@@ -1,0 +1,9 @@
+[package]
+name = "autograph"
+version = "0.0.1"
+authors = ["charles-r-earp <charles.r.earp@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+ocl = "0.19.2"
+itertools = "0.8.0"
