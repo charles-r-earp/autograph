@@ -1,255 +1,273 @@
 use std::ops;
 
-pub trait Dimension: std::fmt::Debug + ops::Deref<Target=[usize]> + Copy + PartialEq {
-  fn rmaj_strides(&self) -> Self;
+pub unsafe trait Element: ocl::OclPrm + 'static {
+  fn rtype() -> String;
+  fn ctype() -> String;
+  fn is_real() -> bool;
+  fn cwidth(device: ocl::Device) -> usize;
+  fn cvector(device: ocl::Device) -> String {
+    Self::ctype() + &Self::cwidth(device).to_string()
+  } 
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Dim<D> {
-  dims: D
-}
-
-impl<D> From<D> for Dim<D> 
-  where Self: Dimension {
-  fn from(dims: D) -> Self {
-    Self{dims}
+unsafe impl Element for f32 {
+  fn rtype() -> String { String::from("f32") }
+  fn ctype() -> String { String::from("float") }
+  fn is_real() -> bool { true }
+  fn cwidth(device: ocl::Device) -> usize {
+    use ocl::enums::{DeviceInfoResult, DeviceInfo};
+    if let DeviceInfoResult::NativeVectorWidthFloat(w) = device.info(DeviceInfo::NativeVectorWidthFloat).unwrap() {
+      w as usize
+    }
+    else {
+      panic!()
+    }
   }
+  
 }
 
-pub type Ix = Dim<[usize; 1]>;
-pub type Ix1 = Ix;
-
-impl ops::Deref for Ix1 {
-  type Target = [usize];
-  fn deref(&self) -> &[usize] {
-    &self.dims
-  }
-}
-
-impl Dimension for Ix1 {
-  fn rmaj_strides(&self) -> Self {
-    Self{dims: [1]}
-  }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Shape<D> {
-  dims: D,
-  strides: D
-}
-
-impl<D: Dimension> Shape<D> {
-  pub fn rmaj<Dims: Into<D>>(dims: Dims) -> Self {
-    let dims = dims.into();
-    let strides = dims.rmaj_strides();
-    Self{dims, strides}
-  }
-  pub fn size(&self) -> usize {
-    self.dims.iter().product::<usize>()
+unsafe impl Element for i32 {
+  fn rtype() -> String { String::from("i32") }
+  fn ctype() -> String { String::from("int") }
+  fn is_real() -> bool { false }
+  fn cwidth(device: ocl::Device) -> usize {
+    use ocl::enums::{DeviceInfoResult, DeviceInfo};
+    if let DeviceInfoResult::NativeVectorWidthInt(w) = device.info(DeviceInfo::NativeVectorWidthInt).unwrap() {
+      w as usize
+    }
+    else {
+      panic!()
+    }
   }
 }
 
 #[derive(Debug)]
-pub struct OpenCL {
-  context: ocl::Context,
-  program: ocl::Program
+pub struct Tensor<'w, T: Element> {
+  workspace: &'w Workspace,
+  dims: Vec<usize>,
+  data: Option<Vec<T>>,
+  buffer: ocl::Buffer<T>
 }
 
-impl OpenCL {
-  pub fn new(context: ocl::Context, program: ocl::Program) -> Self {
-    Self{context, program}
+impl<'w, T: Element> Tensor<'w, T> {
+  pub fn read<'q>(&mut self)
+    where T: Default {
+    let mut data = vec![T::default(); self.len()];
+    self.buffer.read(&mut data)
+      .enq()
+      .unwrap();
+    self.data = Some(data);
+  }
+  pub fn workspace(&self) -> &'w Workspace { self.workspace }
+  pub fn dims(&self) -> &Vec<usize> { &self.dims } 
+  pub fn data(&self) -> Option<&Vec<T>> { self.data.as_ref() }
+  pub fn len(&self) -> usize { self.buffer.len() }
+  pub fn buffer(&self) -> &ocl::Buffer<T> { &self.buffer }
+  pub fn restrict<'b>(&self, other: &'b Tensor<T>) -> bool {
+    self.buffer().as_core().as_ptr() == other.buffer().as_core().as_ptr()
+  }
+  pub fn cwidth(&self) -> usize { T::cwidth(self.workspace.device()) }
+}
+
+#[derive(Debug)]
+pub struct Workspace {
+  context: ocl::Context,
+  program: ocl::Program,
+  queue: ocl::Queue
+}
+
+impl Workspace {
+  pub fn new(context: ocl::Context, src: String) -> Self {
+    debug_assert_eq!(context.devices().len(), 1);
+    let program = ocl::Program::builder()
+      .src(src)
+      .devices(0)
+      .build(&context)
+      .unwrap();
+    let queue = ocl::Queue::new(&context, context.devices()[0], None).unwrap();
+    Self{context, program, queue}
+  }
+  pub fn tensor<T: Element>(&self, dims: Vec<usize>, data: Option<Vec<T>>) -> Tensor<T> {
+    let buffer = ocl::Buffer::builder()
+      .queue(self.queue.clone())
+      .len(dims.iter().product::<usize>())
+      .build()
+      .unwrap();
+    if let Some(ref data) = data {
+      debug_assert_eq!(buffer.len(), data.len());
+      buffer.write(data).enq().unwrap();
+    }
+    Tensor{workspace: self, dims, data, buffer}
   }
   pub fn context(&self) -> &ocl::Context { &self.context }
   pub fn program(&self) -> &ocl::Program { &self.program }
-  pub fn queue(&self) -> ocl::Queue {
-    ocl::Queue::new(&self.context,
-                    self.context.get_device_by_wrapping_index(0),
-                    None)
-      .unwrap()
-  }
+  pub fn queue(&self) -> &ocl::Queue { &self.queue }
+  pub fn device(&self) -> ocl::Device { self.context.devices()[0] }
 }
 
-#[derive(Debug)]
-pub enum Buffer {
-  F32(ocl::Buffer<f32>),
-  I32(ocl::Buffer<i32>)
+pub fn source<'c>(context: &'c ocl::Context) -> String {
+  debug_assert_eq!(context.devices().len(), 1);
+  let device = context.devices()[0];
+  _source(std::marker::PhantomData::<f32>::default(), device)
+  + &_source(std::marker::PhantomData::<i32>::default(), device)
 }
 
-pub trait Element: ocl::OclPrm {
-  fn ocl_buffer_ref<'b>(buffer: &'b Buffer) -> &'b ocl::Buffer<Self>;
-  fn buffer(ocl_buffer: ocl::Buffer<Self>) -> Buffer;
-  fn ctype_name() -> &'static str;
+fn _source<T: Element>(_m: std::marker::PhantomData<T>, device: ocl::Device) -> String {
+  include_str!("autograph.cl")
+    .replace("RTYPE", &T::rtype())
+    .replace("CTYPE", &T::ctype())
+    .replace("IS_REAL", &T::is_real().to_string())
+    .replace("CVECTOR", &T::cvector(device))
+    .to_string()
 }
-
-impl Element for f32 {
-  fn ocl_buffer_ref<'b>(buffer: &'b Buffer) -> &'b ocl::Buffer<Self> {
-    match buffer {
-      Buffer::F32(ref buffer) => buffer,
-      Buffer::I32(_) => panic!()
-    }
-  }
-  fn buffer(ocl_buffer: ocl::Buffer<Self>) -> Buffer {
-    Buffer::F32(ocl_buffer)
-  }
-  fn ctype_name() -> &'static str { "float" }
-}
-
-impl Element for i32 {
-  fn ocl_buffer_ref<'b>(buffer: &'b Buffer) -> &'b ocl::Buffer<Self> {
-    match buffer {
-      Buffer::F32(_) => panic!(),
-      Buffer::I32(ref buffer) => buffer
-    }
-  }
-  fn buffer(ocl_buffer: ocl::Buffer<Self>) -> Buffer {
-    Buffer::I32(ocl_buffer)
-  }
-  fn ctype_name() -> &'static str { "int" } 
-}
-
-#[derive(Debug)]
-pub struct Graph<'o> {
-  backend: &'o OpenCL,
-  vertices: Vec<Buffer>,
-  pub ops: Vec<ocl::Kernel>
-}
-
-impl<'o> Graph<'o> {
-  pub fn new(backend: &'o OpenCL) -> Self {
-    Self{backend, vertices: Vec::new(), ops: Vec::new()}
-  }
-  pub fn vertex<'b, T: Element>(&mut self, data: Option<&'b Vec<T>>, len: usize) -> usize {
-    let buffer = ocl::Buffer::<T>::builder()
-      .context(&self.backend.context())
-      .len(len)
-      .build()
-      .unwrap();
-    if let Some(data) = data {
-      buffer.write(data)
-        .queue(&self.backend.queue())
-        .enq()
-        .unwrap();
-    }
-    let idx = self.vertices.len();
-    self.vertices.push(T::buffer(buffer));
-    idx
-  }
   
-  pub fn backend(&self) -> &'o OpenCL { self.backend }
-  pub fn op(&mut self, kernel: ocl::Kernel) {
-    self.ops.push(kernel);
-  }
-  pub fn exec<'q>(&self) {
-    let queue = self.backend.queue();
-    self.ops.iter()
-      .for_each(|k| { 
-        unsafe {
-          k.cmd()
-            .queue(&queue)
-            .enq()
-            .unwrap();
-        }
-      });
-    queue.finish()
+pub trait Sigmoid {
+  type Output;
+  fn sigmoid(self) -> Self::Output;
+}
+
+impl<'w, 'a, T: Element> Sigmoid for &'a Tensor<'w, T> {
+  type Output = Tensor<'w, T>;
+  fn sigmoid(self) -> Tensor<'w, T> {
+    debug_assert!(T::is_real());
+    let out = self.workspace().tensor(self.dims.clone(), None);
+    let name = format!("sigmoid_{}", T::rtype());
+    let kernel = ocl::Kernel::builder()
+      .program(self.workspace().program())
+      .name(name)
+      .queue(self.workspace().queue().clone())
+      .global_work_size(self.len())
+      .arg(out.buffer())
+      .arg(self.buffer())
+      .build()
       .unwrap();
+    unsafe { kernel.enq().unwrap(); }
+    out
   }
 }
 
-impl<'o, 'b, T: Element, D: Dimension> ops::Index<&'b Tensor<T, D>> for Graph<'o> {
-  type Output = ocl::Buffer<T>;
-  fn index(&self, tensor: &'b Tensor<T, D>) -> &Self::Output {
-    T::ocl_buffer_ref(&self.vertices[tensor.idx])
+pub trait Stack {
+  type Output;
+  fn stack(self, rows: usize) -> Self::Output;
+}
+
+impl<'w, 'a, T: Element> Stack for &'a Tensor<'w, T> {
+  type Output = Tensor<'w, T>;
+  fn stack(self, rows: usize) -> Tensor<'w, T> {
+    let mut dims = self.dims.clone();
+    dims.insert(0, rows); 
+    let out = self.workspace().tensor(dims, None);
+    let name = format!("stack_{}", T::rtype());
+    let kernel = ocl::Kernel::builder()
+      .program(self.workspace().program())
+      .name(name)
+      .queue(self.workspace().queue().clone())
+      .global_work_size(rows)
+      .arg(out.buffer())
+      .arg(self.buffer())
+      .arg(self.len())
+      .build()
+      .unwrap();
+    unsafe { kernel.enq().unwrap(); }
+    out
   }
 }
 
-#[derive(Debug)]
-pub struct Tensor<T, D> {
-  shape: Shape<D>,
-  data: Option<Vec<T>>,
-  idx: usize
-}
-
-impl<T: Element, D: Dimension> Tensor<T, D> {
-  pub fn new<'g, 'o>(graph: &'g mut Graph<'o>, shape: Shape<D>, data: Option<Vec<T>>) -> Self {
-    let idx = graph.vertex(data.as_ref(), shape.size());
-    Self{shape, data, idx}
-  }
-  pub fn shape(&self) -> &Shape<D> { &self.shape }
-  pub fn read<'g, 'o>(&mut self, graph: &'g Graph<'o>)
-    where T: Default + Copy {
-   if self.data.is_none() {
-      let mut data = Vec::with_capacity(self.shape.size());
-      unsafe { data.set_len(data.capacity()); }
-      self.data = Some(data);
+impl<'w, 'a, 'b, T: Element> ops::Add<&'b Tensor<'w, T>> for &'a Tensor<'w, T> {
+  type Output = Tensor<'w, T>;
+  fn add(self, rhs: &'b Tensor<'w, T>) -> Tensor<'w, T> {
+    debug_assert_eq!(self.len(), rhs.len());
+    let out = self.workspace().tensor(self.dims.clone(), None);
+    let name = if self.restrict(rhs) {
+      format!("add_{}_restrict", T::rtype())
     }
-    graph[self].read(self.data.as_mut().unwrap())
-      .queue(&graph.backend().queue())
-      .enq()
-      .unwrap();
-  }
-}
-
-pub struct Add<T: Element> {
-  _m: std::marker::PhantomData<T>
-}
-
-impl<T: Element> Add<T> {
-  pub fn src() -> String {
-    r#"
-      kernel void add_T(global T* out, global T* lhs, global T* rhs) {
-        size_t gid = get_global_id(0);
-        out[gid] = lhs[gid] + rhs[gid];
-      }
-    "#.replace("T", T::ctype_name())
-      .to_string()
-  }
-  pub fn op<'g, 'o, 'l, 'r, D: Dimension>(graph: &'g mut Graph<'o>, lhs: &'l Tensor<T, D>, rhs: &'r Tensor<T, D>) -> Tensor<T, D> {
-    debug_assert_eq!(lhs.shape(), rhs.shape());
-    let out = Tensor::new(graph, *lhs.shape(), lhs.data.clone());
+    else {
+      format!("add_{}", T::rtype())
+    };
     let kernel = ocl::Kernel::builder()
-      .program(graph.backend().program())
-      .name("add_T".replace("T", T::ctype_name()))
-      .global_work_size([lhs.shape().size()])
-      .arg(&graph[&out])
-      .arg(&graph[&lhs])
-      .arg(&graph[&rhs])
+      .program(self.workspace().program())
+      .name(name)
+      .queue(self.workspace().queue().clone())
+      .global_work_size(out.len())
+      .arg(out.buffer())
+      .arg(self.buffer())
+      .arg(rhs.buffer())
       .build()
       .unwrap();
-    graph.op(kernel);
+    unsafe { kernel.enq().unwrap(); }
     out
   }
 }
 
-pub struct Ones<T: Element> {
-  _m : std::marker::PhantomData<T>
+pub trait Transpose {
+  type Output;
+  fn transpose(self) -> Self::Output;
 }
 
-impl<T: Element> Ones<T> {
-  pub fn src() -> String {
-    r#"
-      kernel void ones_T(global T* out) {
-        out[get_global_id(0)] = 1;
-      }
-    "#.replace("T", T::ctype_name())
-      .to_string()
-  }
-  pub fn op<'g, 'o, D: Dimension>(graph: &'g mut Graph<'o>, shape: Shape<D>) -> Tensor<T, D> {
-    let out = Tensor::new(graph, shape, None);
+impl<'w, 'a, T: Element> Transpose for &'a Tensor<'w, T> {
+  type Output = Tensor<'w, T>;
+  fn transpose(self) -> Tensor<'w, T> {
+    debug_assert_eq!(self.dims.len(), 2);
+    let d0 = self.dims[0];
+    let d1 = self.dims[1];
+    let out = self.workspace().tensor(vec![d1, d0], None);
+    let name = format!("transpose_v1_{}", T::rtype());
     let kernel = ocl::Kernel::builder()
-      .program(&graph.backend().program())
-      .name("ones_T".replace("T", T::ctype_name()))
-      .global_work_size([out.shape().size()])
-      .arg(&graph[&out])
+      .program(self.workspace().program())
+      .name(name)
+      .queue(self.workspace().queue().clone())
+      .global_work_size([d1, d0])
+      .arg(out.buffer())
+      .arg(self.buffer())
       .build()
       .unwrap();
-    graph.op(kernel);
+    unsafe { kernel.enq().unwrap(); }
     out
   }
 }
-    
-    
-    
-    
+
+pub trait Matmul<R> {
+  type Output;
+  fn matmul(self, rhs: R) -> Self::Output;
+}
+
+impl<'w, 'a, 'b, T: Element> Matmul<&'b Tensor<'w, T>> for &'a Tensor<'w, T> {
+  type Output = Tensor<'w, T>;
+  fn matmul(self, rhs: &'b Tensor<'w, T>) -> Tensor<'w, T> {
+    debug_assert_eq!(self.dims.len(), 2);
+    debug_assert_eq!(rhs.dims.len(), 2);
+    debug_assert_eq!(self.dims[1], rhs.dims[0]);
+    let m = self.dims[0];
+    let n = rhs.dims[1];
+    let k = self.dims[1];
+    let out = self.workspace().tensor(vec![m, n], None);
+    let name = if self.restrict(rhs) {
+      format!("matmul_v1_{}_restrict", T::rtype())
+    }
+    else {
+      format!("matmul_v1_{}", T::rtype())
+    };
+    let kernel = ocl::Kernel::builder()
+      .program(self.workspace().program())
+      .name(name)
+      .queue(self.workspace().queue().clone())
+      .global_work_size([m, n])
+      .arg(out.buffer())
+      .arg(self.buffer())
+      .arg(rhs.buffer())
+      .arg(m)
+      .arg(n)
+      .arg(k)
+      .build()
+      .unwrap();
+    unsafe { kernel.enq().unwrap(); }
+    out
+  }
+}
+
+
+
+
 
 
 
