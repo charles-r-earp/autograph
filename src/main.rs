@@ -2,17 +2,21 @@ use autograph as ag;
 
 fn main() {
   let context = ocl::Context::builder()
+    .platform(ocl::Platform::first().unwrap())
+    .devices(0)
     .build()
     .unwrap();
-  let program = ocl::Program::builder()
-    .src(itertools::join(&[ag::Ones::<f32>::src(), ag::Add::<f32>::src()], ""))
-    .build(&context)
-    .unwrap();
-  let backend = ag::OpenCL::new(context, program);
-  let mut graph = ag::Graph::new(&backend);
-  let x: ag::Tensor<f32, ag::Ix1> = ag::Ones::op(&mut graph, ag::Shape::rmaj([10]));
-  let mut y = ag::Add::op(&mut graph, &x, &x); 
-  graph.exec();
-  y.read(&graph);
-  println!("{:?}", y);
-} 
+  let src = ag::source(&context);
+  //println!("{:?}", &src);
+  let ws = ag::Workspace::new(context, src); 
+  let x = ws.tensor::<f32>(vec![10, 2], Some(vec![1.; 20]));
+  let w = ws.tensor::<f32>(vec![2, 1], Some(vec![1.; 2]));
+  let b = ws.tensor::<f32>(vec![1], Some(vec![1.]));
+  let t = ws.tensor::<f32>(vec![10], Some(vec![1.; 10]));
+  use ag::{Matmul, Stack, Sigmoid, Square, Sum};
+  let mut y = (&x.matmul(&w) + &b.stack(x.dims()[0])).sigmoid();
+  let mut loss = (&y - &t).sqr().sum();  
+  y.read();
+  loss.read();
+  println!("{:?} {:?}", &y.data(), &loss.data());
+}
