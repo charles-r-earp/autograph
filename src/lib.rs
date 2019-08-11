@@ -62,6 +62,7 @@ impl<'w, T: Element> Tensor<'w, T> {
   pub fn dims(&self) -> &Vec<usize> { &self.dims } 
   pub fn data(&self) -> Option<&Vec<T>> { self.data.as_ref() }
   pub fn len(&self) -> usize { self.buffer.len() }
+  pub fn vlen(&self) -> usize { self.buffer.len() / self.cwidth() + self.buffer.len() % self.cwidth() }
   pub fn buffer(&self) -> &ocl::Buffer<T> { &self.buffer }
   pub fn restrict<'b>(&self, other: &'b Tensor<T>) -> bool {
     self.buffer().as_core().as_ptr() == other.buffer().as_core().as_ptr()
@@ -173,6 +174,31 @@ impl<'w, 'a, T: Element> Stack for &'a Tensor<'w, T> {
   }
 }
 
+pub trait Sum {
+  type Output;
+  fn sum(self) -> Self::Output;
+}
+
+impl<'w, 'a, T: Element> Sum for &'a Tensor<'w, T> {
+  type Output = Tensor<'w, T>;
+  fn sum(self) -> Tensor<'w, T> {
+    debug_assert!(T::is_real());
+    let out = self.workspace().tensor(vec![1], None);
+    let kernel2 = ocl::Kernel::builder()
+      .program(self.workspace().program())
+      .name(format!("sum_{}", T::rtype()))
+      .queue(self.workspace().queue().clone())
+      .global_work_size(1)
+      .arg(out.buffer())
+      .arg(self.buffer())
+      .arg(self.buffer().len())
+      .build()
+      .unwrap();
+    unsafe { kernel2.enq().unwrap(); }
+    out
+  }
+}
+
 impl<'w, 'a, 'b, T: Element> ops::Add<&'b Tensor<'w, T>> for &'a Tensor<'w, T> {
   type Output = Tensor<'w, T>;
   fn add(self, rhs: &'b Tensor<'w, T>) -> Tensor<'w, T> {
@@ -199,14 +225,91 @@ impl<'w, 'a, 'b, T: Element> ops::Add<&'b Tensor<'w, T>> for &'a Tensor<'w, T> {
   }
 }
 
+impl<'w, 'a, 'b, T: Element> ops::Sub<&'b Tensor<'w, T>> for &'a Tensor<'w, T> {
+  type Output = Tensor<'w, T>;
+  fn sub(self, rhs: &'b Tensor<'w, T>) -> Tensor<'w, T> {
+    debug_assert_eq!(self.len(), rhs.len());
+    let out = self.workspace().tensor(self.dims.clone(), None);
+    let name = if self.restrict(rhs) {
+      format!("sub_{}_restrict", T::rtype())
+    }
+    else {
+      format!("sub_{}", T::rtype())
+    };
+    let kernel = ocl::Kernel::builder()
+      .program(self.workspace().program())
+      .name(name)
+      .queue(self.workspace().queue().clone())
+      .global_work_size(out.len())
+      .arg(out.buffer())
+      .arg(self.buffer())
+      .arg(rhs.buffer())
+      .build()
+      .unwrap();
+    unsafe { kernel.enq().unwrap(); }
+    out
+  }
+}
+
+impl<'w, 'a, 'b, T: Element> ops::Mul<&'b Tensor<'w, T>> for &'a Tensor<'w, T> {
+  type Output = Tensor<'w, T>;
+  fn mul(self, rhs: &'b Tensor<'w, T>) -> Tensor<'w, T> {
+    debug_assert_eq!(self.len(), rhs.len());
+    let out = self.workspace().tensor(self.dims.clone(), None);
+    let name = if self.restrict(rhs) {
+      format!("mul_{}_restrict", T::rtype())
+    }
+    else {
+      format!("mul_{}", T::rtype())
+    };
+    let kernel = ocl::Kernel::builder()
+      .program(self.workspace().program())
+      .name(name)
+      .queue(self.workspace().queue().clone())
+      .global_work_size(out.len())
+      .arg(out.buffer())
+      .arg(self.buffer())
+      .arg(rhs.buffer())
+      .build()
+      .unwrap();
+    unsafe { kernel.enq().unwrap(); }
+    out
+  }
+}
+
+pub trait Square {
+  type Output;
+  fn sqr(self) -> Self::Output;
+} 
+
+impl<'w, 'a, T: Element> Square for &'a Tensor<'w, T> {
+  type Output = Tensor<'w, T>;
+  fn sqr(self) -> Tensor<'w, T> {
+    let out = self.workspace().tensor(self.dims.clone(), None);
+    let name = format!("mul_{}_restrict", T::rtype());
+    let kernel = ocl::Kernel::builder()
+      .program(self.workspace().program())
+      .name(name)
+      .queue(self.workspace().queue().clone())
+      .global_work_size(out.len())
+      .arg(out.buffer())
+      .arg(self.buffer())
+      .arg(self.buffer())
+      .build()
+      .unwrap();
+    unsafe { kernel.enq().unwrap(); }
+    out
+  }
+}
+
 pub trait Transpose {
   type Output;
-  fn transpose(self) -> Self::Output;
+  fn t(self) -> Self::Output;
 }
 
 impl<'w, 'a, T: Element> Transpose for &'a Tensor<'w, T> {
   type Output = Tensor<'w, T>;
-  fn transpose(self) -> Tensor<'w, T> {
+  fn t(self) -> Tensor<'w, T> {
     debug_assert_eq!(self.dims.len(), 2);
     let d0 = self.dims[0];
     let d1 = self.dims[1];
