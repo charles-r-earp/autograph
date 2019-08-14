@@ -1,7 +1,6 @@
 // Replaceable Strings:
 // RTYPE = Rust type ie f32 or i32
 // CTYPE = OpenCL type ie float
-// CVECTOR = OpenCL vector type ie float8 
 // IS_REAL = true for float, false for int
 
 // Stack 
@@ -30,6 +29,12 @@ kernel void sigmoid_RTYPE(global CTYPE* restrict out, global CTYPE* restrict inp
   size_t gid = get_global_id(0);
   out[gid] = 1 / (1 + exp(-input[gid])); 
 }
+
+kernel void sigmoid_grad_RTYPE(global CTYPE* restrict out, global CTYPE* restrict input) {
+  size_t gid = get_global_id(0);
+  CTYPE sig = 1 / (1 + exp(-input[gid]));
+  out[gid] = sig * (1 - sig); 
+}
 #endif
 
 // Binary Elementwise
@@ -42,6 +47,16 @@ kernel void add_RTYPE(global CTYPE* restrict out, global CTYPE* lhs, global CTYP
 kernel void add_RTYPE_restrict(global CTYPE* restrict out, global CTYPE* restrict lhs, global CTYPE* restrict rhs) {
   size_t gid = get_global_id(0);
   out[gid] = lhs[gid] + rhs[gid];
+}
+
+kernel void add_assign_RTYPE(global CTYPE* lhs, global CTYPE* rhs) {
+  size_t gid = get_global_id(0);
+  lhs[gid] += rhs[gid];
+}
+
+kernel void add_assign_RTYPE_restrict(global CTYPE* restrict lhs, global CTYPE* restrict rhs) {
+  size_t gid = get_global_id(0);
+  lhs[gid] += rhs[gid];
 }
 
 kernel void sub_RTYPE(global CTYPE* restrict out, global CTYPE* lhs, global CTYPE* rhs) {

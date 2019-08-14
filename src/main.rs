@@ -7,16 +7,16 @@ fn main() {
     .build()
     .unwrap();
   let src = ag::source(&context);
-  //println!("{:?}", &src);
-  let ws = ag::Workspace::new(context, src); 
-  let x = ws.tensor::<f32>(vec![10, 2], Some(vec![1.; 20]));
-  let w = ws.tensor::<f32>(vec![2, 1], Some(vec![1.; 2]));
-  let b = ws.tensor::<f32>(vec![1], Some(vec![1.]));
-  let t = ws.tensor::<f32>(vec![10], Some(vec![1.; 10]));
-  use ag::{Matmul, Stack, Sigmoid, Square, Sum};
-  let mut y = (&x.matmul(&w) + &b.stack(x.dims()[0])).sigmoid();
-  let mut loss = (&y - &t).sqr().sum();  
+  let ws = ag::Workspace::new(context, src);
+  let graph = ws.graph();
+  let mut x = graph.variable::<f32>(ws.tensor(vec![10], Some(vec![1.; 10])), Some(ws.tensor(vec![10], Some(vec![0.; 10]))));
+  use ag::Sigmoid;
+  let mut y = x.sigmoid();
   y.read();
-  loss.read();
-  println!("{:?} {:?}", &y.data(), &loss.data());
+  println!("{:?}", y.value().data());
+  y.backward();
+  x.read_grad();
+  y.read_grad();
+  println!("{:?}", x.grad().unwrap().data());
+  println!("{:?}", y.grad().unwrap().data());
 }
