@@ -6,17 +6,12 @@ fn main() {
     .devices(0)
     .build()
     .unwrap();
-  let src = ag::source(&context);
-  let ws = ag::Workspace::new(context, src);
-  let graph = ws.graph();
-  let mut x = graph.variable::<f32>(ws.tensor(vec![10], Some(vec![1.; 10])), Some(ws.tensor(vec![10], Some(vec![0.; 10]))));
+  let ws = ag::Workspace::new(context, ag::source());
+  let graph = ag::Graph::new(&ws);
   use ag::Sigmoid;
+  let mut x = ag::Variable::new(ag::Tensor::new(&ws, vec![1, 2], Some(vec![1f32; 2])), Some(ag::Gradient::new(&graph, vec![1, 2], Some(vec![0f32; 2]))));
   let mut y = x.sigmoid();
-  y.read();
-  println!("{:?}", y.value().data());
   y.backward();
   x.read_grad();
-  y.read_grad();
   println!("{:?}", x.grad().unwrap().data());
-  println!("{:?}", y.grad().unwrap().data());
 }
