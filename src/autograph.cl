@@ -35,6 +35,11 @@ kernel void sigmoid_grad_RTYPE(global CTYPE* restrict out, global CTYPE* restric
   CTYPE sig = 1 / (1 + exp(-input[gid]));
   out[gid] = sig * (1 - sig); 
 }
+
+kernel void learning_rate_step_RTYPE(global CTYPE* restrict value, CTYPE lr, global CTYPE* restrict grad) {
+  size_t gid = get_global_id(0);
+  value[gid] -= lr * grad[gid];
+} 
 #endif
 
 // Binary Elementwise

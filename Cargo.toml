@@ -6,4 +6,6 @@ edition = "2018"
 
 [dependencies]
 ocl = "0.19.2"
-itertools = "0.8.0"
+#itertools = "0.8.0"
+rand = "0.6.5"
+num-traits = "0.2.6"
