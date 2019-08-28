@@ -7,9 +7,7 @@ fn main() {
     .build()
     .unwrap();
   let ws = ag::Workspace::new(context, ag::source());
-  let graph = ag::Graph::new(&ws);
-  let opt = ag::LearningRate::new(0.01);
-  //let mut w = ag::Parameter::new(Tensor::
-  //use ag::{Matmul, Sigmoid};
+  let graph = ag::Graph::<ag::Forward>::new(&ws);
+  let x = ag::Tensor::<f32>::new(&ws, vec![10], Some(vec![1.; 10]));
   
 }

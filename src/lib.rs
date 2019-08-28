@@ -1,4 +1,4 @@
-use std::{iter, vec, cell, ops};
+use std::{iter, slice, ops};
 
 pub unsafe trait Element: ocl::OclPrm + 'static {
   fn rtype() -> String;
@@ -50,86 +50,70 @@ impl Workspace {
     let queue = ocl::Queue::new(&context, context.devices()[0], None).unwrap();
     Self{context, program, queue}
   }
-}
-
-pub struct Graph<'w> {
-  workspace: &'w Workspace,
-  kernels: cell::RefCell<Vec<ocl::Kernel>>
-}
-
-impl<'w> Graph<'w> {
-  pub fn new(workspace: &'w Workspace) -> Self { 
-    Self{workspace, kernels: cell::RefCell::new(Vec::new())}
-  }
-  pub fn workspace(&self) -> &'w Workspace { self.workspace }
+  pub fn program(&self) -> &ocl::Program { &self.program }
+  pub fn queue(&self) -> &ocl::Queue { &self.queue }
 }
 
 pub trait Executor {
-  fn queue(&self) -> &ocl::Queue;
-  fn program(&self) -> &ocl::Program;
-  fn enq<I: iter::IntoIterator<Item=ocl::Kernel>>(&self, kernels: I)
+  fn enq<I: iter::IntoIterator<Item=ocl::Kernel>>(&mut self, kernels: I)
     where I::IntoIter: iter::DoubleEndedIterator;
 }
 
-impl<'w> Executor for &'w Workspace {
-  fn queue(&self) -> &ocl::Queue { &self.queue }
-  fn program(&self) -> &ocl::Program { &self.program }
-  fn enq<I: IntoIterator<Item=ocl::Kernel>>(&self, kernels: I)
+#[derive(Default)]
+pub struct Forward;
+
+pub struct Backward {
+  kernels: Vec<ocl::Kernel>
+}
+
+impl Default for Backward {
+  fn default() -> Self { Self{kernels: Vec::new()} }
+}
+
+pub struct Graph<'w, E> {
+  workspace: &'w Workspace,
+  exec: E
+}
+
+impl<'w, E> Graph<'w, E> {
+  pub fn new(workspace: &'w Workspace) -> Self
+    where E: Default { 
+    Self{workspace, exec: E::default()}
+  }
+  pub fn workspace(&self) -> &'w Workspace { self.workspace }
+  pub fn forward(&self) -> Graph<'w, Forward> { Graph::new(self.workspace) }
+  /*fn backward(&mut self, ) { 
+    kernels.iter()
+      .for_each(|k| unsafe { println!("{:?}", k.name()); k.enq().unwrap(); });
+    kernels.clear();
+  }*/
+}
+
+impl<'w> Executor for Graph<'w, Forward> {
+  fn enq<I: iter::IntoIterator<Item=ocl::Kernel>>(&mut self, kernels: I)
     where I::IntoIter: iter::DoubleEndedIterator {
     kernels.into_iter().for_each(|k| unsafe { k.enq().unwrap(); });
   }
 }
 
-impl<'w, 'g> Executor for &'g Graph<'w> {
-  fn queue(&self) -> &ocl::Queue { self.workspace.queue() }
-  fn program(&self) -> &ocl::Program { self.workspace.program() }
-  fn enq<I: IntoIterator<Item=ocl::Kernel>>(&self, kernels: I)
+impl<'w> Executor for Graph<'w, Backward> {
+  fn enq<I: iter::IntoIterator<Item=ocl::Kernel>>(&mut self, kernels: I)
     where I::IntoIter: iter::DoubleEndedIterator {
-    self.kernels.borrow_mut().extend(kernels.into_iter().rev());
-  }
-}
-
-pub trait BinaryExec<R> {
-  type Output: Executor;
-  fn binary_exec(&self, rhs: R) -> Self::Output;
-}
-
-impl<'w, E: Executor> BinaryExec<E> for &'w Workspace {
-  type Output = E;
-  fn binary_exec(&self, rhs: E) -> Self::Output { rhs }
-}
-
-impl<'w, 'g, E: Executor> BinaryExec<E> for &'g Graph<'w> {
-  type Output = Self;
-  fn binary_exec(&self, rhs: E) -> Self { self }
-}
-
-
-pub trait BackwardExecutor: Executor {
-  fn backward(&self);
-}
-
-impl<'w, 'g> BackwardExecutor for &'g Graph<'w> {
-  fn backward(&self) { 
-    let mut kernels = self.kernels.borrow_mut();
-    kernels.iter()
-      .for_each(|k| unsafe { println!("{:?}", k.name()); k.enq().unwrap(); });
-    kernels.clear();
+    self.exec.kernels.extend(kernels.into_iter().rev());
   }
 }
 
 #[derive(Debug)]
-pub struct Tensor<E, T: Element> {
-  exec: E,
+pub struct Tensor<T: Element> {
   dims: Vec<usize>,
   data: Option<Vec<T>>,
   buffer: ocl::Buffer<T>
 }
 
-impl<E: Executor, T: Element> Tensor<E, T> {
-  pub fn new(exec: E, dims: Vec<usize>, data: Option<Vec<T>>) -> Self {
+impl<T: Element> Tensor<T> {
+  pub fn new<'w>(ws: &'w Workspace, dims: Vec<usize>, data: Option<Vec<T>>) -> Self {
     let buffer = ocl::Buffer::builder()
-      .queue(exec.queue().clone())
+      .queue(ws.queue().clone())
       .len(dims.iter().product::<usize>())
       .build()
       .unwrap();
@@ -137,12 +121,7 @@ impl<E: Executor, T: Element> Tensor<E, T> {
       debug_assert_eq!(buffer.len(), data.len());
       buffer.write(data).enq().unwrap();
     }
-    Self{exec, dims, data, buffer}
-  }
-  pub fn from_elem(exec: E, dims: Vec<usize>, elem: T) -> Self {
-    let mut t = Self::new(exec, dims, None);
-    t.fill_elem(elem);
-    t
+    Self{dims, data, buffer}
   }
   pub fn dims(&self) -> &Vec<usize> { &self.dims } 
   pub fn data(&self) -> Option<&Vec<T>> { self.data.as_ref() }
@@ -152,332 +131,379 @@ impl<E: Executor, T: Element> Tensor<E, T> {
     let mut data = vec![T::zero(); self.len()];
     self.buffer.read(&mut data).enq().unwrap();
     self.data = Some(data);
-  }
-  pub fn fill_elem(&mut self, elem: T) {
-    let data = vec![elem; self.len()];
-    self.buffer.write(&data).enq().unwrap();
-    self.data = Some(data);
-  }
-  pub fn fill_fn(&mut self, f: impl FnMut() -> T) {
-    
+  } 
 }
 
-pub trait ExecutorRef {
-  type Output: Executor;
-  fn exec(&self) -> Self::Output;
-}
-
-impl<'e, E, T: Element> ExecutorRef for Tensor<&'e E, T> 
-  where &'e E: Executor {
-  type Output = &'e E;
-  fn exec(&self) -> Self::Output { self.exec }
-}
-
-impl<'b, E1, E2, T: Element> BinaryExec<&'b Tensor<E2, T>> for Tensor<E1, T>
-  where Tensor<E1, T>: ExecutorRef,
-        Tensor<E2, T>: ExecutorRef,
-        <Tensor<E1, T> as ExecutorRef>::Output: BinaryExec<<Tensor<E2, T> as ExecutorRef>::Output> {
-  type Output = <<Tensor<E1, T> as ExecutorRef>::Output as BinaryExec<<Tensor<E2, T> as ExecutorRef>::Output>>::Output;
-  fn binary_exec(&self, rhs: &'b Tensor<E2, T>) -> Self::Output { self.exec().binary_exec(rhs.exec()) }
-}
-
-pub type BinaryExecOutput<A, B> = <A as BinaryExec<B>>::Output;
-
-impl<'w, E: BackwardExecutor, T: Element> Tensor<E, T> {
-  fn backward(&mut self) {
-    self.fill_elem(T::one());
-    self.exec.backward();
-  }
-}
- 
 pub fn restrict<'a, 'b, T: Element>(lhs: &'a ocl::Buffer<T>, rhs: &'b ocl::Buffer<T>) -> bool {
   rhs.as_core().as_ptr() == lhs.as_core().as_ptr()
 }
 
-pub struct Variable<'w, 'g, T: Real> {
-  value: Tensor<&'w Workspace, T>,
-  grad: Option<Tensor<&'g Graph<'w>, T>>
+pub fn binary_restrict_sfx<'a, 'b, T: Element>(lhs: &'a ocl::Buffer<T>, rhs: &'b ocl::Buffer<T>) -> &'static str {
+  if restrict(lhs, rhs) { "_restrict" } else { "" }
 }
 
-impl<'w, 'g, T: Real> Variable<'w, 'g, T> {
-  pub fn new(value: Tensor<&'w Workspace, T>, grad: Option<Tensor<&'g Graph<'w>, T>>) -> Self {
+pub struct Variable<T: Real> {
+  value: Tensor<T>,
+  grad: Option<Tensor<T>>
+}
+
+impl<T: Real> Variable<T> {
+  pub fn new(value: Tensor<T>, grad: Option<Tensor<T>>) -> Self {
     Self{value, grad}
   } 
-  pub fn value(&self) -> &Tensor<&'w Workspace, T> { &self.value }
-  pub fn value_mut(&mut self) -> &mut Tensor<&'w Workspace, T> { &mut self.value }
-  pub fn grad(&self) -> Option<&Tensor<&'g Graph<'w>, T>> { self.grad.as_ref() }
-  pub fn grad_mut(&mut self) -> Option<&mut Tensor<&'g Graph<'w>, T>> { self.grad.as_mut() }
-  pub fn backward(&mut self) { self.grad_mut().unwrap().backward(); }
+  pub fn value(&self) -> &Tensor<T> { &self.value }
+  pub fn value_mut(&mut self) -> &mut Tensor<T> { &mut self.value }
+  pub fn grad(&self) -> Option<&Tensor<T>> { self.grad.as_ref() }
+  pub fn grad_mut(&mut self) -> Option<&mut Tensor<T>> { self.grad.as_mut() }
 }
 
-impl<'w, 'g, T: Real> From<Tensor<&'w Workspace, T>> for Variable<'w, 'g, T> {
-  fn from(value: Tensor<&'w Workspace, T>) -> Self {
+impl<T: Real> From<Tensor<T>> for Variable<T> {
+  fn from(value: Tensor<T>) -> Self {
     Self::new(value, None)
   }
 }
 
 pub trait Optimizer<T: Real>: Sized {
   type Payload;
-  fn payload<'d>(&self, dims: &'d [usize]) -> Self::Payload;
-  fn step<'w, 'g>(&self, param: &mut Parameter<'w, 'g, T, Self>);
+  fn payload<'w, 'd>(&self, ws: &'w Workspace, dims: &'d Vec<usize>) -> Self::Payload;
+  fn step<'g, 'w>(&self, graph: &'g mut Graph<'w, Forward>, param: &mut Parameter<T, Self>);
 }
 
-pub struct Parameter<'w, 'g, T: Real, O: Optimizer<T>> {
-  var: Variable<'w, 'g, T>,
+pub struct Parameter<T: Real, O: Optimizer<T>> {
+  var: Variable<T>,
   payload: O::Payload
 }
 
-impl<'w, 'g, T: Real, O: Optimizer<T>> Parameter<'w, 'g, T, O> {
-  pub fn new<'o>(value: Tensor<&'w Workspace, T>, opt: &'o O) -> Self {
-    let payload = opt.payload(value.dims().as_slice());
-    let var = Variable::from(value);
+impl<T: Real, O: Optimizer<T>> Parameter<T, O> {
+  pub fn new<'w, 'o>(ws: &'w Workspace, var: Variable<T>, opt: &'o O) -> Self {
+    let payload = opt.payload(ws, var.value().dims());
     Self{var, payload}
   }
-  pub fn var(&self) -> &Variable<'w, 'g, T> { &self.var } 
-  pub fn var_mut(&mut self) -> &mut Variable<'w, 'g, T> { &mut self.var } 
+  pub fn var(&self) -> &Variable<T> { &self.var } 
+  pub fn var_mut(&mut self) -> &mut Variable<T> { &mut self.var } 
+}  
+/*
+pub struct Net<T: Real, O: Optimizer<T>> {
+  params: Vec<Parameter<T, O>>,
+  opt: O
 } 
 
+impl<T: Real, O: Optimizer<T>> Net<T, O> {
+  pub fn new(params: Vec<Parameter<T, O>>, opt: O) -> Self {
+    Self{params, opt}
+  }
+  pub fn opt(&self) -> &O { &self.opt }
+  pub fn push(&mut self, param: Parameter<T, O>) {
+    self.params.push(param);
+  }
+  pub fn iter<'n>(&'n self) -> NetIter<'n, T, O> {
+    NetIter{iter: self.params.iter()}
+  }
+}
+
+pub struct NetIter<'n, T: Real, O: Optimizer<T>> {
+  iter: slice::Iter<'n, Parameter<T, O>> 
+}
+
+impl<'n, T: Real, O: Optimizer<T>> iter::Iterator for NetIter<'n, T, O> {
+  type Item = &'n Tensor<T>;
+  fn next(&mut self) -> Option<Self::Item> {
+    self.iter.next().map(|p| p.var().value())
+  }
+}
+
+pub struct NetIterMut<'n, T: Real, O: Optimizer<T>> {
+  net: &'n mut Net<T, O>,
+  i: usize 
+}
+
+impl<'n, T: Real, O: Optimizer<T>> NetIterMut<'n, T, O> {
+  pub fn push(&mut self, 
+  pub fn next<'a>(&'a mut self) -> Option<&'a mut Parameter<T, O>> {
+    let p = self.net.params.get(self.i);
+    self.i += 1;
+    p
+  }
+}  */
+        
 // Unary Elementwise 
 
-pub trait Sigmoid {
+pub trait Sigmoid<A> {
   type Output;
-  fn sigmoid(self) -> Self::Output;
+  fn sigmoid(&mut self, input: A) -> Self::Output;
 }
 
-impl<'a, E: Executor, T: Real> Sigmoid for &'a Tensor<E, T>
-  where Tensor<E, T>: ExecutorRef<Output=E> {
-  type Output = Tensor<E, T>;
-  fn sigmoid(self) -> Self::Output {
-    let out = Tensor::new(self.exec(), self.dims.clone(), None);
-    let exec = out.exec();
+impl<'w, 'a, T: Real> Sigmoid<&'a Tensor<T>> for Graph<'w, Forward> {
+  type Output = Tensor<T>;
+  fn sigmoid(&mut self, input: &'a Tensor<T>) -> Self::Output {
+    let ws = self.workspace();
+    let out = Tensor::new(ws, input.dims.clone(), None);
     let kernel = ocl::Kernel::builder()
-      .program(exec.program())
+      .program(ws.program())
       .name(format!("sigmoid_{}", T::rtype()))
-      .queue(exec.queue().clone())
-      .global_work_size(self.len())
+      .queue(ws.queue().clone())
+      .global_work_size(input.len())
       .arg(out.buffer())
-      .arg(self.buffer())
+      .arg(input.buffer())
       .build()
       .unwrap();
-    exec.enq(iter::once(kernel));
+    self.enq(iter::once(kernel));
     out
   }
 }
 
-pub trait SigmoidGrad: Sigmoid {
-  fn sigmoid_grad(self) -> Self::Output;
+pub trait SigmoidGrad<A> {
+  type Output;
+  fn sigmoid_grad(&mut self, input: A) -> Self::Output;
 }
 
-impl<'a, E: Executor, T: Real> SigmoidGrad for &'a Tensor<E, T>
-  where Tensor<E, T>: ExecutorRef<Output=E> {
-  fn sigmoid_grad<'g>(self) -> Self::Output {
-    let out = Self::Output::new(self.exec(), self.dims.clone(), None);
-    let exec = out.exec();
+impl<'w, 'a, T: Real> SigmoidGrad<&'a Tensor<T>> for Graph<'w, Backward> {
+  type Output = Tensor<T>;
+  fn sigmoid_grad(&mut self, input: &'a Tensor<T>) -> Self::Output {
+    let ws = self.workspace();
+    let out = Tensor::new(ws, input.dims.clone(), None);
     let kernel = ocl::Kernel::builder()
-      .program(exec.program())
+      .program(ws.program())
       .name(format!("sigmoid_grad_{}", T::rtype()))
-      .queue(exec.queue().clone())
-      .global_work_size(self.len())
+      .queue(ws.queue().clone())
+      .global_work_size(input.len())
       .arg(out.buffer())
-      .arg(self.buffer())
+      .arg(input.buffer())
       .build()
       .unwrap();
-    exec.enq(iter::once(kernel));
+    self.enq(iter::once(kernel));
     out
   }
 }
 
-impl<'a, 'g, 'w, T: Real> Sigmoid for &'a mut Variable<'g, 'w, T> {
-  type Output = Variable<'g, 'w, T>;
-  fn sigmoid(self) -> Self::Output {
-    let out = Variable::new(self.value().sigmoid(), self.grad().map(|input_grad| 
-      Tensor::from_elem(input_grad.exec(), input_grad.dims().clone(), T::zero())
-    ));
-    let sig_grad = self.value().sigmoid_grad();
-    self.grad_mut().map(|input_grad| { *input_grad += &(out.grad().unwrap() * &sig_grad) });
+impl<'w, 'a, T: Real> Sigmoid<&'a Variable<T>> for Graph<'w, Backward> {
+  type Output = Variable<T>;
+  fn sigmoid(&mut self, input: &'a Variable<T>) -> Self::Output {
+    let out = Variable::new(self.forward().sigmoid(input.value()), input.grad().map(|input_grad| {
+      let out_grad = Tensor::new(self.workspace, input_grad.dims().clone(), Some(vec![T::zero(); input_grad.len()]));
+      let partial_grad = self.sigmoid_grad(input.value());
+      let partial_grad = self.mul(&out_grad, &partial_grad);
+      self.add_assign(input_grad, &partial_grad);
+      out_grad
+    }));
     out
   } 
 }
 
+
+
 // Unary 2d 
 
-pub trait Transpose {
+pub trait Transpose<A> {
   type Output;
-  fn t(self) -> Self::Output;
+  fn transpose(&mut self, input: A) -> Self::Output;
 }
 
-impl<'a, E: Executor, T: Element> Transpose for &'a Tensor<E, T>
-  where Tensor<E, T>: ExecutorRef<Output=E> {
-  type Output = Tensor<E, T>;
-  fn t(self) -> Self::Output {
-    debug_assert_eq!(self.dims.len(), 2);
-    let exec = self.exec();
-    let d0 = self.dims[0];
-    let d1 = self.dims[1];
-    let out = Self::Output::new(exec, vec![d1, d0], None);
-    let exec = &out.exec();
-    let name = format!("transpose_v1_{}", T::rtype());
+impl<'w, 'a, T: Element, E> Transpose<&'a Tensor<T>> for Graph<'w, E>
+  where Graph<'w, E>: Executor {
+  type Output = Tensor<T>;
+  fn transpose(&mut self, input: &'a Tensor<T>) -> Self::Output {
+    debug_assert_eq!(input.dims.len(), 2);
+    let d0 = input.dims[0];
+    let d1 = input.dims[1];
+    let ws = self.workspace();
+    let out = Self::Output::new(ws, vec![d1, d0], None);
     let kernel = ocl::Kernel::builder()
-      .program(exec.program())
-      .name(name)
-      .queue(exec.queue().clone())
+      .program(ws.program())
+      .name(format!("transpose_v1_{}", T::rtype()))
+      .queue(ws.queue().clone())
       .global_work_size([d1, d0])
       .arg(out.buffer())
-      .arg(self.buffer())
+      .arg(input.buffer())
       .build()
       .unwrap();
-    exec.enq(iter::once(kernel));
+    self.enq(iter::once(kernel));
     out
   }
 }
 
 // Binary Elementwise
 
-impl<'b, E1: Executor, E2: Executor, T: Element> ops::AddAssign<&'b Tensor<E2, T>> for Tensor<E1, T>
-  where Self: ExecutorRef {
-  fn add_assign(&mut self, rhs: &'b Tensor<E2, T>) {
-    debug_assert_eq!(self.dims(), rhs.dims());
-    let exec = self.exec();
-    let name = if restrict(self.buffer(), rhs.buffer()) {
-      format!("add_assign_{}_restrict", T::rtype())
-    }
-    else {
-      format!("add_assign_{}", T::rtype())
-    };
-    let kernel = ocl::Kernel::builder()
-      .program(exec.program())
-      .name(name)
-      .queue(exec.queue().clone())
-      .global_work_size(self.len())
-      .arg(self.buffer())
-      .arg(rhs.buffer())
-      .build()
-      .unwrap();
-    exec.enq(iter::once(kernel));
-  }
+pub trait AddAssign<A, B> {
+  fn add_assign(&mut self, lhs: A, rhs: B);
 }
 
-impl<'a, 'b, E1: Executor, E2: Executor, T: Element> ops::Add<&'b Tensor<E2, T>> for &'a Tensor<E1, T>
-  where Tensor<E1, T>: BinaryExec<&'b Tensor<E2, T>> {
-  type Output = Tensor<BinaryExecOutput<Tensor<E1, T>, &'b Tensor<E2, T>>, T>;
-  fn add(self, rhs: &'b Tensor<E2, T>) -> Self::Output {
-    debug_assert_eq!(self.len(), rhs.len());
-    let exec = self.binary_exec(rhs);
-    let out = Self::Output::new(exec, self.dims.clone(), None);
-    let exec = &out.exec;
-    let name = if restrict(self.buffer(), rhs.buffer()) {
-      format!("add_{}_restrict", T::rtype())
-    }
-    else {
-      format!("add_{}", T::rtype())
-    };
+impl<'w, 'a, 'b, T: Element, E> AddAssign<&'a Tensor<T>, &'b Tensor<T>> for Graph<'w, E>
+  where Graph<'w, E>: Executor {
+  fn add_assign(&mut self, lhs: &'a Tensor<T>, rhs: &'b Tensor<T>) {
+    debug_assert_eq!(lhs.dims(), rhs.dims());
+    let ws = self.workspace();
     let kernel = ocl::Kernel::builder()
-      .program(exec.program())
-      .name(name)
-      .queue(exec.queue().clone())
-      .global_work_size(out.len())
-      .arg(out.buffer())
-      .arg(self.buffer())
+      .program(ws.program())
+      .name(format!("add_assign{}", binary_restrict_sfx(lhs.buffer(), rhs.buffer())))
+      .queue(ws.queue().clone())
+      .global_work_size(lhs.len())
+      .arg(lhs.buffer())
       .arg(rhs.buffer())
       .build()
       .unwrap();
-    out.exec.enq(iter::once(kernel));
+    self.enq(iter::once(kernel));
+  }
+}
+pub trait Add<A, B> {
+  type Output;
+  fn add(&mut self, lhs: A, rhs: B) -> Self::Output;
+}
+
+impl<'w, 'a, 'b, T: Element, E> Add<&'a Tensor<T>, &'b Tensor<T>> for Graph<'w, E>
+  where Graph<'w, E>: Executor {
+  type Output = Tensor<T>;
+  fn add(&mut self, lhs: &'a Tensor<T>, rhs: &'b Tensor<T>) -> Self::Output {
+    debug_assert_eq!(lhs.dims(), rhs.dims());
+    let ws = self.workspace();
+    let out = Tensor::new(ws, lhs.dims().clone(), None);
+    let kernel = ocl::Kernel::builder()
+      .program(ws.program())
+      .name(format!("add{}", binary_restrict_sfx(lhs.buffer(), rhs.buffer())))
+      .queue(ws.queue().clone())
+      .global_work_size(out.len())
+      .arg(out.buffer())
+      .arg(lhs.buffer())
+      .arg(rhs.buffer())
+      .build()
+      .unwrap();
+    self.enq(iter::once(kernel));
     out
   }
 }
 
-impl<'a, 'b, E1: Executor, E2: Executor, T: Element> ops::Mul<&'b Tensor<E2, T>> for &'a Tensor<E1, T>
-  where Tensor<E1, T>: BinaryExec<&'b Tensor<E2, T>> {
-  type Output = Tensor<BinaryExecOutput<Tensor<E1, T>, &'b Tensor<E2, T>>, T>;
-  fn mul(self, rhs: &'b Tensor<E2, T>) -> Self::Output {
-    debug_assert_eq!(self.len(), rhs.len());
-    let exec = self.binary_exec(rhs);
-    let out = Self::Output::new(exec, self.dims.clone(), None);
-    let exec = &out.exec;
-    let name = if restrict(self.buffer(), rhs.buffer()) {
-      format!("mul_{}_restrict", T::rtype())
-    }
-    else {
-      format!("mul_{}", T::rtype())
-    };
+pub trait Mul<A, B> {
+  type Output;
+  fn mul(&mut self, lhs: A, rhs: B) -> Self::Output;
+}
+
+impl<'w, 'a, 'b, T: Element, E> Mul<&'a Tensor<T>, &'b Tensor<T>> for Graph<'w, E>
+  where Graph<'w, E>: Executor {
+  type Output = Tensor<T>;
+  fn mul(&mut self, lhs: &'a Tensor<T>, rhs: &'b Tensor<T>) -> Self::Output {
+    debug_assert_eq!(lhs.dims(), rhs.dims());
+    let ws = self.workspace();
+    let out = Tensor::new(ws, lhs.dims().clone(), None);
     let kernel = ocl::Kernel::builder()
-      .program(exec.program())
-      .name(name)
-      .queue(exec.queue().clone())
+      .program(ws.program())
+      .name(format!("mul{}", binary_restrict_sfx(lhs.buffer(), rhs.buffer())))
+      .queue(ws.queue().clone())
       .global_work_size(out.len())
       .arg(out.buffer())
-      .arg(self.buffer())
+      .arg(lhs.buffer())
       .arg(rhs.buffer())
       .build()
       .unwrap();
-    out.exec.enq(iter::once(kernel));
+    self.enq(iter::once(kernel));
     out
   }
 }
 
 // Binary 2d
 
-pub trait Matmul<R> {
+pub trait Matmul<A, B> {
   type Output;
-  fn matmul(self, rhs: R) -> Self::Output;
+  fn matmul(&mut self, lhs: A, rhs: B) -> Self::Output;
 }
 
-impl<'a, 'b, E1: Executor, E2: Executor, T: Element> Matmul<&'b Tensor<E2, T>> for &'a Tensor<E1, T>
-  where Tensor<E1, T>: BinaryExec<&'b Tensor<E2, T>> {
-  type Output = Tensor<BinaryExecOutput<Tensor<E1, T>, &'b Tensor<E2, T>>, T>;
-  fn matmul(self, rhs: &'b Tensor<E2, T>) -> Self::Output {
-    debug_assert_eq!(self.dims.len(), 2);
+impl<'w, 'a, 'b, T: Element, E> Matmul<&'a Tensor<T>, &'b Tensor<T>> for Graph<'w, E>
+  where Graph<'w, E>: Executor {
+  type Output = Tensor<T>;
+  fn matmul(&mut self, lhs: &'a Tensor<T>, rhs: &'b Tensor<T>) -> Self::Output {
+    debug_assert_eq!(lhs.dims.len(), 2);
     debug_assert_eq!(rhs.dims.len(), 2);
-    debug_assert_eq!(self.dims[1], rhs.dims[0]);
-    let exec = self.binary_exec(rhs);
-    let m = self.dims[0];
+    debug_assert_eq!(lhs.dims[1], rhs.dims[0]);
+    let m = lhs.dims[0];
     let n = rhs.dims[1];
-    let k = self.dims[1];
-    let out = Self::Output::new(exec, vec![m, n], None);
-    let exec = &out.exec;
-    let name = if restrict(self.buffer(), rhs.buffer()) {
-      format!("matmul_v1_{}_restrict", T::rtype())
-    }
-    else {
-      format!("matmul_v1_{}", T::rtype())
-    };
+    let k = lhs.dims[1];
+    let ws = self.workspace();
+    let out = Tensor::new(ws, vec![m, n], None);
     let kernel = ocl::Kernel::builder()
-      .program(exec.program())
-      .name(name)
-      .queue(exec.queue().clone())
-      .global_work_size([m, n])
+      .program(ws.program())
+      .name(format!("matmul_v1{}", binary_restrict_sfx(lhs.buffer(), rhs.buffer())))
+      .queue(ws.queue().clone())
+      .global_work_size(out.len())
       .arg(out.buffer())
-      .arg(self.buffer())
+      .arg(lhs.buffer())
       .arg(rhs.buffer())
       .arg(m)
       .arg(n)
       .arg(k)
       .build()
       .unwrap();
-    exec.enq(iter::once(kernel));
+    self.enq(iter::once(kernel));
     out
   }
 }
 
-impl<'a, 'b, 'w, 'g, T: Real> Matmul<&'b mut Variable<'w, 'g, T>> for &'b mut Variable<'w, 'g, T> {
-  type Output = Variable<'w, 'g, T>;
-  fn matmul(self, rhs: &'b mut Variable<'w, 'g, T>) -> Variable<'w, 'g, T> {
-    let lvalue = self.value();
-    let rvalue = rhs.value();
-    let out_value = lvalue.matmul(rvalue);
-    let ws = lvalue.exec();
-    let graph = self.grad().or(rhs.grad()).map(|grad| grad.exec());
-    let out_grad = graph.map(|graph| Tensor::from_elem(graph, out_value.dims().clone(), T::zero()));
-    self.grad_mut().map(|lgrad| {
-      *lgrad += &out_grad.as_ref().unwrap().matmul(&rvalue.t());
-    });
-    rhs.grad_mut().map(|rgrad| {
-      *rgrad += &self.value().t().matmul(out_grad.as_ref().unwrap());
-    });
+impl<'w, 'a, 'b, T: Real> Matmul<&'a Variable<T>, &'b Variable<T>> for Graph<'w, Backward> {
+  type Output = Variable<T>;
+  fn matmul(&mut self, lhs: &'a Variable<T>, rhs: &'b Variable<T>) -> Variable<T> {
+    let out_value = self.forward().matmul(lhs.value(), rhs.value());
+    let ws = self.workspace();
+    let out_grad = if lhs.grad().is_some() || rhs.grad().is_some() {
+      let out_grad = Tensor::new(ws, out_value.dims().clone(), Some(vec![T::zero(); out_value.len()]));
+      lhs.grad().map(|lgrad| {
+        let rvalue_t = self.transpose(rhs.value());
+        let partial_grad = self.matmul(&out_grad, &rvalue_t);
+        self.add_assign(&lgrad, &partial_grad);
+      });
+      rhs.grad().map(|rgrad| {
+        let lvalue_t = self.transpose(lhs.value());
+        let partial_grad = self.matmul(&lvalue_t, &out_grad);
+        self.add_assign(rgrad, &partial_grad);
+      });
+      Some(out_grad)
+    }
+    else { None };
     Variable::new(out_value, out_grad)  
   }
 }
 
+/*
+pub trait Weight<A, B, F> {
+  type Output;
+  fn weight(&mut self, lhs: A, rhs: B, n: usize, f: F) -> Self::Output;
+} 
+
+impl<'w, 'a, 'b, 'n, T: Real, O: Optimizer<T>, F: FnMut([usize; 2]) -> Vec<T>> Weight<&'a Tensor<T>, &'b mut NetIter<'n, T, O>, F> for Graph<'w, Forward> {
+  type Output = Tensor<T>;
+  fn weight(&mut self, lhs: &'a Tensor<T>, rhs: &'b mut NetIter<'n, T, O>, n: usize, f: F) -> Self::Output {
+    let rhs = rhs.next().unwrap();
+    debug_assert_eq!(rhs.dims().len(), 2);
+    debug_assert_eq!(rhs.dims()[1], n);
+    self.matmul(lhs, rhs)
+  }
+}
+
+impl<'w, 'a, 'b, 'n, T: Real, O: Optimizer<T>, F: FnMut([usize; 2]) -> Vec<T>> Weight<&'a Variable<T>, &'b mut NetIterMut<'n, T, O>, F> for Graph<'w, Forward> {
+  type Output = Tensor<T>;
+  fn weight(&mut self, lhs: &'a Variable<T>, rhs: &'b mut NetIter<'n, T, O>, n: usize, f: F) -> Self::Output {
+    debug_assert_eq!(lhs.value().dims().len(), 2);
+    let m = lhs.value().dims()[0];
+    let k = lhs.value().dims()[1];
+    let ws = self.workspace();
+    let rhs = if let Some(ref mut rhs) = rhs.next() {
+      debug_assert_eq!(rhs.var().value().dims().len(), 2);
+      if rhs.var().value().dims()[0] == k {
+        rhs.var()
+      }
+      else {
+        panic!()
+      }
+    }
+    else {
+      let value = Tensor::new(ws, vec![k, n], Some((f)([k, n])));
+      let grad = Tensor::new(ws, vec![k, n], Some(vec![T::zero(); k*n]));
+      rhs.push(ws, Paramter::new(Variable::new(value, Some(grad)), rhs.opt())
+    }
+    //self.matmul(lhs, rhs)
+    panic!()
+  }
+}*/
+
+
+/*
 // Optimizers 
 
 pub struct LearningRate<T: Real> {
@@ -511,7 +537,7 @@ impl<T: Real> Optimizer<T> for LearningRate<T> {
     });
   }
 }
-
+*/
 
 
 
