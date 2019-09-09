@@ -5,6 +5,8 @@ authors = ["charles-r-earp <charles.r.earp@gmail.com>"]
 edition = "2018"
 
 [dependencies]
+smallvec = "0.6.10"
 ocl = "0.19.2"
-rand = "0.6.5"
-num-traits = "0.2.6"
+reqwest = "0.9.20"
+flate2 = { version = "1.0", features = ["rust_backend"], default-features = false }
+timeit = "0.1.2"
