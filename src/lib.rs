@@ -150,7 +150,7 @@ impl<'a, T: Element> TensorRef<'a, T> {
   }
   pub fn shape(&self) -> &Shape { &self.shape }
   pub fn data(&self) -> &[T] { self.data }
-  pub fn batches(&self, batch_sizes: impl IntoIterator<Item=usize>) -> impl iter::Iterator<Item=TensorRef<'a, T>> {
+  fn batches(&self, batch_sizes: impl IntoIterator<Item=usize>) -> impl iter::Iterator<Item=TensorRef<'a, T>> {
     TensorRefChunks{shape: self.shape.clone(), data: self.data, batch_sizes: batch_sizes.into_iter().peekable()} 
   }
 }
@@ -169,6 +169,16 @@ impl<T: Element, A: smallvec::Array<Item=T>> TensorBase<T, A> {
     debug_assert_eq!(shape.size(), data.len());
     Self{shape, data}
   }
+  unsafe fn uninitialized(shape: impl Into<Shape>) -> Self {
+    let shape = shape.into();
+    let n = shape.size();
+    let mut data = smallvec::SmallVec::with_capacity(n);
+    data.set_len(n);
+    Self{shape, data}
+  }
+  pub fn shape(&self) -> &Shape { &self.shape }
+  pub fn data(&self) -> &[T] { self.data.as_slice() }
+  pub fn data_mut(&mut self) -> &mut [T] { self.data.as_mut_slice() }
 }
 
 impl<'a, T: Element, A: smallvec::Array<Item=T>> From<&'a TensorBase<T, A>> for TensorRef<'a, T> {
@@ -177,7 +187,7 @@ impl<'a, T: Element, A: smallvec::Array<Item=T>> From<&'a TensorBase<T, A>> for 
   }
 }
 
-pub type Tensor<T> = TensorBase<T, [T; 128]>;
+pub type Tensor<T> = TensorBase<T, [T; 32]>;
 
 #[derive(Debug, Clone)]
 pub struct Queue {
@@ -188,7 +198,7 @@ pub struct Queue {
 
 impl Queue {
   fn new(context: &ocl::Context, device: ocl::Device, program: &ocl::Program, power: usize) -> Self {
-    let queue = ocl::Queue::new(context, device, None)
+    let queue = ocl::Queue::new(context, device, Some(ocl::CommandQueueProperties::new().out_of_order()))
       .unwrap();
     Self{queue, program: program.clone(), power}
   }
@@ -230,12 +240,14 @@ impl Graph {
     }).collect();
     Self{queues}
   }
-  fn batch_sizes(&self, batch_size: usize) -> impl iter::Iterator<Item=usize> + '_ {
+  pub fn batch_sizes(&self, batch_size: usize) -> impl iter::Iterator<Item=usize> + '_ {
     let mut powers = self.queues.iter()
       .map(|q| q.power());
-    let power = powers.by_ref().sum::<usize>();
+    let power = powers.clone()
+      .sum::<usize>();
     let mut batch_sizes = powers.map(move |p| p*batch_size/power);
-    let rem = batch_size - batch_sizes.by_ref().sum::<usize>();
+    let rem = batch_size - batch_sizes.clone()
+      .sum::<usize>();
     batch_sizes.zip(iter::once(rem).chain(iter::repeat(0)))
       .map(|(b, r)| b + r)
   }
@@ -249,6 +261,7 @@ impl Graph {
   }
 }
 
+#[derive(Debug)]
 pub struct Vertex<T: Element> {
   queue: Queue,
   shape: Shape,
@@ -278,8 +291,12 @@ impl<T: Element> Vertex<T> {
   pub fn queue(&self) -> &Queue { &self.queue }
   pub fn shape(&self) -> &Shape { &self.shape }
   pub fn buffer(&self) -> &ocl::Buffer<T> { &self.buffer }
+  fn read(&self, mut data: impl AsMut<[T]>) {
+    self.buffer.read(data.as_mut()).enq().unwrap();
+  }
 }
 
+#[derive(Debug)]
 pub struct DualVertex<T: Element> {
   value: Vertex<T>,
   grad: Option<Vertex<T>>,
@@ -298,10 +315,28 @@ impl<T: Element> DualVertex<T> {
     else { None }; 
     Self{value, grad, req_grad}
   }
+  pub fn value(&self) -> &Vertex<T> { &self.value }
+  pub fn shape(&self) -> &Shape { self.value.shape() }
+  pub fn req_grad(&self) -> bool { self.req_grad }
 }
 
+#[derive(Debug)]
 pub struct Variable<T: Element> {
   vertices: smallvec::SmallVec<[DualVertex<T>; 8]>
+}
+
+impl<T: Element> Variable<T> {
+  pub fn shape(&self) -> Shape {
+    let mut shape = self.vertices[0].value().shape().clone();
+    self.vertices.iter()
+      .map(|v| v.shape())
+      .skip(1)
+      .for_each(|s| {
+      debug_assert!((shape.len() <= 1 && s.len() <= 1) || (shape[1..] == s[1..]));
+      shape[0] += s[0];
+    });
+    shape
+  }
 }
 
 impl<T: Element> iter::FromIterator<DualVertex<T>> for Variable<T> {
@@ -310,7 +345,31 @@ impl<T: Element> iter::FromIterator<DualVertex<T>> for Variable<T> {
   }
 }
 
-/*
+impl<T: Element> ops::Deref for Variable<T> {
+  type Target = [DualVertex<T>];
+  fn deref(&self) -> &Self::Target {
+    self.vertices.as_slice()
+  }
+}
+
+impl<T: Element, A: smallvec::Array<Item=T> + Default> From<&Variable<T>> for TensorBase<T, A> {
+  fn from(variable: &Variable<T>) -> Self {
+    let mut tensor = unsafe { Self::uninitialized(variable.shape()) };
+    variable.vertices.iter()
+      .fold(tensor.data_mut(), |data, v| {
+      let n = v.shape().size();
+      v.value().read(&mut data[..n]);
+      &mut data[n..]
+    });
+    tensor
+  }
+}
+
+impl<T: Element, A: smallvec::Array<Item=T> + Default> From<Variable<T>> for TensorBase<T, A> {
+  fn from(variable: Variable<T>) -> Self { Self::from(&variable) }
+}
+
+
 macro_rules! impl_binary_op {
   ($op_trait:ident, $func:ident, $kernel:literal) => {
     use ops::*;
@@ -328,14 +387,39 @@ macro_rules! impl_binary_op {
           .arg(rhs.buffer())
           .build()
           .unwrap();
-        // enq
+        unsafe { kernel.enq().unwrap(); }
         out
+      }
+    }
+    impl<T: Element> $op_trait<&DualVertex<T>> for &DualVertex<T> {
+      type Output = DualVertex<T>;
+      fn $func(self, rhs: &DualVertex<T>) -> Self::Output {
+        let lhs = self;
+        debug_assert_eq!(lhs.shape(), rhs.shape());
+        let out = DualVertex::output(lhs.value() + rhs.value(), lhs.req_grad() || rhs.req_grad());
+        // grad ops
+        out
+      }
+    }
+    impl<T: Element> $op_trait<&Variable<T>> for &Variable<T> {
+      type Output = Variable<T>;
+      fn $func(self, rhs: &Variable<T>) -> Self::Output {
+        use std::thread;
+        let lhs = self;
+        debug_assert_eq!(lhs.shape(), rhs.shape());
+        lhs.iter()
+          .zip(rhs.iter())
+          .map(|(a, b)| a.$func(b))
+          .collect()
       }
     }
   }
 }
 
-impl_binary_op!(Add, add, "add");*/
+impl_binary_op!(Add, add, "add");
+impl_binary_op!(Sub, sub, "sub");
+impl_binary_op!(Mul, mul, "mul");
+impl_binary_op!(Div, div, "div");
 
 /*
 pub struct Op {

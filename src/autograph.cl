@@ -4,7 +4,7 @@
 // IS_REAL = true for float, false for int
 
 // Stack 
-
+/*
 kernel void stack_RTYPE(global CTYPE* restrict out, global CTYPE* restrict input, size_t const cols) {
   size_t r = get_global_id(0);
   for (size_t c = 0; c < cols; ++c) {
@@ -86,17 +86,17 @@ kernel void learning_rate_step_RTYPE(global CTYPE* restrict value, CTYPE lr, glo
 #endif
 
 // Binary Elementwise
-
+*/
 kernel void add_RTYPE(global CTYPE* restrict out, global CTYPE* lhs, global CTYPE* rhs) {
-  size_t gid = get_global_id(0);
-  out[gid] = /* lhs[gid] */ rhs[gid];
+  uint gid = get_global_id(0);
+  out[gid] = lhs[gid] + rhs[gid];
 }
 
 kernel void add_restrict_RTYPE(global CTYPE* restrict out, global CTYPE* restrict lhs, global CTYPE* restrict rhs) {
-  size_t gid = get_global_id(0);
-  out[gid] = 2;// lhs[gid] + rhs[gid];
+  uint gid = get_global_id(0);
+  out[gid] = lhs[gid] + rhs[gid];
 }
-
+/*
 kernel void add_assign_RTYPE(global CTYPE* lhs, global CTYPE* rhs) {
   size_t gid = get_global_id(0);
   lhs[gid] += rhs[gid];
@@ -151,4 +151,5 @@ kernel void cross_entropy_RTYPE(global CTYPE* restrict out, global CTYPE* restri
   out[row] = -log(pred[row*cols+indices[row]]);
 }
 #endif
+*/
   

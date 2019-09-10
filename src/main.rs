@@ -1,12 +1,24 @@
 use autograph as ag;
 use std::iter;
+use timeit::*;
 
 fn main() {
-  /*let platforms = ocl::Platform::list()
+  let platforms = ocl::Platform::list()
     .into_iter()
+    .take(1)
     .map(|p| (p, ocl::enums::DeviceSpecifier::All));
-  let graph = ag::Graph::new(platforms, ag::source());*/
-  let x = ag::Tensor::new([64, 1, 28, 28], vec![1f32; 64*28*28]);
-  ag::TensorRef::from(&x).batches(vec![10, 20, 30, 4])
-    .for_each(|x| println!("{:?}", x.shape()));
+  println!("{:?}", platforms.clone().map(|(p, _)| p.name().unwrap()).collect::<Vec<_>>());
+  let graph = ag::Graph::new(platforms, ag::source());
+  let n = 4352;
+  let x = ag::Tensor::new([n], vec![1f32; n]);
+  let x = graph.variable(&x, false);
+  timeit!({
+    let y = &x * &x;
+  });
+  let x = vec![1f32; n];
+  timeit!({
+    let y = x.iter()
+      .map(|&x| x * x)
+      .collect::<Vec<_>>();
+  });
 }
