@@ -5,5 +5,15 @@ authors = ["charles-r-earp <charles.r.earp@gmail.com>"]
 edition = "2018"
 
 [dependencies]
-ocl = "0.19.2"
 itertools = "0.8.0"
+num-traits = "0.2.8"
+ocl = { version = "0.19.3", optional = true }
+ocl-core = { version = "0.11.2", optional = true }
+#cudnn = "1.3.1"
+#rustacuda = "0.1"
+#rustacuda_derive = "0.1"
+#rustacuda_core = "0.1"
+#timeit = "0.1.2"
+
+[features]
+opencl = ['ocl', 'ocl-core']
