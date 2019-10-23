@@ -122,7 +122,7 @@ impl Mnist {
   }
 }
 
-pub struct MnistTrainIter<'a, T> {
+struct MnistTrainIter<'a, T> {
   mnist: &'a Mnist,
   index_vec: IndexVecIntoIter,
   batch_size: usize,

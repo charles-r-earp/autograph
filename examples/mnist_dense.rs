@@ -9,7 +9,7 @@ fn main() {
     .units(10)
     .use_bias()
     .build();
-  let mut optimizer = ag::LearningRate(0.01);
+  let mut optimizer = ag::optim::LearningRate(0.01);
   for epoch in 0 .. 1 {
     let now = Instant::now();
     let loss: f32 = dataset.train(32)
@@ -17,8 +17,10 @@ fn main() {
       let (batch_size, channels, height, width) = x.dim();
       let y = net.forward(x.into_shape([batch_size, channels*height*width])
         .unwrap()
-        .into_dyn());
-      let (loss, dy) = ag::cross_entropy_loss::<f32, _, _>(&y, &t);
+        .into_dyn())
+        .into_dimensionality()
+        .unwrap();
+      let (loss, dy) = ag::cross_entropy_loss(&y, &t);
       net.backward(&dy.into_dyn());
       net.params_mut()
         .iter_mut()
@@ -30,11 +32,13 @@ fn main() {
       let (batch_size, channels, height, width) = x.dim();
       let y = net.forward(x.into_shape([batch_size, channels*height*width])
         .unwrap()
-        .into_dyn());
+        .into_dyn())
+        .into_dimensionality()
+        .unwrap();
       (ag::correct(&y, &t), batch_size)
     }).fold((0, 0), |(a_c, a_t), (c, n)| (a_c + c, a_t + n));
     let acc = correct.to_f32().unwrap() * 100. / total.to_f32().unwrap();
-    println!("[{}] epoch_loss = {:.5}, accuracy = {} / {} = {:.2?}%, duration = {:?}", epoch, loss, correct, total, acc, now.elapsed());
+    println!("[{}] epoch_loss = {:.5}, accuracy = {} / {} = {:.2?}%, duration = {:.0?}", epoch, loss, correct, total, acc, now.elapsed());
   }
 }
       

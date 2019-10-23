@@ -1,85 +1,24 @@
-use std::{any::Any, fmt::Debug, ops::{Deref, Index}};
-pub use ndarray as nd;
+use std::{ops::Deref, fmt::Debug};
+use ndarray as nd;
 
+pub mod init;
+use init::{Initializer, Zeros, HeNormal};
+pub mod optim;
+use optim::{Optimizer, OptimizerPayload};
 pub mod iter;
 pub mod datasets;
 
-pub trait Initializer<T, D>: Debug {
-  fn initialize(&mut self, dim: D, data: &mut [T]);
-}
-
-#[derive(Debug)]
-pub struct Zeros;
-
-impl<T: num_traits::Zero, D: nd::Dimension> Initializer<T, D> for Zeros {
-  fn initialize(&mut self, _: D, data: &mut [T]) {
-    data.iter_mut()
-      .for_each(|x| *x = T::zero());
-  }
-}
-
-#[derive(Debug)]
-pub struct RandomNormal<T: rand_distr::Float + Debug> {
-  pub mean: T,
-  pub std_dev: T
-}
-
-impl<T: rand_distr::Float + Debug, D> Initializer<T, D> for RandomNormal<T>
-  where rand_distr::Normal<T>: rand_distr::Distribution<T>,
-        rand_distr::StandardNormal: rand_distr::Distribution<T> {
-  fn initialize(&mut self, _: D, data: &mut [T]) {
-    use rand_distr::Distribution;
-    let normal = rand_distr::Normal::new(self.mean, self.std_dev).unwrap();
-    data.iter_mut()
-      .zip(normal.sample_iter(&mut rand::thread_rng()))
-      .for_each(|(x, n)| *x = n);
-  }
-}
-
-#[derive(Debug)]
-pub struct HeNormal;
-
-impl<T: num_traits::Float + Debug, D: Index<usize, Output=usize>> Initializer<T, D> for HeNormal
-  where T: rand_distr::Float, 
-        RandomNormal<T>: Initializer<T, D> {
-  fn initialize(&mut self, dim: D, data: &mut [T]) {
-    use num_traits::{Float, NumCast};
-    let units: T = <T as NumCast>::from(dim[1]).unwrap();
-    let two: T = <T as NumCast>::from(2.).unwrap();
-    let std_dev = Float::sqrt(two / units);
-    RandomNormal{mean: T::zero(), std_dev}.initialize(dim, data);
-  }
-}
-
-pub trait Optimizer<T> {
-  fn step<'a>(&mut self, value: nd::ArrayViewMutD<'a, T>, grad: Option<nd::ArrayViewD<T>>, payload: &mut Option<Box<OptimizerPayload<T>>>);
-} 
-
-pub trait OptimizerPayload<T>: Any + Debug {}
-
-pub struct LearningRate<T>(pub T);
-
-impl<T: num_traits::Float + num_traits::NumAssign> Optimizer<T> for LearningRate<T> {
-  fn step<'a>(&mut self, mut value: nd::ArrayViewMutD<'a, T>, grad: Option<nd::ArrayViewD<T>>, payload: &mut Option<Box<OptimizerPayload<T>>>) {
-    *payload = None;
-    if let Some(ref grad) = grad {
-      value.iter_mut()
-        .zip(grad.iter())
-        .for_each(|(x, &dx)| *x -= self.0 * dx);
-    }
-  }
-} 
 
 #[derive(Debug)]
 pub struct Param<T, D: nd::Dimension> {
   value: nd::Array<T, D>,
   grad: Option<nd::Array<T, D>>,
-  initializer: Box<Initializer<T, D>>,
-  payload: Option<Box<OptimizerPayload<T>>>,
+  initializer: Box<dyn Initializer<T, D>>,
+  payload: Option<Box<dyn OptimizerPayload<T>>>,
 }
 
 impl<T, D: nd::Dimension> Param<T, D> {
-  pub fn placeholder(shape: impl nd::ShapeBuilder<Dim=D>, initializer: Box<Initializer<T, D>>) -> Self
+  pub fn placeholder(shape: impl nd::ShapeBuilder<Dim=D>, initializer: Box<dyn Initializer<T, D>>) -> Self
     where T: Default {
     Self{
       value: nd::Array::default(shape),
@@ -117,7 +56,7 @@ impl<T, D: nd::Dimension> Deref for Param<T, D> {
 pub struct ParamViewMut<'a, T> {
   value: nd::ArrayViewMutD<'a, T>,
   grad: Option<nd::ArrayD<T>>,
-  payload: &'a mut Option<Box<OptimizerPayload<T>>>
+  payload: &'a mut Option<Box<dyn OptimizerPayload<T>>>
 }
 
 impl<'a, T> ParamViewMut<'a, T> {
@@ -126,7 +65,7 @@ impl<'a, T> ParamViewMut<'a, T> {
   }
 }
 
-pub trait Layer<T> {
+pub trait Layer<T>: Debug {
   fn forward(&mut self, input: nd::ArrayD<T>) -> nd::ArrayD<T>;
   fn backward(&mut self, grad: &nd::ArrayD<T>) -> nd::ArrayD<T>;
   fn params_mut(&mut self) -> Vec<ParamViewMut<T>> { Vec::new() }
@@ -156,8 +95,8 @@ impl<T> Dense<T> {
 pub struct DenseBuilder<T> {
   units: usize,
   use_bias: bool,
-  kernel_initializer: Box<Initializer<T, nd::Ix2>>,
-  bias_initializer: Box<Initializer<T, nd::Ix1>>,
+  kernel_initializer: Box<dyn Initializer<T, nd::Ix2>>,
+  bias_initializer: Box<dyn Initializer<T, nd::Ix1>>,
 }
 
 impl<T> DenseBuilder<T> {
@@ -236,14 +175,10 @@ impl<T: nd::LinalgScalar + num_traits::NumAssign + num_traits::NumCast + Debug +
   } 
 }
 
-pub fn cross_entropy_loss<T, U, D>(pred: &nd::Array<T, D>, target: &nd::Array1<U>) -> (T, nd::Array2<T>)
+pub fn cross_entropy_loss<T, U>(pred: &nd::Array2<T>, target: &nd::Array1<U>) -> (T, nd::Array2<T>)
   where T: num_traits::Float + num_traits::NumAssign + std::iter::Sum + iter::Mean,
-        U: num_traits::Unsigned + num_traits::ToPrimitive + Copy,
-        D: nd::Dimension {
+        U: num_traits::Unsigned + num_traits::ToPrimitive + Copy {
   use iter::MeanExt;
-  let pred = pred.view()
-    .into_dimensionality::<nd::Ix2>()
-    .unwrap();
   let classes = pred.shape()[1];
   let mut grad = unsafe { nd::Array2::uninitialized(pred.raw_dim()) };
   let loss = grad.as_slice_mut()
@@ -270,13 +205,9 @@ pub fn cross_entropy_loss<T, U, D>(pred: &nd::Array<T, D>, target: &nd::Array1<U
   (loss, grad)
 } 
 
-pub fn correct<T, U, D>(pred: &nd::Array<T, D>, target: &nd::Array1<U>) -> usize
+pub fn correct<T, U>(pred: &nd::Array2<T>, target: &nd::Array1<U>) -> usize
   where T: num_traits::Float,
-        U: num_traits::Unsigned + num_traits::NumCast + Copy,
-        D: nd::Dimension {
-  let pred = pred.view()
-    .into_dimensionality::<nd::Ix2>()
-    .unwrap();
+        U: num_traits::Unsigned + num_traits::NumCast + Copy {
   let classes = pred.shape()[1];
   pred.as_slice()
     .unwrap()
