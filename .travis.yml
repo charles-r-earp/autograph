@@ -5,17 +5,6 @@ env:
   global: 
     - CRATE_NAME=autograph
 install: 
-  - sudo apt update
-  - sudo apt install -y clinfo libhwloc-dev ocl-icd-opencl-dev
-  - clinfo
-  - git clone https://github.com/pocl/pocl
-  - cd pocl
-  - mkdir build
-  - cd build
-  - cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr -DENABLE_ICD=ON -DEXTRA_HOST_CLANG_FLAGS=-fPIC
-  - make -j3
-  - sudo make install
-  - clinfo
   - source ~/.cargo/env || true
 language: rust
 env: TARGET=x86_64-unknown-linux-gnu
@@ -23,5 +12,8 @@ notifications:
   email: 
     on_success: never
 script:
-  - cargo run
-sudo: required
+  - cargo build
+  - cargo build --release
+  - cargo test
+  - cargo run --examples mnist_dense
+  - cargo run --release --examples mnist_dense
