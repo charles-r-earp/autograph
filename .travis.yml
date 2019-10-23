@@ -15,5 +15,5 @@ script:
   - cargo build
   - cargo build --release
   - cargo test
-  - cargo run --examples mnist_dense
-  - cargo run --release --examples mnist_dense
+  - cargo run --example mnist_dense
+  - cargo run --release --example mnist_dense
