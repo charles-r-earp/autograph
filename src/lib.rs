@@ -1,296 +1,298 @@
-#![allow(dead_code, unused)]
-use std::{ops, marker, alloc, mem, slice, fmt, cell, iter, convert};
-pub mod native;
-pub use native::{Element, Native};
-#[cfg(feature="opencl")]
-pub mod opencl;
-#[cfg(feature="opencl")]
-pub use opencl::Opencl;
+use std::{any::Any, fmt::Debug, ops::{Deref, Index}};
+pub use ndarray as nd;
 
-#[derive(Default, Clone, Copy)]
-pub struct Shape {
-  dims: [usize; 4],
-  len: usize
+pub mod iter;
+pub mod datasets;
+
+pub trait Initializer<T, D>: Debug {
+  fn initialize(&mut self, dim: D, data: &mut [T]);
 }
 
-impl Shape {
-  pub fn new(dims: impl AsRef<[usize]>) -> Self {
-    let dims = dims.as_ref();
-    debug_assert!(dims.len() <= Self::default().dims.len());
-    let mut s = Self::default();
-    s.len = dims.len();
-    s[..].copy_from_slice(dims);
-    s
-  }
-  pub fn len(&self) -> usize { self.len }
-  pub fn size(&self) -> usize { 
-    self.iter()
-      .product::<usize>()
+#[derive(Debug)]
+pub struct Zeros;
+
+impl<T: num_traits::Zero, D: nd::Dimension> Initializer<T, D> for Zeros {
+  fn initialize(&mut self, _: D, data: &mut [T]) {
+    data.iter_mut()
+      .for_each(|x| *x = T::zero());
   }
 }
 
-pub fn shape(dims: impl AsRef<[usize]>) -> Shape {
-  Shape::new(dims)
+#[derive(Debug)]
+pub struct RandomNormal<T: rand_distr::Float + Debug> {
+  pub mean: T,
+  pub std_dev: T
 }
 
-impl ops::Deref for Shape {
-  type Target = [usize];
+impl<T: rand_distr::Float + Debug, D> Initializer<T, D> for RandomNormal<T>
+  where rand_distr::Normal<T>: rand_distr::Distribution<T>,
+        rand_distr::StandardNormal: rand_distr::Distribution<T> {
+  fn initialize(&mut self, _: D, data: &mut [T]) {
+    use rand_distr::Distribution;
+    let normal = rand_distr::Normal::new(self.mean, self.std_dev).unwrap();
+    data.iter_mut()
+      .zip(normal.sample_iter(&mut rand::thread_rng()))
+      .for_each(|(x, n)| *x = n);
+  }
+}
+
+#[derive(Debug)]
+pub struct HeNormal;
+
+impl<T: num_traits::Float + Debug, D: Index<usize, Output=usize>> Initializer<T, D> for HeNormal
+  where T: rand_distr::Float, 
+        RandomNormal<T>: Initializer<T, D> {
+  fn initialize(&mut self, dim: D, data: &mut [T]) {
+    use num_traits::{Float, NumCast};
+    let units: T = <T as NumCast>::from(dim[1]).unwrap();
+    let two: T = <T as NumCast>::from(2.).unwrap();
+    let std_dev = Float::sqrt(two / units);
+    RandomNormal{mean: T::zero(), std_dev}.initialize(dim, data);
+  }
+}
+
+pub trait Optimizer<T> {
+  fn step<'a>(&mut self, value: nd::ArrayViewMutD<'a, T>, grad: Option<nd::ArrayViewD<T>>, payload: &mut Option<Box<OptimizerPayload<T>>>);
+} 
+
+pub trait OptimizerPayload<T>: Any + Debug {}
+
+pub struct LearningRate<T>(pub T);
+
+impl<T: num_traits::Float + num_traits::NumAssign> Optimizer<T> for LearningRate<T> {
+  fn step<'a>(&mut self, mut value: nd::ArrayViewMutD<'a, T>, grad: Option<nd::ArrayViewD<T>>, payload: &mut Option<Box<OptimizerPayload<T>>>) {
+    *payload = None;
+    if let Some(ref grad) = grad {
+      value.iter_mut()
+        .zip(grad.iter())
+        .for_each(|(x, &dx)| *x -= self.0 * dx);
+    }
+  }
+} 
+
+#[derive(Debug)]
+pub struct Param<T, D: nd::Dimension> {
+  value: nd::Array<T, D>,
+  grad: Option<nd::Array<T, D>>,
+  initializer: Box<Initializer<T, D>>,
+  payload: Option<Box<OptimizerPayload<T>>>,
+}
+
+impl<T, D: nd::Dimension> Param<T, D> {
+  pub fn placeholder(shape: impl nd::ShapeBuilder<Dim=D>, initializer: Box<Initializer<T, D>>) -> Self
+    where T: Default {
+    Self{
+      value: nd::Array::default(shape),
+      grad: None,
+      initializer,
+      payload: None
+    }
+  }
+  pub fn initialize(&mut self, shape: impl nd::ShapeBuilder<Dim=D>)
+    where T: Copy {
+    self.value = unsafe { nd::Array::uninitialized(shape) };
+    self.initializer.initialize(self.value.raw_dim(), self.value.as_slice_memory_order_mut().unwrap());
+    self.grad = None;
+    self.payload = None;
+  }
+  pub fn add_grad(&mut self, grad: nd::Array<T, D>) {
+    self.grad.replace(grad);
+  }
+  pub fn view_mut(&mut self) -> ParamViewMut<T> {
+    ParamViewMut{
+      value: self.value.view_mut().into_dyn(), 
+      grad: self.grad.take().map(|grad| grad.into_dyn()), 
+      payload: &mut self.payload
+    }
+  }
+}
+
+impl<T, D: nd::Dimension> Deref for Param<T, D> {
+  type Target = nd::Array<T, D>;
   fn deref(&self) -> &Self::Target {
-    &self.dims[..self.len]
+    &self.value
   }
 }
 
-impl ops::DerefMut for Shape {
-  fn deref_mut(&mut self) -> &mut Self::Target {
-    &mut self.dims[..self.len]
+pub struct ParamViewMut<'a, T> {
+  value: nd::ArrayViewMutD<'a, T>,
+  grad: Option<nd::ArrayD<T>>,
+  payload: &'a mut Option<Box<OptimizerPayload<T>>>
+}
+
+impl<'a, T> ParamViewMut<'a, T> {
+  pub fn step(&mut self, optimizer: &mut impl Optimizer<T>) {
+    optimizer.step(self.value.view_mut(), self.grad.as_ref().map(|grad| grad.view()), &mut self.payload);
   }
 }
 
-impl fmt::Debug for Shape {
-  fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-    self[..].fmt(f)
-  }
-}
-
-#[derive(Clone, Copy)]
-pub struct Elem<T: Element> {
-  _m: marker::PhantomData<T>
-}
-
-impl<T: Element> Default for Elem<T> {
-  fn default() -> Self { Self{_m: <_>::default()} }
-}
-
-impl<T: Element> fmt::Debug for Elem<T> {
-  fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-    write!(f, "{}", T::rtype())
-  }
-} 
-
-pub trait ContextBase<'c>: 'c {
-  type Buffer: fmt::Debug;
-  type Executor;
-  type Source;
-  fn compile(&'c self, sources: impl IntoIterator<Item=Option<Self::Source>>) -> Self::Executor;
+pub trait Layer<T> {
+  fn forward(&mut self, input: nd::ArrayD<T>) -> nd::ArrayD<T>;
+  fn backward(&mut self, grad: &nd::ArrayD<T>) -> nd::ArrayD<T>;
+  fn params_mut(&mut self) -> Vec<ParamViewMut<T>> { Vec::new() }
 }
 
 #[derive(Debug)]
-pub struct TensorBase<'c, C: ContextBase<'c>> {
-  context: &'c C,
-  shape: Shape,
-  buffer: C::Buffer,
+pub struct Dense<T> {
+  kernel: Param<T, nd::Ix2>, 
+  bias: Option<Param<T, nd::Ix1>>,
+  saved_input: Option<nd::Array2<T>>,
 }
 
-impl<'c, C: ContextBase<'c>> TensorBase<'c, C> {
-  pub fn new(context: &'c C, shape: Shape, buffer: C::Buffer) -> Self {
-    Self{context, shape, buffer}
+impl<T> Dense<T> {
+  pub fn builder() -> DenseBuilder<T>
+    where HeNormal: Initializer<T, nd::Ix2>,
+          Zeros: Initializer<T, nd::Ix1> {
+    DenseBuilder{
+      units: 0,
+      kernel_initializer: Box::new(HeNormal),
+      use_bias: false,
+      bias_initializer: Box::new(Zeros)
+    }
   }
-  pub fn buffer(&self) -> &C::Buffer { &self.buffer }
-  pub fn buffer_mut(&mut self) -> &mut C::Buffer { &mut self.buffer }
-  pub fn into_buffer(self) -> C::Buffer { self.buffer }
-}
-
-impl<'c, T: Element, C: Context<'c, T>> From<Tensor<'c, T, C>> for TensorBase<'c, C> {
-  fn from(tensor: Tensor<'c, T, C>) -> Self { tensor.base }
-}
-
-pub trait Context<'c, T: Element>: ContextBase<'c> {}
-
-pub trait FromNative<'c, T: Element, C: Context<'c, T>> {
-  fn from_native(native_tensor: Tensor<'static, T, Native>, executor: &C::Executor) -> Self;
-}
-
-pub trait ToNative<'c, T: Element, C: Context<'c, T>> {
-  fn to_native(self, executor: &C::Executor) -> Tensor<'static, T, Native>;
 }
 
 #[derive(Debug)]
-pub struct Tensor<'c, T: Element, C: Context<'c, T>> {
-  base: TensorBase<'c, C>,
-  elem: Elem<T>
+pub struct DenseBuilder<T> {
+  units: usize,
+  use_bias: bool,
+  kernel_initializer: Box<Initializer<T, nd::Ix2>>,
+  bias_initializer: Box<Initializer<T, nd::Ix1>>,
 }
 
-impl<'c, T: Element, C: Context<'c, T>> Tensor<'c, T, C> {
-  pub fn new(context: &'c C, shape: Shape, buffer: C::Buffer) -> Self { 
-    TensorBase::new(context, shape, buffer).into()
+impl<T> DenseBuilder<T> {
+  pub fn units(mut self, units: usize) -> Self {
+    self.units = units;
+    self
+  }
+  pub fn use_bias(mut self) -> Self {
+    self.use_bias = true;
+    self
+  }
+  pub fn kernel_initializer(mut self, kernel_initializer: impl Initializer<T, nd::Ix2> + 'static) -> Self {
+    self.kernel_initializer = Box::new(kernel_initializer);
+    self
+  }
+  pub fn bias_initializer(mut self, bias_initializer: impl Initializer<T, nd::Ix1> + 'static) -> Self {
+    self.bias_initializer = Box::new(bias_initializer);
+    self
+  }
+  pub fn build(self) -> Dense<T>
+    where T: Default {
+    use nd::ShapeBuilder;
+    assert!(self.units != 0);
+    Dense{
+      kernel: Param::placeholder([0, self.units].f(), self.kernel_initializer),
+      bias: if self.use_bias { Some(Param::placeholder([0], self.bias_initializer)) } else { None },
+      saved_input: None
+    }
+  }
+}
+
+impl<T: nd::LinalgScalar + num_traits::NumAssign + num_traits::NumCast + Debug + Default> Layer<T> for Dense<T> {
+  fn forward(&mut self, input: nd::ArrayD<T>) -> nd::ArrayD<T> {
+    use nd::{ShapeBuilder};
+    let input = input.into_dimensionality::<nd::Ix2>()
+      .unwrap();
+    if self.kernel.shape()[0] != input.shape()[1] {
+      self.kernel.initialize([input.shape()[1], self.kernel.shape()[1]].f());
+    }
+    let mut y = input.dot(&*self.kernel);
+    if let Some(ref mut bias) = self.bias {
+      if bias.shape()[0] != y.shape()[1] {
+        bias.initialize([y.shape()[1]]);
+      }
+      y.as_slice_mut()
+        .unwrap()
+        .chunks_exact_mut(bias.shape()[0])
+        .for_each(|y| 
+          y.iter_mut()
+            .zip(bias.iter())
+            .for_each(|(y, &b)| *y += b));
+    }
+    self.saved_input.replace(input);
+    y.into_dyn()
+  }
+  fn backward(&mut self, grad: &nd::ArrayD<T>) -> nd::ArrayD<T> {
+    let grad = grad.view()
+      .into_dimensionality::<nd::Ix2>()
+      .unwrap();
+    let input = self.saved_input.take()
+      .unwrap();
+    self.kernel.add_grad(input.t().dot(&grad));
+    if let Some(ref mut bias) = self.bias {
+      bias.add_grad(nd::Array1::ones(grad.shape()[0]).dot(&grad));
+    }
+    grad.dot(&self.kernel.t())
+      .into_dyn()
+  }
+  fn params_mut(&mut self) -> Vec<ParamViewMut<T>> {
+    if let Some(ref mut bias) = self.bias {
+      vec![self.kernel.view_mut(), bias.view_mut()]
+    }
+    else {
+      vec![self.kernel.view_mut()]
+    }
   } 
-  pub fn context(&self) -> &'c C { self.base.context }
-  pub fn shape(&self) -> &Shape { &self.base.shape }  
-  pub fn base(&self) -> &TensorBase<'c, C> { &self.base }
-  pub fn base_mut(&mut self) -> &mut TensorBase<'c, C> { &mut self.base }
-  pub fn into_base(self) -> TensorBase<'c, C> { self.base }
 }
 
-impl<'c, T: Element, C: Context<'c, T>> From<TensorBase<'c, C>> for Tensor<'c, T, C> {
-  fn from(base: TensorBase<'c, C>) -> Self {
-    Self{base, elem: <_>::default()}
-  }
-}
-
-impl<'c, T: Element, C: Context<'c, T>> From<&TensorBase<'c, C>> for &Tensor<'c, T, C> {
-  fn from(base: &TensorBase<'c, C>) -> Self {
-    unsafe { mem::transmute(base) }
-  }
-}
-
-
-pub trait OpBase {
-  fn shape(&self) -> &Shape;
-}
-
-pub trait ForwardOp<'c, C: ContextBase<'c>>: OpBase {
-  fn source(&self) -> Option<C::Source> { None }
-  fn forward(&self, executor: &C::Executor, tensors: &[TensorBase<'c, C>]) -> TensorBase<'c, C>;
-} 
-
-pub struct ForwardGraph<'c, C: ContextBase<'c>> {
-  ops: cell::RefCell<Vec<Box<ForwardOp<'c, C>>>>
-}
-
-impl<'c, C: ContextBase<'c>> ForwardGraph<'c, C> {
-  fn new() -> Self { Self{ops: cell::RefCell::new(Vec::new())} }
-}
-
-impl<'c, C: ContextBase<'c>> ForwardGraph<'c, C> {
-  pub fn len(&self) -> usize { 
-    self.ops.borrow()
-      .len()
-  }
-  pub unsafe fn op<'g, T: Element>(&'g self, op: impl ForwardOp<'c, C> + 'static) -> Vertex<'g, T, Self>
-    where C: Context<'c, T> {
-    let idx = self.ops.borrow()
-      .len();
-    let vertex = Vertex::new(self, idx, *op.shape());
-    self.ops.borrow_mut()
-      .push(Box::new(op));
-    vertex
-  } 
-}
-
-pub fn forward<'c, T: Element, C: Context<'c, T>>(context: &'c C, mut f: impl FnMut(&ForwardGraph<'c, C>)->VertexBase<T>) -> Tensor<'static, T, Native>
-  where Tensor<'c, T, C>: ToNative<'c, T, C> {
-  let graph = ForwardGraph::new();
-  let y = f(&graph);
-  graph.ops.borrow_mut()
-    .truncate(y.idx()+1);
-  let executor = context.compile(graph.ops.borrow()
-    .iter()
-    .map(|op| op.source()));
-  let mut tensors = Vec::<TensorBase<'c, C>>::with_capacity(graph.ops.borrow().len()-1);
-  unsafe { tensors.set_len(tensors.capacity()); }
-  graph.ops.borrow()
-    .iter()
-    .take(tensors.len())
-    .enumerate()
-    .for_each(|(i, op)| tensors[i] = op.forward(&executor, &tensors[..i]));
-  let out: Tensor::<T, C> = graph.ops.into_inner()
-    .last()
+pub fn cross_entropy_loss<T, U, D>(pred: &nd::Array<T, D>, target: &nd::Array1<U>) -> (T, nd::Array2<T>)
+  where T: num_traits::Float + num_traits::NumAssign + std::iter::Sum + iter::Mean,
+        U: num_traits::Unsigned + num_traits::ToPrimitive + Copy,
+        D: nd::Dimension {
+  use iter::MeanExt;
+  let pred = pred.view()
+    .into_dimensionality::<nd::Ix2>()
+    .unwrap();
+  let classes = pred.shape()[1];
+  let mut grad = unsafe { nd::Array2::uninitialized(pred.raw_dim()) };
+  let loss = grad.as_slice_mut()
     .unwrap()
-    .forward(&executor, &tensors[..])
-    .into();
-  out.to_native(&executor)
-}
-
-
-#[derive(Debug, Clone, Copy)]
-pub struct VertexBase<T: Element> {
-  idx: usize,
-  shape: Shape,
-  elem: Elem<T>
-}
-
-impl<T: Element> VertexBase<T> {
-  fn new(idx: usize, shape: Shape) -> Self {
-    Self{idx, shape, elem: <_>::default()}
-  }
-  pub fn idx(&self) -> usize { self.idx }
-  pub fn shape(&self) -> &Shape { &self.shape }
-}
-
-impl<'g, T: Element, G> From<Vertex<'g, T, G>> for VertexBase<T> {
-  fn from(vertex: Vertex<'g, T, G>) -> Self { vertex.base }
-}
-
-pub struct Vertex<'g, T: Element, G> {
-  graph: &'g G,
-  base: VertexBase<T>
-}
-
-impl<'g, T: Element, G> Vertex<'g, T, G> {
-  pub fn new(graph: &'g G, idx: usize, shape: Shape) -> Self {
-    Self{base: VertexBase::new(idx, shape), graph}
-  }
-  pub fn graph(&self) -> &'g G { self.graph }
-  pub fn idx(&self) -> usize { self.base.idx() }
-  pub fn shape(&self) -> &Shape { self.base.shape() }
-  pub fn base(&self) -> &VertexBase<T> { &self.base }
+    .chunks_exact_mut(classes)
+    .zip(pred.as_slice().unwrap().chunks_exact(classes))
+    .zip(target.iter())
+    .map(|((dy, y), &t)| {
+      let t = t.to_usize().unwrap();
+      let sum: T = y.iter()
+        .map(|&y| y.exp())
+        .sum();
+      dy.iter_mut()
+        .zip(y.iter()
+          .map(|y| y.exp().div(sum))
+          .enumerate()
+          .map(|(u, y)| if u == t { y - T::one() } else { y }))
+          .for_each(|(dy, y)| *dy = y);
+      y[t].exp()
+        .div(sum)
+        .ln()
+        .neg()
+    }).mean();
+  (loss, grad)
 } 
 
-pub trait Uninitialized<T> {
-  type Output;
-  unsafe fn uninitialized(&self, shape: Shape) -> Self::Output;
+pub fn correct<T, U, D>(pred: &nd::Array<T, D>, target: &nd::Array1<U>) -> usize
+  where T: num_traits::Float,
+        U: num_traits::Unsigned + num_traits::NumCast + Copy,
+        D: nd::Dimension {
+  let pred = pred.view()
+    .into_dimensionality::<nd::Ix2>()
+    .unwrap();
+  let classes = pred.shape()[1];
+  pred.as_slice()
+    .unwrap()
+    .chunks_exact(classes)
+    .zip(target.iter())
+    .filter(|(p, &t)| !p.iter().any(|&x| x > p[t.to_usize().unwrap()]))
+    .count()
 }
 
-pub trait Zeros<T> {
-  type Output;
-  fn zeros(&self, shape: Shape) -> Self::Output;
-}
-
-impl<'g, 'c, T: Element, C: Context<'c, T>> Zeros<T> for &'g ForwardGraph<'c, C>
-  where ZerosOp<T>: ForwardOp<'c, C> {
-  type Output = Vertex<'g, T, ForwardGraph<'c, C>>;
-  fn zeros(&self, shape: Shape) -> Self::Output {
-    unsafe { self.op(ZerosOp::new(VertexBase::new(self.len(), shape))) }
+#[cfg(test)]
+mod tests {
+  use ndarray as nd;
+  #[test]
+  fn test_correct() {
+    let pred = nd::arr2(&[[1., 2.]]);
+    let target = nd::arr1(&[1u8]);
+    assert_eq!(super::correct(&pred, &target), 1);
   }
 }
-
-pub struct ZerosOp<T: Element> {
-  vertex: VertexBase<T>
-}
-
-impl<T: Element> ZerosOp<T> {
-  fn new(vertex: VertexBase<T>) -> Self {
-    Self{vertex}
-  }
-  pub fn vertex(&self) -> &VertexBase<T> { &self.vertex }
-}
-
-impl<T: Element> OpBase for ZerosOp<T> {
-  fn shape(&self) -> &Shape { self.vertex().shape() }
-}
-
-pub trait Ones<T> {
-  type Output;
-  fn ones(&self, shape: Shape) -> Self::Output;
-}
-
-impl<'g, 'c, T: Element, C: Context<'c, T>> Ones<T> for &'g ForwardGraph<'c, C>
-  where OnesOp<T>: ForwardOp<'c, C> {
-  type Output = Vertex<'g, T, ForwardGraph<'c, C>>;
-  fn ones(&self, shape: Shape) -> Self::Output {
-    unsafe { self.op(OnesOp::new(VertexBase::new(self.len(), shape))) }
-  }
-}
-
-pub struct OnesOp<T: Element> {
-  vertex: VertexBase<T>
-}
-
-impl<T: Element> OnesOp<T> {
-  fn new(vertex: VertexBase<T>) -> Self {
-    Self{vertex}
-  }
-  pub fn vertex(&self) -> &VertexBase<T> { &self.vertex }
-}
-
-impl<T: Element> OpBase for OnesOp<T> {
-  fn shape(&self) -> &Shape { self.vertex().shape() }
-}
-
-//#[derive(Debug)]
-//pub enum Layout {
-  
-
-//pub trait Gemm
-
-
