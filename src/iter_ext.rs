@@ -28,7 +28,28 @@ pub trait MeanExt: Iterator + Sized {
 
 impl<I: Iterator> MeanExt for I {}
 
+pub trait ArgMax<T=Self>: Sized {
+  fn arg_max<I: Iterator<Item=T>>(iter: I) -> Option<Self>;
+}
 
+pub trait ArgMaxExt: Iterator + Sized {
+  fn arg_max(self) -> Option<usize>
+    where Self::Item: PartialOrd {
+    let mut iter = self.enumerate();
+    iter.next().map(|item| 
+      iter.fold(item, |(max_i, max), (i, x)| { 
+        if max >= x {
+          (max_i, max)
+        }
+        else {
+          (i, x)
+        }
+      }).0 
+    )
+  }
+}
+
+impl<I: Iterator> ArgMaxExt for I {}
 
 #[cfg(test)]
 mod tests {
@@ -37,5 +58,9 @@ mod tests {
   #[test]
   fn test_mean() {
     assert_eq!(vec![1., 2., 3.].into_iter().mean::<f32>(), 2.);
+  }
+  #[test]
+  fn test_arg_max() {
+    assert_eq!(vec![1., 2., 3.].into_iter().arg_max(), Some(2));
   }
 }

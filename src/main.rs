@@ -1,6 +1,5 @@
 use autograph as ag;
-use std::rc::Rc;
 
 fn main() {
-
+  println!("{:e}", 10f32.exp()); 
 }

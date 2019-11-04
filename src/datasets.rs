@@ -1,6 +1,7 @@
-use super::Tensor;
 use std::{env, fs, fs::DirBuilder, io, marker::PhantomData, iter::FromIterator};
+use ndarray as nd;
 use rand::seq::index::IndexVecIntoIter;
+
 
 pub struct Mnist {
   train_images: Vec<u8>,
@@ -102,20 +103,21 @@ impl Mnist {
     };
     Self{train_images, train_labels, test_images, test_labels}
   }
-  pub fn train<T: num_traits::Float + 'static>(&self, batch_size: usize) -> impl Iterator<Item=(Tensor<T>, Tensor<u8>)> + '_ {
+  pub fn train<T: num_traits::Float + 'static>(&self, batch_size: usize) -> impl Iterator<Item=(nd::Array4<T>, nd::Array1<u8>)> + '_ {
     let index_vec = rand::seq::index::sample(&mut rand::thread_rng(), 60_000, 60_000)
       .into_iter();
     MnistTrainIter{mnist: &self, index_vec, batch_size, _m: <_>::default()}
       .take(60_000 / batch_size)
   }
-  pub fn test<T: num_traits::Float>(&self, batch_size: usize) -> impl Iterator<Item=(Tensor<T>, Tensor<u8>)> + '_ {
+  pub fn test<T: num_traits::Float>(&self, batch_size: usize) -> impl Iterator<Item=(nd::Array4<T>, nd::Array1<u8>)> + '_ {
     self.test_images.chunks(batch_size*28*28)
       .zip(self.test_labels.chunks(batch_size))
       .map(|(u_chunk, t_chunk)| {
-      let x = Tensor::from_iter(u_chunk.iter()
+      let x = nd::Array::from_iter(u_chunk.iter()
         .map(|&u| T::from(u).unwrap() / T::from(255).unwrap()))
-        .into_shape([t_chunk.len(), 1, 28, 28]);
-      let t = Tensor::from_iter(t_chunk.iter().copied());
+        .into_shape([t_chunk.len(), 1, 28, 28])
+        .unwrap();
+      let t = nd::Array1::from_iter(t_chunk.iter().copied());
       (x, t)
     })
   }
@@ -129,13 +131,14 @@ struct MnistTrainIter<'a, T> {
 }
 
 impl<'a, T: num_traits::Float> Iterator for MnistTrainIter<'a, T> {
-  type Item = (Tensor<T>, Tensor<u8>);
+  type Item = (nd::Array4<T>, nd::Array1<u8>);
   fn next(&mut self) -> Option<Self::Item> {
-    let mut x = unsafe { Tensor::<T>::uninitialized([self.batch_size, 1, 28, 28]) };
-    let mut t = unsafe { Tensor::<u8>::uninitialized([self.batch_size]) };
-    x.as_mut_slice()
+    let mut x = unsafe { nd::Array4::<T>::uninitialized([self.batch_size, 1, 28, 28]) };
+    let mut t = unsafe { nd::Array1::<u8>::uninitialized([self.batch_size]) };
+    x.as_slice_mut()
+      .unwrap()
       .chunks_exact_mut(28*28)
-      .zip(t.as_mut_slice().iter_mut())
+      .zip(t.iter_mut())
       .for_each(move |(x, t)| {
       let i = self.index_vec.next()
         .unwrap();
