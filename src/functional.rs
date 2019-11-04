@@ -1,5 +1,5 @@
 use super::{Graph, Var, Param, Param1, Param2, iter_ext, iter_ext::{MeanExt, ArgMaxExt}};
-use std::{rc::Rc, sync::Arc};
+use std::{rc::Rc, sync::Arc, iter};
 use ndarray as nd;
 
 pub trait Dense<T> {
@@ -73,7 +73,7 @@ impl<T: nd::LinalgScalar + num_traits::Float> Dense<T> for Var<T> {
           let kernel_grad = kernel_grad_lock.view_mut()
             .into_dimensionality()
             .unwrap();
-          nd::linalg::general_mat_mul(T::from(batch_size).unwrap().recip(), &input_value.t(), &out_grad, T::one(), &mut kernel_grad.reversed_axes());
+          nd::linalg::general_mat_mul(T::one(), &input_value.t(), &out_grad, T::one(), &mut kernel_grad.reversed_axes());
         }
         if let Some(ref bias_grad) = bias_grad {
           let bias_grad_arc = bias_grad.upgrade()
@@ -85,7 +85,7 @@ impl<T: nd::LinalgScalar + num_traits::Float> Dense<T> for Var<T> {
             .into_shape([1, units])
             .unwrap();
           let ones = nd::Array::ones([1, batch_size]);
-          nd::linalg::general_mat_mul(T::from(batch_size).unwrap().recip(), &ones, &out_grad, T::one(), &mut bias_grad);
+          nd::linalg::general_mat_mul(T::one(), &ones, &out_grad, T::one(), &mut bias_grad);
         }
         if let Some(ref input_grad) = input_grad {
           let mut input_grad = input_grad.borrow_mut();
@@ -108,7 +108,7 @@ pub trait Softmax {
   fn softmax(&self, axis: nd::Axis) -> Self::Output;
 }
 
-impl<T: 'static + std::marker::Send + num_traits::Float + num_traits::NumAssign + std::fmt::Debug, S: nd::Data<Elem=T>, D: nd::RemoveAxis> Softmax for nd::ArrayBase<S, D> {
+impl<T: num_traits::Float + num_traits::NumAssign, S: nd::Data<Elem=T>, D: nd::RemoveAxis> Softmax for nd::ArrayBase<S, D> {
   type Output = nd::Array<T, D>; 
   fn softmax(&self, axis: nd::Axis) -> Self::Output {
     let max = self.fold_axis(axis, T::infinity(), |&m, &x| {
@@ -131,7 +131,7 @@ pub trait CrossEntropyLoss<L> {
   fn cross_entropy_loss(&self, labels: &L) -> Self::Output;
 }
 
-impl<T: 'static + std::marker::Send + num_traits::Float + num_traits::NumAssign + iter_ext::Mean + std::fmt::Debug, U: num_traits::AsPrimitive<usize>, S1: nd::Data<Elem=T>, D1: nd::RemoveAxis, S2: nd::Data<Elem=U>> 
+impl<T: num_traits::Float + num_traits::NumAssign + iter::Sum, U: num_traits::AsPrimitive<usize>, S1: nd::Data<Elem=T>, D1: nd::RemoveAxis, S2: nd::Data<Elem=U>> 
   CrossEntropyLoss<nd::ArrayBase<S2, nd::Ix1>> for nd::ArrayBase<S1, D1>
   where Self: Softmax {
   type Output = nd::Array0<T>;
@@ -147,12 +147,12 @@ impl<T: 'static + std::marker::Send + num_traits::Float + num_traits::NumAssign 
     let loss = pred.axis_iter(nd::Axis(0))
       .zip(labels.iter().copied().map(|u| u.as_()))
       .map(|(p, u)| -p[u].ln())
-      .mean();
+      .sum();
     nd::arr0(loss)
   }
 }
 
-impl<T: 'static + std::marker::Send + std::fmt::Debug + num_traits::Float + num_traits::NumAssign + iter_ext::Mean, U: num_traits::AsPrimitive<usize>, S2: nd::Data<Elem=U>> 
+impl<T: 'static + num_traits::Float + num_traits::NumAssign + iter::Sum, U: num_traits::AsPrimitive<usize>, S2: nd::Data<Elem=U>> 
   CrossEntropyLoss<nd::ArrayBase<S2, nd::Ix1>> for Var<T>
   where nd::ArrayD<T>: CrossEntropyLoss<nd::ArrayBase<S2, nd::Ix1>, Output=nd::Array0<T>> {
   type Output = Self;
