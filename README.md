@@ -7,8 +7,8 @@ Machine Learning Library for Rust
 # Concept
 High performance Machine Learning Library inspired by Pytorch, built on top of ndarray. Flexible design allows for parallel and incremental execution, enabling dynamic composition of layers and functions, instead of purely statically defined models. 
 
-# GPU Support
-No means of supporting GPU acceleration, unless or until ndarray is extended as such. Longterm we may see Rust to cuda / SPIR-V, but until then this crate makes no abstractions to allow for gpu acceleration, due to simplicity and because such abstractions are not zero cost.  
+# Note: No GPU Support
+No means of supporting GPU acceleration, unless or until ndarray is extended as such. Longterm we may see Rust to cuda / SPIR-V, but until then this crate makes no abstractions to allow for gpu acceleration, due to simplicity and to minimize interior mutability and laziness, and because such abstractions are not zero cost.  
 
 # Features
 - Layers
