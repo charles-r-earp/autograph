@@ -4,12 +4,42 @@
 # autograph
 Machine Learning Library for Rust
 
-# Status
-Still experimenting. Currently using ndarray for tensor math, found that it has very good performance, gpu acceleration would be nice but presents additional overhead, and is only beneficial with very large tensors / graphs, and that extra overhead complicates native implementations. 
-
 # Concept
-Layer is the core trait in autograph, which describes either a Dense / Conv layer, an activation function / normalization / dropout, or a composition such as Sequential. A layer takes an input and returns an output, and then accepts the gradient and computes the input gradients (and gradients of the parameters). It also has a params_mut() method, which allows for these parameters to be stepped with an Optimizer. 
+High performance Machine Learning Library inspired by Pytorch, built on top of ndarray. Flexible design allows for parallel and incremental execution, enabling dynamic composition of layers and functions, instead of purely statically defined models. 
+
+# GPU Support
+No means of supporting GPU acceleration, unless or until ndarray is extended as such. Longterm we may see Rust to cuda / SPIR-V, but until then this crate makes no abstractions to allow for gpu acceleration, due to simplicity and because such abstractions are not zero cost.  
+
+# Features
+- Layers
+  - Dense
+- Functions
+  - Dense
+  - Softmax
+  - CrossEntropyLoss
+  - ClassificationMatches
+- Initializers
+  - Zeros
+  - Random(rand::Distribution)
+  - HeNormal
+- Optimizers
+  - () ie Learning Rate only
 
 # Example
 See /examples/mnist_dense.rs
+
+# Benchmarks
+Compared to similar fully connected layer in Pytorch, the above example achieves equalivent or better accuracy and trains + tests 30x faster, even against a moderate GPU. For larger networks, GPU acceleration should get an edge. Will benchmark well known models when the crate is more functional.
+
+# Next Steps
+Pull Requests welcome!
+- Stochastic Gradient Descent with Momentum
+- Conv Functions / Layers 
+- Seq (Static list) Layer
+- DynLayer
+- Sequential Layer (Like a vec of DynLayers ie Box<Layer>)
+- Saving / Loading of Model Structure and Parameters
+  
+
+
 
