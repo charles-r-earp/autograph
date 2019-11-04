@@ -1,20 +1,22 @@
-use super::{Graph, Var, Param, Param1, Param2, iter_ext, iter_ext::{MeanExt, ArgMaxExt}};
+use super::{Graph, Var, Param, iter_ext, iter_ext::{MeanExt, ArgMaxExt}};
 use std::{rc::Rc, sync::Arc, iter};
 use ndarray as nd;
 
 pub trait Dense<T> {
-  fn dense(&self, kernel: &Param2<T>, bias: Option<&Param1<T>>) -> Self;
+  fn dense(&self, kernel: &Param<T>, bias: Option<&Param<T>>) -> Self;
 }
 
 impl<T: nd::LinalgScalar> Dense<T> for nd::ArrayD<T> {
-  fn dense(&self, kernel: &Param2<T>, bias: Option<&Param1<T>>) -> Self {
+  fn dense(&self, kernel: &Param<T>, bias: Option<&Param<T>>) -> Self {
     let batch_size = self.shape()[0];
     let in_channels = self.shape()[1..].iter()
       .product();
     let input = self.view()
       .into_shape([batch_size, in_channels])
       .unwrap();
-    let kernel = kernel.value();
+    let kernel = kernel.view()
+      .into_dimensionality()
+      .unwrap();
     let out_channels = kernel.shape()[0];
     let out_dim = [batch_size, out_channels];
     let out = if let Some(ref bias) = bias {
@@ -35,7 +37,7 @@ impl<T: nd::LinalgScalar> Dense<T> for nd::ArrayD<T> {
 }
 
 impl<T: nd::LinalgScalar + num_traits::Float> Dense<T> for Var<T> {
-  fn dense(&self, kernel: &Param2<T>, bias: Option<&Param1<T>>) -> Self {
+  fn dense(&self, kernel: &Param<T>, bias: Option<&Param<T>>) -> Self {
     let req_grad = self.req_grad() || kernel.req_grad() || bias.map_or(false, |b| b.req_grad()); 
     let out = Self::new(&self.graph().upgrade().unwrap(), self.value().dense(kernel, bias),  req_grad);
     if let Some(ref out_grad) = out.grad() {
@@ -193,7 +195,6 @@ pub trait ClassificationMatches<L> {
 impl<T: num_traits::Float, U: num_traits::AsPrimitive<usize>, S1: nd::Data<Elem=T>, D1: nd::Dimension, S2: nd::Data<Elem=U>> 
   ClassificationMatches<nd::ArrayBase<S2, nd::Ix1>> for nd::ArrayBase<S1, D1> {
   fn classification_matches(&self, labels: &nd::ArrayBase<S2, nd::Ix1>) -> usize {
-    use iter_ext::ArgMaxExt;
     let batch_size = self.shape()[0];
     let nclasses = self.shape()[1..].iter()
       .product();
