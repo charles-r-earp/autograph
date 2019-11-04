@@ -1,49 +1,55 @@
-use std::{fmt::Debug, ops::Index}; 
+use ndarray as nd;
+use rand_distr::{Distribution, StandardNormal, Normal};
 
-pub trait Initializer<T, D>: Debug {
-  fn initialize(&mut self, dim: D, data: &mut [T]);
+pub trait Initializer<T> {
+  fn fill<D: nd::Dimension>(&self, array: &mut nd::ArrayViewMut<T, D>);
 }
 
 #[derive(Debug)]
 pub struct Zeros;
 
-impl<T: num_traits::Zero, D> Initializer<T, D> for Zeros {
-  fn initialize(&mut self, _: D, data: &mut [T]) {
-    data.iter_mut()
+impl<T: num_traits::Zero> Initializer<T> for Zeros {
+  fn fill<D: nd::Dimension>(&self, array: &mut nd::ArrayViewMut<T, D>) {
+    array.as_slice_memory_order_mut()
+      .unwrap()
+      .iter_mut()
       .for_each(|x| *x = T::zero());
   }
 }
 
 #[derive(Debug)]
-pub struct RandomNormal<T: rand_distr::Float + Debug> {
-  pub mean: T,
-  pub std_dev: T
+pub struct Random<R> {
+  distr: R
 }
 
-impl<T: rand_distr::Float + Debug, D> Initializer<T, D> for RandomNormal<T>
-  where rand_distr::Normal<T>: rand_distr::Distribution<T>,
-        rand_distr::StandardNormal: rand_distr::Distribution<T> {
-  fn initialize(&mut self, _: D, data: &mut [T]) {
-    use rand_distr::Distribution;
-    let normal = rand_distr::Normal::new(self.mean, self.std_dev).unwrap();
-    data.iter_mut()
-      .zip(normal.sample_iter(&mut rand::thread_rng()))
-      .for_each(|(x, n)| *x = n);
+impl<R> Random<R> {
+  pub fn new(distr: R) -> Self {
+    Self{distr}
+  }
+} 
+
+impl<T, R: Distribution<T> + Copy> Initializer<T> for Random<R> {
+  fn fill<D: nd::Dimension>(&self, array: &mut nd::ArrayViewMut<T, D>) {
+    array.as_slice_memory_order_mut()
+      .unwrap()
+      .iter_mut()
+      .zip(self.distr.sample_iter(&mut rand::thread_rng()))
+      .for_each(|(x, r)| *x = r);
   }
 }
 
 #[derive(Debug)]
 pub struct HeNormal;
 
-impl<T: num_traits::Float + Debug, D: Index<usize, Output=usize>> Initializer<T, D> for HeNormal
-  where T: rand_distr::Float, 
-        RandomNormal<T>: Initializer<T, D> {
-  fn initialize(&mut self, dim: D, data: &mut [T]) {
-    use num_traits::{Float, NumCast};
-    let units: T = <T as NumCast>::from(dim[1]).unwrap();
-    let two: T = <T as NumCast>::from(2.).unwrap();
-    let std_dev = Float::sqrt(two / units);
-    RandomNormal{mean: T::zero(), std_dev}.initialize(dim, data);
+impl<T: num_traits::Float> Initializer<T> for HeNormal
+  where T: rand_distr::Float,
+        StandardNormal: Distribution<T>,
+        Normal<T>: Distribution<T> {
+  fn fill<D: nd::Dimension>(&self, array: &mut nd::ArrayViewMut<T, D>) {
+    let units = <T as num_traits::NumCast>::from(array.shape()[1]).unwrap();
+    let two = <T as num_traits::NumCast>::from(2.).unwrap();
+    let std_dev = num_traits::Float::sqrt(two / units);
+    Random::new(Normal::new(T::zero(), std_dev).unwrap())
+      .fill(array)
   }
 }
-

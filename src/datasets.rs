@@ -1,6 +1,7 @@
-use std::{env, fs, fs::DirBuilder, io, marker::PhantomData};
+use std::{env, fs, fs::DirBuilder, io, marker::PhantomData, iter::FromIterator};
 use ndarray as nd;
 use rand::seq::index::IndexVecIntoIter;
+
 
 pub struct Mnist {
   train_images: Vec<u8>,
@@ -116,7 +117,7 @@ impl Mnist {
         .map(|&u| T::from(u).unwrap() / T::from(255).unwrap()))
         .into_shape([t_chunk.len(), 1, 28, 28])
         .unwrap();
-      let t = nd::Array::from_iter(t_chunk.iter().cloned());
+      let t = nd::Array1::from_iter(t_chunk.iter().copied());
       (x, t)
     })
   }
@@ -132,7 +133,7 @@ struct MnistTrainIter<'a, T> {
 impl<'a, T: num_traits::Float> Iterator for MnistTrainIter<'a, T> {
   type Item = (nd::Array4<T>, nd::Array1<u8>);
   fn next(&mut self) -> Option<Self::Item> {
-    let mut x = unsafe { nd::Array4::uninitialized([self.batch_size, 1, 28, 28]) };
+    let mut x = unsafe { nd::Array4::<T>::uninitialized([self.batch_size, 1, 28, 28]) };
     let mut t = unsafe { nd::Array1::<u8>::uninitialized([self.batch_size]) };
     x.as_slice_mut()
       .unwrap()
@@ -142,8 +143,8 @@ impl<'a, T: num_traits::Float> Iterator for MnistTrainIter<'a, T> {
       let i = self.index_vec.next()
         .unwrap();
       x.iter_mut()
-        .zip(self.mnist.train_images[i*28*28..(i+1)*28*28].iter())
-        .for_each(|(x, &u)| *x = T::from(u).unwrap() / T::from(255).unwrap());
+        .zip(self.mnist.train_images[i*28*28..(i+1)*28*28].iter().copied())
+        .for_each(|(x, u)| *x = T::from(u).unwrap() / T::from(255).unwrap());
       *t = self.mnist.train_labels[i];
     });
     Some((x, t))
