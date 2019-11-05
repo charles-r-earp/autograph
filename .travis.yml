@@ -12,8 +12,5 @@ notifications:
   email: 
     on_success: never
 script:
-  - cargo build
-  - cargo build --release
   - cargo test
-  - cargo run --example mnist_dense
   - cargo run --release --example mnist_dense

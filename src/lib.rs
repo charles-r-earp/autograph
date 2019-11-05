@@ -7,7 +7,7 @@ use init::Initializer;
 pub mod optim;
 use optim::Optimizer;
 pub mod layer;
-pub mod iter_ext;
+mod iter_ext;
 pub mod datasets;
 
 pub struct Graph {
@@ -85,40 +85,52 @@ impl<T> Var<T> {
   }
 }
 
-#[derive(Default, Debug, Clone)]
-pub struct Param<T, D: nd::Dimension> {
-  value: nd::ArcArray<T, D>,
-  grad: Option<Arc<Mutex<nd::Array<T, D>>>>
+#[derive(Default, Debug)]
+pub struct Param<T> {
+  value: nd::ArcArray<T, nd::IxDyn>,
+  grad: Option<Arc<Mutex<nd::ArrayD<T>>>>,
+  pub initializer: Option<Box<dyn Initializer<T>>>,
+  pub optimizer: Option<Box<dyn Optimizer<T>>>
 }
 
-impl<T, D: nd::Dimension> Param<T, D> {
-  pub fn new(value: nd::ArcArray<T, D>) -> Self {
-    Self{value, grad: None}
-  }
-  pub fn initialize(&mut self, init: &impl Initializer<T>)
-    where T: Clone {
-    init.fill(&mut self.value.view_mut());
-  }
-  pub fn value(&self) -> &nd::ArcArray<T, D> { &self.value }
-  pub fn value_mut(&mut self) -> &mut nd::ArcArray<T, D> { &mut self.value }
-  pub fn grad(&self) -> Option<&Arc<Mutex<nd::Array<T, D>>>> { 
+impl<T> Param<T> {
+  pub fn value(&self) -> &nd::ArcArray<T, nd::IxDyn> { &self.value }
+  pub fn view(&self) -> nd::ArrayViewD<T> { self.value.view() }
+  pub fn view_mut(&mut self) -> nd::ArrayViewMutD<T>
+    where T: Clone { self.value.view_mut() }
+  pub fn grad(&self) -> Option<&Arc<Mutex<nd::ArrayD<T>>>> { 
     self.grad.as_ref()
   }
   pub fn req_grad(&self) -> bool { self.grad.is_some() }
-  fn zero_grad(&mut self)
+  pub fn zero_grad(&mut self)
     where T: num_traits::Zero + Clone {
     self.grad = Some(Arc::new(Mutex::new(nd::Array::zeros(self.value().dim()))));
   }
-  fn none_grad(&mut self) { self.grad = None }
-  fn step(&mut self, optim: &mut impl Optimizer<T, D>, lr: T) 
-    where T: Clone {
+  pub fn none_grad(&mut self) { self.grad = None }
+  pub fn initialize(&mut self, shape: impl nd::ShapeBuilder<Dim=nd::IxDyn>)
+    where T: Copy + num_traits::Zero {
+    self.value = unsafe { nd::ArcArray::uninitialized(shape) };
+    if let Some(ref initializer) = self.initializer {
+      initializer.fill(&mut self.value.view_mut());
+    }
+    else {
+      self.value.fill(T::zero());
+    }
+  }
+  pub fn set_optimizer(&mut self, optimizer: impl Optimizer<T> + 'static) {
+    self.optimizer.replace(Box::new(optimizer));
+  }
+  pub fn step(&mut self, lr: T) 
+    where T: 'static + num_traits::Float {
     if let Some(grad) = self.grad.take() {
       let grad = grad.lock().unwrap();
-      optim.step(&mut self.value.view_mut(), &grad, lr);
+      if let Some(ref mut optimizer) = self.optimizer {
+        optimizer.step(&mut self.value.view_mut(), &grad.view(), lr);
+      }
+      else {
+        self.value.scaled_add(-lr, &grad);
+      } 
     }
   }
 }
-
-pub type Param1<T> = Param<T, nd::Ix1>;
-pub type Param2<T> = Param<T, nd::Ix2>;
   

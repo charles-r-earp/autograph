@@ -4,16 +4,27 @@ use std::{rc::Rc, time::Instant};
 use rand_distr::{Distribution, Normal}; 
 
 fn main() {
-  use ag::{layer, layer::{Forward, Layer}, functional::{Softmax, CrossEntropyLoss, ClassificationMatches}, iter_ext::MeanExt};
+  use ag::{layer, layer::{Forward, Layer}, functional::{Softmax, CrossEntropyLoss, ClassificationMatches}, optim};
   use nd::ShapeBuilder;
   use num_traits::ToPrimitive;
   let dataset = ag::datasets::Mnist::new();
-  let mut model = layer::dense_builder::<f32>()
+  let mut model = layer::Dense::builder()
     .units(10)
     .use_bias()
     .build();
+  let optimizer = optim::SGD::builder()
+    .momentum(0.5)
+    .weight_decay(0.1)
+    .nesterov()
+    .build();
+  model.param_iter_mut()
+    .for_each(|p| p.set_optimizer(optimizer.clone()));
   println!("{:#?}", &model); 
   model.build(&nd::Array::zeros([1, 1, 28, 28]).into_dyn());
+  let nparams = model.param_iter()
+    .map(|p| p.view().len())
+    .sum::<usize>();
+  println!("{} trainable parameters.", nparams);
   let lr = 0.01;
   let now = Instant::now();
   for epoch in 1 ..= 10 {
@@ -22,7 +33,8 @@ fn main() {
     let mut train_correct = 0;
     dataset.train(64)
       .for_each(|(x, t)| {
-      model.train();
+      model.param_iter_mut()
+        .for_each(|p| p.zero_grad());
       let (y, loss) = {
         let graph = Rc::new(ag::Graph::new());
         let x = ag::Var::new(&graph, x, false);
@@ -31,7 +43,8 @@ fn main() {
         loss.backward();
         (y, loss)
       };
-      model.step(lr);
+      model.param_iter_mut()
+        .for_each(|p| p.step(lr));
       train_total += t.shape()[0];
       train_loss += loss.into_array()
         .into_dimensionality()
@@ -45,7 +58,6 @@ fn main() {
     let mut test_total = 0;
     let mut test_loss = 0f32;
     let mut test_correct = 0;
-    model.eval();
     dataset.test(512)
       .for_each(|(x, t)| {
       let y = model.forward(&x.into_dyn());
