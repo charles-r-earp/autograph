@@ -1,40 +1,6 @@
 use super::{Var, Param, functional, init, init::Initializer, optim, optim::Optimizer}; 
 use std::{ops::Deref, marker::PhantomData};
 use ndarray as nd;
-/*
-#[derive(Debug)]
-pub struct Parameter<T, D: nd::Dimension, I: Initializer<T>, O: Optimizer<T, D>> {
-  param: Param<T, D>,
-  init: I,
-  optim: O
-}
-
-impl<T, D: nd::Dimension, I: Initializer<T>, O: Optimizer<T, D>> Parameter<T, D, I, O> {
-  pub fn placeholder(init: I, optim: O) -> Self
-    where T: Default {
-    Self{param: Param::default(), init, optim}
-  }
-  pub fn step(&mut self, lr: T)
-    where T: Clone {
-    self.param.step(&mut self.optim, lr);
-  }
-  pub fn param(&self) -> &Param<T, D> { &self.param }
-  pub fn initialize(&mut self, shape: impl nd::ShapeBuilder<Dim=D>)
-    where T: Copy {
-    self.param = Param::new(unsafe { nd::ArcArray::uninitialized(shape) });
-    self.param.initialize(&self.init);
-  } 
-  pub fn train(&mut self)
-    where T: num_traits::Zero + Clone {
-    self.param.zero_grad();
-  }
-  pub fn eval(&mut self) {
-    self.param.none_grad();
-  }
-} 
-
-pub type Parameter1<T, I, O> = Parameter<T, nd::Ix1, I, O>;
-pub type Parameter2<T, I, O> = Parameter<T, nd::Ix2, I, O>;*/
 
 pub trait Forward<X> {
   fn forward(&self, input: &X) -> X;

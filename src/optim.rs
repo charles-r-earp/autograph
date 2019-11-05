@@ -4,12 +4,6 @@ use ndarray as nd;
 pub trait Optimizer<T>: Debug {
   fn step(&mut self, value: &mut nd::ArrayViewMutD<T>, grad: &nd::ArrayViewD<T>, lr: T);
 }
-/*
-impl<T: nd::LinalgScalar + num_traits::Float, D: nd::Dimension> Optimizer<D> for () {
-  fn step(&mut self, value: &mut nd::ArrayViewMut<T, D>, grad: &nd::Array<T, D>, lr: T) {
-    value.scaled_add(-lr, &grad);
-  }
-}*/
 
 #[derive(Default, Clone, Copy)]
 pub struct SGDBuilder<T> {
