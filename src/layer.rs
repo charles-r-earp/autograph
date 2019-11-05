@@ -1,17 +1,89 @@
 use super::{autograd::{Var, Param}, functional, init, init::Initializer}; 
+use std::{fmt::Debug, ops::{Index, IndexMut}};
 use ndarray as nd;
 
 pub trait Forward<X> {
   fn forward(&self, input: &X) -> X;
 }
 
-pub trait Layer<T>: Forward<nd::ArrayD<T>> + Forward<Var<T>> {
+pub trait Layer<T>: Forward<nd::ArrayD<T>> + Forward<Var<T>> + Debug {
   fn build(&mut self, input: &nd::ArrayD<T>) -> nd::ArrayD<T> {
     self.forward(input)
   }
   fn param_iter(&self) -> std::vec::IntoIter<&Param<T>> { Vec::new().into_iter() }
   fn param_iter_mut(&mut self) -> std::vec::IntoIter<&mut Param<T>> { Vec::new().into_iter() }
 }
+
+#[derive(Default, Debug)]
+pub struct Sequential<T> {
+  layers: Vec<Box<dyn Layer<T>>>
+}
+
+impl<T> Sequential<T> {
+  pub fn len(&self) -> usize { self.layers.len() }
+  pub fn push(&mut self, layer: impl Layer<T> + 'static) { self.layers.push(Box::new(layer)); }
+  pub fn insert(&mut self, index: usize, layer: impl Layer<T> + 'static) {
+    self.layers.insert(index, Box::new(layer));
+  }
+  pub fn remove(&mut self, index: usize) -> Box<dyn Layer<T>> { self.layers.remove(index) }
+}
+
+impl<T> Index<usize> for Sequential<T> {
+  type Output = dyn Layer<T>;
+  fn index(&self, index: usize) -> &(dyn Layer<T> + 'static) { &*self.layers[index] }
+}
+
+impl<T> IndexMut<usize> for Sequential<T> {
+  fn index_mut(&mut self, index: usize) -> &mut (dyn Layer<T> + 'static) { &mut *self.layers[index] }
+}
+
+impl<T: Clone> Forward<nd::ArrayD<T>> for Sequential<T> {
+  fn forward(&self, input: &nd::ArrayD<T>) -> nd::ArrayD<T> {
+    let mut layer_iter = self.layers.iter();
+    if let Some(first) = layer_iter.next() {
+      layer_iter.fold(first.forward(input), |x, layer| layer.forward(&x))
+    }
+    else {
+      input.clone()
+    }  
+  }
+}
+
+impl<T: Clone> Forward<Var<T>> for Sequential<T> {
+  fn forward(&self, input: &Var<T>) -> Var<T> {
+    let mut layer_iter = self.layers.iter();
+    if let Some(first) = layer_iter.next() {
+      layer_iter.fold(first.forward(input), |x, layer| layer.forward(&x))
+    }
+    else {
+      input.clone()
+    }  
+  }
+}
+
+impl<T: Clone + Debug> Layer<T> for Sequential<T> {
+  fn build(&mut self, input: &nd::ArrayD<T>) -> nd::ArrayD<T> {
+    let mut layer_iter = self.layers.iter_mut();
+    if let Some(first) = layer_iter.next() {
+      layer_iter.fold(first.build(input), |x, layer| layer.build(&x))
+    }
+    else {
+      input.clone()
+    }  
+  }
+  fn param_iter(&self) -> std::vec::IntoIter<&Param<T>> {
+    self.layers.iter()
+      .flat_map(|layer| layer.param_iter())
+      .collect::<Vec<_>>()
+      .into_iter()
+  }
+  fn param_iter_mut(&mut self) -> std::vec::IntoIter<&mut Param<T>> {
+    self.layers.iter_mut()
+      .flat_map(|layer| layer.param_iter_mut())
+      .collect::<Vec<_>>()
+      .into_iter()
+  }
+} 
 
 #[derive(Default)]
 pub struct DenseBuilder<T> {
@@ -77,7 +149,7 @@ impl<T, X: functional::Dense<T>>
   }
 }
 
-impl<T: 'static + num_traits::Float> Layer<T> for Dense<T>
+impl<T: 'static + num_traits::Float + Debug> Layer<T> for Dense<T>
   where Self: Forward<nd::ArrayD<T>> + Forward<Var<T>> {
   fn build(&mut self, input: &nd::ArrayD<T>) -> nd::ArrayD<T> {
     use nd::{IntoDimension, ShapeBuilder};
@@ -111,6 +183,15 @@ impl<T: 'static + num_traits::Float> Layer<T> for Dense<T>
     params.into_iter()
   }
 }
+
+#[derive(Default, Debug, Clone, Copy)]
+pub struct Relu; 
+
+impl<X: functional::Relu<Output=X>> Forward<X> for Relu {
+  fn forward(&self, x: &X) -> X { x.relu() }
+}
+
+impl<T: Debug> Layer<T> for Relu where Self: Forward<nd::ArrayD<T>> + Forward<Var<T>> {}
 
 
 
