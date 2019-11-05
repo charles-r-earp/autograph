@@ -1,11 +1,9 @@
 use autograph as ag;
 use ndarray as nd;
 use std::{rc::Rc, time::Instant};
-use rand_distr::{Distribution, Normal}; 
 
 fn main() {
-  use ag::{layer, layer::{Forward, Layer}, functional::{Softmax, CrossEntropyLoss, ClassificationMatches}, optim};
-  use nd::ShapeBuilder;
+  use ag::{layer, layer::{Forward, Layer}, functional::{CrossEntropyLoss, ClassificationMatches}, optim};
   use num_traits::ToPrimitive;
   let dataset = ag::datasets::Mnist::new();
   let mut model = layer::Dense::builder()
@@ -36,8 +34,8 @@ fn main() {
       model.param_iter_mut()
         .for_each(|p| p.zero_grad());
       let (y, loss) = {
-        let graph = Rc::new(ag::Graph::new());
-        let x = ag::Var::new(&graph, x, false);
+        let tape = Rc::new(ag::autograd::Tape::new());
+        let x = ag::autograd::Var::new(&tape, x, false);
         let y = model.forward(&x);
         let loss = y.cross_entropy_loss(&t);
         loss.backward();

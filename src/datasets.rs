@@ -1,4 +1,4 @@
-use std::{env, fs, fs::DirBuilder, io, marker::PhantomData, iter::FromIterator};
+use std::{env, fs, fs::DirBuilder, io, marker::PhantomData};
 use ndarray as nd;
 use rand::seq::index::IndexVecIntoIter;
 
