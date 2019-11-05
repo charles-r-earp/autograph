@@ -1,4 +1,4 @@
-use super::{Graph, Var, Param, iter_ext, iter_ext::{MeanExt, ArgMaxExt}};
+use super::{autograd::{Var, Param}, iter_ext::ArgMaxExt};
 use std::{rc::Rc, sync::Arc, iter};
 use ndarray as nd;
 
@@ -39,7 +39,7 @@ impl<T: nd::LinalgScalar> Dense<T> for nd::ArrayD<T> {
 impl<T: nd::LinalgScalar + num_traits::Float> Dense<T> for Var<T> {
   fn dense(&self, kernel: &Param<T>, bias: Option<&Param<T>>) -> Self {
     let req_grad = self.req_grad() || kernel.req_grad() || bias.map_or(false, |b| b.req_grad()); 
-    let out = Self::new(&self.graph().upgrade().unwrap(), self.value().dense(kernel, bias),  req_grad);
+    let out = Self::new(self.tape(), self.value().dense(kernel, bias),  req_grad);
     if let Some(ref out_grad) = out.grad() {
       let out_grad = Rc::clone(out_grad);
       let input_value = Rc::clone(self.value());
@@ -53,9 +53,7 @@ impl<T: nd::LinalgScalar + num_traits::Float> Dense<T> for Var<T> {
         else { None }
       }
       else { None };
-      out.graph()
-        .upgrade()
-        .unwrap()
+      out.tape()
         .backward_op(move || {
         let out_grad = out_grad.borrow();
         let out_grad = out_grad.view()
@@ -138,7 +136,6 @@ impl<T: num_traits::Float + num_traits::NumAssign + iter::Sum, U: num_traits::As
   where Self: Softmax {
   type Output = nd::Array0<T>;
   fn cross_entropy_loss(&self, labels: &nd::ArrayBase<S2, nd::Ix1>) -> Self::Output {
-    use iter_ext::MeanExt;
     let batch_size = self.shape()[0];
     let nclasses = self.shape()[1..].iter()
       .product();
@@ -154,21 +151,22 @@ impl<T: num_traits::Float + num_traits::NumAssign + iter::Sum, U: num_traits::As
   }
 }
 
-impl<T: 'static + num_traits::Float + num_traits::NumAssign + iter::Sum, U: num_traits::AsPrimitive<usize>, S2: nd::Data<Elem=U>> 
+impl<T: 'static + num_traits::Float + num_traits::NumAssign + iter::Sum + std::fmt::Debug, U: num_traits::AsPrimitive<usize>, S2: nd::Data<Elem=U>> 
   CrossEntropyLoss<nd::ArrayBase<S2, nd::Ix1>> for Var<T>
   where nd::ArrayD<T>: CrossEntropyLoss<nd::ArrayBase<S2, nd::Ix1>, Output=nd::Array0<T>> {
   type Output = Self;
   fn cross_entropy_loss(&self, labels: &nd::ArrayBase<S2, nd::Ix1>) -> Self {
-    let out = Self::new(&self.graph().upgrade().unwrap(), self.value().cross_entropy_loss(labels), self.req_grad());
+    let out = Self::new(self.tape(), self.value().cross_entropy_loss(labels), self.req_grad());
     if let Some(ref out_grad) = out.grad() {
       let out_grad = Rc::clone(out_grad);
       let input = Rc::clone(self.value());
       let input_grad = Rc::clone(self.grad().as_ref().unwrap());
       let labels = labels.to_owned();
-      out.graph()
-        .upgrade()
-        .unwrap()
+      out.tape()
         .backward_op(move || {
+        let dy = *out_grad.borrow()
+          .first()
+          .unwrap();
         let mut input_grad = input_grad.borrow_mut();
         input.softmax(nd::Axis(1))
           .axis_iter(nd::Axis(0))
@@ -180,7 +178,7 @@ impl<T: 'static + num_traits::Float + num_traits::NumAssign + iter::Sum, U: num_
             .enumerate()
             .map(|(i, x)| if i == u { x - T::one() } else { x })
             .zip(dx.iter_mut())
-            .for_each(|(px, dx)| *dx = px);   
+            .for_each(|(px, dx)| *dx = px * dy);   
         });
       });
     }

@@ -1,5 +1,4 @@
-use super::{Var, Param, functional, init, init::Initializer, optim, optim::Optimizer}; 
-use std::{ops::Deref, marker::PhantomData};
+use super::{autograd::{Var, Param}, functional, init, init::Initializer}; 
 use ndarray as nd;
 
 pub trait Forward<X> {
@@ -42,12 +41,13 @@ impl<T> DenseBuilder<T> {
   }   
   pub fn build(self) -> Dense<T>
     where T: Default,
-          init::HeNormal: Initializer<T> {
+          init::HeNormal: Initializer<T>,
+          init::Zeros: Initializer<T> {
     let mut kernel = Param::default();
     kernel.initializer.replace(self.kernel_initializer.unwrap_or(Box::new(init::HeNormal)));
     let bias = if self.use_bias {
       let mut bias = Param::default();
-      bias.initializer = self.bias_initializer;
+      bias.initializer.replace(self.bias_initializer.unwrap_or(Box::new(init::Zeros)));
       Some(bias)
     }
     else { None };
@@ -81,7 +81,6 @@ impl<T: 'static + num_traits::Float> Layer<T> for Dense<T>
   where Self: Forward<nd::ArrayD<T>> + Forward<Var<T>> {
   fn build(&mut self, input: &nd::ArrayD<T>) -> nd::ArrayD<T> {
     use nd::{IntoDimension, ShapeBuilder};
-    let batch_size = input.shape()[0];
     let in_channels = input.shape()[1..].iter().product();
     if self.kernel.value().shape() != &[self.units, in_channels] {
       self.kernel.initialize([self.units, in_channels].as_ref().into_dimension().f());
