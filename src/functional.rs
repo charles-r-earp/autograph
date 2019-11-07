@@ -3,11 +3,13 @@ use std::{rc::Rc, sync::Arc, iter};
 use ndarray as nd;
 
 pub trait Dense<T> {
-  fn dense(&self, kernel: &Param<T>, bias: Option<&Param<T>>) -> Self;
+  type Output;
+  fn dense(&self, kernel: &Param<T>, bias: Option<&Param<T>>) -> Self::Output;
 }
 
-impl<T: nd::LinalgScalar> Dense<T> for nd::ArrayD<T> {
-  fn dense(&self, kernel: &Param<T>, bias: Option<&Param<T>>) -> Self {
+impl<T: nd::LinalgScalar, S: nd::Data<Elem=T>, D: nd::Dimension> Dense<T> for nd::ArrayBase<S, D> {
+  type Output = nd::Array<T, D>;
+  fn dense(&self, kernel: &Param<T>, bias: Option<&Param<T>>) -> Self::Output {
     let batch_size = self.shape()[0];
     let in_channels = self.shape()[1..].iter()
       .product();
@@ -32,11 +34,13 @@ impl<T: nd::LinalgScalar> Dense<T> for nd::ArrayD<T> {
       nd::linalg::general_mat_mul(T::one(), &input, &kernel.t(), T::zero(), &mut out);
       out
     };
-    out.into_dyn()
+    out.into_dimensionality()
+      .unwrap()
   }
 }
 
 impl<T: nd::LinalgScalar + num_traits::Float> Dense<T> for Var<T> {
+  type Output = Self;
   fn dense(&self, kernel: &Param<T>, bias: Option<&Param<T>>) -> Self {
     let req_grad = self.req_grad() || kernel.req_grad() || bias.map_or(false, |b| b.req_grad()); 
     let out = Self::new(self.tape(), self.value().dense(kernel, bias),  req_grad);
@@ -100,6 +104,92 @@ impl<T: nd::LinalgScalar + num_traits::Float> Dense<T> for Var<T> {
       });
     }
     out
+  }
+}
+
+#[allow(unused)]
+pub struct ConvArgs<T, D: nd::Dimension> {
+  stride: D,
+  padding: D,
+  pad_elem: T,
+  dilation: D,
+  groups: usize
+}
+
+impl<T: Default + num_traits::Zero, D: nd::Dimension> Default for ConvArgs<T, D> {
+  fn default() -> Self {
+    let mut stride = D::default();
+    let mut dilation = D::default();
+    for u in 0 .. stride.ndim() {
+      stride[u] = 1;
+      dilation[u] = 1;
+    }
+    Self {
+      stride,
+      padding: D::default(),
+      pad_elem: T::zero(),
+      dilation,
+      groups: 1
+    }
+  }
+}
+  
+pub trait Conv<T, D: nd::Dimension> {
+  type Output;
+  fn conv(&self, kernel: &Param<T>, bias: Option<&Param<T>>, args: &ConvArgs<T, D>) -> Self::Output;
+} 
+
+impl<T: nd::LinalgScalar + std::fmt::Debug, S: nd::Data<Elem=T>, D: nd::Dimension> Conv<T, nd::Ix2> for nd::ArrayBase<S, D> {
+  type Output = nd::Array<T, D>;
+  
+  /// - input: [n, c_in, h_in, w_in]
+  /// - kernel: [n, c_out, kernel_size[0], kernel_size[1]]
+  /// - output: [n, c_out, h_out, w_out]
+  /// - h_out = (h_in + 2 * padding[0] - dilation[0] * (kernel_size[0] - 1) - 1) / stride[0] + 1
+  /// - w_out = (w_in + 2 * padding[1] - dilation[0] * (kernel_size[1] - 1) - 1) / stride[1] + 1
+  
+  fn conv(&self, kernel: &Param<T>, bias: Option<&Param<T>>, args: &ConvArgs<T, nd::Ix2>) -> Self::Output {
+    self.as_standard_layout();
+    use nd::Dimension;
+    let input = self.view()
+      .into_dimensionality::<nd::Ix4>()
+      .unwrap();
+    let (n, c_in, h_in, w_in) = input.dim();
+    let kernel = kernel.value()
+      .view()
+      .into_dimensionality::<nd::Ix4>()
+      .unwrap();
+    let (c_out, _c_in, kh, kw) = kernel.dim();
+    debug_assert_eq!(c_in, _c_in);
+    let h_out = (h_in + 2 * args.padding[0] - args.dilation[0] * (kh - 1) - 1) / args.stride[0] + 1;
+    let w_out = (w_in + 2 * args.padding[1] - args.dilation[1] * (kw - 1) - 1) / args.stride[1] + 1;
+    let input = if args.padding.size() > 0 { 
+      unimplemented!();
+      //let mut _input = unsafe { nd::Array::uninitialized(input.raw_dim()) };
+    }
+    else { 
+      input
+    };
+    let mut out = nd::Array::zeros([n, c_out, h_out, w_out]);
+    input.windows([n, c_in, kh, kw])
+      .into_iter()
+      .zip(out.exact_chunks_mut([n, c_out, 1, 1])
+        .into_iter())
+      .for_each(|(input, mut out)| {
+        let mut out = out.index_axis_mut(nd::Axis(3), 0);
+        let mut out = out.index_axis_mut(nd::Axis(2), 0);
+        input.axis_iter(nd::Axis(2))
+          .zip(kernel.axis_iter(nd::Axis(2)))
+          .for_each(|(input, kernel)| {
+            input.axis_iter(nd::Axis(2))
+              .zip(kernel.axis_iter(nd::Axis(2)))
+              .for_each(|(input, kernel)| {
+              nd::linalg::general_mat_mul(T::one(), &input, &kernel.t(), T::one(), &mut out);
+          });
+      });
+    });
+    out.into_dimensionality()
+      .unwrap()
   }
 }
 

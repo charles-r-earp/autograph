@@ -5,7 +5,7 @@ authors = ["charles-r-earp <charles.r.earp@gmail.com>"]
 edition = "2018"
 
 [dependencies]
-ndarray = "0.12.1"
+ndarray = "0.13.0"
 num-traits = "0.2.8"
 rand = "0.7.2"
 rand_distr = "0.2.2"

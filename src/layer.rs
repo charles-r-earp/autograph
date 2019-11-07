@@ -142,7 +142,7 @@ impl<T: Default> Dense<T> {
   pub fn builder() -> DenseBuilder<T> { Default::default() }
 } 
 
-impl<T, X: functional::Dense<T>>
+impl<T, X: functional::Dense<T, Output=X>>
   Forward<X> for Dense<T> {
   fn forward(&self, input: &X) -> X {
     input.dense(&self.kernel, self.bias.as_ref())
