@@ -24,7 +24,6 @@ Machine Learning Library for Rust
   - SGD
 
 # Examples
-  - Dense
   - Lenet5
   
 # Next Steps
