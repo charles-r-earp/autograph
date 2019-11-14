@@ -1,6 +1,6 @@
 use std::fmt::Debug;
 use ndarray as nd;
-use rand_distr::{Distribution, StandardNormal, Normal};
+use rand_distr::{Distribution, StandardNormal, Normal, Uniform};
 
 pub trait Initializer<T>: Debug {
   fn fill(&self, array: &mut nd::ArrayViewMutD<T>);
@@ -48,6 +48,21 @@ impl<T: num_traits::Float + Debug> Initializer<T> for HeNormal
     let two = <T as num_traits::NumCast>::from(2.).unwrap();
     let std_dev = num_traits::Float::sqrt(two / units);
     Random::new(Normal::new(T::zero(), std_dev).unwrap())
+      .fill(array)
+  }
+}
+
+#[derive(Debug)]
+pub struct XavierUniform;
+
+impl<T: num_traits::Float + Debug> Initializer<T> for XavierUniform
+  where T: rand_distr::Float + rand_distr::uniform::SampleUniform,
+        Uniform<T>: Distribution<T> + Copy + Debug {
+  fn fill(&self, array: &mut nd::ArrayViewMutD<T>) {
+    let units = <T as num_traits::NumCast>::from(array.shape()[0] * array.shape()[1]).unwrap();
+    let six = <T as num_traits::NumCast>::from(6.).unwrap();
+    let limit = num_traits::Float::sqrt(six / units);
+    Random::new(Uniform::new(-limit, limit))
       .fill(array)
   }
 }

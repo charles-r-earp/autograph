@@ -28,21 +28,17 @@ pub trait MeanExt: Iterator + Sized {
 
 impl<I: Iterator> MeanExt for I {}
 
-pub trait ArgMax<T=Self>: Sized {
-  fn arg_max<I: Iterator<Item=T>>(iter: I) -> Option<Self>;
-}
-
 pub trait ArgMaxExt: Iterator + Sized {
   fn arg_max(self) -> Option<usize>
     where Self::Item: PartialOrd {
     let mut iter = self.enumerate();
     iter.next().map(|item| 
       iter.fold(item, |(max_i, max), (i, x)| { 
-        if max >= x {
-          (max_i, max)
+        if x >= max {
+          (i, x)
         }
         else {
-          (i, x)
+          (max_i, max)
         }
       }).0 
     )

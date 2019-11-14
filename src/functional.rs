@@ -2,7 +2,7 @@ use super::{autograd::{Var, Param}, iter_ext::ArgMaxExt};
 use std::{rc::Rc, sync::Arc, iter};
 use ndarray as nd;
 
-pub trait Dense<T> {
+pub(crate) trait Dense<T> {
   type Output;
   fn dense(&self, kernel: &Param<T>, bias: Option<&Param<T>>) -> Self::Output;
 }
@@ -49,10 +49,10 @@ impl<T: nd::LinalgScalar + num_traits::Float> Dense<T> for Var<T> {
       let input_value = Rc::clone(self.value());
       let input_grad = self.grad().map(|ref grad| Rc::clone(grad));
       let kernel_value = nd::ArcArray::clone(kernel.value());
-      let kernel_grad = kernel.grad().map(|ref grad| Arc::downgrade(grad));
+      let kernel_grad = kernel.grad().map(|ref grad| Arc::clone(grad));
       let bias_grad = if let Some(ref bias) = bias {
         if let Some(ref bias_grad) = bias.grad() {
-          Some(Arc::downgrade(bias_grad))
+          Some(Arc::clone(bias_grad))
         }
         else { None }
       }
@@ -70,22 +70,18 @@ impl<T: nd::LinalgScalar + num_traits::Float> Dense<T> for Var<T> {
           .into_shape([batch_size, in_channels])
           .unwrap();
         if let Some(ref kernel_grad) = kernel_grad {
-          let kernel_grad_arc = kernel_grad.upgrade()
+          let mut kernel_grad = kernel_grad.lock()
             .unwrap();
-          let mut kernel_grad_lock = kernel_grad_arc.lock()
-            .unwrap();
-          let kernel_grad = kernel_grad_lock.view_mut()
+          let kernel_grad = kernel_grad.view_mut()
             .into_dimensionality()
             .unwrap();
           nd::linalg::general_mat_mul(T::one(), &input_value.t(), &out_grad, T::one(), &mut kernel_grad.reversed_axes());
         }
         if let Some(ref bias_grad) = bias_grad {
-          let bias_grad_arc = bias_grad.upgrade()
+          let mut bias_grad = bias_grad.lock()
             .unwrap();
-          let mut bias_grad_lock = bias_grad_arc.lock()
-            .unwrap();
-          let units = bias_grad_lock.shape()[0];
-          let mut bias_grad = bias_grad_lock.view_mut()
+          let units = bias_grad.shape()[0];
+          let mut bias_grad = bias_grad.view_mut()
             .into_shape([1, units])
             .unwrap();
           let ones = nd::Array::ones([1, batch_size]);
@@ -106,49 +102,22 @@ impl<T: nd::LinalgScalar + num_traits::Float> Dense<T> for Var<T> {
     out
   }
 }
-
-#[allow(unused)]
-pub struct ConvArgs<T, D: nd::Dimension> {
-  stride: D,
-  padding: D,
-  pad_elem: T,
-  dilation: D,
-  groups: usize
-}
-
-impl<T: Default + num_traits::Zero, D: nd::Dimension> Default for ConvArgs<T, D> {
-  fn default() -> Self {
-    let mut stride = D::default();
-    let mut dilation = D::default();
-    for u in 0 .. stride.ndim() {
-      stride[u] = 1;
-      dilation[u] = 1;
-    }
-    Self {
-      stride,
-      padding: D::default(),
-      pad_elem: T::zero(),
-      dilation,
-      groups: 1
-    }
-  }
-}
   
-pub trait Conv<T, D: nd::Dimension> {
+pub(crate) trait Conv<T, D: nd::Dimension> {
   type Output;
-  fn conv(&self, kernel: &Param<T>, bias: Option<&Param<T>>, args: &ConvArgs<T, D>) -> Self::Output;
+  fn conv(&self, kernel: &Param<T>, padding: impl nd::IntoDimension<Dim=D>, pad_elem: T) -> Self::Output;
 } 
 
-impl<T: nd::LinalgScalar + std::fmt::Debug, S: nd::Data<Elem=T>, D: nd::Dimension> Conv<T, nd::Ix2> for nd::ArrayBase<S, D> {
+impl<T: nd::LinalgScalar, S: nd::Data<Elem=T>, D: nd::Dimension> Conv<T, nd::Ix2> for nd::ArrayBase<S, D> {
   type Output = nd::Array<T, D>;
   
   /// - input: [n, c_in, h_in, w_in]
   /// - kernel: [n, c_out, kernel_size[0], kernel_size[1]]
   /// - output: [n, c_out, h_out, w_out]
-  /// - h_out = (h_in + 2 * padding[0] - dilation[0] * (kernel_size[0] - 1) - 1) / stride[0] + 1
-  /// - w_out = (w_in + 2 * padding[1] - dilation[0] * (kernel_size[1] - 1) - 1) / stride[1] + 1
+  /// - h_out = h_in + 2 * padding[0] - kernel_size[0] + 1
+  /// - w_out = w_in + 2 * padding[1] - kernel_size[1] + 1
   
-  fn conv(&self, kernel: &Param<T>, bias: Option<&Param<T>>, args: &ConvArgs<T, nd::Ix2>) -> Self::Output {
+  fn conv(&self, kernel: &Param<T>, padding: impl nd::IntoDimension<Dim=nd::Ix2>, pad_elem: T) -> Self::Output {
     self.as_standard_layout();
     use nd::Dimension;
     let input = self.view()
@@ -160,16 +129,22 @@ impl<T: nd::LinalgScalar + std::fmt::Debug, S: nd::Data<Elem=T>, D: nd::Dimensio
       .into_dimensionality::<nd::Ix4>()
       .unwrap();
     let (c_out, _c_in, kh, kw) = kernel.dim();
+    let padding = padding.into_dimension();
     debug_assert_eq!(c_in, _c_in);
-    let h_out = (h_in + 2 * args.padding[0] - args.dilation[0] * (kh - 1) - 1) / args.stride[0] + 1;
-    let w_out = (w_in + 2 * args.padding[1] - args.dilation[1] * (kw - 1) - 1) / args.stride[1] + 1;
-    let input = if args.padding.size() > 0 { 
-      unimplemented!();
-      //let mut _input = unsafe { nd::Array::uninitialized(input.raw_dim()) };
+    let h_out = h_in + 2 * padding[0] - kh + 1;
+    let w_out = w_in + 2 * padding[1] - kw + 1;
+    let input = if padding.size() != 0 { 
+      let h_padded = h_in + 2 * padding[0];
+      let w_padded = w_in + 2 * padding[1];
+      let [pad_h, pad_w] = [padding[0] as isize, padding[1] as isize];
+      let mut padded = nd::Array::from_elem([n, c_in, h_padded, w_padded], pad_elem);
+      padded.slice_mut(nd::s![.., .., pad_h .. -pad_h, pad_w .. -pad_w])
+        .assign(&input);
+      nd::CowArray::from(padded)
     }
     else { 
-      input
-    };
+      nd::CowArray::from(input)
+    }; 
     let mut out = nd::Array::zeros([n, c_out, h_out, w_out]);
     input.windows([n, c_in, kh, kw])
       .into_iter()
@@ -193,7 +168,187 @@ impl<T: nd::LinalgScalar + std::fmt::Debug, S: nd::Data<Elem=T>, D: nd::Dimensio
   }
 }
 
-pub trait Relu {
+impl<T: nd::LinalgScalar + num_traits::NumAssign> Conv<T, nd::Ix2> for Var<T> {
+  type Output = Self;
+  fn conv(&self, kernel: &Param<T>, padding: impl nd::IntoDimension<Dim=nd::Ix2>, pad_elem: T) -> Self::Output {
+    use nd::Dimension;
+    let padding = padding.into_dimension();
+    let out = Self::new(self.tape(), self.value().conv(kernel, padding, pad_elem), self.req_grad() || kernel.req_grad());
+    if let Some(ref out_grad) = out.grad() {
+      let out_grad = Rc::clone(out_grad);
+      let input_value = Rc::clone(self.value());
+      let input_grad = self.grad().map(|grad| Rc::clone(grad));
+      let kernel_value = nd::ArcArray::clone(kernel.value()); 
+      let kernel_grad = kernel.grad().map(|grad| Arc::clone(grad));
+      out.tape().backward_op(move || {
+        let out_grad = out_grad.borrow();
+        let out_grad = out_grad.view()
+          .into_dimensionality::<nd::Ix4>()
+          .unwrap();
+        let input_value = input_value.view()
+          .into_dimensionality::<nd::Ix4>()
+          .unwrap();
+        let kernel_value = kernel_value.view()
+          .into_dimensionality::<nd::Ix4>()
+          .unwrap();  
+        let (n, c_in, h_in, w_in) = input_value.dim();
+        let (_, c_out, h_out, w_out) = out_grad.dim();
+        if let Some(ref kernel_grad) = kernel_grad {
+          let mut kernel_grad = kernel_grad.lock()
+            .unwrap();
+          let mut kernel_grad = kernel_grad.view_mut()
+            .into_dimensionality::<nd::Ix4>()
+            .unwrap();
+          let (c_out, _c_in, kh, kw) = kernel_value.dim();
+          debug_assert_eq!(c_in, _c_in);
+          let h_out = h_in + 2 * padding[0] - kh + 1;
+          let w_out = w_in + 2 * padding[1] - kw + 1;
+          let input_value = if padding.size() != 0 { 
+            let h_padded = h_in + 2 * padding[0];
+            let w_padded = w_in + 2 * padding[1];
+            let [pad_h, pad_w] = [padding[0] as isize, padding[1] as isize];
+            let mut padded = nd::Array::from_elem([n, c_in, h_padded, w_padded], pad_elem);
+            padded.slice_mut(nd::s![.., .., pad_h .. -pad_h, pad_w .. -pad_w])
+              .assign(&input_value);
+            nd::CowArray::from(padded)
+          }
+          else { 
+            nd::CowArray::from(input_value)
+          };  
+          input_value.windows([n, c_in, kh, kw])
+            .into_iter()
+            .zip(out_grad.exact_chunks([n, c_out, 1, 1]))
+            .for_each(|(input_value, out_grad)| {
+              let out_grad = out_grad.index_axis(nd::Axis(3), 0);
+              let out_grad = out_grad.index_axis(nd::Axis(2), 0);
+              input_value.axis_iter(nd::Axis(3))
+                .zip(kernel_grad.axis_iter_mut(nd::Axis(3)))
+                .for_each(|(input_value, mut kernel_grad)| {
+                  input_value.axis_iter(nd::Axis(2))
+                    .zip(kernel_grad.axis_iter_mut(nd::Axis(2)))
+                    .for_each(|(input_value, mut kernel_grad)| {
+                      nd::linalg::general_mat_mul(T::one(), &input_value.t(), &out_grad, T::one(), &mut kernel_grad.reversed_axes());
+                    });
+                });
+            });
+        }
+        if let Some(ref input_grad) = input_grad {
+          let mut input_grad = input_grad.borrow_mut();
+          let mut input_grad = input_grad.view_mut()
+            .into_dimensionality::<nd::Ix4>()
+            .unwrap();
+          out_grad.axis_iter(nd::Axis(3))
+            .enumerate()
+            .for_each(|(j, out_grad)| {
+              out_grad.axis_iter(nd::Axis(2))
+              .enumerate()
+              .for_each(|(i, out_grad)| {
+                kernel_value.axis_iter(nd::Axis(3))
+                  .enumerate()
+                  .for_each(|(kj, kernel_value)| {
+                    kernel_value.axis_iter(nd::Axis(2))
+                      .enumerate()
+                      .for_each(|(ki, kernel_value)| {
+                        input_grad.slice_mut(nd::s![.., .., i + ki, j + kj])
+                          .zip_mut_with(&out_grad.dot(&kernel_value), |x, &dx| *x += dx);
+                      });
+                  });
+               });
+            });
+        }
+      });
+    }
+    out
+  }
+}
+
+pub(crate) trait MaxPool<D: nd::Dimension> {
+  type Output;
+  fn max_pool(&self, pool_size: impl nd::IntoDimension<Dim=D>) -> Self::Output;
+}
+
+impl<T: num_traits::Float, S: nd::Data<Elem=T>, D: nd::Dimension> MaxPool<nd::Ix2> for nd::ArrayBase<S, D> {
+  type Output = nd::Array<T, D>;
+  fn max_pool(&self, pool_size: impl nd::IntoDimension<Dim=nd::Ix2>) -> Self::Output {
+    let pool_size = pool_size.into_dimension();
+    let input = self.view()
+      .into_dimensionality::<nd::Ix4>()
+      .unwrap();
+    let (n, c, h_in, w_in) = input.dim();
+    let h_out = h_in / pool_size[0];
+    let w_out = w_in / pool_size[1];
+    let mut out = unsafe { nd::Array::uninitialized([n, c, h_out, w_out]) };
+    input.outer_iter()
+      .zip(out.outer_iter_mut())
+      .for_each(|(input, mut out)| {
+        input.outer_iter()
+          .zip(out.outer_iter_mut())
+          .for_each(|(input, mut out)| {
+            input.exact_chunks(pool_size)
+              .into_iter()
+              .zip(out.exact_chunks_mut([1, 1]).into_iter())
+              .for_each(|(input, mut out)| {
+                out[(0, 0)] = input.iter()
+                  .copied()
+                  .fold(T::neg_infinity(), |max, x| if x >= max { x } else { max });
+              });
+          });
+      });
+    out.into_dimensionality()
+      .unwrap()
+  }
+}
+
+impl<T: num_traits::Float + num_traits::NumAssign + 'static> MaxPool<nd::Ix2> for Var<T> {
+  type Output = Self;
+  fn max_pool(&self, pool_size: impl nd::IntoDimension<Dim=nd::Ix2>) -> Self::Output {
+    let pool_size = pool_size.into_dimension();
+    let out = Self::new(self.tape(), self.value().max_pool(pool_size), self.req_grad());
+    if let Some(ref out_grad) = out.grad() {
+      let out_grad = Rc::clone(out_grad);
+      let input_value = Rc::clone(self.value());
+      let input_grad = Rc::clone(self.grad().as_ref().unwrap());
+      out.tape().backward_op(move || {
+        let out_grad = out_grad
+          .borrow();
+        let out_grad = out_grad.view()
+          .into_dimensionality::<nd::Ix4>()
+          .unwrap();
+        let input_value = input_value.view()
+          .into_dimensionality::<nd::Ix4>()
+          .unwrap();
+        let mut input_grad = input_grad.borrow_mut();
+        let mut input_grad = input_grad.view_mut()
+          .into_dimensionality::<nd::Ix4>()
+          .unwrap();
+        input_value.outer_iter()
+          .zip(input_grad.outer_iter_mut())
+          .zip(out_grad.outer_iter())
+          .for_each(|((input_value, mut input_grad), out)| {
+            input_value.outer_iter()
+              .zip(input_grad.outer_iter_mut())
+              .zip(out.outer_iter())
+              .for_each(|((input_value, mut input_grad), out)| {
+                input_value.exact_chunks(pool_size)
+                  .into_iter()
+                  .zip(input_grad.exact_chunks_mut(pool_size).into_iter())
+                  .zip(out.exact_chunks([1, 1]).into_iter())
+                  .for_each(|((input_value, mut input_grad), out_grad)| {
+                    let max_i = input_value.iter()
+                      .copied()
+                      .arg_max()
+                      .unwrap();
+                    *input_grad.iter_mut().skip(max_i).next().unwrap() += out_grad[(0, 0)];
+                  });
+              });
+          });
+      });
+    }
+    out
+  }
+}
+ 
+pub(crate) trait Relu {
   type Output;
   fn relu(&self) -> Self::Output;
 }

@@ -107,9 +107,6 @@ impl<T> Param<T> {
       self.value.fill(T::zero());
     }
   }
-  /*pub fn set_optimizer(&mut self, optimizer: impl Optimizer<T> + 'static) {
-    self.optimizer.replace(Box::new(optimizer));
-  }*/
   pub fn step(&mut self, lr: T) 
     where T: 'static + num_traits::Float {
     if let Some(grad) = self.grad.take() {
