@@ -270,7 +270,7 @@ impl<T: 'static + num_traits::Float + Debug> Layer<T> for Conv<T, nd::Ix2>
   where Self: Forward<nd::ArrayD<T>> + Forward<Var<T>> {
   fn build(&mut self, input: &nd::ArrayD<T>) -> nd::ArrayD<T> {
     use nd::{Dimension, IntoDimension, ShapeBuilder};
-    let (n, c_in, h_in, w_in) = input.view().into_dimensionality::<nd::Ix4>().unwrap().dim();
+    let c_in = input.shape()[1];
     let (kh, kw) = self.kernel_size.into_pattern();
     if self.kernel.value().shape() != &[self.units, c_in, kh, kw] {
       self.kernel.initialize([self.units, c_in, kh, kw].as_ref().into_dimension().f());

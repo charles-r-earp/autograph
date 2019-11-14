@@ -192,7 +192,6 @@ impl<T: nd::LinalgScalar + num_traits::NumAssign> Conv<T, nd::Ix2> for Var<T> {
           .into_dimensionality::<nd::Ix4>()
           .unwrap();  
         let (n, c_in, h_in, w_in) = input_value.dim();
-        let (_, c_out, h_out, w_out) = out_grad.dim();
         if let Some(ref kernel_grad) = kernel_grad {
           let mut kernel_grad = kernel_grad.lock()
             .unwrap();
@@ -201,8 +200,6 @@ impl<T: nd::LinalgScalar + num_traits::NumAssign> Conv<T, nd::Ix2> for Var<T> {
             .unwrap();
           let (c_out, _c_in, kh, kw) = kernel_value.dim();
           debug_assert_eq!(c_in, _c_in);
-          let h_out = h_in + 2 * padding[0] - kh + 1;
-          let w_out = w_in + 2 * padding[1] - kw + 1;
           let input_value = if padding.size() != 0 { 
             let h_padded = h_in + 2 * padding[0];
             let w_padded = w_in + 2 * padding[1];
@@ -226,7 +223,7 @@ impl<T: nd::LinalgScalar + num_traits::NumAssign> Conv<T, nd::Ix2> for Var<T> {
                 .for_each(|(input_value, mut kernel_grad)| {
                   input_value.axis_iter(nd::Axis(2))
                     .zip(kernel_grad.axis_iter_mut(nd::Axis(2)))
-                    .for_each(|(input_value, mut kernel_grad)| {
+                    .for_each(|(input_value, kernel_grad)| {
                       nd::linalg::general_mat_mul(T::one(), &input_value.t(), &out_grad, T::one(), &mut kernel_grad.reversed_axes());
                     });
                 });
