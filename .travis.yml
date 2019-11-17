@@ -13,5 +13,4 @@ notifications:
     on_success: never
 script:
   - cargo test
-  - cargo run --release --example mnist_dense
-  - cargo run --release --example mnist_lenet5
+  - cargo run --release --example mnist_lenet5 --epochs 1
