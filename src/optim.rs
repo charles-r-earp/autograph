@@ -1,7 +1,7 @@
-use std::fmt::Debug;
+use std::{fmt::Debug, marker::{Send, Sync}};
 use ndarray as nd;
 
-pub trait Optimizer<T>: Debug {
+pub trait Optimizer<T>: Debug + Send + Sync {
   fn step(&mut self, value: &mut nd::ArrayViewMutD<T>, grad: &nd::ArrayViewD<T>, lr: T);
 }
 
@@ -55,7 +55,7 @@ impl<T: Default> SGD<T> {
   pub fn builder() -> SGDBuilder<T> { Default::default() }
 }
 
-impl<T: nd::LinalgScalar + num_traits::Float + num_traits::NumAssign + Debug> Optimizer<T> for SGD<T> {
+impl<T: nd::LinalgScalar + num_traits::Float + num_traits::NumAssign + Debug + Send + Sync> Optimizer<T> for SGD<T> {
   fn step(&mut self, value: &mut nd::ArrayViewMutD<T>, grad: &nd::ArrayViewD<T>, lr: T) {
    if self.velocity.raw_dim() != value.raw_dim() {
       self.velocity = nd::Array::zeros(value.raw_dim());

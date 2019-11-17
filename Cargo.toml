@@ -18,6 +18,8 @@ flate2 = "1.0.12"
 byteorder = "1.3.2"
 timeit = "0.1.2"
 matrixmultiply = "0.2.3"
+args = "2.2.0"
+getopts = "0.2.21"
 progress = "0.2.0"
-
+terminal_size = "0.1.8"
 

@@ -1,12 +1,12 @@
 use super::{autograd::{Var, Param}, functional, init, init::Initializer}; 
-use std::{fmt::Debug, ops::{Index, IndexMut}};
+use std::{fmt::Debug, ops::{Index, IndexMut}, marker::{Send, Sync}};
 use ndarray as nd;
 
 pub trait Forward<X> {
   fn forward(&self, input: &X) -> X;
 }
 
-pub trait Layer<T>: Forward<nd::ArrayD<T>> + Forward<Var<T>> + Debug {
+pub trait Layer<T>: Forward<nd::ArrayD<T>> + Forward<Var<T>> + Debug + Send + Sync {
   fn build(&mut self, input: &nd::ArrayD<T>) -> nd::ArrayD<T> {
     self.forward(input)
   }
@@ -61,7 +61,7 @@ impl<T: Clone> Forward<Var<T>> for Sequential<T> {
   }
 }
 
-impl<T: Clone + Debug> Layer<T> for Sequential<T> {
+impl<T: Clone + Debug + Send + Sync> Layer<T> for Sequential<T> {
   fn build(&mut self, input: &nd::ArrayD<T>) -> nd::ArrayD<T> {
     let mut layer_iter = self.layers.iter_mut();
     if let Some(first) = layer_iter.next() {
@@ -158,7 +158,7 @@ impl<T: nd::LinalgScalar + num_traits::Float>
   }
 }
 
-impl<T: 'static + num_traits::Float + Debug> Layer<T> for Dense<T>
+impl<T: num_traits::Float + Debug + Send + Sync + 'static> Layer<T> for Dense<T>
   where Self: Forward<nd::ArrayD<T>> + Forward<Var<T>> {
   fn build(&mut self, input: &nd::ArrayD<T>) -> nd::ArrayD<T> {
     use nd::{IntoDimension, ShapeBuilder};
@@ -266,7 +266,7 @@ impl<T: nd::LinalgScalar + num_traits::NumAssign> Forward<Var<T>> for Conv<T, nd
   }
 } 
 
-impl<T: 'static + num_traits::Float + Debug> Layer<T> for Conv<T, nd::Ix2>
+impl<T: num_traits::Float + Debug + Send + Sync + 'static> Layer<T> for Conv<T, nd::Ix2>
   where Self: Forward<nd::ArrayD<T>> + Forward<Var<T>> {
   fn build(&mut self, input: &nd::ArrayD<T>) -> nd::ArrayD<T> {
     use nd::{Dimension, IntoDimension, ShapeBuilder};
@@ -310,7 +310,7 @@ impl<T: num_traits::Float + num_traits::NumAssign + 'static> Forward<Var<T>> for
   }
 } 
 
-impl<T: Debug, D: nd::Dimension> Layer<T> for MaxPool<D> where Self: Forward<nd::ArrayD<T>> + Forward<Var<T>> {}
+impl<T: Debug + Send + Sync, D: nd::Dimension> Layer<T> for MaxPool<D> where Self: Forward<nd::ArrayD<T>> + Forward<Var<T>> {}
  
 #[derive(Default, Debug, Clone, Copy)]
 pub struct Relu; 
@@ -329,7 +329,7 @@ impl<T: num_traits::Float + num_traits::NumAssign + 'static> Forward<Var<T>> for
   }
 }
 
-impl<T: Debug> Layer<T> for Relu where Self: Forward<nd::ArrayD<T>> + Forward<Var<T>> {}
+impl<T: Debug + Send + Sync> Layer<T> for Relu where Self: Forward<nd::ArrayD<T>> + Forward<Var<T>> {}
 
 
 

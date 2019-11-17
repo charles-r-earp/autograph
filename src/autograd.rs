@@ -108,15 +108,15 @@ impl<T> Param<T> {
     }
   }
   pub fn step(&mut self, lr: T) 
-    where T: 'static + num_traits::Float {
-    if let Some(grad) = self.grad.take() {
+    where T: 'static + num_traits::Float + num_traits::Zero {
+    if let Some(ref mut grad) = self.grad.take() {
       let grad = grad.lock().unwrap();
       if let Some(ref mut optimizer) = self.optimizer {
         optimizer.step(&mut self.value.view_mut(), &grad.view(), lr);
       }
       else {
         self.value.scaled_add(-lr, &grad);
-      } 
+      }
     }
   }
 }
