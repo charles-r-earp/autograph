@@ -1,15 +1,15 @@
-use std::fmt::Debug;
+use std::{fmt::Debug, marker::{Send, Sync}};
 use ndarray as nd;
 use rand_distr::{Distribution, StandardNormal, Normal, Uniform};
 
-pub trait Initializer<T>: Debug {
+pub trait Initializer<T>: Debug + Send + Sync {
   fn fill(&self, array: &mut nd::ArrayViewMutD<T>);
 }
 
 #[derive(Debug)]
 pub struct Zeros;
 
-impl<T: num_traits::Zero + Clone> Initializer<T> for Zeros {
+impl<T: num_traits::Zero + Clone + Send + Sync> Initializer<T> for Zeros {
   fn fill(&self, array: &mut nd::ArrayViewMutD<T>) {
     array.fill(T::zero());
   }
@@ -26,7 +26,7 @@ impl<R> Random<R> {
   }
 } 
 
-impl<T, R: Distribution<T> + Copy + Debug> Initializer<T> for Random<R> {
+impl<T: Send + Sync, R: Distribution<T> + Copy + Debug + Send + Sync> Initializer<T> for Random<R> {
   fn fill(&self, array: &mut nd::ArrayViewMutD<T>) {
     array.as_slice_memory_order_mut()
       .unwrap()
@@ -39,7 +39,7 @@ impl<T, R: Distribution<T> + Copy + Debug> Initializer<T> for Random<R> {
 #[derive(Debug)]
 pub struct HeNormal;
 
-impl<T: num_traits::Float + Debug> Initializer<T> for HeNormal
+impl<T: num_traits::Float + Debug + Send + Sync> Initializer<T> for HeNormal
   where T: rand_distr::Float,
         StandardNormal: Distribution<T>,
         Normal<T>: Distribution<T> {
@@ -55,9 +55,9 @@ impl<T: num_traits::Float + Debug> Initializer<T> for HeNormal
 #[derive(Debug)]
 pub struct XavierUniform;
 
-impl<T: num_traits::Float + Debug> Initializer<T> for XavierUniform
+impl<T: num_traits::Float + Debug + Send + Sync> Initializer<T> for XavierUniform
   where T: rand_distr::Float + rand_distr::uniform::SampleUniform,
-        Uniform<T>: Distribution<T> + Copy + Debug {
+        Uniform<T>: Distribution<T> + Copy + Debug + Send + Sync {
   fn fill(&self, array: &mut nd::ArrayViewMutD<T>) {
     let units = <T as num_traits::NumCast>::from(array.shape()[0] * array.shape()[1]).unwrap();
     let six = <T as num_traits::NumCast>::from(6.).unwrap();

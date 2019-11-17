@@ -110,13 +110,6 @@ pub(crate) trait Conv<T, D: nd::Dimension> {
 
 impl<T: nd::LinalgScalar, S: nd::Data<Elem=T>, D: nd::Dimension> Conv<T, nd::Ix2> for nd::ArrayBase<S, D> {
   type Output = nd::Array<T, D>;
-  
-  /// - input: [n, c_in, h_in, w_in]
-  /// - kernel: [n, c_out, kernel_size[0], kernel_size[1]]
-  /// - output: [n, c_out, h_out, w_out]
-  /// - h_out = h_in + 2 * padding[0] - kernel_size[0] + 1
-  /// - w_out = w_in + 2 * padding[1] - kernel_size[1] + 1
-  
   fn conv(&self, kernel: &Param<T>, padding: impl nd::IntoDimension<Dim=nd::Ix2>, pad_elem: T) -> Self::Output {
     self.as_standard_layout();
     use nd::Dimension;
