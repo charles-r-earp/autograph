@@ -1,0 +1,3 @@
+[submodule "oneDNN"]
+	path = oneDNN
+	url = https://github.com/oneapi-src/oneDNN
