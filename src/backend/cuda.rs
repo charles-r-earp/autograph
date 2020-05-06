@@ -1,6 +1,6 @@
 use super::{AutographResult, AutographError, Element, Stack, Vertex};
-use std::cell::{UnsafeCell, RefCell, RefMut};
-use rustacuda::{error::CudaError, CudaFlags, device::Device as CudaDevice, context::{Context as CudaContext, CurrentContext, ContextFlags}, memory::{DeviceBuffer}, stream::{Stream, StreamFlags}};
+use std::{rc::Rc, cell::{UnsafeCell, RefCell, RefMut}};
+use rustacuda::{error::CudaError, CudaFlags, device::Device as CudaDevice, context::{Context as CudaContext, CurrentContext, ContextFlags}, memory::DeviceBuffer, stream::{Stream, StreamFlags}};
 use cuda_sys::cublas::{cublasOperation_t_CUBLAS_OP_C as OP_C, cublasOperation_t_CUBLAS_OP_T as OP_T, cublasSgemm_v2};
 type CublasContext = cuda_sys::cublas::cublasContext;
 type CublasStatus = cuda_sys::cublas::cublasStatus_t;
@@ -23,7 +23,7 @@ pub struct Gpu {
 
 #[cfg(feature="cuda")]
 impl Gpu {
-  pub fn new(index: usize) -> AutographResult<Self> {
+  pub fn new(index: usize) -> AutographResult<Rc<super::Device>> {
     rustacuda::init(CudaFlags::empty()).unwrap();
     let device = CudaDevice::get_device(index as u32).unwrap();
     let cuda_ctx = CudaContext::create_and_push(ContextFlags::MAP_HOST | ContextFlags::SCHED_AUTO, device)?;
@@ -33,7 +33,7 @@ impl Gpu {
     let cublas_ctx = UnsafeCell::new(unsafe { Box::from_raw(cublas_ctx) });
     let stack = RefCell::new(Stack::default());
     let stream = Stream::new(StreamFlags::DEFAULT, Some(0))?;
-    Ok(Self{index, device, stack, stream, cuda_ctx, cublas_ctx})
+    Ok(Rc::new(super::Device::Cuda(Self{index, device, stack, stream, cuda_ctx, cublas_ctx})))
   }
   pub fn set_current(&self) -> AutographResult<()> {
     CurrentContext::set_current(&self.cuda_ctx)?;
