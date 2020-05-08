@@ -1,252 +1,346 @@
 #![allow(warnings)]
 #![recursion_limit="1024"]
-use std::{result::Result, rc::Rc, iter::Iterator, fmt::Debug, cell::Cell};
-use num_traits::AsPrimitive;
-use rc_cell::RcCell;
+use std::{fmt::{self, Debug}, sync::{Arc, Weak, Mutex, RwLock}, borrow::Cow, iter::Iterator};
+use num_traits::{Zero, One, AsPrimitive};
+use rand::Rng;
+use rand_distr::{Distribution, Normal};
 
 
 pub mod error;
 use error::AutographError;
-type AutographResult<T> = Result<T, AutographError>;
+
+pub mod backend;
+use backend::{Cpu, BackwardOp};
+
+type Result<T, E = AutographError> = std::result::Result<T, E>; 
+
+type ArcRwLock<T> = Arc<RwLock<T>>;
+
+fn arc_rwlock<T>(t: T) -> ArcRwLock<T> { Arc::new(RwLock::new(t)) }
 
 mod private {
-  use super::Buffer;
-  use std::{rc::Rc, cell::RefCell};
-  use num_traits::Zero;
+  pub trait PrivateElement {}
   
-  #[cfg(feature="cuda")]
-  use rustacuda::memory::DeviceCopy;
-  
-  #[cfg(not(feature="cuda"))]
-  pub trait DeviceCopy {}
-  
-  #[cfg(not(feature="cuda"))]
-  impl<T> DeviceCopy for T {}
-  
-  pub trait PrivateElement: 'static + Copy + Zero + DeviceCopy {
-    #[doc(hidden)]
-    type Grad;
-  }
-  
-  impl PrivateElement for u8 {
-    type Grad = ();
-  }
-  impl PrivateElement for f32 {
-    type Grad = Option<Rc<Vec<Buffer<f32>>>>;
-  }
+  impl PrivateElement for u8 {}
+  impl PrivateElement for f32 {}
 }
 
-pub trait Element: private::PrivateElement {}
+pub trait Element: private::PrivateElement + Copy + Zero + One + 'static {}
 
-impl<T> Element for T where T: private::PrivateElement {}
+impl Element for u8 {}
+impl Element for f32 {}
 
 pub trait Unsigned: Element + AsPrimitive<usize> {}
 
-impl Unsigned for u8 {}
-
-pub mod backend;
-
-use backend::{native, Buffer, DualBuffer, Vertex};
-
 #[derive(Clone)]
 pub enum Device {
-  Native(Rc<native::Cpu>),
+  Native(&'static Cpu),
   #[cfg(feature="cuda")]
-  Cuda(Rc<cuda::Gpu>)
+  Cuda(&'static Gpu)
 }
 
-pub mod init;
+impl Device {
+  pub fn cpu() -> Self {
+    Device::Native(Cpu::get())
+  }
+}
 
-#[derive(Clone, Copy)]
-pub enum TensorRepr {
-  Batched,
-  Broadcasted
+unsafe fn uninitialized_vec<T: Element>(len: usize) -> Vec<T> {
+  let mut vec = Vec::with_capacity(len);
+  vec.set_len(len);
+  vec
+}
+
+pub enum Buffer<T: Element> {
+  Native(Vec<T>),
+  #[cfg(feature="cuda")]
+  Cuda(DeviceBuffer<T>)
+}
+
+impl<T: Element> Buffer<T> {
+  unsafe fn uninitialized(device: &Device, len: usize) -> Result<Self> {
+    match device {
+      Device::Native(_) => Ok(Buffer::Native(uninitialized_vec(len)))
+    }
+  }
+  fn from_elem(device: &Device, elem: T, len: usize) -> Result<Self> {
+    match device {
+      Device::Native(_) => Ok(Buffer::Native(vec![elem; len]))
+    }
+  }
+  fn from_cow<'a>(device: &Device, cow: Cow<'a, [T]>) -> Result<Self> {
+    match device {
+      Device::Native(_) => Ok(Buffer::Native(cow.into_owned()))
+    } 
+  }
+  fn to_device(&self, device: &Device) -> Result<Self> {
+    match self {
+      Buffer::Native(slice) => match device {
+        Device::Native(_) => unreachable!()
+      }
+    }
+  }
+  fn len(&self) -> usize {
+    match self {
+      Buffer::Native(slice) => slice.len()
+    }
+  }
+  fn native_ptr(&self) -> *const T {
+    match self {
+      Buffer::Native(slice) => slice.as_ptr()
+    }
+  }
+  fn native_mut_ptr(&mut self) -> *mut T {
+    match self {
+      Buffer::Native(slice) => slice.as_mut_ptr()
+    }
+  }
 }
 
 #[derive(Clone)]
 pub struct Tensor<T: Element> {
-  devices: Vec<Device>,
+  device: Device,
   dims: Vec<usize>,
-  repr: TensorRepr,
-  vertices: Vec<Vertex<T>>
+  data: Arc<Buffer<T>>    
 }
 
 impl<T: Element> Tensor<T> {
-  pub fn zeros(devices: impl AsRef<[Device]>, dims: impl AsRef<[usize]>, repr: TensorRepr) -> AutographResult<Self> {
-    let devices = devices.as_ref().to_vec();
+  /*pub unsafe fn uninitialized(device: &Device, dims: impl AsRef<[usize]>) -> Result<Self> {
+    let device = device.clone();
     let dims = dims.as_ref().to_vec();
-    let mut vertices = Vec::with_capacity(dims.len());
-    match repr {
-      TensorRepr::Batched => {
-        let mut batch_dims = dims.clone();
-        batch_dims[0] = (dims[0] / devices.len()) + dims[0] % devices.len();
-        vertices.push(Vertex::zeros(&devices[0], &batch_dims)?);
-        batch_dims[0] = dims[0] / devices.len();
-        for device in &devices[1..] {
-          vertices.push(Vertex::zeros(device, &batch_dims)?);
-        }
-      },
-      TensorRepr::Broadcasted => {
-        for device in &devices {
-          vertices.push(Vertex::zeros(device, &dims)?);
-        }
-      }
-    }
-    Ok(Self{devices, dims, repr, vertices})
+    let data = Arc::new(Buffer::uninitialized(&device, dims.iter().product())?);
+    Ok(Self{device, dims, data})
+  }*/
+  unsafe fn from_dims_buffer(device: &Device, dims: impl AsRef<[usize]>, buffer: Buffer<T>) -> Self {
+    let device = device.clone();
+    let dims = dims.as_ref().to_vec();
+    debug_assert_eq!(buffer.len(), dims.iter().product());
+    let data = Arc::new(buffer);
+    Self{device, dims, data}
   }
-  pub fn devices(&self) -> &[Device] { &self.devices }
+  pub fn from_dims_cow<'a>(device: &Device, dims: impl AsRef<[usize]>, cow: impl Into<Cow<'a, [T]>>) -> Result<Self> {
+    let device = device.clone();
+    let cow = cow.into();
+    let dims = dims.as_ref().to_vec();
+    debug_assert_eq!(cow.len(), dims.iter().product());
+    let data = Arc::new(Buffer::from_cow(&device, cow)?);
+    Ok(Self{device, dims, data})
+  }
+  pub fn from_dims_iter(device: &Device, dims: impl AsRef<[usize]>, mut iter: impl Iterator<Item=T>) -> Result<Self> {
+    let dims = dims.as_ref();
+    let vec: Vec<T> = iter.take(dims.iter().product()).collect();
+    Self::from_dims_cow(device, dims, vec)
+  }
+  pub fn from_dims_elem(device: &Device, dims: impl AsRef<[usize]>, elem: T) -> Result<Self> {
+    let device = device.clone();
+    let dims = dims.as_ref().to_vec();
+    let data = Arc::new(Buffer::from_elem(&device, elem, dims.iter().product())?);
+    Ok(Self{device, dims, data})
+  }
+  pub fn zeros(device: &Device, dims: impl AsRef<[usize]>) -> Result<Self> {
+    Self::from_dims_elem(device, dims, T::zero())
+  }
+  pub fn random<D: AsRef<[usize]>, Dist: Distribution<T>, R: Rng>(device: &Device, dims: D, dist: Dist, rng: &mut R) -> Result<Self> {
+    Self::from_dims_iter(device, dims, dist.sample_iter(rng))
+  }
   pub fn dims(&self) -> &[usize] { &self.dims }
-  pub fn len(&self) -> usize { self.dims.iter().product() }
-  pub fn vertices(&self) -> &[Vertex<T>] { &self.vertices }
-  pub fn buffers(&self) -> impl Iterator<Item=Buffer<T>> + '_ {
-    self.vertices.iter()
-      .map(|v| v.buffer())
-  }
-  pub fn write(&self, mut slice: &[T]) -> AutographResult<()> {
-    debug_assert_eq!(slice.len(), self.dims.iter().product());
-    for vertex in &self.vertices {
-      match vertex {
-        Vertex::Native(cpu, _, buffer) => {
-          let len = buffer.len();
-          buffer.write(cpu, &slice[..len]);
-          slice = &slice[len..];
+  pub fn to_device(&self, device: &Device) -> Result<Self> {
+    match &self.device {
+      Device::Native(_) => {
+        match device {
+          Device::Native(_) => Ok(Self {
+            device: device.clone(), 
+            dims: self.dims.clone(),
+            data: self.data.clone()
+          })
         }
       }
     }
-    Ok(())
+  }
+  pub fn as_slice(&self) -> Result<Cow<[T]>> {
+    match &self.device {
+      Device::Native(_) => {
+        match &*self.data {
+          Buffer::Native(slice) => Ok(Cow::from(slice))
+        }
+      } 
+    }
+  }
+}
+
+#[derive(Clone)]
+pub struct Gradient {
+  device: Device,
+  dims: Vec<usize>,
+  data: ArcRwLock<Buffer<f32>>
+}
+
+impl Gradient {
+  pub fn zeros(device: &Device, dims: impl AsRef<[usize]>) -> Result<Self> {
+    let device = device.clone();
+    let dims = dims.as_ref().to_vec();
+    let data = arc_rwlock(Buffer::from_elem(&device, 0., dims.iter().product())?);
+    Ok(Self{device, dims, data})
   } 
-  pub fn read(&self, mut slice: &mut [T]) -> AutographResult<()> {
-    debug_assert_eq!(slice.len(), self.dims.iter().product());
-    for vertex in &self.vertices {
-      match vertex {
-        Vertex::Native(cpu, _, buffer) => {
-          let len = buffer.len();
-          buffer.read(cpu, &mut slice[..len]);
-          slice = &mut slice[len..];
-        }
-      }
+}
+
+pub struct Graph {
+  ops: Mutex<Vec<BackwardOp>>
+}
+
+impl Graph {
+  pub fn backward(self) -> Result<()> {
+    let mut ops = self.ops.into_inner().unwrap();
+    for op in ops.iter_mut().rev() {
+      op.backward()?;
     }
     Ok(())
   }
-  pub fn to_vec(&self) -> AutographResult<Vec<T>> {
-    let mut vec = vec![T::zero(); self.len()];
-    self.read(&mut vec)?;
-    Ok(vec)
+  fn backward_op(&self, op: BackwardOp) {
+    self.ops.lock()
+      .unwrap()
+      .push(op);
+  }
+}
+
+impl Debug for Graph {
+  fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    f.debug_struct("Graph").finish()
   }
 }
 
 #[derive(Clone)]
 pub struct Variable {
+  graph: Weak<Graph>,
   value: Tensor<f32>,
-  grad: Option<Tensor<f32>>
+  grad: Option<Gradient>
 }
 
 impl Variable {
-  pub fn zeros(devices: &[Device], dims: impl AsRef<[usize]>, requires_grad: bool) -> AutographResult<Self> {
-    let dims = dims.as_ref();
-    let value = Tensor::zeros(devices, &dims, TensorRepr::Batched)?;
-    let grad = if requires_grad {
-      let grad = Tensor::zeros(devices, &dims, TensorRepr::Batched)?;
-      Some(grad)
-    } else { None };
-    Ok(Self{value, grad})
-  }
-  pub fn devices(&self) -> &[Device] { self.value.devices() }
+  pub fn new(graph: Option<&Arc<Graph>>, value: Tensor<f32>) -> Self {
+    let graph = graph.map_or(Weak::new(), |g| Arc::downgrade(g));
+    let grad = None;
+    Self{graph, value, grad}
+  } 
   pub fn dims(&self) -> &[usize] { self.value.dims() }
   pub fn value(&self) -> &Tensor<f32> { &self.value }
-  pub fn grad(&self) -> Option<&Tensor<f32>> { self.grad.as_ref() }
-  pub fn duals(&self) -> impl Iterator<Item=DualBuffer> + '_ {
-    let mut grads = self.grad.as_ref()
-      .map(|g| {
-      g.buffers()
-    });
-    let grads = std::iter::from_fn(move || {
-      Some(grads.as_mut().map(|g| g.next().unwrap()))
-    });
-    self.value.buffers()
-      .zip(grads)
-      .map(|(x, dx)| DualBuffer::new(x, dx)) 
-  }
-}
+} 
 
-#[derive(Clone)]
 pub struct Parameter {
   value: Tensor<f32>,
-  grad: Option<Tensor<f32>>,
-  velocity: Option<Tensor<f32>>
+  grad: Option<Gradient>
 }
 
 impl Parameter {
-  pub fn zeros(devices: &[Device], dims: impl AsRef<[usize]>, requires_grad: bool) -> AutographResult<Self> {
-    let dims = dims.as_ref();
-    let value = Tensor::zeros(devices, &dims, TensorRepr::Broadcasted)?;
-    let (grad, velocity) = if requires_grad {
-      let grad = Tensor::zeros(devices, &dims, TensorRepr::Broadcasted)?;
-      let velocity = Tensor::zeros(devices, &dims, TensorRepr::Broadcasted)?;
-      (Some(grad), Some(velocity))
-    } else { (None, None) };
-    Ok(Self{value, grad, velocity})
+  pub fn to_device(&self, device: &Device) -> Result<Self> {
+    Ok(Self::from(self.value.to_device(device)?))
   }
-  pub fn devices(&self) -> &[Device] { self.value.devices() }
   pub fn dims(&self) -> &[usize] { self.value.dims() }
-  pub fn len(&self) -> usize { self.value.len() }
-  pub fn value(&self) -> &Tensor<f32> { &self.value }
-  pub fn grad(&self) -> Option<&Tensor<f32>> { self.grad.as_ref() }
-  pub fn velocity(&self) -> Option<&Tensor<f32>> { self.velocity.as_ref() }
-  pub fn duals(&self) -> impl Iterator<Item=DualBuffer> + '_ {
-    let mut grads = self.grad.as_ref()
-      .map(|g| {
-      g.buffers()
-    });
-    let grads = std::iter::from_fn(move || {
-      Some(grads.as_mut().map(|g| g.next().unwrap()))
-    });
-    self.value.buffers()
-      .zip(grads)
-      .map(|(x, dx)| DualBuffer::new(x, dx)) 
+  pub fn zero_grad(&mut self) -> Result<()> {
+    self.grad = Some(Gradient::zeros(&self.value.device, self.dims())?);
+    Ok(())
   }
 }
 
-pub trait Optimizer {
-  fn step(&self, parameters: &[Parameter]);
+impl From<Tensor<f32>> for Parameter {
+  fn from(tensor: Tensor<f32>) -> Self {
+    Self{value: tensor, grad: None}
+  }
 }
 
-#[derive(Clone, Copy)]
-pub enum ForwardMode {
-  Infer,
-  Eval,
-  Train
+pub trait Layer: Sized {
+  fn forward(&self, input: &Variable) -> Result<Variable>;
+  fn parameters_mut(&mut self) -> Vec<&mut Parameter>;
+  fn to_device(&self, device: &Device) -> Result<Self>;
 }
 
-impl ForwardMode {
-  pub fn backward_mode(&self) -> Option<BackwardMode> {
-    match self {
-      ForwardMode::Infer => None,
-      ForwardMode::Eval => Some(BackwardMode::Eval),
-      ForwardMode::Train => Some(BackwardMode::Train)
+pub trait LayerBuilder {
+  type Layer;
+  fn input(self, dims: &[usize]) -> Self;
+  fn output(&self) -> Vec<usize>; 
+  fn build(self) -> Self::Layer;
+}
+
+pub struct Dense {
+  weight: Parameter,
+  bias: Option<Parameter>
+}
+
+impl Dense {
+  pub fn builder() -> DenseBuilder {
+    DenseBuilder::default()
+  }
+}
+
+impl Layer for Dense {
+  fn forward(&self, input: &Variable) -> Result<Variable> {
+    backend::dense(input, &self.weight, self.bias.as_ref())
+  }
+  fn parameters_mut(&mut self) -> Vec<&mut Parameter> {
+    if let Some(bias) = &mut self.bias {
+      vec![&mut self.weight, bias]
+    }
+    else {
+      vec![&mut self.weight]
     }
   }
+  fn to_device(&self, device: &Device) -> Result<Self> {
+    let weight = self.weight.to_device(device)?;
+    let bias = if let Some(bias) = &self.bias {
+      Some(bias.to_device(device)?)
+    } else { None };
+    Ok(Self{weight, bias})
+  } 
 }
 
-#[derive(Clone, Copy)]
-pub enum BackwardMode {
-  Eval, 
-  Train
+#[derive(Default)]
+pub struct DenseBuilder {
+  input_channels: usize,
+  units: usize,
+  use_bias: bool
 }
 
-pub trait Autograd {
-  fn forward(&self, mode: ForwardMode) -> AutographResult<()>;
-  fn backward(&self) -> AutographResult<()>;
+impl DenseBuilder {
+  pub fn units(mut self, units: usize) -> Self {
+    self.units = units;
+    self
+  }
+  pub fn bias(mut self) -> Self {
+    self.use_bias = true;
+    self
+  }
 }
 
-#[derive(Clone, Copy)]
-pub enum Activation {
-  Relu
+impl LayerBuilder for DenseBuilder {
+  type Layer = Dense;
+  fn input(mut self, dims: &[usize]) -> Self {
+    self.input_channels = dims.iter().product();
+    self
+  }
+  fn output(&self) -> Vec<usize> { 
+    vec![self.units]
+  }
+  fn build(self) -> Dense {
+    let device = Device::cpu();
+    use std::f32::consts::SQRT_2;
+    let normal = Normal::<f32>::new(0f32, SQRT_2 / AsPrimitive::<f32>::as_(self.units)).unwrap();
+    let weight = Parameter::from(Tensor::random(&device, [self.units, self.input_channels], 
+                                                normal, 
+                                                backend::thread_rng()).unwrap());
+    let bias = if self.use_bias {
+      Some(Parameter::from(Tensor::zeros(&device, [1, self.units]).unwrap()))
+    } else { None };
+    Dense{weight, bias}
+  }
+}
+/*
+pub fn cross_entropy_loss<U: Unsigned>(input: &Variable, target: &Tensor<U>) -> f32 {
+  unimplemented!()
 }
 
-pub mod layer;
-pub mod loss;
-
+pub fn accuracy<U: Unsigned>(input: &Tensor<f32>, target: &Tensor<U>) -> usize {
+  unimplemented!()
+}*/
 
 
 

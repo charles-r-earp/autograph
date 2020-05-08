@@ -1,19 +1,14 @@
-use std::{error::Error, fmt::{self, Debug, Display}};
-#[cfg(feature="cuda")]
-use rustacuda::error::CudaError;
+use super::Graph;
+use std::{result::Result, error::Error, fmt::{self, Debug, Display}, sync::{Arc}};
 
 #[derive(Debug)]
 pub enum AutographError {
-  Uninitialized,
-  CudaUnavailable,
-  #[cfg(feature="cuda")]
-  CudaError(CudaError),
+  
 }
-
 
 impl Display for AutographError {
   fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-    write!(f, "{:?}", self)
+    write!(f, "AutographError")
   }
 }
 
@@ -22,6 +17,4 @@ impl Error for AutographError {
     "AutographError"
   }
 }
-
-
 
