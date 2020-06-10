@@ -5,7 +5,7 @@ use std::borrow::Cow;
 use num_traits::{Zero, One, ToPrimitive, Bounded};
 use ndarray::{Array, ArrayView, CowArray, Dimension, IntoDimension, Ix0, Ix1, Ix2, Ix3, Ix4, Ix5, Ix6, IxDyn};
 #[cfg(feature="cuda")]
-use rustacuda::memory::DeviceCopy;
+use rustacuda::memory::{DeviceCopy, DeviceSlice};
 
 #[doc(hidden)]
 pub mod cpu;
@@ -423,6 +423,18 @@ impl<T: Num, S: DataOwned<Elem=T>, D: Dimension> TensorBase<S, D> {
     let data = S::from_buffer(Buffer::from_vec(&device, vec));
     Self{device, dim, data}
   } 
+  pub fn from_array<'a>(device: &Device, array: impl Into<CowArray<'a, T, D>>) -> Self {
+    let array = array.into();
+    if let Some(slice) = array.as_slice() {
+      Self::from_shape_vec(&device, array.raw_dim(), slice)
+    }
+    else {
+      let vec: Vec::<T> = array.iter()
+        .copied()
+        .collect();
+      Self::from_shape_vec(&device, array.raw_dim(), vec)
+    }
+  }
   pub fn zeros(device: &Device, shape: impl IntoDimension<Dim=D>) -> Self {
     let device = device.clone();
     let dim = shape.into_dimension();
@@ -481,6 +493,12 @@ impl<T: Num, S: DataRef<Elem=T>, D: Dimension> TensorBase<S, D> {
     self.data.buffer()
       .cpu()
       .map(|b| b.as_slice())
+  }
+  #[cfg(feature="cuda")]
+  fn as_cuda_slice(&self) -> Option<&DeviceSlice<T>> {
+    self.data.buffer()
+      .cuda()
+      .map(|b| b.as_device_slice())
   }
   fn as_cpu_ptr(&self) -> Option<*const T> {
     self.data.buffer()
@@ -554,6 +572,12 @@ impl<T: Num, S: DataMut<Elem=T>, D: Dimension> TensorBase<S, D> {
     self.data.buffer_mut()
       .cpu_mut()
       .map(|mut b| b.as_mut_slice())
+  }
+  #[cfg(feature="cuda")]
+  fn as_mut_cuda_slice(&mut self) -> Option<&mut DeviceSlice<T>> {
+    self.data.buffer_mut()
+      .cuda_mut()
+      .map(|b| b.as_mut_device_slice())
   }
   fn as_mut_cpu_ptr(&mut self) -> Option<*mut T> {
     self.data.buffer_mut()
@@ -642,12 +666,12 @@ fn broadcast_backward<S1: DataMut<Elem=f32>, S2: DataRef<Elem=f32>, D: Dimension
 }
 
 #[derive(Clone, Copy, PartialEq)]
-enum Transpose {
+pub enum Transpose {
   No,
   Yes
 }
 
-fn gemm<S1: DataRef<Elem=f32>, S2: DataRef<Elem=f32>, S3: DataMut<Elem=f32>>
+pub fn gemm<S1: DataRef<Elem=f32>, S2: DataRef<Elem=f32>, S3: DataMut<Elem=f32>>
   (alpha: f32, a: &TensorBase<S1, Ix2>, trans_a: Transpose, b: &TensorBase<S2, Ix2>, trans_b: Transpose, beta: f32, c: &mut TensorBase<S3, Ix2>) {
   debug_assert_eq!(&a.device, &b.device);
   debug_assert_eq!(&a.device, &c.device);
@@ -697,7 +721,7 @@ impl<S1: DataRef<Elem=f32>> TensorBase<S1, Ix2> {
     match &self.device {
       Device::Cpu(cpu) => cpu::cross_entropy(self, target, &mut output),
       #[cfg(feature="cuda")]
-      Device::Cuda(cuda_gpu) => cuda::cross_entropy_loss(self, target)
+      Device::Cuda(cuda_gpu) => cuda::cross_entropy(self, target, &mut output)
     }
     output.sum()
   }
@@ -706,25 +730,385 @@ impl<S1: DataRef<Elem=f32>> TensorBase<S1, Ix2> {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use ndarray::{ArrayView2, ArrayViewMut2};
   
-  fn test_dense(device: impl Into<Device>) {
+  fn test_tensor_from_vec(device: impl Into<Device>) {
     let device = device.into();
-    let x = Tensor::from_shape_vec(&device, [2, 3], vec![1., 2., 3., 4., 5., 6.]);
-    let w = Tensor::from_shape_vec(&device, [4, 3], vec![7., 8., 9., 10., 11., 12., 13., 14., 15., 16., 17., 18.]); 
-    let y = x.dense(&w.view(), None);
-    let x_arr = x.as_array();
-    let w_arr = w.as_array();
-    let y_arr = y.as_array();
-    assert_eq!(x_arr.dot(&w_arr.t()), y_arr); 
+    let vec = vec![1., 2., 3., 4.];
+    let x = Tensor::from_shape_vec(&device, vec.len(), &vec);
+    let vec_out = x.as_slice().into_owned();
+    assert_eq!(vec, vec_out);
   }
   #[test]
-  fn test_dense_cpu() {
-    test_dense(Cpu::new());
-  } 
+  fn test_tensor_from_vec_cpu() {
+    test_tensor_from_vec(Cpu::new());
+  }
   #[cfg(feature="cuda")]
   #[test]
-  fn test_dense_cuda() {
-    test_dense(CudaGpu::new(0));
+  fn test_tensor_from_vec_cuda() {
+    test_tensor_from_vec(CudaGpu::new(0));
+  }
+  fn test_u8_to_f32(device: impl Into<Device>) {
+    let device = device.into();
+    let vec: Vec<u8> = vec![1, 2, 3, 4];
+    let x = Tensor::from_shape_vec(&device, vec.len(), &vec);
+    let y = x.to_f32();
+    let vec_out = y.as_slice().into_owned();
+    let scale = 255f32.recip(); 
+    let vec_true: Vec<f32> = vec.iter()
+      .map(|x| scale * x.to_f32().unwrap())
+      .collect();
+    assert_eq!(vec_out, vec_true);
+  }
+  #[test]
+  fn test_u8_to_f32_cpu() {
+    test_u8_to_f32(Cpu::new());
+  }
+  #[cfg(feature="cuda")]
+  fn test_u8_to_f32_cuda() {
+    test_u8_to_f32(CudaGpu::new(0));
+  }
+  fn test_u8_to_one_hot_f32(device: impl Into<Device>) {
+    let device = device.into();
+    let vec: Vec<u8> = vec![1, 2, 3, 4, 5, 6];
+    let x = Tensor::from_shape_vec(&device, vec.len(), &vec);
+    let y = x.to_one_hot_f32(8);
+    let mut y_true = Array::zeros([6, 8]);
+    y_true.outer_iter_mut()
+      .into_iter()
+      .zip(vec.iter())
+      .for_each(|(mut y, &x)| {
+        y[x as usize] = 1.;
+      });
+    let y_out = y.as_array().into_owned();
+    assert_eq!(y_out, y_true);
+  }
+  #[test]
+  fn test_u8_to_one_hot_f32_cpu() {
+    test_u8_to_one_hot_f32(Cpu::new());
+  }
+  #[cfg(feature="cuda")]
+  #[test]
+  fn test_u8_to_one_hot_f32_cuda() {
+    test_u8_to_one_hot_f32(CudaGpu::new(0));
+  }
+  fn test_fill_u8(device: impl Into<Device>) {
+    let device = device.into();
+    let n = 10;
+    let mut x = Tensor::zeros(&device, n);
+    assert_eq!(x.as_slice(), vec![0u8; n].as_slice());
+    x.fill(1u8);
+    assert_eq!(x.as_slice(), vec![1u8; n].as_slice()); 
+  }
+  #[test]
+  fn test_fill_u8_cpu() {
+    test_fill_u8(Cpu::new());
+  }
+  #[cfg(feature="cuda")]
+  #[test]
+  fn test_fill_u8_cuda() {
+    test_fill_u8(CudaGpu::new(0));
+  }
+  fn test_fill_f32(device: impl Into<Device>) {
+    let device = device.into();
+    let n = 10;
+    let mut x = Tensor::zeros(&device, n);
+    assert_eq!(x.as_slice(), vec![0f32; n].as_slice());
+    x.fill(1f32);
+    assert_eq!(x.as_slice(), vec![1f32; n].as_slice()); 
+  }
+  #[test]
+  fn test_fill_f32_cpu() {
+    test_fill_f32(Cpu::new());
+  }
+  #[cfg(feature="cuda")]
+  #[test]
+  fn test_fill_f32_cuda() {
+    test_fill_f32(CudaGpu::new(0));
+  }
+  fn test_broadcast(device: impl Into<Device>) {
+    let device = device.into();
+    let x = Tensor::from_shape_vec(&device, [1, 4], vec![1., 2., 3., 4.]);
+    let mut y = Tensor::zeros(&device, [2, 4]);
+    broadcast(&x, &mut y);
+    let y_out = y.as_slice().into_owned();
+    let y_true = vec![1., 2., 3., 4., 1., 2., 3., 4.];
+    assert_eq!(y_out, y_true);
+  }
+  #[test]
+  fn test_broadcast_cpu() {
+    test_broadcast(Cpu::new());
+  }
+  #[cfg(feature="cuda")]
+  #[test]
+  fn test_broadcast_cuda() {
+    test_broadcast(CudaGpu::new(0));
+  }
+  fn test_broadcast_backward(device: impl Into<Device>) {
+    let device = device.into();
+    let mut dx = Tensor::zeros(&device, [1, 4]);
+    let dy = Tensor::from_shape_vec(&device, [2, 4], vec![1., 2., 3., 4., 5., 6., 7., 8.]);
+    broadcast_backward(&mut dx, &dy);
+    let dx_out = dx.as_slice().into_owned();
+    let dx_true = vec![6., 8., 10., 12.];
+    assert_eq!(dx_out, dx_true);
+  }
+  #[test]
+  fn test_broadcast_backward_cpu() {
+    test_broadcast_backward(Cpu::new());
+  }
+  #[cfg(feature="cuda")]
+  #[test]
+  fn test_broadcast_backward_cuda() {
+    test_broadcast_backward(CudaGpu::new(0));
+  }
+  fn test_gemm_mkn(m: usize, k: usize, n: usize, device: impl Into<Device>) {
+    fn compare_vectors(a: &[f32], b: &[f32], m: usize, k: usize, n: usize) {
+      // dnnl and cuda have fast mul / approx ops
+      // compared to ndarray / matrixmultiply which performs exact ops
+      // assert_eq fails for gemm with large matrices
+      // https://oneapi-src.github.io/oneDNN/cpu_sgemm_and_matmul_8cpp-example.html
+      let mut v1_l2 = 0f64;
+      let mut diff_l2 = 0f64;
+      a.iter()
+        .zip(b.iter())
+        .for_each(|(&a, &b)| {
+          v1_l2 += (a * b) as f64;
+          diff_l2 += (a - b).powi(2) as f64;
+        });
+      let threshold = (f32::EPSILON as f64) * f64::ln(f64::max(2., k.to_f64().unwrap()));
+      assert!(diff_l2.sqrt() <= threshold * v1_l2.sqrt(), "m: {} k: {} n: {} ({} !<= {})", m, k, n, diff_l2.sqrt(), threshold * v1_l2.sqrt());
+    }
+  
+    let device = device.into(); 
+    
+    let vec1: Vec<f32> = (1 ..= m*k).into_iter()
+      .map(|x| x.to_f32().unwrap())
+      .collect();
+    let vec2: Vec<f32> = (1 ..= k*n).into_iter()
+      .map(|x| x.to_f32().unwrap())
+      .collect();
+    
+    { // MxK * KxN
+      let x1 = Tensor::from_shape_vec(&device, [m, k], &vec1);
+      let x2 = Tensor::from_shape_vec(&device, [k, n], &vec2);
+      let mut y = Tensor::zeros(&device, [m, n]);
+      gemm(1., &x1, Transpose::No, &x2, Transpose::No, 0., &mut y);
+      let y_true = x1.as_array()
+        .dot(&x2.as_array());
+      compare_vectors(&y.as_slice(), y_true.as_slice().unwrap(), m, k, n);
+    }
+    { // KxM^T * KxN
+      let x1 = Tensor::from_shape_vec(&device, [k, m], &vec1);
+      let x2 = Tensor::from_shape_vec(&device, [k, n], &vec2);
+      let mut y = Tensor::zeros(&device, [m, n]);
+      gemm(1., &x1, Transpose::Yes, &x2, Transpose::No, 0., &mut y);
+      let y_true = x1.as_array()
+        .t()
+        .dot(&x2.as_array());
+      compare_vectors(&y.as_slice(), y_true.as_slice().unwrap(), m, k, n);
+    }
+    { // MxK * NxK^T
+      let x1 = Tensor::from_shape_vec(&device, [m, k], &vec1);
+      let x2 = Tensor::from_shape_vec(&device, [n, k], &vec2);
+      let mut y = Tensor::zeros(&device, [m, n]);
+      gemm(1., &x1, Transpose::No, &x2, Transpose::Yes, 0., &mut y);
+      let y_true = x1.as_array()
+        .dot(&x2.as_array().t());
+      compare_vectors(&y.as_slice(), y_true.as_slice().unwrap(), m, k, n);
+    }
+    { // KxM^T * NxK^T
+      let x1 = Tensor::from_shape_vec(&device, [k, m], &vec1);
+      let x2 = Tensor::from_shape_vec(&device, [n, k], &vec2);
+      let mut y = Tensor::zeros(&device, [m, n]);
+      gemm(1., &x1, Transpose::Yes, &x2, Transpose::Yes, 0., &mut y);
+      let y_true: Vec<f32> = x1.as_array()
+        .t()
+        .dot(&x2.as_array().t())
+        .iter()
+        .copied()
+        .collect();
+      compare_vectors(&y.as_slice(), &y_true, m, k, n);
+    }
+  }
+  fn test_gemm(device: impl Into<Device>) {
+    test_gemm_mkn(33, 43, 53, device);
+  }
+  #[test]
+  fn test_gemm_cpu() {
+    test_gemm(Cpu::new());
+  }
+  #[cfg(feature="cuda")]
+  #[test]
+  fn test_gemm_cuda() {
+    test_gemm(CudaGpu::new(0));
+  }
+  fn test_sum(device: impl Into<Device>) {
+    let device = device.into();
+    
+    let vec: Vec<f32> = (1 ..= 100).into_iter()
+      .map(|x| x.to_f32().unwrap())
+      .collect();
+    
+    let x = Tensor::from_shape_vec(&device, vec.len(), &vec);
+    let y = x.sum().as_slice()[0];
+    assert_eq!(y, vec.iter().sum::<f32>());
+  }
+  #[test]
+  fn test_sum_cpu() {
+    test_sum(Cpu::new());
+  }
+  #[cfg(feature="cuda")]
+  #[test]
+  fn test_sum_cuda() {
+    test_sum(CudaGpu::new(0));
+  }
+  fn test_scaled_add(device: impl Into<Device>) {
+    let device = device.into();
+    
+    let mut lhs = Tensor::zeros(&device, 10);
+    let rhs = Tensor::from_shape_vec(
+      &device,
+      10,
+      vec![1., 2., 3., 4., 5., 6., 7., 8., 9., 10.]
+    );
+    
+    let alpha = 2.;
+    
+    lhs.scaled_add(alpha, &rhs);
+    
+    let mut lhs_true = Array::zeros(lhs.raw_dim());
+    lhs_true.scaled_add(alpha, &rhs.as_array());
+    
+    let success = lhs.as_slice()
+      .iter()
+      .zip(lhs_true.as_slice().unwrap())
+      .all(|(a, b)| {
+        approx::relative_eq!(a, b, max_relative = 0.00001)
+      });
+    assert!(success, "{:?} {:?}", lhs.as_slice(), lhs_true.as_slice().unwrap());
+  }
+  fn test_cross_entropy(device: impl Into<Device>) {
+    let device = device.into();
+    
+    let batch_size = 3;
+    let nclasses = 4;
+    
+    let input = Tensor::from_shape_vec(
+      &device,
+      [batch_size, nclasses],
+      vec![1., 2., 3., 4., 5., 6., 7., 8., 9., 10., 11., 12.]
+    );
+    
+    let target = Tensor::from_shape_vec(
+      &device,
+      [batch_size, nclasses],
+      vec![1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0.]
+    );
+    
+    let mut output = Tensor::zeros(
+      &device,
+      [batch_size, nclasses]
+    );
+    
+    match &device {
+      Device::Cpu(_) => { cpu::cross_entropy(&input, &target, &mut output); }
+      #[cfg(feature="cuda")]
+      Device::Cuda(_) => { cuda::cross_entropy(&input, &target, &mut output); }
+    }
+    
+    let mut output_true = vec![0.; batch_size*nclasses];
+    input.as_slice()
+      .chunks_exact(nclasses)
+      .zip(target.as_slice().chunks_exact(nclasses))
+      .zip(output_true.chunks_exact_mut(nclasses))
+      .for_each(|((input, target), mut output)| {
+        let mut m = input[0];
+        input.iter()
+          .for_each(|&x| m = f32::max(x, m));
+        output.iter_mut()
+          .zip(input.iter())
+          .for_each(|(y, &x)| *y = x-m);
+        let s: f32 = output.iter()
+          .map(|&y| y.exp())
+          .sum();
+        let ln_s = s.ln();
+        output.iter_mut()
+          .zip(target.iter())
+          .for_each(|(y, t)| *y = (ln_s - *y) * t);  
+      });
+    let output = output.as_slice();
+    let success = output.iter()
+      .zip(output_true.as_slice())
+      .all(|(a, b)| {
+        approx::relative_eq!(a, b, max_relative = 0.00001)
+      });
+    assert!(success, "{:?} {:?}", output, output_true);
+  }
+  #[test]
+  fn test_cross_entropy_cpu() {
+    test_cross_entropy(Cpu::new());
+  }
+  #[cfg(feature="cuda")]
+  #[test]
+  fn test_cross_entropy_cuda() {
+    test_cross_entropy(CudaGpu::new(0));
+  }
+  fn test_cross_entropy_backward(device: impl Into<Device>) {
+    let device = device.into();
+    
+    let batch_size = 3;
+    let nclasses = 4;
+    
+    let input = Tensor::from_shape_vec(
+      &device,
+      [batch_size, nclasses],
+      vec![1., 2., 3., 4., 5., 6., 7., 8., 9., 10., 11., 12.]
+    );
+    
+    let mut input_grad = Tensor::zeros(
+      &device,
+      [batch_size, nclasses]
+    );
+    
+    let target = Tensor::from_shape_vec(
+      &device,
+      [batch_size, nclasses],
+      vec![1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0.]
+    );
+    
+    let output_grad = Tensor::from_shape_vec(
+      &device,
+      (),
+      vec![1.]
+    );
+    
+    cross_entropy_backward(&input, &mut input_grad, &target, &output_grad); 
+    
+    let mut input_grad_true = vec![0.; batch_size*nclasses];
+    input.as_slice()
+      .iter()
+      .zip(input_grad_true.iter_mut())
+      .zip(target.as_slice().iter())
+      .for_each(|((x, mut dx), t)| {
+        *dx = x - t;
+      });     
+    let input_grad = input_grad.as_slice();
+    let success = input_grad.iter()
+      .zip(input_grad_true.as_slice())
+      .all(|(a, b)| {
+        approx::relative_eq!(a, b, max_relative = 0.00001)
+      });
+    assert!(success, "{:?} {:?}", input_grad, input_grad_true);
+  }
+  #[test]
+  fn test_cross_entropy_backward_cpu() {
+    test_cross_entropy_backward(Cpu::new());
+  }
+  #[cfg(feature="cuda")]
+  #[test]
+  fn test_cross_entropy_backward_cuda() {
+    test_cross_entropy_backward(CudaGpu::new(0));
   }
 }
 

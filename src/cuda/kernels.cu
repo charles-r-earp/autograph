@@ -1,11 +1,12 @@
 extern "C" {
-  __global__ void cast_scale_u8(const unsigned char* x, float scale, float* y, unsigned int len) {
+  __global__ void u8_to_f32(const unsigned char* x, float* y, unsigned int len) {
+    const float scale = 1.0f / 255.0f;
     int tid = blockIdx.x * blockDim.x + threadIdx.x; 
     if (tid < len) {
       y[tid] = scale * x[tid];
     }
   }
-  __global__ void one_hot_cast_u8(const unsigned char* x, unsigned int nclasses, float* y, unsigned int len) {
+  __global__ void u8_to_one_hot_f32(const unsigned char* x, unsigned int nclasses, float* y, unsigned int len) {
     int tid = blockIdx.x * blockDim.x + threadIdx.x; 
     if (tid < len) {
       y[tid*nclasses+x[tid]] = 1.0f;
@@ -19,7 +20,7 @@ extern "C" {
       for(int i = 1; i < nclasses; ++i) {
         m = fmaxf(x[tid*nclasses+i], m);
       } 
-      // compute y = exp(x-m)
+      // subtract max
       for(int i = 0; i < nclasses; ++i) {
         y[tid*nclasses+i] = x[tid*nclasses+i]-m;
       }
@@ -30,19 +31,16 @@ extern "C" {
       }
       // compute ln(s)
       float ln_s = logf(s);
+      // y = (ln_s - y) * t
       for(int i = 0; i < nclasses; ++i) {
-        y[tid*nclasses+i] = ln_s - y[tid*nclasses+i];
-      }
-      // mul by t
-      for(int i = 0; i < nclasses; ++i) {
-        y[tid*nclasses+i] = y[tid*nclasses+i] * t[tid*nclasses+i];
+        y[tid*nclasses+i] = (ln_s - y[tid*nclasses+i]) * t[tid*nclasses+i];
       }
     }
   }
-  __global__ void cross_entropy_backward(const float* x, float* dx, const float* t, unsigned int len) {
+  __global__ void cross_entropy_backward(const float* x, float* dx, const float* t, float* dy, unsigned int len) {
     int tid = blockIdx.x * blockDim.x + threadIdx.x; 
     if (tid < len) {
-      dx[tid] = x[tid] - t[tid];
+      dx[tid] = dy[0] * (x[tid] - t[tid]);
     }
   }
   __global__ void reduce_sum_partial(const float* input, float* output, unsigned int len) {

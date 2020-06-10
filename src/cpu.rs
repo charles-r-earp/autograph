@@ -210,6 +210,8 @@ pub(super) fn gemm<S1: DataRef<Elem=f32>, S2: DataRef<Elem=f32>, S3: DataMut<Ele
   });            
 }
 
+
+
 pub(super) fn reduce_sum<S1: DataRef<Elem=f32>, S2: DataMut<Elem=f32>, D: Dimension>
   (input: &TensorBase<S1, D>, output: &mut TensorBase<S2, Ix0>) {
   let x: &[f32] = &input.as_cpu_slice()
