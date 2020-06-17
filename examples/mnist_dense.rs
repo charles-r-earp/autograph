@@ -1,7 +1,7 @@
 #![allow(warnings)]
 use autograph::{Device, Cpu, Tensor, ArcTensor, RwTensor};
 use autograph::autograd::{Graph, Variable, Parameter};
-use autograph::datasets::Mnist;
+use autograph::datasets::Mnist; // requires feature "datasets"
 #[cfg(feature="cuda")]
 use autograph::CudaGpu;
 use std::time::Instant;
@@ -30,8 +30,8 @@ fn main() {
     Some(RwTensor::zeros(&device, [10, 28*28]))
   );
   let b = Parameter::new(
-    RwTensor::zeros(&device, [1, 10]),
-    Some(RwTensor::zeros(&device, [1, 10]))
+    RwTensor::zeros(&device, 10),
+    Some(RwTensor::zeros(&device, 10))
   );
   
   let lr = 0.01;
