@@ -30,20 +30,23 @@ use ndarray::{
 pub mod builders;
 use builders::{
   DenseBuilder,
-  Conv2dBuilder
+  Conv2dBuilder, 
+  MaxPool2dBuilder
 };
 
 pub trait Layer {
-  fn params(&self) -> Vec<ParameterD> { Vec::new() }
+  fn parameters(&self) -> Vec<ParameterD> { Vec::new() }
   fn init_training(&mut self) {}
 }
 
 pub trait Inference<D: Dimension> {
-  fn infer(&self, input: &TensorView<f32, D>) -> Tensor<f32, D>;
+  type OutputDim: Dimension;
+  fn infer(&self, input: &TensorView<f32, D>) -> Tensor<f32, Self::OutputDim>;
 }
 
 pub trait Forward<D: Dimension> {
-  fn forward(&self, input: &Variable<D>, train: bool) -> Variable<D>;
+  type OutputDim: Dimension;
+  fn forward(&self, input: &Variable<D>, train: bool) -> Variable<Self::OutputDim>;
 }
 
 pub struct Dense {
@@ -86,7 +89,7 @@ impl From<DenseBuilder> for Dense {
 }
 
 impl Layer for Dense {
-  fn params(&self) -> Vec<ParameterD> {
+  fn parameters(&self) -> Vec<ParameterD> {
     let weight = self.weight.clone()
       .into_dyn();
     if let Some(bias) = &self.bias {
@@ -107,6 +110,7 @@ impl Layer for Dense {
 }
 
 impl Inference<Ix2> for Dense {
+  type OutputDim = Ix2;
   fn infer(&self, input: &TensorView2<f32>) -> Tensor2<f32> {
     let weight = self.weight.value()
       .read()
@@ -125,6 +129,7 @@ impl Inference<Ix2> for Dense {
 }
 
 impl Forward<Ix2> for Dense {
+  type OutputDim = Ix2;
   fn forward(&self, input: &Variable2, train: bool) -> Variable2 {
     if train {
       debug_assert!(self.weight.grad().is_some());
@@ -197,7 +202,7 @@ impl From<Conv2dBuilder> for Conv2d {
 }
 
 impl Layer for Conv2d {
-  fn params(&self) -> Vec<ParameterD> {
+  fn parameters(&self) -> Vec<ParameterD> {
     let weight = self.weight.clone()
       .into_dyn();
     if let Some(bias) = &self.bias {
@@ -218,6 +223,7 @@ impl Layer for Conv2d {
 }
 
 impl Inference<Ix4> for Conv2d {
+  type OutputDim = Ix4;
   fn infer(&self, input: &TensorView4<f32>) -> Tensor4<f32> {
     let weight = self.weight.value()
       .read()
@@ -236,6 +242,7 @@ impl Inference<Ix4> for Conv2d {
 }
 
 impl Forward<Ix4> for Conv2d {
+  type OutputDim = Ix4;
   fn forward(&self, input: &Variable4, train: bool) -> Variable4 {
     if train {
       debug_assert!(self.weight.grad().is_some());
@@ -267,18 +274,33 @@ pub struct Relu {}
 impl Layer for Relu {}
 
 impl<D: Dimension> Inference<D> for Relu {
+  type OutputDim = D;
   fn infer(&self, input: &TensorView<f32, D>) -> Tensor<f32, D> {
     input.relu()
   }
 }
 
 impl<D: Dimension> Forward<D> for Relu {
+  type OutputDim = D;
   fn forward(&self, input: &Variable<D>, train: bool) -> Variable<D> {
     input.relu()
   }
 }
 
-
 pub struct MaxPool2d {
   args: Pool2dArgs
+}
+
+impl MaxPool2d {
+  pub fn builder() -> MaxPool2dBuilder {
+    MaxPool2dBuilder {
+      args: Pool2dArgs::default()
+    } 
+  }
+}
+  
+impl From<MaxPool2dBuilder> for MaxPool2d {
+  fn from(builder: MaxPool2dBuilder) -> Self {
+    Self{args: builder.args}
+  }
 }

@@ -1,11 +1,13 @@
 use super::{
   Num, Unsigned, 
+  Buffer,
   DataRef, DataMut, 
   Transpose, 
   Conv2dArgs, Pool2dArgs,
   TensorBase, 
   Tensor2, 
-  TensorView1, TensorView4
+  TensorView1, TensorView4,
+  TensorViewMut1, TensorViewMut4
 };
 use std::{sync::{Arc, Mutex}, borrow::Cow, fmt::{self, Debug}};
 use ndarray::{Dimension, Ix0, Ix1, Ix2, Ix4};
@@ -15,6 +17,7 @@ use cpp::*;
 cpp!({
   #include <dnnl.hpp>
   #include <cassert>
+  #include <utility>
   
   using dnnl_dt = dnnl::memory::data_type;
   using dnnl_tag = dnnl::memory::format_tag;
@@ -571,7 +574,6 @@ pub(super) fn conv2d<S1: DataRef<Elem=f32>, S2: DataMut<Elem=f32>>
       args.insert({DNNL_ARG_DST, y_mem});
       
       conv.execute(stream, args);
-      
       stream.wait();
     });
   }
@@ -624,14 +626,272 @@ pub(super) fn conv2d<S1: DataRef<Elem=f32>, S2: DataMut<Elem=f32>>
       args.insert({DNNL_ARG_DST, y_mem});
       
       conv.execute(stream, args);
-      
       stream.wait();
     });
   }
 }
 
-pub(super) fn max_pool2d<S1: DataRef<Elem=f32>, S2: DataMut<Elem=f32>>
-  (input: &TensorBase<S1, Ix4>, args: &Pool2dArgs, output: &mut TensorBase<S2, Ix4>) {
+pub(super) fn conv2d_backward_input<S1: DataMut<Elem=f32>>
+  (input_grad: &mut TensorBase<S1, Ix4>, weight: &TensorView4<f32>, args: &Conv2dArgs, output_grad: &TensorView4<f32>) { 
+  let cpu = weight.device()
+    .cpu()
+    .unwrap();
+  let engine_ptr = unsafe { &cpu.engine as *const Engine };
+  let mut stream = cpu.stream.lock()
+    .unwrap();
+  let stream_ptr = unsafe { &mut *stream as *mut Stream }; 
+  let (batch_size, inputs, ih, iw) = input_grad.dim();
+  let (outputs, _, kh, kw) = weight.dim();
+  let (_, _, ow, oh) = output_grad.dim();
+  
+  let bs = batch_size as i64;
+  let i = inputs as i64;
+  let o = outputs as i64;
+  let ih = ih as i64;
+  let iw = iw as i64;
+  let oh = oh as i64;
+  let ow = ow as i64;
+  let kh = kh as i64;
+  let kw = kw as i64;
+  let [sh, sw] = args.strides;
+  let sh = sh as i64;
+  let sw = sw as i64;
+  let [ph, pw] = args.padding;
+  let ph = ph as i64;
+  let pw = pw as i64;
+  let dx = input_grad.as_mut_cpu_ptr().unwrap();
+  let w = weight.as_cpu_ptr().unwrap();
+  let dy = output_grad.as_cpu_ptr().unwrap();
+  
+  cpp!(unsafe [engine_ptr as "const dnnl::engine*",
+               stream_ptr as "dnnl::stream*",
+               bs as "long int",
+               i as "long int",
+               o as "long int",
+               ih as "long int",
+               iw as "long int",
+               oh as "long int",
+               ow as "long int",
+               kh as "long int",
+               kw as "long int",
+               sh as "long int",
+               sw as "long int",
+               ph as "long int",
+               pw as "long int",
+               dx as "float*",
+               w as "const float*",
+               dy as "const float*"] {
+    auto engine = *engine_ptr;
+    auto stream = *stream_ptr;
+    
+    auto dx_md = dnnl::memory::desc({bs, i, ih, iw}, dnnl_dt::f32, dnnl_tag::nchw);
+    auto dx_mem = dnnl::memory(dx_md, engine, dx);
+    auto w_md = dnnl::memory::desc({o, i, kh, kw}, dnnl_dt::f32, dnnl_tag::oihw);
+    auto w_mem = dnnl::memory(w_md, engine, (float*) w);
+    auto dy_md = dnnl::memory::desc({bs, o, oh, ow}, dnnl_dt::f32, dnnl_tag::nchw);
+    auto dy_mem = dnnl::memory(dy_md, engine, (float*) dy);
+    std::vector<long int> strides{sh, sw};
+    std::vector<long int> pad_l{ph, pw};
+    std::vector<long int> pad_r{ph, pw};
+    
+    auto conv_d = dnnl::convolution_forward::desc(
+      dnnl::prop_kind::forward_training,
+      dnnl::algorithm::convolution_auto,
+      dx_md, w_md, dy_md,
+      strides, pad_l, pad_r
+    );
+    dnnl::primitive_attr attr;
+    auto conv_pd = dnnl::convolution_forward::primitive_desc(
+      conv_d, attr, engine
+    );
+    
+    auto conv_bw_d = dnnl::convolution_backward_data::desc(
+      dnnl::algorithm::convolution_auto,
+      dx_md, w_md, dy_md,
+      strides, pad_l, pad_r
+    );
+    dnnl::primitive_attr bw_attr;
+    auto conv_bw_pd = dnnl::convolution_backward_data::primitive_desc(
+      conv_bw_d, attr, engine, conv_pd
+    );
+    auto conv_bw = dnnl::convolution_backward_data(conv_bw_pd);
+    argmap args;
+    args.insert({DNNL_ARG_DIFF_SRC, dx_mem});
+    args.insert({DNNL_ARG_WEIGHTS, w_mem});
+    args.insert({DNNL_ARG_DIFF_DST, dy_mem});
+    
+    conv_bw.execute(stream, args);
+    stream.wait();
+  });
+}
+
+pub(super) fn conv2d_backward_weight_bias<S1: DataRef<Elem=f32>>
+  (input: &TensorBase<S1, Ix4>, weight_grad: &mut TensorViewMut4<f32>, bias_grad: Option<&mut TensorViewMut1<f32>>, args: &Conv2dArgs, output_grad: &TensorView4<f32>) {
+  let cpu = input.device()
+    .cpu()
+    .unwrap();
+  let engine_ptr = unsafe { &cpu.engine as *const Engine };
+  let mut stream = cpu.stream.lock()
+    .unwrap();
+  let stream_ptr = unsafe { &mut *stream as *mut Stream }; 
+  let (batch_size, inputs, ih, iw) = input.dim();
+  let (outputs, _, kh, kw) = weight_grad.dim();
+  let (_, _, ow, oh) = output_grad.dim();
+  
+  let bs = batch_size as i64;
+  let i = inputs as i64;
+  let o = outputs as i64;
+  let ih = ih as i64;
+  let iw = iw as i64;
+  let oh = oh as i64;
+  let ow = ow as i64;
+  let kh = kh as i64;
+  let kw = kw as i64;
+  let [sh, sw] = args.strides;
+  let sh = sh as i64;
+  let sw = sw as i64;
+  let [ph, pw] = args.padding;
+  let ph = ph as i64;
+  let pw = pw as i64;
+  let x = input.as_cpu_ptr().unwrap();
+  let dw = weight_grad.as_mut_cpu_ptr().unwrap();
+  let dy = output_grad.as_cpu_ptr().unwrap();
+  
+  if let Some(bias_grad) = bias_grad {
+    debug_assert_eq!(bias_grad.dim(), outputs);
+    let db = bias_grad.as_mut_cpu_ptr().unwrap();
+    
+    cpp!(unsafe [engine_ptr as "const dnnl::engine*",
+                 stream_ptr as "dnnl::stream*",
+                 bs as "long int",
+                 i as "long int",
+                 o as "long int",
+                 ih as "long int",
+                 iw as "long int",
+                 oh as "long int",
+                 ow as "long int",
+                 kh as "long int",
+                 kw as "long int",
+                 sh as "long int",
+                 sw as "long int",
+                 ph as "long int",
+                 pw as "long int",
+                 x as "const float*",
+                 dw as "float*",
+                 db as "float*",
+                 dy as "const float*"] {
+      auto engine = *engine_ptr;
+      auto stream = *stream_ptr;
+      
+      auto x_md = dnnl::memory::desc({bs, i, ih, iw}, dnnl_dt::f32, dnnl_tag::nchw);
+      auto x_mem = dnnl::memory(x_md, engine, (float*) x);
+      auto dw_md = dnnl::memory::desc({o, i, kh, kw}, dnnl_dt::f32, dnnl_tag::oihw);
+      auto dw_mem = dnnl::memory(dw_md, engine, dw);
+      auto db_md = dnnl::memory::desc({o}, dnnl_dt::f32, dnnl_tag::a);
+      auto db_mem = dnnl::memory(db_md, engine, db);
+      auto dy_md = dnnl::memory::desc({bs, o, oh, ow}, dnnl_dt::f32, dnnl_tag::nchw);
+      auto dy_mem = dnnl::memory(dy_md, engine, (float*) dy);
+      std::vector<long int> strides{sh, sw};
+      std::vector<long int> pad_l{ph, pw};
+      std::vector<long int> pad_r{ph, pw};
+      
+      auto conv_d = dnnl::convolution_forward::desc(
+        dnnl::prop_kind::forward_inference,
+        dnnl::algorithm::convolution_auto,
+        x_md, dw_md, db_md, dy_md,
+        strides, pad_l, pad_r
+      );
+      dnnl::primitive_attr attr;
+      auto conv_pd = dnnl::convolution_forward::primitive_desc(
+        conv_d, attr, engine
+      );
+      
+      auto conv_bw_d = dnnl::convolution_backward_weights::desc(
+        dnnl::algorithm::convolution_auto,
+        x_md, dw_md, db_md, dy_md,
+        strides, pad_l, pad_r
+      );
+      dnnl::primitive_attr bw_attr;
+      auto conv_bw_pd = dnnl::convolution_backward_weights::primitive_desc(
+        conv_bw_d, attr, engine, conv_pd
+      );
+      auto conv_bw = dnnl::convolution_backward_weights(conv_bw_pd);
+      argmap args;
+      args.insert({DNNL_ARG_SRC, x_mem});
+      args.insert({DNNL_ARG_DIFF_WEIGHTS, dw_mem});
+      args.insert({DNNL_ARG_DIFF_BIAS, db_mem});
+      args.insert({DNNL_ARG_DIFF_DST, dy_mem});
+      
+      conv_bw.execute(stream, args);
+      stream.wait();
+    });
+  }
+  else {
+    cpp!(unsafe [engine_ptr as "const dnnl::engine*",
+                 stream_ptr as "dnnl::stream*",
+                 bs as "long int",
+                 i as "long int",
+                 o as "long int",
+                 ih as "long int",
+                 iw as "long int",
+                 oh as "long int",
+                 ow as "long int",
+                 kh as "long int",
+                 kw as "long int",
+                 sh as "long int",
+                 sw as "long int",
+                 ph as "long int",
+                 pw as "long int",
+                 x as "const float*",
+                 dw as "float*",
+                 dy as "const float*"] {
+      auto engine = *engine_ptr;
+      auto stream = *stream_ptr;
+      
+      auto x_md = dnnl::memory::desc({bs, i, ih, iw}, dnnl_dt::f32, dnnl_tag::nchw);
+      auto x_mem = dnnl::memory(x_md, engine, (float*) x);
+      auto dw_md = dnnl::memory::desc({o, i, kh, kw}, dnnl_dt::f32, dnnl_tag::oihw);
+      auto dw_mem = dnnl::memory(dw_md, engine, dw);
+      auto dy_md = dnnl::memory::desc({bs, o, oh, ow}, dnnl_dt::f32, dnnl_tag::nchw);
+      auto dy_mem = dnnl::memory(dy_md, engine, (float*) dy);
+      std::vector<long int> strides{sh, sw};
+      std::vector<long int> pad_l{ph, pw};
+      std::vector<long int> pad_r{ph, pw};
+      
+      auto conv_d = dnnl::convolution_forward::desc(
+        dnnl::prop_kind::forward_inference,
+        dnnl::algorithm::convolution_auto,
+        x_md, dw_md, dy_md,
+        strides, pad_l, pad_r
+      );
+      dnnl::primitive_attr attr;
+      auto conv_pd = dnnl::convolution_forward::primitive_desc(
+        conv_d, attr, engine
+      );
+      
+      auto conv_bw_d = dnnl::convolution_backward_weights::desc(
+        dnnl::algorithm::convolution_auto,
+        x_md, dw_md, dy_md,
+        strides, pad_l, pad_r
+      );
+      dnnl::primitive_attr bw_attr;
+      auto conv_bw_pd = dnnl::convolution_backward_weights::primitive_desc(
+        conv_bw_d, attr, engine, conv_pd
+      );
+      auto conv_bw = dnnl::convolution_backward_weights(conv_bw_pd);
+      argmap args;
+      args.insert({DNNL_ARG_SRC, x_mem});
+      args.insert({DNNL_ARG_DIFF_WEIGHTS, dw_mem});
+      args.insert({DNNL_ARG_DIFF_DST, dy_mem});
+      
+      conv_bw.execute(stream, args);
+      stream.wait();
+    });
+  }
+}
+
+pub(super) fn max_pool2d_forward<S1: DataRef<Elem=f32>, S2: DataMut<Elem=f32>>
+  (input: &TensorBase<S1, Ix4>, args: &Pool2dArgs, train: bool, output: &mut TensorBase<S2, Ix4>) -> Option<CpuBuffer<u8>> {
    let cpu = input.device()
     .cpu()
     .unwrap();
@@ -659,6 +919,166 @@ pub(super) fn max_pool2d<S1: DataRef<Elem=f32>, S2: DataMut<Elem=f32>>
   let x = input.as_cpu_ptr().unwrap();
   let y = output.as_mut_cpu_ptr().unwrap();
   
+  if train {
+    let (ws, ws_size) = cpp!(unsafe [engine_ptr as "const dnnl::engine*",
+                 stream_ptr as "dnnl::stream*",
+                 bs as "long int",
+                 i as "long int",
+                 o as "long int",
+                 ih as "long int",
+                 iw as "long int",
+                 oh as "long int",
+                 ow as "long int",
+                 kh as "long int",
+                 kw as "long int",
+                 sh as "long int",
+                 sw as "long int",
+                 ph as "long int",
+                 pw as "long int",
+                 x as "const float*",
+                 y as "float*"] -> (*mut u8, usize) as "std::pair<unsigned char*, std::size_t>" {
+      auto engine = *engine_ptr;
+      auto stream = *stream_ptr;
+      
+      auto x_desc = dnnl::memory::desc({bs, i, ih, iw}, dnnl_dt::f32, dnnl_tag::nchw);
+      auto x_mem = dnnl::memory(x_desc, engine, (float*) x);
+      auto y_desc = dnnl::memory::desc({bs, o, oh, ow}, dnnl_dt::f32, dnnl_tag::nchw);
+      auto y_mem = dnnl::memory(y_desc, engine, y);
+      std::vector<long int> strides{sh, sw};
+      std::vector<long int> kernel{kh, kw};
+      std::vector<long int> pad_l{ph, pw};
+      std::vector<long int> pad_r{ph, pw};
+      
+      auto pool_d = dnnl::pooling_forward::desc(
+        dnnl::prop_kind::forward_training,
+        dnnl::algorithm::pooling_max,
+        x_desc,
+        y_desc,
+        strides,
+        kernel,
+        pad_l,
+        pad_r
+      );
+      dnnl::primitive_attr attr;
+      auto pool_pd = dnnl::pooling_forward::primitive_desc(
+        pool_d,
+        attr,
+        engine
+      );
+      auto ws_desc = pool_pd.workspace_desc();
+      std::size_t ws_size = ws_desc.get_size();
+      unsigned char* ws = (unsigned char*)malloc(ws_size);
+      auto ws_mem = dnnl::memory(ws_desc, engine, ws);
+      auto pool = dnnl::pooling_forward(pool_pd);
+      argmap args;
+      args.insert({DNNL_ARG_SRC, x_mem});
+      args.insert({DNNL_ARG_DST, y_mem});
+      args.insert({DNNL_ARG_WORKSPACE, ws_mem});
+      
+      pool.execute(stream, args);
+      stream.wait();
+      
+      return std::make_pair(ws, ws_size);
+    });
+    let ws_vec = unsafe {
+      Vec::from_raw_parts(ws, ws_size, ws_size)
+    };
+    Some(CpuBuffer::from_vec(ws_vec))
+  }
+  else {
+    cpp!(unsafe [engine_ptr as "const dnnl::engine*",
+                 stream_ptr as "dnnl::stream*",
+                 bs as "long int",
+                 i as "long int",
+                 o as "long int",
+                 ih as "long int",
+                 iw as "long int",
+                 oh as "long int",
+                 ow as "long int",
+                 kh as "long int",
+                 kw as "long int",
+                 sh as "long int",
+                 sw as "long int",
+                 ph as "long int",
+                 pw as "long int",
+                 x as "const float*",
+                 y as "float*"] {
+      auto engine = *engine_ptr;
+      auto stream = *stream_ptr;
+      
+      auto x_desc = dnnl::memory::desc({bs, i, ih, iw}, dnnl_dt::f32, dnnl_tag::nchw);
+      auto x_mem = dnnl::memory(x_desc, engine, (float*) x);
+      auto y_desc = dnnl::memory::desc({bs, o, oh, ow}, dnnl_dt::f32, dnnl_tag::nchw);
+      auto y_mem = dnnl::memory(y_desc, engine, y);
+      std::vector<long int> strides{sh, sw};
+      std::vector<long int> kernel{kh, kw};
+      std::vector<long int> pad_l{ph, pw};
+      std::vector<long int> pad_r{ph, pw};
+      
+      auto pool_d = dnnl::pooling_forward::desc(
+        dnnl::prop_kind::forward_inference,
+        dnnl::algorithm::pooling_max,
+        x_desc,
+        y_desc,
+        strides,
+        kernel,
+        pad_l,
+        pad_r
+      );
+      dnnl::primitive_attr attr;
+      auto pool_pd = dnnl::pooling_forward::primitive_desc(
+        pool_d,
+        attr,
+        engine
+      );
+      auto pool = dnnl::pooling_forward(pool_pd);
+      argmap args;
+      args.insert({DNNL_ARG_SRC, x_mem});
+      args.insert({DNNL_ARG_DST, y_mem});
+      
+      pool.execute(stream, args);
+      stream.wait();
+    });
+    None
+  }
+}
+
+pub(super) fn max_pool2d_backward<S1: DataRef<Elem=f32>, S2: DataMut<Elem=f32>, S3: DataRef<Elem=f32>>
+  (input: &TensorBase<S1, Ix4>, input_grad: &mut TensorBase<S2, Ix4>, args: &Pool2dArgs, workspace: Option<&Buffer<u8>>, output_grad: &TensorBase<S3, Ix4>) {
+  let cpu = input.device()
+    .cpu()
+    .unwrap();
+  let engine_ptr = unsafe { &cpu.engine as *const Engine };
+  let mut stream = cpu.stream.lock()
+    .unwrap();
+  let stream_ptr = unsafe { &mut *stream as *mut Stream };
+
+  let (batch_size, inputs, ih, iw) = input.dim();
+  let (_, outputs, oh, ow) = output_grad.dim();
+  
+  let workspace = workspace.unwrap()
+    .cpu()
+    .unwrap();
+  let ws = workspace.as_ptr();
+  let ws_size = workspace.data.len();
+  
+  let bs = batch_size as i64;
+  let i = inputs as i64;
+  let o = outputs as i64;
+  let ih = ih as i64;
+  let iw = iw as i64;
+  let oh = oh as i64;
+  let ow = ow as i64;
+  let kh = args.kernel[0] as i64;
+  let kw = args.kernel[1] as i64;
+  let sh = args.strides[0] as i64;
+  let sw = args.strides[1] as i64;
+  let ph = args.padding[0] as i64;
+  let pw = args.padding[1] as i64;
+  let x = input.as_cpu_ptr().unwrap();
+  let dx = input_grad.as_mut_cpu_ptr().unwrap();
+  let dy = output_grad.as_cpu_ptr().unwrap();
+  
   cpp!(unsafe [engine_ptr as "const dnnl::engine*",
                stream_ptr as "dnnl::stream*",
                bs as "long int",
@@ -675,24 +1095,29 @@ pub(super) fn max_pool2d<S1: DataRef<Elem=f32>, S2: DataMut<Elem=f32>>
                ph as "long int",
                pw as "long int",
                x as "const float*",
-               y as "float*"] {
+               dx as "float*",
+               dy as "const float*",
+               ws as "const unsigned char*",
+               ws_size as "std::size_t"] {
     auto engine = *engine_ptr;
     auto stream = *stream_ptr;
     
     auto x_desc = dnnl::memory::desc({bs, i, ih, iw}, dnnl_dt::f32, dnnl_tag::nchw);
     auto x_mem = dnnl::memory(x_desc, engine, (float*) x);
-    auto y_desc = dnnl::memory::desc({bs, o, oh, ow}, dnnl_dt::f32, dnnl_tag::nchw);
-    auto y_mem = dnnl::memory(y_desc, engine, y);
+    auto dx_desc = x_desc;
+    auto dx_mem = dnnl::memory(dx_desc, engine, dx);
+    auto dy_desc = dnnl::memory::desc({bs, o, oh, ow}, dnnl_dt::f32, dnnl_tag::nchw);
+    auto dy_mem = dnnl::memory(dy_desc, engine, (float*) dy);
     std::vector<long int> strides{sh, sw};
     std::vector<long int> kernel{kh, kw};
     std::vector<long int> pad_l{ph, pw};
     std::vector<long int> pad_r{ph, pw};
     
     auto pool_d = dnnl::pooling_forward::desc(
-      dnnl::prop_kind::forward_inference,
+      dnnl::prop_kind::forward_training,
       dnnl::algorithm::pooling_max,
       x_desc,
-      y_desc,
+      dy_desc,
       strides,
       kernel,
       pad_l,
@@ -704,12 +1129,36 @@ pub(super) fn max_pool2d<S1: DataRef<Elem=f32>, S2: DataMut<Elem=f32>>
       attr,
       engine
     );
-    auto pool = dnnl::pooling_forward(pool_pd);
+    
+    auto ws_desc = pool_pd.workspace_desc();
+    assert(ws_desc.get_size() == ws_size);
+    auto ws_mem = dnnl::memory(ws_desc, engine, (void*) ws);
+    
+    auto pool_bw_d = dnnl::pooling_backward::desc(
+      dnnl::algorithm::pooling_max,
+      dx_desc,
+      dy_desc,
+      strides,
+      kernel,
+      pad_l,
+      pad_r
+    );
+    dnnl::primitive_attr bw_attr;
+    auto pool_bw_pd = dnnl::pooling_backward::primitive_desc(
+      pool_bw_d,
+      bw_attr,
+      engine,
+      pool_pd
+    );
+    
+    auto pool_bw = dnnl::pooling_backward(pool_bw_pd);
     argmap args;
     args.insert({DNNL_ARG_SRC, x_mem});
-    args.insert({DNNL_ARG_DST, y_mem});
+    args.insert({DNNL_ARG_DIFF_SRC, dx_mem});
+    args.insert({DNNL_ARG_DIFF_DST, dy_mem});
+    args.insert({DNNL_ARG_WORKSPACE, ws_mem});
     
-    pool.execute(stream, args);
+    pool_bw.execute(stream, args);
     stream.wait();
   });
 }

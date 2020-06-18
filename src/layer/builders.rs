@@ -1,5 +1,5 @@
-use crate::{Device, Into2d, Conv2dArgs};
-use super::{Dense, Conv2d};
+use crate::{Device, Into2d, Conv2dArgs, Pool2dArgs};
+use super::{Dense, Conv2d, MaxPool2d};
 
 pub struct DenseBuilder {
   pub(super) device: Device,
@@ -84,6 +84,20 @@ impl Conv2dBuilder {
     self
   }
   pub fn build(self) -> Conv2d {
+    self.into()
+  }
+}
+
+pub struct MaxPool2dBuilder {
+  pub(super) args: Pool2dArgs
+}
+
+impl MaxPool2dBuilder {
+  pub fn args(mut self, args: Pool2dArgs) -> Self {
+    self.args = args;
+    self
+  }
+  pub fn build(self) -> MaxPool2d {
     self.into()
   }
 }

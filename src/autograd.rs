@@ -2,10 +2,11 @@ use crate::{
   Num, 
   Device, 
   Transpose, 
+  Buffer,
   Tensor, Tensor2, 
-  ArcTensor, ArcTensor2, 
-  RwTensor, RwTensor0, RwTensor1, RwTensor2,
-  Conv2dArgs
+  ArcTensor, ArcTensor2, ArcTensor4, ArcTensorD,
+  RwTensor, RwTensor0, RwTensor1, RwTensor2, RwTensor4, RwTensorD,
+  Conv2dArgs, Pool2dArgs
 };
 use std::sync::{Arc, Weak, Mutex};
 use ndarray::{IntoDimension, Dimension, Ix0, Ix1, Ix2, Ix4, IxDyn, RemoveAxis};
@@ -16,12 +17,18 @@ use num_traits::ToPrimitive;
 pub mod backward_variable_op_proxy {
   use super::{
     DenseBackwardInput,
-    CrossEntropyBackward
+    CrossEntropyBackward,
+    Conv2dBackwardInput,
+    MaxPool2dBackward,
+    ReluBackward
   };
   
   pub enum BackwardVariableOp {
     DenseBackwardInput(DenseBackwardInput),
-    CrossEntropyBackward(CrossEntropyBackward)
+    CrossEntropyBackward(CrossEntropyBackward),
+    Conv2dBackwardInput(Conv2dBackwardInput),
+    MaxPool2dBackward(MaxPool2dBackward),
+    ReluBackward(ReluBackward)
   }
   
   impl BackwardVariableOp {
@@ -36,12 +43,14 @@ use backward_variable_op_proxy::BackwardVariableOp;
 pub mod backward_parameter_op_proxy {
   use super::{
     DenseBackwardWeight,
-    DenseBackwardBias
+    DenseBackwardBias,
+    Conv2dBackwardWeightBias
   };
   
   pub enum BackwardParameterOp {
     DenseBackwardWeight(DenseBackwardWeight),
-    DenseBackwardBias(DenseBackwardBias)
+    DenseBackwardBias(DenseBackwardBias),
+    Conv2dBackwardWeightBias(Conv2dBackwardWeightBias)
   }
   
   impl BackwardParameterOp {
@@ -60,7 +69,13 @@ pub struct DenseBackwardInput {
 
 impl DenseBackwardInput {
   fn exec(&self) {
-    unimplemented!()
+    let mut input_grad = self.input_grad.write()
+      .unwrap();
+    let weight = self.weight.read()
+      .unwrap();
+    let output_grad = self.output_grad.read()
+      .unwrap();
+    crate::gemm(1., &output_grad, Transpose::No, &weight, Transpose::No, 1., &mut input_grad);
   }
 }
 
@@ -115,7 +130,7 @@ impl DenseBackwardBias {
 
 impl From<DenseBackwardBias> for BackwardParameterOp {
   fn from(op: DenseBackwardBias) -> Self {
-    return BackwardParameterOp::DenseBackwardBias(op)
+    BackwardParameterOp::DenseBackwardBias(op)
   }
 }
 
@@ -140,6 +155,129 @@ impl CrossEntropyBackward {
 impl From<CrossEntropyBackward> for BackwardVariableOp {
   fn from(op: CrossEntropyBackward) -> Self {
     BackwardVariableOp::CrossEntropyBackward(op)
+  }
+}
+
+#[doc(hidden)]
+pub struct Conv2dBackwardInput {
+  input_grad: RwTensor4<f32>,
+  weight: RwTensor4<f32>,
+  args: Conv2dArgs,
+  output_grad: RwTensor4<f32>,
+}
+
+impl Conv2dBackwardInput {
+  fn exec(&self) {
+    let mut input_grad = self.input_grad.write()
+      .unwrap();
+    let weight = self.weight.read()
+      .unwrap();
+    let output_grad = self.output_grad.read()
+      .unwrap();
+    crate::conv2d_backward_input(
+      &mut input_grad, 
+      &weight.view(),
+      &self.args, 
+      &output_grad.view()
+    );
+  }
+}
+
+impl From<Conv2dBackwardInput> for BackwardVariableOp {
+  fn from(op: Conv2dBackwardInput) -> Self {
+    BackwardVariableOp::Conv2dBackwardInput(op)
+  }
+}
+
+#[doc(hidden)]
+pub struct Conv2dBackwardWeightBias {
+  input: ArcTensor4<f32>,
+  weight_grad: RwTensor4<f32>,
+  bias_grad: Option<RwTensor1<f32>>,
+  args: Conv2dArgs,
+  output_grad: RwTensor4<f32>,
+}
+
+impl Conv2dBackwardWeightBias {
+  fn exec(&self) {
+    let mut weight_grad = self.weight_grad.write()
+      .unwrap();
+    let output_grad = self.output_grad.read()
+      .unwrap();
+    if let Some(bias_grad) = &self.bias_grad {
+      let mut bias_grad = bias_grad.write()
+        .unwrap();
+      crate::conv2d_backward_weight_bias(
+        &self.input, 
+        &mut weight_grad.view_mut(), 
+        Some(&mut bias_grad.view_mut()), 
+        &self.args, 
+        &output_grad.view()
+      );
+    }
+    else {
+      crate::conv2d_backward_weight_bias(
+        &self.input, 
+        &mut weight_grad.view_mut(), 
+        None, 
+        &self.args, 
+        &output_grad.view()
+      );
+    }
+  }
+}
+
+impl From<Conv2dBackwardWeightBias> for BackwardParameterOp {
+  fn from(op: Conv2dBackwardWeightBias) -> Self {
+    BackwardParameterOp::Conv2dBackwardWeightBias(op)
+  }
+}
+
+#[doc(hidden)]
+pub struct MaxPool2dBackward {
+  input: ArcTensor4<f32>,
+  input_grad: RwTensor4<f32>,
+  args: Pool2dArgs,
+  workspace: Option<Buffer<u8>>,
+  output_grad: RwTensor4<f32>
+}
+
+impl MaxPool2dBackward {
+  fn exec(&self) {
+    let mut input_grad = self.input_grad.write()
+      .unwrap();
+    let output_grad = self.output_grad.read()
+      .unwrap();
+    crate::max_pool2d_backward(&self.input, &mut input_grad, &self.args, self.workspace.as_ref(), &output_grad);
+  }
+}
+
+impl From<MaxPool2dBackward> for BackwardVariableOp {
+  fn from(op: MaxPool2dBackward) -> Self {
+    BackwardVariableOp::MaxPool2dBackward(op)
+  }
+}
+
+#[doc(hidden)]
+pub struct ReluBackward {
+  input: ArcTensorD<f32>,
+  input_grad: RwTensorD<f32>,
+  output_grad: RwTensorD<f32>
+}
+
+impl ReluBackward {
+  fn exec(&self) {
+    let mut input_grad = self.input_grad.write()
+      .unwrap();
+    let output_grad = self.output_grad.read()
+      .unwrap();
+    crate::relu_backward(&self.input, &mut input_grad, &output_grad);
+  }
+}
+
+impl From<ReluBackward> for BackwardVariableOp {
+  fn from(op: ReluBackward) -> Self {
+    BackwardVariableOp::ReluBackward(op)
   }
 }
 
@@ -169,12 +307,14 @@ impl Graph {
     self.backward_variable_ops.lock()
       .unwrap()
       .iter()
+      .rev()
       .for_each(|op| op.exec());
   } 
   fn exec_backward_parameter_ops(&self) {
     self.backward_parameter_ops.lock()
       .unwrap()
       .iter()
+      .rev()
       .for_each(|op| op.exec());
   }
 }
@@ -270,7 +410,13 @@ impl<D: Dimension> Variable<D> {
       Some(RwTensor::zeros(&output_value.device, output_value.raw_dim()))
     } else { None };
     if let Some(output_grad) = &output_grad {
-      unimplemented!();
+      if let Some(input_grad) = &self.grad {
+        graph.backward_variable_op(ReluBackward {
+          input: self.value.clone().into_dyn(),
+          input_grad: input_grad.clone().into_dyn(),
+          output_grad: output_grad.clone().into_dyn()
+        });
+      }
     }
     Self::new(&graph, output_value, output_grad)
   }
@@ -376,32 +522,53 @@ impl Variable4 {
     } else { None };
     if let Some(output_grad) = &output_grad {
       if let Some(weight_grad) = &weight.grad {
-        unimplemented!()
-        /*graph.backward_parameter_op(Conv2dBackwardWeight {
+        let bias_grad = bias.map(|bias| 
+          bias.grad().unwrap().clone()
+        );
+        graph.backward_parameter_op(Conv2dBackwardWeightBias {
           input: self.value.clone(),
           weight_grad: weight_grad.clone(),
+          bias_grad,
+          args: args.clone(),
           output_grad: output_grad.clone()
-        });*/
-      }
-      if let Some(bias) = &bias {
-        if let Some(bias_grad) = &bias.grad {
-          unimplemented!()
-          /*graph.backward_parameter_op(DenseBackwardBias {
-            bias_grad: bias_grad.clone(), 
-            output_grad: output_grad.clone()
-          });*/
-        } 
+        });
       }
       if let Some(input_grad) = &self.grad {
-        unimplemented!()
-        /*graph.backward_variable_op(DenseBackwardInput {
+        graph.backward_variable_op(Conv2dBackwardInput {
           input_grad: input_grad.clone(),
           weight: weight.value.clone(),
+          args: args.clone(),
           output_grad: output_grad.clone()
-        });*/
+        });
       }
     }
     Variable::new(&graph, output_value, output_grad)
+  }
+  pub fn max_pool2d(&self, args: &Pool2dArgs) -> Self {
+    let graph = Weak::upgrade(&self.graph)
+      .unwrap();
+    let train = self.grad.is_some(); 
+    let (output_value, workspace) = crate::max_pool2d_forward(
+      &self.value, 
+      args, 
+      train
+    );
+    let output_value = ArcTensor::from(output_value);
+    let output_grad = if self.grad.is_some() {
+      Some(RwTensor::zeros(self.device(), output_value.raw_dim()))
+    } else { None };
+    if let Some(output_grad) = &output_grad {
+      if let Some(input_grad) = &self.grad {
+        graph.backward_variable_op(MaxPool2dBackward {
+          input: self.value.clone(),
+          input_grad: input_grad.clone(),
+          args: args.clone(),
+          workspace,
+          output_grad: output_grad.clone()
+        })
+      }
+    }
+    Self::new(&graph, output_value, output_grad)
   }
 }
 

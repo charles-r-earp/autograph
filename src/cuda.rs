@@ -1,4 +1,12 @@
-use super::{Num, Unsigned, DataRef, DataMut, TensorBase, Tensor, Tensor4, Transpose, Conv2dArgs, TensorView1, TensorView4, TensorViewMut4};
+use super::{
+  Num, Unsigned, 
+  DataRef, DataMut, 
+  TensorBase, 
+  Tensor, Tensor4, 
+  Transpose, Conv2dArgs, Pool2dArgs,
+  TensorView1, TensorView4, 
+  TensorViewMut1, TensorViewMut4
+};
 use std::{sync::{Arc, Mutex}, borrow::Cow, fmt::{self, Debug}, ffi::CString, any::TypeId};
 use ndarray::{Dimension, Ix0, Ix1, Ix2, Ix4};
 use rustacuda::{
@@ -46,6 +54,17 @@ use cuda_cudnn_sys::{
   cudnnGetConvolutionForwardWorkspaceSize,
   cudnnGetConvolutionForwardAlgorithm_v7,
   cudnnConvolutionFwdAlgoPerf_t,
+  cudnnConvolutionBackwardData,
+  cudnnGetConvolutionBackwardDataAlgorithm_v7,
+  cudnnGetConvolutionBackwardDataWorkspaceSize,
+  cudnnConvolutionBwdDataAlgo_t,
+  cudnnConvolutionBwdDataAlgoPerf_t,
+  cudnnConvolutionBackwardFilter,
+  cudnnGetConvolutionBackwardFilterAlgorithm_v7,
+  cudnnGetConvolutionBackwardFilterWorkspaceSize,
+  cudnnConvolutionBwdFilterAlgo_t,
+  cudnnConvolutionBwdFilterAlgoPerf_t,
+  cudnnConvolutionBackwardBias,
   cudnnActivationDescriptor_t,
   cudnnCreateActivationDescriptor,
   cudnnSetActivationDescriptor,
@@ -53,7 +72,14 @@ use cuda_cudnn_sys::{
   cudnnActivationMode_t,
   cudnnNanPropagation_t,
   cudnnActivationForward,
-  cudnnActivationBackward
+  cudnnActivationBackward,
+  cudnnPoolingDescriptor_t,
+  cudnnCreatePoolingDescriptor,
+  cudnnSetPooling2dDescriptor,
+  cudnnDestroyPoolingDescriptor,
+  cudnnPoolingMode_t,
+  cudnnPoolingForward,
+  cudnnPoolingBackward
 };
 
 pub struct CudaBuffer<T: Num> {
@@ -428,6 +454,47 @@ impl Drop for ConvolutionDescriptor {
   }
 }
 
+struct PoolingDescriptor {
+  pooling_descriptor: cudnnPoolingDescriptor_t
+}
+
+impl PoolingDescriptor {
+  fn new_pool2d(mode: cudnnPoolingMode_t, nan_propagation: cudnnNanPropagation_t, args: &Pool2dArgs) -> Self {
+    let mut pooling_descriptor = unsafe {
+      std::ptr::null_mut()
+    };
+    let status = unsafe {
+      cudnnCreatePoolingDescriptor(
+        &mut pooling_descriptor as *mut cudnnPoolingDescriptor_t 
+      )
+    };
+    let status = unsafe {
+      cudnnSetPooling2dDescriptor(
+        pooling_descriptor,
+        mode,
+        nan_propagation,
+        args.kernel[0] as i32,
+        args.kernel[1] as i32,
+        args.padding[0] as i32,
+        args.padding[1] as i32,
+        args.strides[0] as i32,
+        args.strides[1] as i32
+      )
+    };
+    assert_eq!(status, cudnnStatus_t::CUDNN_STATUS_SUCCESS);
+    Self{pooling_descriptor}
+  }
+}
+
+impl Drop for PoolingDescriptor {
+  fn drop(&mut self) {
+    let status = unsafe { 
+      cudnnDestroyPoolingDescriptor(self.pooling_descriptor)
+    };
+    assert_eq!(status, cudnnStatus_t::CUDNN_STATUS_SUCCESS);
+  }
+}
+
 pub(super) fn unsigned_to_f32<T: Unsigned, S1: DataRef<Elem=T>, S2: DataMut<Elem=f32>, D: Dimension>
   (input: &TensorBase<S1, D>, output: &mut TensorBase<S2, D>) {
   let gpu = input.device.cuda()
@@ -725,7 +792,7 @@ pub(super) fn relu_backward<S1: DataRef<Elem=f32>, S2: DataMut<Elem=f32>, S3: Da
       relu_desc.activation_descriptor,
       &1f32 as *const f32 as *const std::ffi::c_void,
       dy_desc.tensor_descriptor,
-      std::ptr::null() as *const std::ffi::c_void,
+      x as *const std::ffi::c_void,
       dy_desc.tensor_descriptor,
       dy as *const std::ffi::c_void,
       x_desc.tensor_descriptor,
@@ -919,7 +986,8 @@ pub(super) fn conv2d<S1: DataRef<Elem=f32>, S2: DataMut<Elem=f32>>
     )
   };
   assert_eq!(status, cudnnStatus_t::CUDNN_STATUS_SUCCESS);
-  let mut workspace = unsafe { 
+  let mut workspace = unsafe {
+    gpu.make_current();
     DeviceBuffer::<u8>::uninitialized(workspace_size).unwrap()
   }; 
   let status: cudnnStatus_t = if let Some(bias) = &bias {
@@ -973,4 +1041,278 @@ pub(super) fn conv2d<S1: DataRef<Elem=f32>, S2: DataMut<Elem=f32>>
     }
   };
   assert_eq!(status, cudnnStatus_t::CUDNN_STATUS_SUCCESS, "cudnnConvolutionForward");
+}
+
+pub(super) fn conv2d_backward_input<S1: DataMut<Elem=f32>>
+  (input_grad: &mut TensorBase<S1, Ix4>, weight: &TensorView4<f32>, args: &Conv2dArgs, output_grad: &TensorView4<f32>) { 
+  let gpu = weight.device.cuda()
+    .unwrap();
+  let stream = gpu.stream();
+  let mut cudnn_context = gpu.cudnn_context.lock()
+    .unwrap();
+  let cudnn_handle = unsafe { *cudnn_context as *mut cudnnContext };
+  let dx_desc = TensorDescriptor::new(
+    input_grad.dim.slice(),
+    cudnnDataType_t::CUDNN_DATA_FLOAT
+  );
+  let dx = input_grad.as_mut_cuda_ptr().unwrap();
+  let weight = {
+    // Patch cudnn behavior by reversing filter order ie per patch
+    // for kernel of shape (1, 1, 2, 2) and data = vec![1., 2., 3., 4.]
+    // output = vec![4., 3., 2., 1.]
+    let mut weight_reversed = unsafe { Tensor::uninitialized(&weight.device, weight.raw_dim()) };
+    reverse_conv2d_filter(&weight.view(), &mut weight_reversed.view_mut());
+    weight_reversed
+  };
+  let w_desc = FilterDescriptor::new(weight.dim.slice(), cudnnDataType_t::CUDNN_DATA_FLOAT);
+  let w = weight.as_cuda_ptr().unwrap();
+  let dy_desc = TensorDescriptor::new(output_grad.dim.slice(), cudnnDataType_t::CUDNN_DATA_FLOAT);
+  let dy = output_grad.as_cuda_ptr().unwrap();
+  let mut conv2d_desc = ConvolutionDescriptor::new_conv2d(args, cudnnDataType_t::CUDNN_DATA_FLOAT);
+  conv2d_desc.set_math_type(cudnnMathType_t::CUDNN_TENSOR_OP_MATH);
+  
+  let algo = {
+    let mut perf: cudnnConvolutionBwdDataAlgoPerf_t = unsafe { std::mem::uninitialized() };
+    let mut ret_algo_count = 0i32;
+    let status = unsafe {
+      cudnnGetConvolutionBackwardDataAlgorithm_v7(
+        cudnn_handle,
+        w_desc.filter_descriptor,
+        dy_desc.tensor_descriptor,
+        conv2d_desc.convolution_descriptor,
+        dx_desc.tensor_descriptor,
+        1,
+        &mut ret_algo_count as *mut i32,
+        &mut perf as *mut cudnnConvolutionBwdDataAlgoPerf_t
+      )
+    };
+    assert_eq!(status, cudnnStatus_t::CUDNN_STATUS_SUCCESS);
+    assert_eq!(ret_algo_count, 1);
+    perf.algo
+  };
+  let workspace_size = {
+    let mut workspace_size = 0;
+    let status = unsafe {
+      cudnnGetConvolutionBackwardDataWorkspaceSize(
+        cudnn_handle,
+        w_desc.filter_descriptor,
+        dy_desc.tensor_descriptor,
+        conv2d_desc.convolution_descriptor,
+        dx_desc.tensor_descriptor,
+        algo,
+        &mut workspace_size as *mut usize
+      )
+    };
+    assert_eq!(status, cudnnStatus_t::CUDNN_STATUS_SUCCESS);
+    workspace_size
+  };
+  let mut workspace = unsafe {
+    gpu.make_current(); 
+    DeviceBuffer::<u8>::uninitialized(workspace_size).unwrap()
+  }; 
+  
+  let status = unsafe {
+    cudnnConvolutionBackwardData(
+      cudnn_handle,
+      &1f32 as *const f32 as *const std::ffi::c_void,
+      w_desc.filter_descriptor,
+      w as *const std::ffi::c_void,
+      dy_desc.tensor_descriptor,
+      dy as *const std::ffi::c_void,
+      conv2d_desc.convolution_descriptor,
+      algo,
+      workspace.as_mut_ptr() as *mut std::ffi::c_void,
+      workspace_size,
+      &0f32 as *const f32 as *const std::ffi::c_void,
+      dx_desc.tensor_descriptor,
+      dx as *mut std::ffi::c_void
+    )
+  }; 
+  assert_eq!(status, cudnnStatus_t::CUDNN_STATUS_SUCCESS);
+}
+
+pub(super) fn conv2d_backward_weight_bias<S1: DataRef<Elem=f32>>
+  (input: &TensorBase<S1, Ix4>, weight_grad: &mut TensorViewMut4<f32>, bias_grad: Option<&mut TensorViewMut1<f32>>, args: &Conv2dArgs, output_grad: &TensorView4<f32>) {
+  let gpu = input.device.cuda()
+    .unwrap();
+  let stream = gpu.stream();
+  let mut cudnn_context = gpu.cudnn_context.lock()
+    .unwrap();
+  let cudnn_handle = unsafe { *cudnn_context as *mut cudnnContext };
+  let x_desc = TensorDescriptor::new(
+    input.dim.slice(),
+    cudnnDataType_t::CUDNN_DATA_FLOAT
+  );
+  let x = input.as_cuda_ptr().unwrap();
+  let dw_desc = FilterDescriptor::new(weight_grad.dim.slice(), cudnnDataType_t::CUDNN_DATA_FLOAT);
+  let dw = weight_grad.as_mut_cuda_ptr().unwrap();
+  let dy_desc = TensorDescriptor::new(output_grad.dim.slice(), cudnnDataType_t::CUDNN_DATA_FLOAT);
+  let dy = output_grad.as_cuda_ptr().unwrap();
+  let mut conv2d_desc = ConvolutionDescriptor::new_conv2d(args, cudnnDataType_t::CUDNN_DATA_FLOAT);
+  conv2d_desc.set_math_type(cudnnMathType_t::CUDNN_TENSOR_OP_MATH);
+  
+  let algo = {
+    let mut perf: cudnnConvolutionBwdFilterAlgoPerf_t = unsafe { std::mem::uninitialized() };
+    let mut ret_algo_count = 0i32;
+    let status = unsafe {
+      cudnnGetConvolutionBackwardFilterAlgorithm_v7(
+        cudnn_handle,
+        x_desc.tensor_descriptor,
+        dy_desc.tensor_descriptor,
+        conv2d_desc.convolution_descriptor,
+        dw_desc.filter_descriptor,
+        1,
+        &mut ret_algo_count as *mut i32,
+        &mut perf as *mut cudnnConvolutionBwdFilterAlgoPerf_t
+      )
+    };
+    assert_eq!(status, cudnnStatus_t::CUDNN_STATUS_SUCCESS);
+    assert_eq!(ret_algo_count, 1);
+    perf.algo
+  };
+  let workspace_size = {
+    let mut workspace_size = 0;
+    let status = unsafe {
+      cudnnGetConvolutionBackwardFilterWorkspaceSize(
+        cudnn_handle,
+        x_desc.tensor_descriptor,
+        dy_desc.tensor_descriptor,
+        conv2d_desc.convolution_descriptor,
+        dw_desc.filter_descriptor,
+        algo,
+        &mut workspace_size as *mut usize
+      )
+    };
+    assert_eq!(status, cudnnStatus_t::CUDNN_STATUS_SUCCESS);
+    workspace_size
+  };
+  let mut workspace = unsafe { 
+    gpu.make_current();
+    DeviceBuffer::<u8>::uninitialized(workspace_size).unwrap()
+  }; 
+  
+  let status = unsafe {
+    cudnnConvolutionBackwardFilter(
+      cudnn_handle,
+      &1f32 as *const f32 as *const std::ffi::c_void,
+      x_desc.tensor_descriptor,
+      x as *const std::ffi::c_void,
+      dy_desc.tensor_descriptor,
+      dy as *const std::ffi::c_void,
+      conv2d_desc.convolution_descriptor,
+      algo,
+      workspace.as_mut_ptr() as *mut std::ffi::c_void,
+      workspace_size,
+      &0f32 as *const f32 as *const std::ffi::c_void,
+      dw_desc.filter_descriptor,
+      dw as *mut std::ffi::c_void,
+    )
+  }; 
+  assert_eq!(status, cudnnStatus_t::CUDNN_STATUS_SUCCESS);
+  
+  if let Some(bias_grad) = bias_grad {
+    let db_desc = TensorDescriptor::new(
+      bias_grad.dim.slice(),
+      cudnnDataType_t::CUDNN_DATA_FLOAT
+    );
+    let db = bias_grad.as_mut_cuda_ptr().unwrap();
+    
+    let status = unsafe {
+      cudnnConvolutionBackwardBias(
+        cudnn_handle,
+        &1f32 as *const f32 as *const std::ffi::c_void,
+        dy_desc.tensor_descriptor,
+        dy as *const std::ffi::c_void,
+        &0f32 as *const f32 as *const std::ffi::c_void,
+        db_desc.tensor_descriptor,
+        db as *mut std::ffi::c_void,
+      )
+    }; 
+    assert_eq!(status, cudnnStatus_t::CUDNN_STATUS_SUCCESS);
+  }
+}
+
+pub(super) fn max_pool2d<S1: DataRef<Elem=f32>, S2: DataMut<Elem=f32>>
+  (input: &TensorBase<S1, Ix4>, args: &Pool2dArgs, output: &mut TensorBase<S2, Ix4>) {
+  let gpu = input.device.cuda()
+    .unwrap();
+  let stream = gpu.stream();
+  let mut cudnn_context = gpu.cudnn_context.lock()
+    .unwrap();
+  let cudnn_handle = unsafe { *cudnn_context as *mut cudnnContext };
+  let x_desc = TensorDescriptor::new(
+    input.dim.slice(),
+    cudnnDataType_t::CUDNN_DATA_FLOAT
+  );
+  let x = input.as_cuda_ptr().unwrap();
+  let y_desc = TensorDescriptor::new(
+    output.dim.slice(), 
+    cudnnDataType_t::CUDNN_DATA_FLOAT
+  );
+  let y = output.as_mut_cuda_ptr().unwrap();
+  let pool2d_desc = PoolingDescriptor::new_pool2d(
+    cudnnPoolingMode_t::CUDNN_POOLING_MAX,
+    cudnnNanPropagation_t::CUDNN_NOT_PROPAGATE_NAN,
+    args
+  );
+  let status = unsafe {
+    cudnnPoolingForward(
+      cudnn_handle,
+      pool2d_desc.pooling_descriptor,
+      &1f32 as *const f32 as *const std::ffi::c_void,
+      x_desc.tensor_descriptor,
+      x as *const std::ffi::c_void,
+      &0f32 as *const f32 as *const std::ffi::c_void,
+      y_desc.tensor_descriptor,
+      y as *mut std::ffi::c_void
+    )
+  };
+  assert_eq!(status, cudnnStatus_t::CUDNN_STATUS_SUCCESS);
+}
+
+pub(super) fn max_pool2d_backward<S1: DataRef<Elem=f32>, S2: DataMut<Elem=f32>, S3: DataRef<Elem=f32>>
+  (input: &TensorBase<S1, Ix4>, input_grad: &mut TensorBase<S2, Ix4>, args: &Pool2dArgs, output_grad: &TensorBase<S3, Ix4>) {
+  let gpu = input.device.cuda()
+    .unwrap();
+  let stream = gpu.stream();
+  let mut cudnn_context = gpu.cudnn_context.lock()
+    .unwrap();
+  let cudnn_handle = unsafe { *cudnn_context as *mut cudnnContext };
+  let x_desc = TensorDescriptor::new(
+    input.dim.slice(),
+    cudnnDataType_t::CUDNN_DATA_FLOAT
+  );
+  let x = input.as_cuda_ptr().unwrap();
+  let dx_desc = TensorDescriptor::new(
+    input_grad.dim.slice(),
+    cudnnDataType_t::CUDNN_DATA_FLOAT
+  );
+  let dx = input_grad.as_mut_cuda_ptr().unwrap();
+  let dy_desc = TensorDescriptor::new(
+    output_grad.dim.slice(), 
+    cudnnDataType_t::CUDNN_DATA_FLOAT
+  );
+  let dy = output_grad.as_cuda_ptr().unwrap();
+  let pool2d_desc = PoolingDescriptor::new_pool2d(
+    cudnnPoolingMode_t::CUDNN_POOLING_MAX,
+    cudnnNanPropagation_t::CUDNN_NOT_PROPAGATE_NAN,
+    args
+  );
+  let status = unsafe {
+    cudnnPoolingBackward(
+      cudnn_handle,
+      pool2d_desc.pooling_descriptor,
+      &1f32 as *const f32 as *const std::ffi::c_void,
+      dy_desc.tensor_descriptor,
+      x as *const std::ffi::c_void,
+      dy_desc.tensor_descriptor,
+      dy as *const std::ffi::c_void,
+      x_desc.tensor_descriptor,
+      x as *const std::ffi::c_void,
+      &0f32 as *const f32 as *const std::ffi::c_void,
+      dx_desc.tensor_descriptor,
+      dx as *mut std::ffi::c_void
+    )
+  };
+  assert_eq!(status, cudnnStatus_t::CUDNN_STATUS_SUCCESS);
 }

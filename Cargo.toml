@@ -21,7 +21,6 @@ ndarray = "0.13.1"
 byteorder = { version = "1.3.4", optional = true }
 flate2 = { version = "1.0.14", optional = true }
 reqwest = { version = "0.9.22", optional = true }
-timeit = "0.1.2"
 
 [build-dependencies]
 static_assertions = "1.1.0"

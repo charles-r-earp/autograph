@@ -400,13 +400,18 @@ pub type TensorView<'a, T, D> = TensorBase<ViewRepr<&'a Buffer<T>>, D>;
 pub type TensorView1<'a, T> = TensorView<'a, T, Ix1>;
 pub type TensorView2<'a, T> = TensorView<'a, T, Ix2>;
 pub type TensorView4<'a, T> = TensorView<'a, T, Ix4>;
+pub type TensorViewD<'a, T> = TensorView<'a, T, IxDyn>;
 
 pub type TensorViewMut<'a, T, D> = TensorBase<ViewRepr<&'a mut Buffer<T>>, D>;
+pub type TensorViewMut0<'a, T> = TensorViewMut<'a, T, Ix0>;
+pub type TensorViewMut1<'a, T> = TensorViewMut<'a, T, Ix1>;
 pub type TensorViewMut2<'a, T> = TensorViewMut<'a, T, Ix2>;
 pub type TensorViewMut4<'a, T> = TensorViewMut<'a, T, Ix4>;
 
 pub type ArcTensor<T, D> = TensorBase<ArcRepr<T>, D>;
 pub type ArcTensor2<T> = ArcTensor<T, Ix2>;
+pub type ArcTensor4<T> = ArcTensor<T, Ix4>;
+pub type ArcTensorD<T> = ArcTensor<T, IxDyn>;
 
 pub type RwTensor<T, D> = TensorBase<RwRepr<T>, D>;
 pub type RwTensor0<T> = RwTensor<T, Ix0>;
@@ -414,6 +419,7 @@ pub type RwTensor1<T> = RwTensor<T, Ix1>;
 pub type RwTensor2<T> = RwTensor<T, Ix2>;
 pub type RwTensor3<T> = RwTensor<T, Ix3>;
 pub type RwTensor4<T> = RwTensor<T, Ix4>;
+pub type RwTensorD<T> = RwTensor<T, IxDyn>;
 
 pub type RwReadTensor<'a, T, D> = TensorBase<RwReadRepr<'a, T>, D>;
 pub type RwWriteTensor<'a, T, D> = TensorBase<RwWriteRepr<'a, T>, D>;
@@ -905,21 +911,73 @@ impl<S1: DataRef<Elem=f32>> TensorBase<S1, Ix4> {
     output
   }
   pub fn max_pool2d(&self, args: &Pool2dArgs) -> Tensor4<f32> {
-    let device = &self.device;
-    let (batch_size, inputs, ih, iw) = self.dim();
-    let [kh, kw] = args.kernel;
-    let [sh, sw] = args.strides;
-    let [ph, pw] = args.padding;
-    let oh = (ih - (kh - 1) + 2 * ph - 1) / sh + 1;
-    let ow = (iw - (kw - 1) + 2 * pw - 1) / sw + 1;
-    let mut output = unsafe { Tensor::uninitialized(&device, [batch_size, inputs, oh, ow]) };
-    match device {
-      Device::Cpu(_) => cpu::max_pool2d(self, args, &mut output),
-      #[cfg(feature="cuda")]
-      Device::Cuda(_) => cuda::max_pool2d(self, args, &mut output)
-    }
+    let (output, _) = max_pool2d_forward(self, args, false);
     output
   }
+}
+
+fn conv2d_backward_input<S1: DataMut<Elem=f32>>
+  (input_grad: &mut TensorBase<S1, Ix4>, weight: &TensorView4<f32>, args: &Conv2dArgs, output_grad: &TensorView4<f32>) {
+  debug_assert_eq!(input_grad.device(), weight.device());
+  debug_assert_eq!(input_grad.device(), output_grad.device());
+  match input_grad.device() {
+    Device::Cpu(_) => cpu::conv2d_backward_input(input_grad, weight, args, output_grad),
+    #[cfg(feature="cuda")]
+    Device::Cuda(_) => cuda::conv2d_backward_input(input_grad, weight, args, output_grad)
+  } 
+}
+
+fn conv2d_backward_weight_bias<S1: DataRef<Elem=f32>>
+  (input: &TensorBase<S1, Ix4>, weight_grad: &mut TensorViewMut4<f32>, bias_grad: Option<&mut TensorViewMut1<f32>>, args: &Conv2dArgs, output_grad: &TensorView4<f32>) {
+  debug_assert_eq!(input.device(), weight_grad.device());
+  #[cfg(debug_assertions)]
+  {
+    if let Some(bias_grad) = &bias_grad {
+      assert_eq!(input.device(), bias_grad.device());
+    }
+  }
+  debug_assert_eq!(input.device(), output_grad.device());
+  match input.device() {
+    Device::Cpu(_) => cpu::conv2d_backward_weight_bias(input, weight_grad, bias_grad, args, output_grad),
+    #[cfg(feature="cuda")]
+    Device::Cuda(_) => cuda::conv2d_backward_weight_bias(input, weight_grad, bias_grad, args, output_grad)
+  } 
+}
+
+fn max_pool2d_forward<S1: DataRef<Elem=f32>>
+  (input: &TensorBase<S1, Ix4>, args: &Pool2dArgs, train: bool) -> (Tensor4<f32>, Option<Buffer<u8>>) {
+  let device = &input.device;
+  let (batch_size, inputs, ih, iw) = input.dim();
+  let [kh, kw] = args.kernel;
+  let [sh, sw] = args.strides;
+  let [ph, pw] = args.padding;
+  let oh = (ih - (kh - 1) + 2 * ph - 1) / sh + 1;
+  let ow = (iw - (kw - 1) + 2 * pw - 1) / sw + 1;
+  let mut output = unsafe { Tensor::uninitialized(&device, [batch_size, inputs, oh, ow]) };
+  let workspace: Option<Buffer<u8>> = match device {
+    Device::Cpu(_) => {
+      let workspace = cpu::max_pool2d_forward(input, args, train, &mut output);
+      workspace.map(|ws| ws.into())
+    },
+    #[cfg(feature="cuda")]
+    Device::Cuda(_) => {
+      cuda::max_pool2d(input, args, &mut output);
+      None
+    }
+  };
+  (output, workspace)
+}
+
+fn max_pool2d_backward<S1: DataRef<Elem=f32>, S2: DataMut<Elem=f32>, S3: DataRef<Elem=f32>>
+  (input: &TensorBase<S1, Ix4>, input_grad: &mut TensorBase<S2, Ix4>, args: &Pool2dArgs, workspace: Option<&Buffer<u8>>, output_grad: &TensorBase<S3, Ix4>) {
+  debug_assert_eq!(input.device(), input_grad.device());
+  debug_assert_eq!(input.device(), output_grad.device());
+  debug_assert_eq!(input.raw_dim(), input_grad.raw_dim());
+  match input.device() {
+    Device::Cpu(_) => cpu::max_pool2d_backward(input, input_grad, args, workspace, output_grad),
+    #[cfg(feature="cuda")]
+    Device::Cuda(_) => cuda::max_pool2d_backward(input, input_grad, args, output_grad)
+  } 
 }
 
 #[cfg(test)]
