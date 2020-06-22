@@ -12,4 +12,4 @@ notifications:
   email: 
     on_success: never
 script:
-  - cargo test --tests
+  - cargo test --lib 

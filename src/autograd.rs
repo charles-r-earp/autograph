@@ -95,14 +95,11 @@ pub struct DenseBackwardWeight {
 impl DenseBackwardWeight {
   fn exec(&self) {
     let (batch_size, inputs) = self.input.dim();
-    let alpha = batch_size.to_f32()
-      .unwrap()
-      .recip();
     let mut weight_grad = self.weight_grad.write()
       .unwrap();
     let output_grad = self.output_grad.read()
       .unwrap();
-    crate::gemm(alpha, &output_grad, Transpose::Yes, &self.input, Transpose::No, 1., &mut weight_grad); 
+    crate::gemm(1., &output_grad, Transpose::Yes, &self.input, Transpose::No, 1., &mut weight_grad); 
   }
 }
 

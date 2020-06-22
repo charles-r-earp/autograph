@@ -12,9 +12,9 @@ extern "C" {
       y[tid*nclasses+x[tid]] = 1.0f;
     }
   } 
-  __global__ void cross_entropy_forward(const float* x, unsigned int nclasses, const float* t, float* y, unsigned int len) {
+  __global__ void cross_entropy_forward(unsigned int batch_size, unsigned int nclasses, const float* x, const float* t, float* y) {
     int tid = blockIdx.x * blockDim.x + threadIdx.x; 
-    if (tid < len) {
+    if (tid < batch_size) {
       // compute max value of slice
       float m = x[tid*nclasses];
       for(int i = 1; i < nclasses; ++i) {
@@ -89,11 +89,18 @@ extern "C" {
       *y += x[i];  
     }
   }
-  __global__ void reverse_conv_filter(const float* x, float* y, unsigned int filter_len, unsigned int len) {
+  __global__ void reverse_conv_filter(const float* x, float beta, float* y, unsigned int filter_len, unsigned int len) {
     int tid = blockIdx.x*blockDim.x + threadIdx.x;
     if (tid < len) {
-      for(int i = 0; i < filter_len; ++i) {
-        y[tid*filter_len + i] = x[tid*filter_len + ((filter_len-1) - i)];
+      if (beta == 0.0f) {
+        for(int i = 0; i < filter_len; ++i) {
+          y[tid*filter_len + i] = x[tid*filter_len + ((filter_len-1) - i)];
+        }
+      }
+      else {
+        for(int i = 0; i < filter_len; ++i) {
+          y[tid*filter_len + i] = x[tid*filter_len + ((filter_len-1) - i)] + beta * y[tid*filter_len + i];
+        }
       }
     }
   }

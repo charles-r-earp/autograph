@@ -839,11 +839,10 @@ pub(super) fn cross_entropy<S1: DataRef<Elem=f32>, S2: DataRef<Elem=f32>, S3: Da
     .unwrap();
   let stream = gpu.stream();
   let module = gpu.kernels();
-  let len = input.len() as u32;
   let (batch_size, nclasses) = input.dim();
   let nthreads = 32;
-  let mut nblocks = len / nthreads;
-  if len % nthreads != 0 {
+  let mut nblocks = (batch_size as u32) / nthreads;
+  if (batch_size as u32) % nthreads != 0 {
     nblocks += 1;
   }
   let x = input.as_cuda_ptr()
@@ -854,11 +853,11 @@ pub(super) fn cross_entropy<S1: DataRef<Elem=f32>, S2: DataRef<Elem=f32>, S3: Da
     .unwrap();
   unsafe {
     launch!(module.cross_entropy_forward<<<nblocks, nthreads, 0, stream>>>(
-      DevicePointer::wrap(x as *mut f32),
+      batch_size as u32,
       nclasses as u32,
+      DevicePointer::wrap(x as *mut f32),
       DevicePointer::wrap(t as *mut f32),
-      DevicePointer::wrap(y),
-      len
+      DevicePointer::wrap(y)
     )).unwrap()
   }
 }
@@ -897,7 +896,7 @@ pub(super) fn cross_entropy_backward<S1: DataRef<Elem=f32>, S2: DataMut<Elem=f32
   }
 }
 
-fn reverse_conv2d_filter(input: &TensorView4<f32>, output: &mut TensorViewMut4<f32>) {
+fn reverse_conv2d_filter(input: &TensorView4<f32>, beta: f32, output: &mut TensorViewMut4<f32>) {
    let gpu = input.device.cuda()
     .unwrap();
   let stream = gpu.stream();
@@ -917,6 +916,7 @@ fn reverse_conv2d_filter(input: &TensorView4<f32>, output: &mut TensorViewMut4<f
   unsafe {
     launch!(module.reverse_conv_filter<<<nblocks, nthreads, 0, stream>>>(
       DevicePointer::wrap(x as *mut f32),
+      beta,
       DevicePointer::wrap(y),
       filter_len,
       len
@@ -942,7 +942,7 @@ pub(super) fn conv2d<S1: DataRef<Elem=f32>, S2: DataMut<Elem=f32>>
     // for kernel of shape (1, 1, 2, 2) and data = vec![1., 2., 3., 4.]
     // output = vec![4., 3., 2., 1.]
     let mut weight_reversed = unsafe { Tensor::uninitialized(&input.device, weight.raw_dim()) };
-    reverse_conv2d_filter(&weight.view(), &mut weight_reversed.view_mut());
+    reverse_conv2d_filter(&weight.view(), 0., &mut weight_reversed.view_mut());
     weight_reversed
   };
   let w_desc = FilterDescriptor::new(weight.dim.slice(), cudnnDataType_t::CUDNN_DATA_FLOAT);
@@ -1061,7 +1061,7 @@ pub(super) fn conv2d_backward_input<S1: DataMut<Elem=f32>>
     // for kernel of shape (1, 1, 2, 2) and data = vec![1., 2., 3., 4.]
     // output = vec![4., 3., 2., 1.]
     let mut weight_reversed = unsafe { Tensor::uninitialized(&weight.device, weight.raw_dim()) };
-    reverse_conv2d_filter(&weight.view(), &mut weight_reversed.view_mut());
+    reverse_conv2d_filter(&weight.view(), 0., &mut weight_reversed.view_mut());
     weight_reversed
   };
   let w_desc = FilterDescriptor::new(weight.dim.slice(), cudnnDataType_t::CUDNN_DATA_FLOAT);
@@ -1110,7 +1110,6 @@ pub(super) fn conv2d_backward_input<S1: DataMut<Elem=f32>>
     gpu.make_current(); 
     DeviceBuffer::<u8>::uninitialized(workspace_size).unwrap()
   }; 
-  
   let status = unsafe {
     cudnnConvolutionBackwardData(
       cudnn_handle,
@@ -1123,7 +1122,7 @@ pub(super) fn conv2d_backward_input<S1: DataMut<Elem=f32>>
       algo,
       workspace.as_mut_ptr() as *mut std::ffi::c_void,
       workspace_size,
-      &0f32 as *const f32 as *const std::ffi::c_void,
+      &1f32 as *const f32 as *const std::ffi::c_void,
       dx_desc.tensor_descriptor,
       dx as *mut std::ffi::c_void
     )
@@ -1144,14 +1143,17 @@ pub(super) fn conv2d_backward_weight_bias<S1: DataRef<Elem=f32>>
     cudnnDataType_t::CUDNN_DATA_FLOAT
   );
   let x = input.as_cuda_ptr().unwrap();
+  // patch cudnn behavior
+  let mut weight_grad_reversed = Tensor::zeros(weight_grad.device(), weight_grad.raw_dim());
   let dw_desc = FilterDescriptor::new(weight_grad.dim.slice(), cudnnDataType_t::CUDNN_DATA_FLOAT);
-  let dw = weight_grad.as_mut_cuda_ptr().unwrap();
+  let dw = weight_grad_reversed.as_mut_cuda_ptr().unwrap();
   let dy_desc = TensorDescriptor::new(output_grad.dim.slice(), cudnnDataType_t::CUDNN_DATA_FLOAT);
   let dy = output_grad.as_cuda_ptr().unwrap();
   let mut conv2d_desc = ConvolutionDescriptor::new_conv2d(args, cudnnDataType_t::CUDNN_DATA_FLOAT);
   conv2d_desc.set_math_type(cudnnMathType_t::CUDNN_TENSOR_OP_MATH);
   
   let algo = {
+    /*
     let mut perf: cudnnConvolutionBwdFilterAlgoPerf_t = unsafe { std::mem::uninitialized() };
     let mut ret_algo_count = 0i32;
     let status = unsafe {
@@ -1168,8 +1170,9 @@ pub(super) fn conv2d_backward_weight_bias<S1: DataRef<Elem=f32>>
     };
     assert_eq!(status, cudnnStatus_t::CUDNN_STATUS_SUCCESS);
     assert_eq!(ret_algo_count, 1);
-    perf.algo
-  };
+    perf.algo*/
+    cudnnConvolutionBwdFilterAlgo_t::CUDNN_CONVOLUTION_BWD_FILTER_ALGO_1
+  }; 
   let workspace_size = {
     let mut workspace_size = 0;
     let status = unsafe {
@@ -1203,16 +1206,20 @@ pub(super) fn conv2d_backward_weight_bias<S1: DataRef<Elem=f32>>
       algo,
       workspace.as_mut_ptr() as *mut std::ffi::c_void,
       workspace_size,
-      &0f32 as *const f32 as *const std::ffi::c_void,
+      &1f32 as *const f32 as *const std::ffi::c_void,
       dw_desc.filter_descriptor,
       dw as *mut std::ffi::c_void,
     )
   }; 
   assert_eq!(status, cudnnStatus_t::CUDNN_STATUS_SUCCESS);
   
+  // apply reversed filter back to weight_grad
+  reverse_conv2d_filter(&weight_grad_reversed.view(), 1., &mut weight_grad.view_mut());
+  
   if let Some(bias_grad) = bias_grad {
+    println!("bias_grad.dim(): {:?}", bias_grad.raw_dim());
     let db_desc = TensorDescriptor::new(
-      bias_grad.dim.slice(),
+      [1, bias_grad.dim(), 1, 1],
       cudnnDataType_t::CUDNN_DATA_FLOAT
     );
     let db = bias_grad.as_mut_cuda_ptr().unwrap();
@@ -1223,7 +1230,7 @@ pub(super) fn conv2d_backward_weight_bias<S1: DataRef<Elem=f32>>
         &1f32 as *const f32 as *const std::ffi::c_void,
         dy_desc.tensor_descriptor,
         dy as *const std::ffi::c_void,
-        &0f32 as *const f32 as *const std::ffi::c_void,
+        &1f32 as *const f32 as *const std::ffi::c_void,
         db_desc.tensor_descriptor,
         db as *mut std::ffi::c_void,
       )

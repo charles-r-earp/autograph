@@ -13,59 +13,51 @@ use autograph::autograd::{
 };
 use autograph::layer::{
   Layer, Inference, Forward, 
-  Conv2d, Dense
+  Conv2d, Dense,
+  builders::{LayerBuilder, Conv2dBuilder, DenseBuilder}
 };
 use autograph::datasets::Mnist; // requires feature "datasets"
 #[cfg(feature="cuda")]
 use autograph::CudaGpu;
-use ndarray::{Ix2, Ix4};
+use ndarray::{Dimension, Ix2, Ix4};
 use std::time::Instant;
 use rand::{Rng, SeedableRng, rngs::SmallRng};
-use rand_distr::{Distribution, Normal};
+use rand_distr::{Distribution, Normal, Uniform};
 use argmm::ArgMinMax;
 use num_traits::ToPrimitive;
 
-struct Lenet5 {
-  conv1: Conv2d,
-  conv2: Conv2d,
-  dense1: Dense,
-  dense2: Dense,
-  dense3: Dense
+#[derive(Clone)]
+struct Lenet5Builder {
+  device: Option<Device>,
+  conv1: Conv2dBuilder,
+  conv2: Conv2dBuilder,
+  dense1: DenseBuilder,
+  dense2: DenseBuilder,
+  dense3: DenseBuilder
 }
 
-impl Lenet5 {
-  fn new<R: Rng>(device: &Device, mut rng: &mut R) -> Self {
-    let normal = Normal::new(0., 0.01).unwrap();
-  
-    let conv1 = Conv2d::builder(&device)
+impl Default for Lenet5Builder {
+  fn default() -> Self {
+    let conv1 = Conv2d::builder()
       .inputs(1)
       .outputs(6)
-      .kernel(5)
-      .init_weight_from_iter(normal.sample_iter(&mut rng))
-      .build();
-    let conv2 = Conv2d::builder(&device)
+      .kernel(5);
+    let conv2 = Conv2d::builder()
       .inputs(6)
       .outputs(16)
-      .kernel(5)
-      .init_weight_from_iter(normal.sample_iter(&mut rng))
-      .build();
-    let dense1 = Dense::builder(&device)
+      .kernel(5);
+    let dense1 = Dense::builder()
       .inputs(256)
-      .outputs(120)
-      .init_weight_from_iter(normal.sample_iter(&mut rng))
-      .build();
-    let dense2 = Dense::builder(&device)
+      .outputs(120);
+    let dense2 = Dense::builder()
       .inputs(120)
-      .outputs(84)
-      .init_weight_from_iter(normal.sample_iter(&mut rng))
-      .build();
-    let dense3 = Dense::builder(&device)
+      .outputs(84);
+    let dense3 = Dense::builder()
       .inputs(84)
       .outputs(10)
-      .init_weight_from_iter(normal.sample_iter(&mut rng))
-      .bias()
-      .build();
+      .bias();
     Self {
+      device: None,
       conv1,
       conv2,
       dense1,
@@ -75,7 +67,76 @@ impl Lenet5 {
   }
 }
 
+impl Lenet5Builder {
+  fn init(mut self, mut rng: &mut impl Rng) -> Self {
+    fn he_normal(inputs: usize) -> Normal<f32> {
+      let std_dev = f32::sqrt(2. / inputs.to_f32().unwrap());
+      Normal::new(0., std_dev).unwrap()
+    }
+    fn xavier_uniform(inputs: usize, outputs: usize) -> Uniform<f32> {
+      let range = f32::sqrt(6. / (inputs + outputs).to_f32().unwrap());
+      Uniform::new(-range, range)
+    }
+    self.conv1 = self.conv1.weight_data(|d| {
+      let (outputs, inputs, kh, kw) = d.into_pattern(); 
+      xavier_uniform(inputs, outputs)
+        .sample_iter(&mut rng)
+        .take(d.size())
+        .collect()
+    });
+    self.conv2 = self.conv2.weight_data(|d| {
+      let (outputs, inputs, kh, kw) = d.into_pattern(); 
+      xavier_uniform(inputs, outputs)
+        .sample_iter(&mut rng)
+        .take(d.size())
+        .collect()
+    });
+    self.dense1 = self.dense1.weight_data(|d| {
+      let (outputs, inputs) = d.into_pattern(); 
+      he_normal(inputs)
+        .sample_iter(&mut rng)
+        .take(d.size())
+        .collect()
+    });
+    self.dense2 = self.dense2.weight_data(|d| {
+      let (outputs, inputs) = d.into_pattern(); 
+      he_normal(inputs)
+        .sample_iter(&mut rng)
+        .take(d.size())
+        .collect()
+    });
+    self.dense3 = self.dense3.weight_data(|d| {
+      let (outputs, inputs) = d.into_pattern(); 
+      he_normal(inputs)
+        .sample_iter(&mut rng)
+        .take(d.size())
+        .collect()
+    });
+    self
+  }
+}
+
+impl LayerBuilder for Lenet5Builder {
+  type Layer = Lenet5;
+  fn device(mut self, device: &Device) -> Self {
+    self.device.replace(device.clone());
+    self
+  }
+  fn build(self) -> Lenet5 {
+    self.into()
+  }
+}
+
+struct Lenet5 {
+  conv1: Conv2d,
+  conv2: Conv2d,
+  dense1: Dense,
+  dense2: Dense,
+  dense3: Dense
+}
+
 impl Layer for Lenet5 {
+  type Builder = Lenet5Builder;
   fn parameters(&self) -> Vec<ParameterD> {
     self.conv1.parameters()
       .into_iter()
@@ -91,6 +152,45 @@ impl Layer for Lenet5 {
     self.dense1.init_training();
     self.dense2.init_training();
     self.dense3.init_training();
+  }
+  fn to_builder(&self, with_data: bool) -> Lenet5Builder {
+    let device = None;
+    let conv1 = self.conv1.to_builder(with_data);
+    let conv2 = self.conv2.to_builder(with_data);
+    let dense1 = self.dense1.to_builder(with_data);
+    let dense2 = self.dense2.to_builder(with_data);
+    let dense3 = self.dense3.to_builder(with_data);
+    Lenet5Builder {
+      device,
+      conv1,
+      conv2,
+      dense1,
+      dense2,
+      dense3
+    }
+  }
+}
+
+impl From<Lenet5Builder> for Lenet5 {
+  fn from(builder: Lenet5Builder) -> Self {
+    let device = builder.device.unwrap();
+    let conv1 = builder.conv1.device(&device)
+      .build();
+    let conv2 = builder.conv2.device(&device)
+      .build();
+    let dense1 = builder.dense1.device(&device)
+      .build();
+    let dense2 = builder.dense2.device(&device)
+      .build();
+    let dense3 = builder.dense3.device(&device)
+      .build();
+    Self {
+      conv1,
+      conv2,
+      dense1,
+      dense2,
+      dense3
+    }
   }
 }
 
@@ -113,7 +213,6 @@ impl Inference<Ix4> for Lenet5 {
 }
 
 impl Forward<Ix4> for Lenet5 {
-  type OutputDim = Ix2;
   fn forward(&self, input: &Variable4, train: bool) -> Variable2 {
     let x = self.conv1.forward(&input, train)
       .relu()
@@ -140,17 +239,24 @@ fn main() {
   
   let mut rng = SmallRng::seed_from_u64(0); 
   
-  let mut model = Lenet5::new(&device, &mut rng);
+  let mut model = Lenet5::builder()
+    .device(&device)
+    .init(&mut rng)
+    .build();
   model.init_training();
   
-  let lr = 0.01;
-  let train_batch_size: usize = 60;
-  let eval_batch_size: usize = 1000;
+  let train_batch_size: usize = 40;
+  let eval_batch_size: usize = 1024;
+  
+  let lr = 0.001;
+  
+  println!("train_batch_size: {}", train_batch_size);
+  println!("lr: {}", lr);
   
   let dataset = Mnist::new();
 
   let start = Instant::now();
-  for epoch in 1 ..= 20 {
+  for epoch in 1 ..= 200 {
     let mut train_loss = 0.;
     let mut train_correct: usize = 0;
     dataset.train(train_batch_size)
