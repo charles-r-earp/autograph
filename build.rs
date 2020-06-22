@@ -8,7 +8,7 @@ fn main() {
       .define("DNNL_LIBRARY_TYPE", "STATIC")
       .define("DNNL_BUILD_EXAMPLES", "OFF")
       .define("DNNL_BUILD_TESTS", "OFF")
-      .cxx_flag("-fPIC")
+      .cxxflag("-fPIC")
       .build();
     println!("cargo:rustc-link-search=native={}", dst.join("lib").display());
     println!("cargo:rustc-link-lib=static=dnnl");
