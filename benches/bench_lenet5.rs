@@ -16,15 +16,14 @@ use autograph::layer::{
   Conv2d, Dense,
   builders::{LayerBuilder, Conv2dBuilder, DenseBuilder}
 };
-use autograph::datasets::Mnist; // requires feature "datasets"
 #[cfg(feature="cuda")]
 use autograph::CudaGpu;
 use ndarray::{Dimension, Ix2, Ix4};
 use std::time::Instant;
 use rand::{Rng, SeedableRng, rngs::SmallRng};
 use rand_distr::{Distribution, Normal, Uniform};
-use argmm::ArgMinMax;
 use num_traits::ToPrimitive;
+use criterion::{black_box, criterion_group, criterion_main, Criterion};
 
 #[derive(Clone)]
 struct Lenet5Builder {
@@ -229,109 +228,139 @@ impl Forward<Ix4> for Lenet5 {
   }
 }
 
-fn main() {
-  println!("MNIST Lenet5 Example");
-  
-  #[cfg(not(feature="cuda"))]
-  let device = Device::from(Cpu::new());
-  #[cfg(feature="cuda")]
-  let device = Device::from(CudaGpu::new(0));
-  
+fn bench_autograph_lenet5(c: &mut Criterion, device: &Device, batch_size: usize) {
   let mut rng = SmallRng::seed_from_u64(0); 
-  
   let mut model = Lenet5::builder()
     .device(&device)
     .init(&mut rng)
     .build();
   model.init_training();
   
-  let train_batch_size: usize = 256;
-  let eval_batch_size: usize = 1024;
-  
   let lr = 0.001;
   
-  println!("train_batch_size: {}", train_batch_size);
-  println!("lr: {}", lr);
-  
-  let dataset = Mnist::new();
+  let x = ArcTensor::ones(&device, [batch_size, 1, 28, 28]);
+  let t = Tensor::<u8, _>::zeros(&device, batch_size);
+  c.bench_function(&format!("autograph_lenet5_train_{}_{:?}", batch_size, device), |b| b.iter(|| {
+    let graph = Graph::new();
+    let x = Variable::new(
+      &graph,
+      x.clone(),
+      None
+    );
+    let y = model.forward(&x, true);
+    let t = ArcTensor::from(t.to_one_hot_f32(10));
+    let loss = y.cross_entropy_loss(&t);
+    loss.backward(graph);
+    model.parameters()
+      .iter()
+      .for_each(|w| {
+        let mut w_value = w.value()
+          .write()
+          .unwrap();
+        let mut w_grad = w.grad()
+          .unwrap()
+          .write()
+          .unwrap();
+        w_value.scaled_add(-lr, &w_grad);
+        w_grad.fill(0.);
+      });
+    device.synchronize();
+  }));
+  let x = ArcTensor::ones(&device, [batch_size, 1, 28, 28]);
+  let t = Tensor::<u8, _>::zeros(&device, batch_size);
+  c.bench_function(&format!("autograph_lenet5_eval_{}_{:?}", batch_size, device), |b| b.iter(|| {
+    let y = model.infer(&x.view());
+    let t = t.to_one_hot_f32(10);
+    let loss = y.cross_entropy_loss(&t.view());
+    device.synchronize();
+  }));
+}
 
-  let start = Instant::now();
-  for epoch in 1 ..= 200 {
-    let mut train_loss = 0.;
-    let mut train_correct: usize = 0;
-    dataset.train(train_batch_size)
-      .for_each(|(x_arr, t_arr)| {
-        let graph = Graph::new();
-        let x = Variable::new(
-          &graph,
-          Tensor::from_array(&device, x_arr).to_f32(),
-          None
-        );
-        let t = ArcTensor::from_array(&device, t_arr)
-          .to_one_hot_f32(10);
-        let y = model.forward(&x, true);
-        model.parameters()
-          .iter()
-          .for_each(|w| {
-            w.grad()
-              .unwrap()
-              .write()
-              .unwrap()
-              .fill(0.);
-          });
-        let loss = y.cross_entropy_loss(t);
-        loss.backward(graph);
-        model.parameters()
-          .iter()
-          .for_each(|w| {
-            let mut w_value = w.value()
-              .write()
-              .unwrap();
-            let w_grad = w.grad()
-              .unwrap()
-              .read()
-              .unwrap();
-            w_value.scaled_add(-lr, &w_grad);
-          });
-        y.value()
-          .as_slice()
-          .chunks_exact(10)
-          .zip(t_arr.as_slice().unwrap())
-          .for_each(|(y, &t)| {
-            if y.argmax() == Some(t as usize) {
-              train_correct += 1;
-            }  
-          });
-        train_loss += loss.value()
-          .as_slice()[0];
-      });
-    train_loss /= 60_000f32;
-    let train_acc = train_correct.to_f32().unwrap() * 100f32 / 60_000f32; 
-    
-    let mut eval_loss = 0.;
-    let mut eval_correct: usize = 0;
-    dataset.eval(eval_batch_size)
-      .for_each(|(x_arr, t_arr)| {
-        let x = Tensor::from_array(&device, x_arr)
-          .to_f32();
-        let t = Tensor::from_array(&device, t_arr)
-          .to_one_hot_f32(10);
-        let y = model.infer(&x.view());
-        let loss = y.cross_entropy_loss(&t.view());
-        y.as_slice()
-          .chunks_exact(10)
-          .zip(t_arr.as_slice().unwrap())
-          .for_each(|(y, &t)| {
-            if y.argmax() == Some(t as usize) {
-              eval_correct += 1;
-            }  
-          });
-        eval_loss += loss.as_slice()[0];
-      });
-    eval_loss /= 10_000f32;
-    let eval_acc = eval_correct.to_f32().unwrap() * 100f32 / 10_000f32;
-    let elapsed = Instant::now() - start;
-    println!("epoch: {} elapsed {:.0?} train_loss: {:.5} train_acc: {:.2}% eval_loss: {:.5} eval_acc: {:.2}%", 
-      epoch, elapsed, train_loss, train_acc, eval_loss, eval_acc);
+#[derive(Debug)]
+struct TchLenet5 {
+  conv1: tch::nn::Conv2D,
+  conv2: tch::nn::Conv2D,
+  dense1: tch::nn::Linear,
+  dense2: tch::nn::Linear,
+  dense3: tch::nn::Linear
+}
+
+impl TchLenet5 {
+  fn new(vs: &tch::nn::Path) -> Self {
+    let mut conv_config = tch::nn::ConvConfig::default();
+    conv_config.bias = false;
+    let conv1 = tch::nn::conv2d(vs, 1, 6, 5, conv_config);
+    let conv2 = tch::nn::conv2d(vs, 6, 16, 5, conv_config);
+    let mut linear_config = tch::nn::LinearConfig::default();
+    linear_config.bias = false;
+    let dense1 = tch::nn::linear(vs, 256, 120, linear_config);
+    let dense2 = tch::nn::linear(vs, 120, 84, linear_config);
+    linear_config.bias = true;
+    let dense3 = tch::nn::linear(vs, 84, 10, linear_config);
+    Self {
+      conv1,
+      conv2,
+      dense1,
+      dense2,
+      dense3
+    }
   }
 }
+
+impl tch::nn::ModuleT for TchLenet5 {
+  fn forward_t(&self, xs: &tch::Tensor, train: bool) -> tch::Tensor {
+    xs.apply(&self.conv1)
+      .max_pool2d_default(2)
+      .apply(&self.conv2)
+      .max_pool2d_default(2)
+      .view([-1, 256])
+      .apply(&self.dense1)
+      .relu()
+      .apply(&self.dense2)
+      .relu()
+      .apply(&self.dense3)
+  }
+}
+
+fn bench_tch_lenet5(c: &mut Criterion, device: tch::Device, batch_size: usize) {
+  use tch::nn::ModuleT;
+  use tch::nn::OptimizerConfig;
+  let vs = tch::nn::VarStore::new(device);
+  let model = TchLenet5::new(&vs.root());
+  let lr = 0.001;
+  let mut optim = tch::nn::Sgd::default()
+    .build(&vs, lr)
+    .unwrap();
+  
+  let device_name = match device {
+    tch::Device::Cpu => String::from("cpu"),
+    tch::Device::Cuda(i) => format!("cuda:{}", i)
+  };
+  let x = tch::Tensor::ones(&[batch_size as i64, 1, 28, 28], (tch::Kind::Float, device));
+  let t = tch::Tensor::zeros(&[batch_size as i64], (tch::Kind::Int64, device));
+  c.bench_function(&format!("tch_lenet5_train_{}_{}", batch_size, &device_name), |b| b.iter(|| {
+    let y = model.forward_t(&x, true);
+    let loss = y.cross_entropy_for_logits(&t);
+    optim.backward_step(&loss);
+  }));
+  let x = tch::Tensor::ones(&[batch_size as i64, 1, 28, 28], (tch::Kind::Float, device));
+  let t = tch::Tensor::zeros(&[batch_size as i64], (tch::Kind::Int64, device));
+  c.bench_function(&format!("tch_lenet5_eval_{}_{}", batch_size, &device_name), |b| b.iter(|| {
+    let y = model.forward_t(&x, false);
+    let loss = y.cross_entropy_for_logits(&t);
+  }));
+} 
+
+pub fn criterion_benchmark(c: &mut Criterion) {
+  let cpu = Device::from(Cpu::new());
+  bench_autograph_lenet5(c, &cpu, 256);
+  #[cfg(feature="cuda")] 
+  {
+    let gpu = Device::from(CudaGpu::new(0));
+    bench_autograph_lenet5(c, &gpu, 256);
+  }
+  bench_tch_lenet5(c, tch::Device::Cpu, 256);
+}
+
+criterion_group!(benches, criterion_benchmark);
+criterion_main!(benches);

@@ -165,6 +165,13 @@ impl Device {
       _ => None
     }
   }
+  pub fn synchronize(&self) {
+    #[cfg(feature="cuda")]
+    {
+      self.cuda()
+        .map(|gpu| gpu.synchronize());
+    }
+  }
 }
 
 impl From<Arc<Cpu>> for Device {

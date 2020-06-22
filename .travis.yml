@@ -12,4 +12,8 @@ notifications:
   email: 
     on_success: never
 script:
-  - cargo test --lib 
+  - while sleep 540; do echo "=====[ $SECONDS seconds still running ]====="; done &
+  - cargo test --lib
+  - cargo build --examples
+  - cargo build --benches 
+  - kill %1

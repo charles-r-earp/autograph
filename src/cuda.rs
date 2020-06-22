@@ -223,6 +223,9 @@ impl CudaGpu {
   fn cudnn_context(&self) -> &Mutex<*mut cudnnContext> {
     &self.cudnn_context
   }
+  pub(super) fn synchronize(&self) {
+    self.stream.synchronize();
+  }
 }
 
 impl Debug for CudaGpu {

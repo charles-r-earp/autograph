@@ -477,10 +477,9 @@ impl Variable2 {
     }
     Self::new(&graph, output_value, output_grad)
   }
-  pub fn cross_entropy_loss(&self, target: impl Into<ArcTensor2<f32>>) -> Variable0 {
+  pub fn cross_entropy_loss(&self, target: &ArcTensor2<f32>) -> Variable0 {
     let graph = Weak::upgrade(&self.graph)
       .unwrap();
-    let target = target.into();
     let output_value = ArcTensor::from(
       self.value.cross_entropy_loss(&target.view())
     );
@@ -490,7 +489,7 @@ impl Variable2 {
       graph.backward_variable_op(CrossEntropyBackward {
         input: self.value.clone(),
         input_grad: input_grad.clone(),
-        target,
+        target: target.clone(),
         output_grad: output_grad.clone()
       });
       output_grad
