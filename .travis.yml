@@ -15,6 +15,6 @@ script:
   - while sleep 540; do echo "=====[ $SECONDS seconds still running ]====="; done &
   - cargo build
   - cargo test --lib
-  - cargo build --examples
+  - cargo build --examples --features datasets
   - cargo build --benches 
   - kill %1
