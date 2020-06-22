@@ -13,6 +13,7 @@ notifications:
     on_success: never
 script:
   - while sleep 540; do echo "=====[ $SECONDS seconds still running ]====="; done &
+  - cargo build
   - cargo test --lib
   - cargo build --examples
   - cargo build --benches 
