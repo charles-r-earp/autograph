@@ -267,8 +267,10 @@ fn main() {
           Tensor::from_array(&device, x_arr).to_f32(),
           None
         );
-        let t = ArcTensor::from_array(&device, t_arr)
-          .to_one_hot_f32(10);
+        let t = ArcTensor::from(
+          Tensor::from_array(&device, t_arr)
+            .to_one_hot_f32(10)
+        );
         let y = model.forward(&x, true);
         model.parameters()
           .iter()
@@ -279,7 +281,7 @@ fn main() {
               .unwrap()
               .fill(0.);
           });
-        let loss = y.cross_entropy_loss(t);
+        let loss = y.cross_entropy_loss(&t);
         loss.backward(graph);
         model.parameters()
           .iter()

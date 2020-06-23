@@ -53,8 +53,10 @@ fn main() {
             .to_f32(),
           None
         );
-        let t = ArcTensor::from_shape_vec(&device, train_batch_size, t_arr.as_slice().unwrap())
-          .to_one_hot_f32(10);
+        let t = ArcTensor::from(
+          Tensor::from_shape_vec(&device, train_batch_size, t_arr.as_slice().unwrap())
+            .to_one_hot_f32(10)
+        );
         let y = x.dense(&w, Some(&b));
         w.grad()
           .unwrap()
@@ -66,7 +68,7 @@ fn main() {
           .write()
           .unwrap()
           .fill(0.);
-        let loss = y.cross_entropy_loss(t);
+        let loss = y.cross_entropy_loss(&t);
         loss.backward(graph);
         let mut w_value = w.value()
           .write()
