@@ -9,6 +9,7 @@ fn main() {
       .define("DNNL_BUILD_EXAMPLES", "OFF")
       .define("DNNL_BUILD_TESTS", "OFF")
       .build();
+    panic!();
     println!("cargo:rustc-link-search=native={}", dst.join("lib").display());
     println!("cargo:rustc-link-lib=static=dnnl");
     cpp_build::Config::new()
