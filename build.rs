@@ -9,7 +9,6 @@ fn main() {
       .define("DNNL_BUILD_EXAMPLES", "OFF")
       .define("DNNL_BUILD_TESTS", "OFF")
       .build();
-    panic!();
     println!("cargo:rustc-link-search=native={}", dst.join("lib").display());
     println!("cargo:rustc-link-lib=static=dnnl");
     cpp_build::Config::new()
@@ -45,7 +44,7 @@ fn main() {
         .next()
         .unwrap();
       println!("cargo:rustc-link-search=native=/usr/lib/gcc/{}/{}", machine, version);
-      println!("cargo:rustc-link-lib=static=gomp");
+      println!("cargo:rustc-link-lib=dylib=gomp");
     }
   }
     
