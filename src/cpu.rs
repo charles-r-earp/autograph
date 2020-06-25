@@ -19,7 +19,6 @@ cpp!({
   #include <cassert>
   #include <utility>
   
-  using dnnl_dim = dnnl::memory::dim;
   using dnnl_dt = dnnl::memory::data_type;
   using dnnl_tag = dnnl::memory::format_tag;
   using argmap = std::unordered_map<int, dnnl::memory>;
@@ -194,9 +193,9 @@ pub(super) fn gemm<S1: DataRef<Elem=f32>, S2: DataRef<Elem=f32>, S3: DataMut<Ele
   let t_b = trans_b == Transpose::Yes;
   cpp!(unsafe [t_a as "bool",
                t_b as "bool",
-               m as "dnnl::dim",
-               k as "dnnl::dim",
-               n as "dnnl::dim",
+               m as "dnnl_dim_t",
+               k as "dnnl_dim_t",
+               n as "dnnl_dim_t",
                alpha as "float",
                beta as "float",
                a as "const float*",
@@ -204,8 +203,8 @@ pub(super) fn gemm<S1: DataRef<Elem=f32>, S2: DataRef<Elem=f32>, S3: DataMut<Ele
                c as "float*"] {
     char trans_a = t_a ? 't' : 'n';
     char trans_b = t_b ? 't' : 'n';
-    long int lda = t_a ? m : k;
-    long int ldb = t_b ? k : n;
+    dnnl_dim_t lda = t_a ? m : k;
+    dnnl_dim_t ldb = t_b ? k : n;
     auto status = dnnl::sgemm(
       trans_a,
       trans_b,
@@ -252,7 +251,7 @@ pub(super) fn relu<S1: DataRef<Elem=f32>, S2: DataMut<Elem=f32>, D: Dimension>
   
   cpp!(unsafe [engine_ptr as "const dnnl::engine*",
                stream_ptr as "dnnl::stream*",
-               n as "dnnl::dim",
+               n as "dnnl_dim_t",
                x as "const float*",
                y as "float*"] {
     auto engine = *engine_ptr;
@@ -303,7 +302,7 @@ pub(super) fn relu_backward<S1: DataRef<Elem=f32>, S2: DataMut<Elem=f32>, S3: Da
   
   cpp!(unsafe [engine_ptr as "const dnnl::engine*",
                stream_ptr as "dnnl::stream*",
-               n as "dnnl::dim",
+               n as "dnnl_dim_t",
                x as "const float*",
                dx as "float*",
                dy as "const float*"] {
@@ -384,8 +383,8 @@ pub(super) fn cross_entropy<S1: DataRef<Elem=f32>, S2: DataRef<Elem=f32>, S3: Da
   
   cpp!(unsafe [engine_ptr as "const dnnl::engine*",
                stream_ptr as "dnnl::stream*",
-               m as "dnnl::dim",
-               n as "dnnl::dim",
+               m as "dnnl_dim_t",
+               n as "dnnl_dim_t",
                x as "const float*",
                t as "const float*",
                y as "float*"] {
@@ -458,8 +457,8 @@ pub(super) fn cross_entropy_backward<S1: DataRef<Elem=f32>, S2: DataMut<Elem=f32
   
   cpp!(unsafe [engine_ptr as "const dnnl::engine*",
                stream_ptr as "dnnl::stream*",
-               m as "dnnl::dim",
-               n as "dnnl::dim",
+               m as "dnnl_dim_t",
+               n as "dnnl_dim_t",
                x as "const float*", dx as "float*",
                t as "const float*",
                dy as "float"] {
@@ -528,19 +527,19 @@ pub(super) fn conv2d<S1: DataRef<Elem=f32>, S2: DataMut<Elem=f32>>
     
     cpp!(unsafe [engine_ptr as "const dnnl::engine*",
                 stream_ptr as "dnnl::stream*",
-                bs as "dnnl::dim",
-                i as "dnnl::dim",
-                o as "dnnl::dim",
-                ih as "dnnl::dim",
-                iw as "dnnl::dim",
-                oh as "dnnl::dim",
-                ow as "dnnl::dim",
-                kh as "dnnl::dim",
-                kw as "dnnl::dim",
-                sh as "dnnl::dim",
-                sw as "dnnl::dim",
-                ph as "dnnl::dim",
-                pw as "dnnl::dim",
+                bs as "dnnl_dim_t",
+                i as "dnnl_dim_t",
+                o as "dnnl_dim_t",
+                ih as "dnnl_dim_t",
+                iw as "dnnl_dim_t",
+                oh as "dnnl_dim_t",
+                ow as "dnnl_dim_t",
+                kh as "dnnl_dim_t",
+                kw as "dnnl_dim_t",
+                sh as "dnnl_dim_t",
+                sw as "dnnl_dim_t",
+                ph as "dnnl_dim_t",
+                pw as "dnnl_dim_t",
                 x as "const float*",
                 w as "const float*",
                 b as "const float*",
@@ -556,9 +555,9 @@ pub(super) fn conv2d<S1: DataRef<Elem=f32>, S2: DataMut<Elem=f32>>
       auto b_mem = dnnl::memory(b_md, engine, (float*) b);
       auto y_md = dnnl::memory::desc({bs, o, oh, ow}, dnnl_dt::f32, dnnl_tag::nchw);
       auto y_mem = dnnl::memory(y_md, engine, y);
-      std::vector<long int> strides{sh, sw};
-      std::vector<long int> pad_l{ph, pw};
-      std::vector<long int> pad_r{ph, pw};
+      std::vector<dnnl_dim_t> strides{sh, sw};
+      std::vector<dnnl_dim_t> pad_l{ph, pw};
+      std::vector<dnnl_dim_t> pad_r{ph, pw};
       
       auto conv_d = dnnl::convolution_forward::desc(
         dnnl::prop_kind::forward_inference,
@@ -584,19 +583,19 @@ pub(super) fn conv2d<S1: DataRef<Elem=f32>, S2: DataMut<Elem=f32>>
   else {
     cpp!(unsafe [engine_ptr as "const dnnl::engine*",
                 stream_ptr as "dnnl::stream*",
-                bs as "dnnl::dim",
-                i as "dnnl::dim",
-                o as "dnnl::dim",
-                ih as "dnnl::dim",
-                iw as "dnnl::dim",
-                oh as "dnnl::dim",
-                ow as "dnnl::dim",
-                kh as "dnnl::dim",
-                kw as "dnnl::dim",
-                sh as "dnnl::dim",
-                sw as "dnnl::dim",
-                ph as "dnnl::dim",
-                pw as "dnnl::dim",
+                bs as "dnnl_dim_t",
+                i as "dnnl_dim_t",
+                o as "dnnl_dim_t",
+                ih as "dnnl_dim_t",
+                iw as "dnnl_dim_t",
+                oh as "dnnl_dim_t",
+                ow as "dnnl_dim_t",
+                kh as "dnnl_dim_t",
+                kw as "dnnl_dim_t",
+                sh as "dnnl_dim_t",
+                sw as "dnnl_dim_t",
+                ph as "dnnl_dim_t",
+                pw as "dnnl_dim_t",
                 x as "const float*",
                 w as "const float*",
                 y as "float*"] {
@@ -609,9 +608,9 @@ pub(super) fn conv2d<S1: DataRef<Elem=f32>, S2: DataMut<Elem=f32>>
       auto w_mem = dnnl::memory(w_md, engine, (float*) w);
       auto y_md = dnnl::memory::desc({bs, o, oh, ow}, dnnl_dt::f32, dnnl_tag::nchw);
       auto y_mem = dnnl::memory(y_md, engine, y);
-      std::vector<long int> strides{sh, sw};
-      std::vector<long int> pad_l{ph, pw};
-      std::vector<long int> pad_r{ph, pw};
+      std::vector<dnnl_dim_t> strides{sh, sw};
+      std::vector<dnnl_dim_t> pad_l{ph, pw};
+      std::vector<dnnl_dim_t> pad_r{ph, pw};
       
       auto conv_d = dnnl::convolution_forward::desc(
         dnnl::prop_kind::forward_inference,
@@ -669,19 +668,19 @@ pub(super) fn conv2d_backward_input<S1: DataMut<Elem=f32>>
   
   cpp!(unsafe [engine_ptr as "const dnnl::engine*",
                stream_ptr as "dnnl::stream*",
-               bs as "dnnl::dim",
-               i as "dnnl::dim",
-               o as "dnnl::dim",
-               ih as "dnnl::dim",
-               iw as "dnnl::dim",
-               oh as "dnnl::dim",
-               ow as "dnnl::dim",
-               kh as "dnnl::dim",
-               kw as "dnnl::dim",
-               sh as "dnnl::dim",
-               sw as "dnnl::dim",
-               ph as "dnnl::dim",
-               pw as "dnnl::dim",
+               bs as "dnnl_dim_t",
+               i as "dnnl_dim_t",
+               o as "dnnl_dim_t",
+               ih as "dnnl_dim_t",
+               iw as "dnnl_dim_t",
+               oh as "dnnl_dim_t",
+               ow as "dnnl_dim_t",
+               kh as "dnnl_dim_t",
+               kw as "dnnl_dim_t",
+               sh as "dnnl_dim_t",
+               sw as "dnnl_dim_t",
+               ph as "dnnl_dim_t",
+               pw as "dnnl_dim_t",
                dx as "float*",
                w as "const float*",
                dy as "const float*"] {
@@ -694,9 +693,9 @@ pub(super) fn conv2d_backward_input<S1: DataMut<Elem=f32>>
     auto w_mem = dnnl::memory(w_md, engine, (float*) w);
     auto dy_md = dnnl::memory::desc({bs, o, oh, ow}, dnnl_dt::f32, dnnl_tag::nchw);
     auto dy_mem = dnnl::memory(dy_md, engine, (float*) dy);
-    std::vector<long int> strides{sh, sw};
-    std::vector<long int> pad_l{ph, pw};
-    std::vector<long int> pad_r{ph, pw};
+    std::vector<dnnl_dim_t> strides{sh, sw};
+    std::vector<dnnl_dim_t> pad_l{ph, pw};
+    std::vector<dnnl_dim_t> pad_r{ph, pw};
     
     auto conv_d = dnnl::convolution_forward::desc(
       dnnl::prop_kind::forward_training,
@@ -767,19 +766,19 @@ pub(super) fn conv2d_backward_weight_bias<S1: DataRef<Elem=f32>>
     
     cpp!(unsafe [engine_ptr as "const dnnl::engine*",
                  stream_ptr as "dnnl::stream*",
-                 bs as "dnnl::dim",
-                 i as "dnnl::dim",
-                 o as "dnnl::dim",
-                 ih as "dnnl::dim",
-                 iw as "dnnl::dim",
-                 oh as "dnnl::dim",
-                 ow as "dnnl::dim",
-                 kh as "dnnl::dim",
-                 kw as "dnnl::dim",
-                 sh as "dnnl::dim",
-                 sw as "dnnl::dim",
-                 ph as "dnnl::dim",
-                 pw as "dnnl::dim",
+                 bs as "dnnl_dim_t",
+                 i as "dnnl_dim_t",
+                 o as "dnnl_dim_t",
+                 ih as "dnnl_dim_t",
+                 iw as "dnnl_dim_t",
+                 oh as "dnnl_dim_t",
+                 ow as "dnnl_dim_t",
+                 kh as "dnnl_dim_t",
+                 kw as "dnnl_dim_t",
+                 sh as "dnnl_dim_t",
+                 sw as "dnnl_dim_t",
+                 ph as "dnnl_dim_t",
+                 pw as "dnnl_dim_t",
                  x as "const float*",
                  dw as "float*",
                  db as "float*",
@@ -795,9 +794,9 @@ pub(super) fn conv2d_backward_weight_bias<S1: DataRef<Elem=f32>>
       auto db_mem = dnnl::memory(db_md, engine, db);
       auto dy_md = dnnl::memory::desc({bs, o, oh, ow}, dnnl_dt::f32, dnnl_tag::nchw);
       auto dy_mem = dnnl::memory(dy_md, engine, (float*) dy);
-      std::vector<long int> strides{sh, sw};
-      std::vector<long int> pad_l{ph, pw};
-      std::vector<long int> pad_r{ph, pw};
+      std::vector<dnnl_dim_t> strides{sh, sw};
+      std::vector<dnnl_dim_t> pad_l{ph, pw};
+      std::vector<dnnl_dim_t> pad_r{ph, pw};
       
       auto conv_d = dnnl::convolution_forward::desc(
         dnnl::prop_kind::forward_inference,
@@ -833,19 +832,19 @@ pub(super) fn conv2d_backward_weight_bias<S1: DataRef<Elem=f32>>
   else {
     cpp!(unsafe [engine_ptr as "const dnnl::engine*",
                  stream_ptr as "dnnl::stream*",
-                 bs as "dnnl::dim",
-                 i as "dnnl::dim",
-                 o as "dnnl::dim",
-                 ih as "dnnl::dim",
-                 iw as "dnnl::dim",
-                 oh as "dnnl::dim",
-                 ow as "dnnl::dim",
-                 kh as "dnnl::dim",
-                 kw as "dnnl::dim",
-                 sh as "dnnl::dim",
-                 sw as "dnnl::dim",
-                 ph as "dnnl::dim",
-                 pw as "dnnl::dim",
+                 bs as "dnnl_dim_t",
+                 i as "dnnl_dim_t",
+                 o as "dnnl_dim_t",
+                 ih as "dnnl_dim_t",
+                 iw as "dnnl_dim_t",
+                 oh as "dnnl_dim_t",
+                 ow as "dnnl_dim_t",
+                 kh as "dnnl_dim_t",
+                 kw as "dnnl_dim_t",
+                 sh as "dnnl_dim_t",
+                 sw as "dnnl_dim_t",
+                 ph as "dnnl_dim_t",
+                 pw as "dnnl_dim_t",
                  x as "const float*",
                  dw as "float*",
                  dy as "const float*"] {
@@ -858,9 +857,9 @@ pub(super) fn conv2d_backward_weight_bias<S1: DataRef<Elem=f32>>
       auto dw_mem = dnnl::memory(dw_md, engine, dw);
       auto dy_md = dnnl::memory::desc({bs, o, oh, ow}, dnnl_dt::f32, dnnl_tag::nchw);
       auto dy_mem = dnnl::memory(dy_md, engine, (float*) dy);
-      std::vector<long int> strides{sh, sw};
-      std::vector<long int> pad_l{ph, pw};
-      std::vector<long int> pad_r{ph, pw};
+      std::vector<dnnl_dim_t> strides{sh, sw};
+      std::vector<dnnl_dim_t> pad_l{ph, pw};
+      std::vector<dnnl_dim_t> pad_r{ph, pw};
       
       auto conv_d = dnnl::convolution_forward::desc(
         dnnl::prop_kind::forward_inference,
@@ -926,19 +925,19 @@ pub(super) fn max_pool2d_forward<S1: DataRef<Elem=f32>, S2: DataMut<Elem=f32>>
   if train {
     let (ws, ws_size) = cpp!(unsafe [engine_ptr as "const dnnl::engine*",
                  stream_ptr as "dnnl::stream*",
-                 bs as "dnnl::dim",
-                 i as "dnnl::dim",
-                 o as "dnnl::dim",
-                 ih as "dnnl::dim",
-                 iw as "dnnl::dim",
-                 oh as "dnnl::dim",
-                 ow as "dnnl::dim",
-                 kh as "dnnl::dim",
-                 kw as "dnnl::dim",
-                 sh as "dnnl::dim",
-                 sw as "dnnl::dim",
-                 ph as "dnnl::dim",
-                 pw as "dnnl::dim",
+                 bs as "dnnl_dim_t",
+                 i as "dnnl_dim_t",
+                 o as "dnnl_dim_t",
+                 ih as "dnnl_dim_t",
+                 iw as "dnnl_dim_t",
+                 oh as "dnnl_dim_t",
+                 ow as "dnnl_dim_t",
+                 kh as "dnnl_dim_t",
+                 kw as "dnnl_dim_t",
+                 sh as "dnnl_dim_t",
+                 sw as "dnnl_dim_t",
+                 ph as "dnnl_dim_t",
+                 pw as "dnnl_dim_t",
                  x as "const float*",
                  y as "float*"] -> (*mut u8, usize) as "std::pair<unsigned char*, std::size_t>" {
       auto engine = *engine_ptr;
@@ -948,10 +947,10 @@ pub(super) fn max_pool2d_forward<S1: DataRef<Elem=f32>, S2: DataMut<Elem=f32>>
       auto x_mem = dnnl::memory(x_desc, engine, (float*) x);
       auto y_desc = dnnl::memory::desc({bs, o, oh, ow}, dnnl_dt::f32, dnnl_tag::nchw);
       auto y_mem = dnnl::memory(y_desc, engine, y);
-      std::vector<long int> strides{sh, sw};
-      std::vector<long int> kernel{kh, kw};
-      std::vector<long int> pad_l{ph, pw};
-      std::vector<long int> pad_r{ph, pw};
+      std::vector<dnnl_dim_t> strides{sh, sw};
+      std::vector<dnnl_dim_t> kernel{kh, kw};
+      std::vector<dnnl_dim_t> pad_l{ph, pw};
+      std::vector<dnnl_dim_t> pad_r{ph, pw};
       
       auto pool_d = dnnl::pooling_forward::desc(
         dnnl::prop_kind::forward_training,
@@ -992,19 +991,19 @@ pub(super) fn max_pool2d_forward<S1: DataRef<Elem=f32>, S2: DataMut<Elem=f32>>
   else {
     cpp!(unsafe [engine_ptr as "const dnnl::engine*",
                  stream_ptr as "dnnl::stream*",
-                 bs as "dnnl::dim",
-                 i as "dnnl::dim",
-                 o as "dnnl::dim",
-                 ih as "dnnl::dim",
-                 iw as "dnnl::dim",
-                 oh as "dnnl::dim",
-                 ow as "dnnl::dim",
-                 kh as "dnnl::dim",
-                 kw as "dnnl::dim",
-                 sh as "dnnl::dim",
-                 sw as "dnnl::dim",
-                 ph as "dnnl::dim",
-                 pw as "dnnl::dim",
+                 bs as "dnnl_dim_t",
+                 i as "dnnl_dim_t",
+                 o as "dnnl_dim_t",
+                 ih as "dnnl_dim_t",
+                 iw as "dnnl_dim_t",
+                 oh as "dnnl_dim_t",
+                 ow as "dnnl_dim_t",
+                 kh as "dnnl_dim_t",
+                 kw as "dnnl_dim_t",
+                 sh as "dnnl_dim_t",
+                 sw as "dnnl_dim_t",
+                 ph as "dnnl_dim_t",
+                 pw as "dnnl_dim_t",
                  x as "const float*",
                  y as "float*"] {
       auto engine = *engine_ptr;
@@ -1014,10 +1013,10 @@ pub(super) fn max_pool2d_forward<S1: DataRef<Elem=f32>, S2: DataMut<Elem=f32>>
       auto x_mem = dnnl::memory(x_desc, engine, (float*) x);
       auto y_desc = dnnl::memory::desc({bs, o, oh, ow}, dnnl_dt::f32, dnnl_tag::nchw);
       auto y_mem = dnnl::memory(y_desc, engine, y);
-      std::vector<long int> strides{sh, sw};
-      std::vector<long int> kernel{kh, kw};
-      std::vector<long int> pad_l{ph, pw};
-      std::vector<long int> pad_r{ph, pw};
+      std::vector<dnnl_dim_t> strides{sh, sw};
+      std::vector<dnnl_dim_t> kernel{kh, kw};
+      std::vector<dnnl_dim_t> pad_l{ph, pw};
+      std::vector<dnnl_dim_t> pad_r{ph, pw};
       
       auto pool_d = dnnl::pooling_forward::desc(
         dnnl::prop_kind::forward_inference,
@@ -1085,19 +1084,19 @@ pub(super) fn max_pool2d_backward<S1: DataRef<Elem=f32>, S2: DataMut<Elem=f32>, 
   
   cpp!(unsafe [engine_ptr as "const dnnl::engine*",
                stream_ptr as "dnnl::stream*",
-               bs as "dnnl::dim",
-               i as "dnnl::dim",
-               o as "dnnl::dim",
-               ih as "dnnl::dim",
-               iw as "dnnl::dim",
-               oh as "dnnl::dim",
-               ow as "dnnl::dim",
-               kh as "dnnl::dim",
-               kw as "dnnl::dim",
-               sh as "dnnl::dim",
-               sw as "dnnl::dim",
-               ph as "dnnl::dim",
-               pw as "dnnl::dim",
+               bs as "dnnl_dim_t",
+               i as "dnnl_dim_t",
+               o as "dnnl_dim_t",
+               ih as "dnnl_dim_t",
+               iw as "dnnl_dim_t",
+               oh as "dnnl_dim_t",
+               ow as "dnnl_dim_t",
+               kh as "dnnl_dim_t",
+               kw as "dnnl_dim_t",
+               sh as "dnnl_dim_t",
+               sw as "dnnl_dim_t",
+               ph as "dnnl_dim_t",
+               pw as "dnnl_dim_t",
                x as "const float*",
                dx as "float*",
                dy as "const float*",
@@ -1112,10 +1111,10 @@ pub(super) fn max_pool2d_backward<S1: DataRef<Elem=f32>, S2: DataMut<Elem=f32>, 
     auto dx_mem = dnnl::memory(dx_desc, engine, dx);
     auto dy_desc = dnnl::memory::desc({bs, o, oh, ow}, dnnl_dt::f32, dnnl_tag::nchw);
     auto dy_mem = dnnl::memory(dy_desc, engine, (float*) dy);
-    std::vector<long int> strides{sh, sw};
-    std::vector<long int> kernel{kh, kw};
-    std::vector<long int> pad_l{ph, pw};
-    std::vector<long int> pad_r{ph, pw};
+    std::vector<dnnl_dim_t> strides{sh, sw};
+    std::vector<dnnl_dim_t> kernel{kh, kw};
+    std::vector<dnnl_dim_t> pad_l{ph, pw};
+    std::vector<dnnl_dim_t> pad_r{ph, pw};
     
     auto pool_d = dnnl::pooling_forward::desc(
       dnnl::prop_kind::forward_training,
