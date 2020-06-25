@@ -15,7 +15,7 @@ jobs:
     steps:
     - uses: actions/checkout@v1
     - name: Build
-      run: cargo build --verbose
+      run: cargo build --verbose --features datasets
     - name: Run tests
       run: cargo test --lib --verbose
     - name: Check all binary targets
