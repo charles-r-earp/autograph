@@ -17,9 +17,9 @@ jobs:
     - uses: actions/checkout@v2
       with: 
         submodules: recursive
-    - name: Install gcc for macos
+    - name: Install omp for macos
       if: ${{ matrix.os == 'macos-latest' }}
-      run: brew options gcc && brew install gcc
+      run: brew options libomp && brew install libomp
     - name: Check
       run: cargo check --verbose --features datasets
     - name: Check Bins
