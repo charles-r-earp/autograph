@@ -17,8 +17,36 @@ fn main() {
   }
   {
     // gomp for dnnl
-    assert_cfg!(target_os = "linux", "Only Linux supported!");
+    assert_cfg!(any(target_os = "linux", target_os="macos"), "Only Linux or MacOS supported!");
     if cfg!(target_os = "linux") {
+      let machine = Command::new("gcc")
+        .arg("-dumpmachine")
+        .output()
+        .unwrap()
+        .stdout;
+      let machine = CString::new(machine)
+        .unwrap()
+        .into_string()
+        .unwrap();
+      let machine = machine.lines()
+        .next()
+        .unwrap();
+      let version = Command::new("gcc")
+        .arg("-dumpversion")
+        .output()
+        .unwrap()
+        .stdout;
+      let version = CString::new(version)
+        .unwrap()
+        .into_string()
+        .unwrap();
+      let version = version.lines()
+        .next()
+        .unwrap();
+      println!("cargo:rustc-link-search=native=/usr/lib/gcc/{}/{}", machine, version);
+      println!("cargo:rustc-link-lib=dylib=gomp");
+    }
+    else if cfg!(target_os = "macos") {
       let machine = Command::new("gcc")
         .arg("-dumpmachine")
         .output()
