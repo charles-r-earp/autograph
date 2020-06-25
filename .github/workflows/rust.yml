@@ -9,16 +9,26 @@ env:
 
 jobs:
   build:
-
-    runs-on: ubuntu-latest
-
+    runs-on: [ubuntu-latest windows-latest macos-latest]
     steps:
     - uses: actions/checkout@v2
       with: 
         submodules: recursive
+    - name: Check
+      run: cargo check --verbose --features datasets
+    - name: Check Bins
+      run: cargo check --bins --verbose --features datasets
     - name: Build
       run: cargo build --verbose --features datasets
+    - name: Build Bins
+      run: cargo build --bins --verbose --features datasets
     - name: Run tests
       run: cargo test --lib --verbose
-    - name: Check all binary targets
-      run: cargo check --bins --verbose --features datasets
+  benchmark:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v2
+      with: 
+        submodules: recursive
+    - name: Check
+      run: cargo bench
