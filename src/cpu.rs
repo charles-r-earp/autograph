@@ -19,6 +19,7 @@ cpp!({
   #include <cassert>
   #include <utility>
   
+  using dnnl_dim = dnnl::memory::dim;
   using dnnl_dt = dnnl::memory::data_type;
   using dnnl_tag = dnnl::memory::format_tag;
   using argmap = std::unordered_map<int, dnnl::memory>;
