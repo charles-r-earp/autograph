@@ -37,6 +37,7 @@ rand = { version = "0.7.3", features=["small_rng"] }
 approx = "0.3.2"
 tch = "0.1.7"
 criterion = "0.3.2"
+argparse = "0.2.2"
 
 [[bench]]
 name = "bench_lenet5"

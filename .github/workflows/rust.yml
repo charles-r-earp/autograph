@@ -28,11 +28,15 @@ jobs:
       run: cargo build --bins --verbose --features datasets
     - name: Run tests
       run: cargo test --lib --verbose
+    - name: Run MNIST Dense Example
+      run: cargo run --example mnist_dense --verbose --features datasets -- --epochs 1
+    - name: Run MNIST Lenet5 Example
+      run: cargo run --example mnist_lenet5 --verbose --features datasets -- --epochs 1
   benchmark:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v2
       with: 
         submodules: recursive
-    - name: Check
+    - name: Bench
       run: cargo bench
