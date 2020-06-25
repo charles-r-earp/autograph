@@ -30,6 +30,12 @@ Cuda can be enabled by passing the feature "cuda" to cargo. CUDA https://develop
 cargo run --features cuda
 ```
 
+# Getting Started
+View the documentation by:
+```
+cargo doc --open [--features "[datasets] [cuda]"]
+```
+
 # Tests
 Run the unit-tests with (passing the feature cuda additionally runs cuda tests):
 ```
