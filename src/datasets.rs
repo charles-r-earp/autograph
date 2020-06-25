@@ -1,7 +1,7 @@
-use std::{env, fs, fs::DirBuilder, io, marker::PhantomData, iter::FromIterator};
-use ndarray as nd;
-use rand::seq::index::IndexVecIntoIter;
-
+use std::{env, fs::{File, DirBuilder}, io::Read, iter::Iterator};
+use byteorder::{ReadBytesExt, BigEndian};
+use flate2::read::GzDecoder;
+use ndarray::{ArrayView, ArrayView4, ArrayView1};
 
 pub struct Mnist {
   train_images: Vec<u8>,
@@ -12,8 +12,6 @@ pub struct Mnist {
 
 impl Mnist {
   pub fn new() -> Self {
-    use io::Read;
-    use byteorder::{ReadBytesExt, BigEndian};
     let current_dir = env::current_dir().unwrap();
     let mnist_dir = current_dir.join("datasets").join("mnist");
     DirBuilder::new()
@@ -28,11 +26,11 @@ impl Mnist {
         println!("downloading train_images: {:?}", &train_images_path);
         reqwest::get("http://yann.lecun.com/exdb/mnist/train-images-idx3-ubyte.gz")
           .unwrap()
-          .copy_to(&mut fs::File::create(&train_images_path).unwrap())
+          .copy_to(&mut File::create(&train_images_path).unwrap())
           .unwrap();
       }
       println!("loading 60,000 train_images: {:?}", &train_images_path);
-      let mut decoder = flate2::read::GzDecoder::new(fs::File::open(&train_images_path).unwrap());
+      let mut decoder = GzDecoder::new(File::open(&train_images_path).unwrap());
       assert_eq!(decoder.read_i32::<BigEndian>().unwrap(), 2_051);
       assert_eq!(decoder.read_i32::<BigEndian>().unwrap(), 60_000);
       assert_eq!(decoder.read_i32::<BigEndian>().unwrap(), 28);
@@ -49,11 +47,11 @@ impl Mnist {
         println!("downloading train_labels: {:?}", &train_labels_path);
         reqwest::get("http://yann.lecun.com/exdb/mnist/train-labels-idx1-ubyte.gz")
           .unwrap()
-          .copy_to(&mut fs::File::create(&train_labels_path).unwrap())
+          .copy_to(&mut File::create(&train_labels_path).unwrap())
           .unwrap();
       }
       println!("loading 60,000 train_labels: {:?}", &train_labels_path);
-      let mut decoder = flate2::read::GzDecoder::new(fs::File::open(&train_labels_path).unwrap());
+      let mut decoder = GzDecoder::new(File::open(&train_labels_path).unwrap());
       assert_eq!(decoder.read_i32::<BigEndian>().unwrap(), 2_049);
       assert_eq!(decoder.read_i32::<BigEndian>().unwrap(), 60_000);
       decoder.read_to_end(&mut train_labels)
@@ -68,11 +66,11 @@ impl Mnist {
         println!("downloading test_images: {:?}", &test_images_path);
         reqwest::get("http://yann.lecun.com/exdb/mnist/t10k-images-idx3-ubyte.gz")
           .unwrap()
-          .copy_to(&mut fs::File::create(&test_images_path).unwrap())
+          .copy_to(&mut File::create(&test_images_path).unwrap())
           .unwrap();
       }
       println!("loading 10,000 test_images: {:?}", &test_images_path);
-      let mut decoder = flate2::read::GzDecoder::new(fs::File::open(&test_images_path).unwrap());
+      let mut decoder = GzDecoder::new(File::open(&test_images_path).unwrap());
       assert_eq!(decoder.read_i32::<BigEndian>().unwrap(), 2_051);
       assert_eq!(decoder.read_i32::<BigEndian>().unwrap(), 10_000);
       assert_eq!(decoder.read_i32::<BigEndian>().unwrap(), 28);
@@ -89,11 +87,11 @@ impl Mnist {
         println!("downloading test_labels: {:?}", &test_labels_path);
         reqwest::get("http://yann.lecun.com/exdb/mnist/t10k-labels-idx1-ubyte.gz")
           .unwrap()
-          .copy_to(&mut fs::File::create(&test_labels_path).unwrap())
+          .copy_to(&mut File::create(&test_labels_path).unwrap())
           .unwrap();
       }
       println!("loading 10,000 test_labels: {:?}", &test_labels_path);
-      let mut decoder = flate2::read::GzDecoder::new(fs::File::open(&test_labels_path).unwrap());
+      let mut decoder = GzDecoder::new(File::open(&test_labels_path).unwrap());
       assert_eq!(decoder.read_i32::<BigEndian>().unwrap(), 2_049);
       assert_eq!(decoder.read_i32::<BigEndian>().unwrap(), 10_000);
       decoder.read_to_end(&mut test_labels)
@@ -103,52 +101,21 @@ impl Mnist {
     };
     Self{train_images, train_labels, test_images, test_labels}
   }
-  pub fn train<T: num_traits::Float + 'static>(&self, batch_size: usize) -> impl Iterator<Item=(nd::Array4<T>, nd::Array1<u8>)> + '_ {
-    let index_vec = rand::seq::index::sample(&mut rand::thread_rng(), 60_000, 60_000)
-      .into_iter();
-    MnistTrainIter{mnist: &self, index_vec, batch_size, _m: <_>::default()}
-      .take(60_000 / batch_size)
+  pub fn train<'a>(&'a self, batch_size: usize) -> impl Iterator<Item=(ArrayView4<'a, u8>, ArrayView1<'a, u8>)> + 'a {
+    self.train_images.as_slice()
+      .chunks(batch_size*28*28)
+      .map(move |x| ArrayView::from_shape([x.len() / (28*28), 1, 28, 28], x).unwrap())
+      .zip(self.train_labels.as_slice()
+        .chunks(batch_size)
+        .map(move |t| ArrayView::from_shape(t.len(), t).unwrap()))
   }
-  pub fn test<T: num_traits::Float>(&self, batch_size: usize) -> impl Iterator<Item=(nd::Array4<T>, nd::Array1<u8>)> + '_ {
-    self.test_images.chunks(batch_size*28*28)
-      .zip(self.test_labels.chunks(batch_size))
-      .map(|(u_chunk, t_chunk)| {
-      let x = nd::Array::from_iter(u_chunk.iter()
-        .map(|&u| T::from(u).unwrap() / T::from(255).unwrap()))
-        .into_shape([t_chunk.len(), 1, 28, 28])
-        .unwrap();
-      let t = nd::Array1::from_iter(t_chunk.iter().copied());
-      (x, t)
-    })
+  pub fn eval<'a>(&'a self, batch_size: usize) -> impl Iterator<Item=(ArrayView4<'a, u8>, ArrayView1<'a, u8>)> + 'a {
+    self.test_images.as_slice()
+      .chunks(batch_size*28*28)
+      .map(move |x| ArrayView::from_shape([x.len() / (28*28), 1, 28, 28], x).unwrap())
+      .zip(self.test_labels.as_slice()
+        .chunks(batch_size)
+        .map(move |t| ArrayView::from_shape(t.len(), t).unwrap()))
   }
 }
-
-struct MnistTrainIter<'a, T> {
-  mnist: &'a Mnist,
-  index_vec: IndexVecIntoIter,
-  batch_size: usize,
-  _m: PhantomData<T>
-}
-
-impl<'a, T: num_traits::Float> Iterator for MnistTrainIter<'a, T> {
-  type Item = (nd::Array4<T>, nd::Array1<u8>);
-  fn next(&mut self) -> Option<Self::Item> {
-    let mut x = unsafe { nd::Array4::<T>::uninitialized([self.batch_size, 1, 28, 28]) };
-    let mut t = unsafe { nd::Array1::<u8>::uninitialized([self.batch_size]) };
-    x.as_slice_mut()
-      .unwrap()
-      .chunks_exact_mut(28*28)
-      .zip(t.iter_mut())
-      .for_each(move |(x, t)| {
-      let i = self.index_vec.next()
-        .unwrap();
-      x.iter_mut()
-        .zip(self.mnist.train_images[i*28*28..(i+1)*28*28].iter().copied())
-        .for_each(|(x, u)| *x = T::from(u).unwrap() / T::from(255).unwrap());
-      *t = self.mnist.train_labels[i];
-    });
-    Some((x, t))
-  }
-}
-
 
