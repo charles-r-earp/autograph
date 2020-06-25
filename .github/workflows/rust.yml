@@ -19,7 +19,7 @@ jobs:
         submodules: recursive
     - name: Install gcc for macos
       if: ${{ matrix.os == 'macos-latest' }}
-      run: brew install gcc --without-multilib --without-fortran
+      run: brew options gcc && brew install gcc
     - name: Check
       run: cargo check --verbose --features datasets
     - name: Check Bins
