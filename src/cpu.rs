@@ -40,6 +40,9 @@ impl<T: Num> CpuBuffer<T> {
       .into_owned();
     Self{data}
   }
+  pub(super) fn len(&self) -> usize {
+    self.data.len()
+  }
   pub(super) fn fill(&mut self, elem: T) {
     self.data.iter_mut()
       .for_each(|mut x| *x = elem); 

@@ -103,19 +103,19 @@ impl Mnist {
   }
   pub fn train<'a>(&'a self, batch_size: usize) -> impl Iterator<Item=(ArrayView4<'a, u8>, ArrayView1<'a, u8>)> + 'a {
     self.train_images.as_slice()
-      .chunks_exact(batch_size*28*28)
-      .map(move |x| ArrayView::from_shape([batch_size, 1, 28, 28], x).unwrap())
+      .chunks(batch_size*28*28)
+      .map(move |x| ArrayView::from_shape([x.len() / (28*28), 1, 28, 28], x).unwrap())
       .zip(self.train_labels.as_slice()
-        .chunks_exact(batch_size)
-        .map(move |t| ArrayView::from_shape([batch_size], t).unwrap()))
+        .chunks(batch_size)
+        .map(move |t| ArrayView::from_shape(t.len(), t).unwrap()))
   }
   pub fn eval<'a>(&'a self, batch_size: usize) -> impl Iterator<Item=(ArrayView4<'a, u8>, ArrayView1<'a, u8>)> + 'a {
     self.test_images.as_slice()
-      .chunks_exact(batch_size*28*28)
-      .map(move |x| ArrayView::from_shape([batch_size, 1, 28, 28], x).unwrap())
+      .chunks(batch_size*28*28)
+      .map(move |x| ArrayView::from_shape([x.len() / (28*28), 1, 28, 28], x).unwrap())
       .zip(self.test_labels.as_slice()
-        .chunks_exact(batch_size)
-        .map(move |t| ArrayView::from_shape([batch_size], t).unwrap()))
+        .chunks(batch_size)
+        .map(move |t| ArrayView::from_shape(t.len(), t).unwrap()))
   }
 }
 

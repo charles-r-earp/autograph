@@ -6,6 +6,9 @@ use num_traits::{Zero, One, ToPrimitive, Bounded};
 use ndarray::{Array, ArrayView, CowArray, Dimension, IntoDimension, Ix0, Ix1, Ix2, Ix3, Ix4, Ix5, Ix6, IxDyn, RemoveAxis};
 #[cfg(feature="cuda")]
 use rustacuda::memory::{DeviceCopy, DeviceSlice};
+use rand::Rng;
+use rand_distr::Distribution;
+use argmm::ArgMinMax;
 
 #[doc(hidden)]
 pub mod cpu;
@@ -23,6 +26,8 @@ pub mod layer;
 
 #[cfg(feature="datasets")]
 pub mod datasets;
+
+pub mod utils;
 
 #[cfg(test)]
 mod tests;
@@ -101,6 +106,13 @@ impl<T: Num> Buffer<T> {
         buffer.into()
       }
     }
+  }
+  fn len(&self) -> usize {
+    match self {
+      Buffer::Cpu(cpu_buffer) => cpu_buffer.len(),
+      #[cfg(feature="cuda")]
+      Buffer::Cuda(cuda_buffer) => cuda_buffer.len()
+    } 
   }
   fn fill(&mut self, elem: T) {
     match self {
@@ -476,6 +488,13 @@ impl<T: Num, S: DataOwned<Elem=T>, D: Dimension> TensorBase<S, D> {
     let data = S::from_buffer(buffer);
     Self{device, dim, data}
   }
+  pub fn random(device: &Device, shape: impl IntoDimension<Dim=D>, distr: &impl Distribution<T>, mut rng: &mut impl Rng) -> Self {
+    let dim = shape.into_dimension();
+    let vec: Vec<T> = distr.sample_iter(&mut rng)
+      .take(dim.size())
+      .collect();
+    Self::from_shape_vec(device, dim, vec)
+  } 
 }
 
 impl<T: Num, S: Data<Elem=T>, D: Dimension> TensorBase<S, D> {
@@ -660,10 +679,26 @@ impl<T: Num, S: DataMut<Elem=T>, D: Dimension> TensorBase<S, D> {
       .cuda_mut()
       .map(|mut b| b.as_mut_ptr())
   }
-  
   pub fn fill(&mut self, elem: T) {
     self.data.buffer_mut()
       .fill(elem);
+  }
+  pub fn fill_random(&mut self, distr: &impl Distribution<T>, mut rng: &mut impl Rng) {
+    match self.data.buffer_mut() {
+      Buffer::Cpu(cpu_buffer) => {
+        cpu_buffer.as_mut_slice()
+          .iter_mut()
+          .zip(distr.sample_iter(&mut rng))
+          .for_each(|(y, x)| *y = x);
+      },
+      #[cfg(feature="cuda")]
+      Buffer::Cuda(cuda_buffer) => {
+        let vec: Vec<T> = distr.sample_iter(&mut rng)
+          .take(cuda_buffer.len())
+          .collect();
+        cuda_buffer.copy_from_slice(&vec);
+      }  
+    }
   }
 }
 
