@@ -12,11 +12,14 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [macos-latest]
     steps:
     - uses: actions/checkout@v2
       with: 
         submodules: recursive
+    - name: Install gcc for macos
+      if: matrix.os == macos-latest
+      run: brew install gcc --without-multilib --without-fortran
     - name: Check
       run: cargo check --verbose --features datasets
     - name: Check Bins
