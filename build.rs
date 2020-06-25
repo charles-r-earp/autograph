@@ -1,6 +1,5 @@
 #![allow(warnings)]
 use std::{env, process::Command, ffi::CString};
-use static_assertions::assert_cfg;
 
 fn main() {
   { // dnnl
@@ -15,10 +14,9 @@ fn main() {
       .include(dst.join("include").display().to_string())
       .build("src/lib.rs");
   }
-  {
+  /*{
     // gomp for dnnl
-    assert_cfg!(target_os = "linux", "Only Linux supported!");
-    if cfg!(target_os = "linux") {
+    if cfg!(target_family = "unix") {
       let machine = Command::new("gcc")
         .arg("-dumpmachine")
         .output()
@@ -46,13 +44,15 @@ fn main() {
       println!("cargo:rustc-link-search=native=/usr/lib/gcc/{}/{}", machine, version);
       println!("cargo:rustc-link-lib=dylib=gomp");
     }
-  }
+    else if cfg!(target_family = "windows") {
+      
+    }
+  }*/
     
   #[cfg(feature="cuda")]
   {
-    //println!("cargo:rustc-link-lib=dylib=culibos");
-    //println!("cargo:rustc-link-lib=dylib=cudart");
     { // compile custom cuda source
+      println!("cargo:rustc-rerun-if-changed=src/cuda/kernels.cu");
       let status = Command::new("nvcc")
         .arg("src/cuda/kernels.cu")
         .arg("--ptx")
