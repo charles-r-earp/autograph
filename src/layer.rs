@@ -34,9 +34,6 @@ use builders::{
   MaxPool2dBuilder
 };
 
-//#[cfg(test)]
-//mod tests;
-
 pub trait Layer {
   fn parameters(&self) -> Vec<ParameterD> { Vec::new() }
   fn set_training(&mut self, training: bool) {} 
