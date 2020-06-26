@@ -24,7 +24,6 @@ rand_distr = "0.2.2"
 argmm = "0.1.0"
 
 [build-dependencies]
-static_assertions = "1.1.0"
 cmake = "0.1.42"
 cpp_build = "0.5.4"
 
