@@ -24,6 +24,7 @@ use std::time::Instant;
 use rand::{Rng, SeedableRng, rngs::SmallRng};
 use rand_distr::{Distribution, Normal, Uniform};
 use num_traits::ToPrimitive;
+use argparse::{ArgumentParser, Store, StoreTrue};
 
 struct Lenet5 {
   conv1: Conv2d,
@@ -114,12 +115,46 @@ impl Forward<Ix4> for Lenet5 {
 }
 
 fn main() {
-  println!("MNIST Lenet5 Example");
+  let (epochs, lr, train_batch_size, eval_batch_size, no_cuda) = {
+    let mut epochs = 50;
+    let mut lr = 0.001;
+    let mut train_batch_size: usize = 256;
+    let mut eval_batch_size: usize = 1024;
+    let mut no_cuda = false;
+    {
+      let mut ap = ArgumentParser::new();
+      ap.set_description("MNIST Lenet5 Example");
+      ap.refer(&mut epochs)
+        .add_option(&["-e", "--epochs"], Store, "Number of epochs to train for.");
+      ap.refer(&mut lr)
+        .add_option(&["--learning-rate"], Store, "Learning Rate");
+      ap.refer(&mut train_batch_size)
+        .add_option(&["--train-batch_size"], Store, "Training Batch Size");
+      ap.refer(&mut eval_batch_size)
+        .add_option(&["--eval-batch-size"], Store, "Evaluation Batch Size");
+      ap.refer(&mut no_cuda)
+        .add_option(&["--no-cuda"], StoreTrue, "Uses cpu even if cuda feature is enabled.");
+      ap.parse_args_or_exit();
+    }
+    (epochs, lr, train_batch_size, eval_batch_size, no_cuda)
+  };
   
   #[cfg(not(feature="cuda"))]
   let device = Device::from(Cpu::new());
   #[cfg(feature="cuda")]
-  let device = Device::from(CudaGpu::new(0));
+  let device = if no_cuda {
+    Device::from(Cpu::new())  
+  } 
+  else { 
+    Device::from(CudaGpu::new(0)) 
+  };
+  
+  println!("epochs: {}", epochs);
+  println!("lr: {}", lr);
+  println!("train_batch_size: {}", train_batch_size);
+  println!("eval_batch_size: {}", eval_batch_size);
+  println!("no_cuda: {}", no_cuda);
+  println!("device: {:?}", &device);
   
   let mut rng = SmallRng::seed_from_u64(0); 
   
@@ -136,18 +171,10 @@ fn main() {
       }
     });
   
-  let train_batch_size: usize = 256;
-  let eval_batch_size: usize = 1024;
-  
-  let lr = 0.001;
-  
-  println!("train_batch_size: {}", train_batch_size);
-  println!("lr: {}", lr);
-  
   let dataset = Mnist::new();
 
   let start = Instant::now();
-  for epoch in 1 ..= 200 {
+  for epoch in 1 ..= epochs {
     let mut train_loss = 0.;
     let mut train_correct: usize = 0;
     dataset.train(train_batch_size)
