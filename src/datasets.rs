@@ -3,6 +3,7 @@ use byteorder::{ReadBytesExt, BigEndian};
 use flate2::read::GzDecoder;
 use ndarray::{ArrayView, ArrayView4, ArrayView1};
 
+/// See http://yann.lecun.com/exdb/mnist/
 pub struct Mnist {
   train_images: Vec<u8>,
   train_labels: Vec<u8>,
@@ -11,6 +12,7 @@ pub struct Mnist {
 }
 
 impl Mnist {
+  /// Loads the dataset into memory, potentially downloading and saving it to datasets/mnist/*
   pub fn new() -> Self {
     let current_dir = env::current_dir().unwrap();
     let mnist_dir = current_dir.join("datasets").join("mnist");
@@ -101,6 +103,11 @@ impl Mnist {
     };
     Self{train_images, train_labels, test_images, test_labels}
   }
+  /// Returns an iterator of batches from the training_set, a tuple of input images and labels.\
+  /// * image: [batch_size, 1, 28, 28]
+  /// * label: [batch_size]\
+  ///
+  /// If the size of the set (60_000) is not evenly divisible by batch_size the final item will include the remainder 
   pub fn train<'a>(&'a self, batch_size: usize) -> impl Iterator<Item=(ArrayView4<'a, u8>, ArrayView1<'a, u8>)> + 'a {
     self.train_images.as_slice()
       .chunks(batch_size*28*28)
@@ -109,6 +116,11 @@ impl Mnist {
         .chunks(batch_size)
         .map(move |t| ArrayView::from_shape(t.len(), t).unwrap()))
   }
+  /// Returns an iterator of batches from the testing set, a tuple of input images and labels.\
+  /// * image: [batch_size, 1, 28, 28]
+  /// * label: [batch_size]\
+  ///
+  /// If the size of the set (10_000) is not evenly divisible by batch_size the final item will include the remainder 
   pub fn eval<'a>(&'a self, batch_size: usize) -> impl Iterator<Item=(ArrayView4<'a, u8>, ArrayView1<'a, u8>)> + 'a {
     self.test_images.as_slice()
       .chunks(batch_size*28*28)

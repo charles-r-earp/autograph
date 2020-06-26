@@ -1,5 +1,6 @@
 #![allow(warnings)]
-#![recursion_limit="1024"]
+#![recursion_limit="1024"] 
+
 use std::sync::{Arc, RwLock, LockResult, PoisonError, RwLockReadGuard, RwLockWriteGuard};
 use std::borrow::Cow;
 use num_traits::{Zero, One, ToPrimitive, Bounded};
@@ -12,13 +13,16 @@ use argmm::ArgMinMax;
 
 #[doc(hidden)]
 pub mod cpu;
-pub use cpu::{Cpu, CpuBuffer};
+use cpu::CpuBuffer;
+pub use cpu::Cpu;
 
 #[doc(hidden)]
 #[cfg(feature="cuda")]
 pub mod cuda;
 #[cfg(feature="cuda")]
-pub use cuda::{CudaGpu, CudaBuffer};
+use cuda::CudaBuffer;
+#[cfg(feature="cuda")]
+pub use cuda::CudaGpu;
 
 pub mod autograd;
 
@@ -47,15 +51,18 @@ pub trait DeviceCopy {}
 #[cfg(not(feature="cuda"))]
 impl<T: PrivateNum> DeviceCopy for T {}
 
+/// Num is a trait for all data types that Tensor can store, it cannot be implemented for additional types
 pub trait Num: 'static + Copy + DeviceCopy + Default + Zero + One + ToPrimitive + Bounded + PartialEq {}
 
 impl Num for u8 {}
 impl Num for f32 {}
 
+/// Unsigned is a trait for types which can be treated as an index, ie converted to usize
 pub trait Unsigned: Num {}
 
 impl Unsigned for u8 {}
 
+#[doc(hidden)]
 #[derive(Clone)]
 pub enum Buffer<T: Num> {
   Cpu(CpuBuffer<T>),
@@ -156,6 +163,13 @@ impl<T: Num> Buffer<T> {
   }
 }
 
+/// Device is an enum that is used to select whether to store and execute operations on the cpu or a gpu.\
+///
+/// You can use the From trait to create a device from a Cpu or CudaGpu:
+/// ```
+/// let cpu = Device::from(Cpu::new());
+/// ```
+/// Device can be cloned, which copies the pointer. Each Tensor will have a copy of the Device so that it can execute operations.
 #[derive(Clone, Debug)]
 pub enum Device {
   Cpu(Arc<Cpu>),
@@ -177,6 +191,7 @@ impl Device {
       _ => None
     }
   }
+  /// For cpu does nothing. For cuda, blocks until all operations on the device are finished. Only necessary for timing ie for benchmarks. Any tranfers back to the cpu will implicitly synchronize. 
   pub fn synchronize(&self) {
     #[cfg(feature="cuda")]
     {
@@ -224,19 +239,23 @@ mod private_data {
 }
 use private_data::PrivateData;
 
+/// Main trait for Tensor S generic parameter, similar to ndarray::Data. Elem indicates that the Tensor stores that datatype. 
 pub trait Data: PrivateData {
   type Elem: Num;
 }
 
+/// Trait for Tensors that can be constructed, and do not have references (ie not a View)
 pub trait DataOwned: Data + Sized {
   fn from_buffer(buffer: Buffer<Self::Elem>) -> Self;
 }
 
+/// Trait for Tensors which can borrow their data immutably
 pub trait DataRef: Data {
   #[doc(hidden)]
   fn buffer(&self) -> &Buffer<Self::Elem>;
 }
 
+/// Trait for Tensors which can borrow their data mutably
 pub trait DataMut: DataRef {
   #[doc(hidden)]
   fn buffer_mut(&mut self) -> &mut Buffer<Self::Elem>;
@@ -406,6 +425,7 @@ impl<'a, T: Num> DataMut for RwWriteRepr<'a, T> {
   }
 }
 
+/// The core data type of Autograph, which abstracts over data location and representation. Data must be loaded into tensors before operations can be run. 
 #[derive(Clone)]
 pub struct TensorBase<S: Data, D: Dimension> {
   device: Device,  
@@ -413,29 +433,34 @@ pub struct TensorBase<S: Data, D: Dimension> {
   data: S
 }
 
+/// Tensor which has exclusive ownership of its data
 pub type Tensor<T, D> = TensorBase<OwnedRepr<T>, D>;
 pub type Tensor0<T> = Tensor<T, Ix0>;
 pub type Tensor1<T> = Tensor<T, Ix1>;
 pub type Tensor2<T> = Tensor<T, Ix2>;
 pub type Tensor4<T> = Tensor<T, Ix4>;
 
+/// Tensor which has an immutable (shared) borrow of its data
 pub type TensorView<'a, T, D> = TensorBase<ViewRepr<&'a Buffer<T>>, D>;
 pub type TensorView1<'a, T> = TensorView<'a, T, Ix1>;
 pub type TensorView2<'a, T> = TensorView<'a, T, Ix2>;
 pub type TensorView4<'a, T> = TensorView<'a, T, Ix4>;
 pub type TensorViewD<'a, T> = TensorView<'a, T, IxDyn>;
 
+/// Tensor which has a mutable (exclusive) borrow of its data
 pub type TensorViewMut<'a, T, D> = TensorBase<ViewRepr<&'a mut Buffer<T>>, D>;
 pub type TensorViewMut0<'a, T> = TensorViewMut<'a, T, Ix0>;
 pub type TensorViewMut1<'a, T> = TensorViewMut<'a, T, Ix1>;
 pub type TensorViewMut2<'a, T> = TensorViewMut<'a, T, Ix2>;
 pub type TensorViewMut4<'a, T> = TensorViewMut<'a, T, Ix4>;
 
+/// Tensor which has threadsafe shared immutable access without a lifetime
 pub type ArcTensor<T, D> = TensorBase<ArcRepr<T>, D>;
 pub type ArcTensor2<T> = ArcTensor<T, Ix2>;
 pub type ArcTensor4<T> = ArcTensor<T, Ix4>;
 pub type ArcTensorD<T> = ArcTensor<T, IxDyn>;
 
+/// Tensor which allows for either shared immutable access or exclusive mutable access
 pub type RwTensor<T, D> = TensorBase<RwRepr<T>, D>;
 pub type RwTensor0<T> = RwTensor<T, Ix0>;
 pub type RwTensor1<T> = RwTensor<T, Ix1>;
@@ -444,24 +469,35 @@ pub type RwTensor3<T> = RwTensor<T, Ix3>;
 pub type RwTensor4<T> = RwTensor<T, Ix4>;
 pub type RwTensorD<T> = RwTensor<T, IxDyn>;
 
+/// Represents an immutable borrow of a RwTensor, acts like a TensorView
 pub type RwReadTensor<'a, T, D> = TensorBase<RwReadRepr<'a, T>, D>;
+/// Represents a mutable borrow of a RwTensor, acts like a TensorViewMut
 pub type RwWriteTensor<'a, T, D> = TensorBase<RwWriteRepr<'a, T>, D>;
 
 impl<T: Num, S: DataOwned<Elem=T>, D: Dimension> TensorBase<S, D> {
-  pub unsafe fn uninitialized(device: &Device, shape: impl IntoDimension<Dim=D>) -> Self {
+  /// Constructs a Tensor on the device with the given shape, its data is unninitialized.
+  /// Unsafe: Rust generally marks these kinds of functions unsafe because reading uninitialized data is undefined behavior
+  /// Num is only implemented for types which are safe to read arbitrary bits, so generally this is safe
+  /// Use this prior an operation that will only write to the tensor and not read from it
+  unsafe fn uninitialized(device: &Device, shape: impl IntoDimension<Dim=D>) -> Self {
     let device = device.clone();
     let dim = shape.into_dimension();
     let data = S::from_buffer(Buffer::uninitialized(&device, dim.size()));
     Self{device, dim, data}
   }
+  /// Constructs a Tensor on the device with the given shape. If a Vec is provided, will move the data (ie no copy) if the device is a cpu. Can also provide a slice, which allows for the data to only be copied once (rather than twice in the case of copying to the gpu).
+  /// Panics: Asserts that the provided shape matches the length of the provided vec or slice.
+  ///
   pub fn from_shape_vec<'a>(device: &Device, shape: impl IntoDimension<Dim=D>, vec: impl Into<Cow<'a, [T]>>) -> Self {
     let device = device.clone();
     let dim = shape.into_dimension();
     let vec = vec.into();
-    debug_assert_eq!(dim.size(), vec.len());
+    assert_eq!(dim.size(), vec.len());
     let data = S::from_buffer(Buffer::from_vec(&device, vec));
     Self{device, dim, data}
   } 
+  /// Similar to from_shape_vec, can accept either an Array or an ArrayView
+  /// Copies that data to standard (packed) layout if necessary
   pub fn from_array<'a>(device: &Device, array: impl Into<CowArray<'a, T, D>>) -> Self {
     let array = array.into();
     if let Some(slice) = array.as_slice() {
@@ -474,12 +510,14 @@ impl<T: Num, S: DataOwned<Elem=T>, D: Dimension> TensorBase<S, D> {
       Self::from_shape_vec(&device, array.raw_dim(), vec)
     }
   }
+  /// Constructs a Tensor on the device with the give shape filled with zeros 
   pub fn zeros(device: &Device, shape: impl IntoDimension<Dim=D>) -> Self {
     let device = device.clone();
     let dim = shape.into_dimension();
     let data = S::from_buffer(Buffer::zeros(&device, dim.size()));
     Self{device, dim, data}
   }
+  /// Constructs a Tensor on the device with the give shape filled with ones 
   pub fn ones(device: &Device, shape: impl IntoDimension<Dim=D>) -> Self {
     let device = device.clone();
     let dim = shape.into_dimension();
@@ -488,6 +526,7 @@ impl<T: Num, S: DataOwned<Elem=T>, D: Dimension> TensorBase<S, D> {
     let data = S::from_buffer(buffer);
     Self{device, dim, data}
   }
+  /// Constructs a Tensor on the device with the give shape filled with data sampled from distr using the given rng 
   pub fn random(device: &Device, shape: impl IntoDimension<Dim=D>, distr: &impl Distribution<T>, mut rng: &mut impl Rng) -> Self {
     let dim = shape.into_dimension();
     let vec: Vec<T> = distr.sample_iter(&mut rng)
@@ -498,19 +537,24 @@ impl<T: Num, S: DataOwned<Elem=T>, D: Dimension> TensorBase<S, D> {
 }
 
 impl<T: Num, S: Data<Elem=T>, D: Dimension> TensorBase<S, D> {
+  /// Reference to the device
   pub fn device(&self) -> &Device {
     &self.device
   }
+  /// Copies the stored Dimension
   pub fn raw_dim(&self) -> D {
     self.dim.clone()
   }
+  /// Returns the Dimension in pattern form, ie for Ix2 -> (usize, usize)
   pub fn dim(&self) -> D::Pattern {
     self.dim.clone()
       .into_pattern()
   }
+  /// Returns the number of elements in the tensor
   pub fn len(&self) -> usize {
     self.dim.size()
   }
+  /// Consumes self (ie moves its data without copying) and converts its dimension to IxDyn
   pub fn into_dyn(self) -> TensorBase<S, IxDyn> {
     TensorBase {
       device: self.device,
@@ -518,6 +562,9 @@ impl<T: Num, S: Data<Elem=T>, D: Dimension> TensorBase<S, D> {
       data: self.data
     }
   }
+  /// Consumes self and attempts to convert to the provided Dimension type
+  /// Generally this is used to downcast a TensorBase<_, IxDyn> to a Tensor<_, D2>, in which case it will succeed if the number of dimensions match 
+  /// Some: If D and D2 have the same number of dimensions
   pub fn into_dimensionality<D2: Dimension>(self) -> Option<TensorBase<S, D2>> {
     D2::from_dimension(&self.dim)
       .map(|dim| {
@@ -528,6 +575,8 @@ impl<T: Num, S: Data<Elem=T>, D: Dimension> TensorBase<S, D> {
         }
       })
   }
+  /// Consumes self and attempts to convert the current dim to the provided shape.
+  /// Some: If the new shape is the same size as the current size, that is the same number of elements
   pub fn into_shape<D2: Dimension>(self, shape: impl IntoDimension<Dim=D2>) -> Option<TensorBase<S, D2>> {
     let dim = shape.into_dimension();
     if self.dim.size() == dim.size() {
@@ -538,6 +587,7 @@ impl<T: Num, S: Data<Elem=T>, D: Dimension> TensorBase<S, D> {
       })
     } else { None }
   } 
+  /// Consumes self and returns a 2D Tensor with the first dimension (ie the batch size) the same as the input
   pub fn into_flatten(self) -> TensorBase<S, Ix2>
     where D: RemoveAxis {
     let batch_size = self.dim[0];
@@ -548,16 +598,21 @@ impl<T: Num, S: Data<Elem=T>, D: Dimension> TensorBase<S, D> {
 }
 
 impl<T: Num, S: DataRef<Elem=T>, D: Dimension> TensorBase<S, D> {
+  /// Borrows self as a TensorView
   pub fn view(&self) -> TensorView<T, D> {
     let device = self.device.clone();
     let dim = self.dim.clone();
     let data = ViewRepr::new(self.data.buffer());
     TensorView{device, dim, data}
   }
+  /// Borrows self as a Cow slice. If the tensor device is a gpu, copies the data to a vec.
+  /// Use the into_owned method to get a Vec<T> without an additional copy.  
   pub fn as_slice(&self) -> Cow<[T]> {
     self.data.buffer()
       .as_slice()
   }
+  /// Borrows self as an CowArray. If the tensor device is a gpu, copies the data into an Array.
+  /// Use the into_owned method to get an Array<T, D> without an additional copy 
   pub fn as_array(&self) -> CowArray<T, D> {
     let dim = self.dim.clone();
     match self.data.buffer().as_slice() {
@@ -594,6 +649,7 @@ impl<T: Num, S: DataRef<Elem=T>, D: Dimension> TensorBase<S, D> {
 }
 
 impl<S: DataRef<Elem=f32>, D: Dimension> TensorBase<S, D> {
+  /// Sums all the elements of the tensor, returning a Tensor with 1 element
   pub fn sum(&self) -> Tensor0<f32> {
     let mut output = unsafe { Tensor::uninitialized(&self.device, ()) };
     match &self.device {
@@ -603,6 +659,7 @@ impl<S: DataRef<Elem=f32>, D: Dimension> TensorBase<S, D> {
     }
     output
   }
+  /// Computes the ReLU function
   pub fn relu(&self) -> Tensor<f32, D> {
     let mut output = unsafe { Tensor::uninitialized(&self.device, self.raw_dim()) };
     match &self.device {
@@ -615,6 +672,7 @@ impl<S: DataRef<Elem=f32>, D: Dimension> TensorBase<S, D> {
 }
 
 impl<S: DataMut<Elem=f32>, D: Dimension> TensorBase<S, D> {
+  /// Performs the operation self[i] += alpha * rhs[i] for all elements in self
   pub fn scaled_add<S2: DataRef<Elem=f32>>(&mut self, alpha: f32, rhs: &TensorBase<S2, D>) {
     debug_assert_eq!(&self.device, &rhs.device);
     debug_assert_eq!(&self.dim, &rhs.dim);
@@ -627,6 +685,10 @@ impl<S: DataMut<Elem=f32>, D: Dimension> TensorBase<S, D> {
 }
 
 impl<T: Unsigned, S: DataRef<Elem=T>, D: Dimension> TensorBase<S, D> {
+  /// Copies the data from self to a new Tensor<f32, D>, scaled by the max value of T
+  /// ie for u8: y = x / 255.
+  /// This is used to covert image data typically stored as u8 to f32 for computation
+  /// Performing this conversion on a gpu, rather than on the host prior to copying to the device, greatly reduces the size of the data that is copied
   pub fn to_f32(&self) -> Tensor<f32, D> {
     let mut output = unsafe { Tensor::uninitialized(&self.device, self.dim.clone()) };
     match &self.device {
@@ -639,6 +701,8 @@ impl<T: Unsigned, S: DataRef<Elem=T>, D: Dimension> TensorBase<S, D> {
 }
 
 impl<T: Unsigned, S: DataRef<Elem=T>> TensorBase<S, Ix1> {
+  /// Similar to to_f32, this operation converts each element of the input vector to a new vector filled with zeros, with a single element at the given index set to 1.
+  /// Again, performing the coversion on the gpu means that significantly less data must be transfered.
   pub fn to_one_hot_f32(&self, nclasses: usize) -> Tensor2<f32> {
     let mut output = Tensor2::zeros(&self.device, [self.len(), nclasses]);
     match &self.device {
@@ -651,6 +715,7 @@ impl<T: Unsigned, S: DataRef<Elem=T>> TensorBase<S, Ix1> {
 }
 
 impl<T: Num, S: DataMut<Elem=T>, D: Dimension> TensorBase<S, D> {
+  /// Borrows the Tensor as a mutable view
   pub fn view_mut(&mut self) -> TensorViewMut<T, D> {
     let device = self.device.clone();
     let dim = self.dim.clone();
@@ -679,10 +744,12 @@ impl<T: Num, S: DataMut<Elem=T>, D: Dimension> TensorBase<S, D> {
       .cuda_mut()
       .map(|mut b| b.as_mut_ptr())
   }
+  /// Fills the tensor with the provided elem.  
   pub fn fill(&mut self, elem: T) {
     self.data.buffer_mut()
       .fill(elem);
   }
+  /// Fills the tensor with data sampled from distr with the given rng. On cuda, samples into a vec and then copies to the device buffer
   pub fn fill_random(&mut self, distr: &impl Distribution<T>, mut rng: &mut impl Rng) {
     match self.data.buffer_mut() {
       Buffer::Cpu(cpu_buffer) => {
@@ -711,6 +778,9 @@ impl<T: Num, D: Dimension> From<Tensor<T, D>> for ArcTensor<T, D> {
 }
 
 impl<T: Num, D: Dimension> RwTensor<T, D> {
+  /// Similar to RwLock::read(), blocks the current thread until any write access is released, ensures that no writes occur as long as the RwReadTensor is held
+  /// Ok: If the lock can be acquired
+  /// Err: Returns the PoisonError if the RwLock is poisoned
   pub fn read(&self) -> LockResult<RwReadTensor<T, D>> {
     match self.data.read() {
       Ok(data) => {
@@ -726,6 +796,9 @@ impl<T: Num, D: Dimension> RwTensor<T, D> {
       }
     }
   }
+  /// Similar to RwLock::write(), blocks until exclusive mutable access can be acquired
+  /// Ok: If the lock can be acquired
+  /// Err: Returns the PoisonError if the RwLock is poisoned
   pub fn write(&self) -> LockResult<RwWriteTensor<T, D>> {
     match self.data.write() {
       Ok(data) => {
@@ -784,12 +857,12 @@ fn relu_backward<S1: DataRef<Elem=f32>, S2: DataMut<Elem=f32>, S3: DataRef<Elem=
 } 
 
 #[derive(Clone, Copy, PartialEq)]
-pub enum Transpose {
+enum Transpose {
   No,
   Yes
 }
 
-pub fn gemm<S1: DataRef<Elem=f32>, S2: DataRef<Elem=f32>, S3: DataMut<Elem=f32>>
+fn gemm<S1: DataRef<Elem=f32>, S2: DataRef<Elem=f32>, S3: DataMut<Elem=f32>>
   (alpha: f32, a: &TensorBase<S1, Ix2>, trans_a: Transpose, b: &TensorBase<S2, Ix2>, trans_b: Transpose, beta: f32, c: &mut TensorBase<S3, Ix2>) {
   debug_assert_eq!(&a.device, &b.device);
   debug_assert_eq!(&a.device, &c.device);
@@ -810,18 +883,11 @@ fn cross_entropy_backward<S1: DataRef<Elem=f32>, S2: DataMut<Elem=f32>, S3: Data
   debug_assert_eq!(device, &output_grad.device);
   debug_assert_eq!(input.raw_dim(), input_grad.raw_dim());
   debug_assert_eq!(input.raw_dim(), target.raw_dim());
-  /*println!("cross_entropy_backward");
-  println!("input:\n{:?}", input.as_slice());
-  println!("input_grad(in):\n{:?}", input_grad.as_slice());
-  println!("target:\n{:?}", target.as_slice());
-  println!("output_grad:\n{:?}", output_grad.as_slice()); */
   match device {
     Device::Cpu(cpu) => cpu::cross_entropy_backward(input, input_grad, target, output_grad),
     #[cfg(feature="cuda")]
     Device::Cuda(cuda_gpu) => cuda::cross_entropy_backward(input, input_grad, target, output_grad)
   }
- /* println!("input_grad(out):\n{:?}", input_grad.as_slice());
-  println!("cross_entropy_backward end");*/
 }
 
 impl<S1: DataRef<Elem=f32>> TensorBase<S1, Ix2> {
@@ -842,8 +908,7 @@ impl<S1: DataRef<Elem=f32>> TensorBase<S1, Ix2> {
   pub fn cross_entropy_loss(&self, target: &TensorView2<f32>) -> Tensor0<f32> {
     debug_assert_eq!(&self.device, &target.device);
     debug_assert_eq!(self.raw_dim(), target.raw_dim());
-    //let mut output = unsafe { Tensor::uninitialized(&self.device, self.raw_dim()) };
-    let mut output = Tensor::zeros(&self.device, self.raw_dim());
+    let mut output = unsafe { Tensor::uninitialized(&self.device, self.raw_dim()) };
     match &self.device {
       Device::Cpu(cpu) => cpu::cross_entropy(self, target, &mut output),
       #[cfg(feature="cuda")]
@@ -853,6 +918,8 @@ impl<S1: DataRef<Elem=f32>> TensorBase<S1, Ix2> {
   }
 }
 
+/// Convenience trait to allow passing either usize or [usize, usize] to functions\
+/// ie 1.into_2d() == [1, 1]
 pub trait Into2d {
   fn into_2d(self) -> [usize; 2];
 }
@@ -875,6 +942,17 @@ impl Into2d for usize {
   }
 }
 
+/// Builder struct for 2D Convolution functions\
+/// Additional features may be added\
+///
+/// Defaults:
+///   - strides: [1, 1]
+///   - padding: [0, 0]
+/// 
+/// To use the builder pattern, for example for strides 2 and padding 1
+///```
+/// let args = Conv2dArgs::default().strides(2).padding(1);
+///```
 #[derive(Clone, Copy)]
 pub struct Conv2dArgs {
   strides: [usize; 2],
@@ -882,10 +960,12 @@ pub struct Conv2dArgs {
 }
 
 impl Conv2dArgs {
+  /// Sets strides to the given strides (either usize or [usize, usize])
   pub fn strides(mut self, strides: impl Into2d) -> Self {
     self.strides = strides.into_2d();
     self
   }
+  // Sets padding to the given padding
   pub fn padding(mut self, padding: impl Into2d) -> Self {
     self.padding = padding.into_2d();
     self
@@ -901,6 +981,12 @@ impl Default for Conv2dArgs {
   }
 }
 
+/// Similar to Conv2dArgs, but for pooling functions\
+///
+/// Defaults:
+///   - kernel: [2, 2]
+///   - strides: [1, 1]
+///   - padding: [0, 0]
 #[derive(Clone, Copy)]
 pub struct Pool2dArgs {
   kernel: [usize; 2],
@@ -919,14 +1005,18 @@ impl Default for Pool2dArgs {
 }
 
 impl Pool2dArgs {
+  /// Sets the kernel\
+  /// Note: unlike Pytorch, does not affect strides
   pub fn kernel(mut self, kernel: impl Into2d) -> Self {
     self.kernel = kernel.into_2d();
     self
   } 
+  /// Sets the strides
   pub fn strides(mut self, strides: impl Into2d) -> Self {
     self.strides = strides.into_2d();
     self
   }
+  /// Sets the padding
   pub fn padding(mut self, padding: impl Into2d) -> Self {
     self.padding = padding.into_2d();
     self
@@ -934,6 +1024,20 @@ impl Pool2dArgs {
 }
 
 impl<S1: DataRef<Elem=f32>> TensorBase<S1, Ix4> {
+  /// Performs a 2D convolution with the given weight, bias, and args.\
+  /// Prefer to use [Conv2d](layer/struct.Conv2d.html) instead.\
+  /// Inputs:
+  ///   * self: Tensor of shape [n, i, ih, iw]
+  ///   * weight: Tensor of shape [o, i, kh, kw]
+  ///   * bias: Optional Tensor of shape [o]
+  ///   * args: 
+  ///     - strides: [sh, sw]
+  ///     - padding: [ph, pw]\
+  ///
+  /// Returns: Tensor of shape [n, o, oh, ow]\
+  /// where:
+  ///  - oh = (ih - kh + 2 * ph) / sh + 1
+  ///  - ow = (iw - kw + 2 * pw) / sw + 1
   pub fn conv2d(&self, weight: &TensorView4<f32>, bias: Option<&TensorView1<f32>>, args: &Conv2dArgs) -> Tensor4<f32> {
     let device = &self.device;
     let (batch_size, inputs, ih, iw) = self.dim();
@@ -964,36 +1068,38 @@ impl<S1: DataRef<Elem=f32>> TensorBase<S1, Ix4> {
     } 
     output
   }
+  /// Computes a 2D max pool\
+  /// Inputs:\
+  ///   * self: Tensor of shape [n, i, ih, iw]
+  ///   * args: 
+  ///     - kernel: [kh, kw]
+  ///     - strides: [sh, sw]
+  ///     - padding: [ph, pw] 
+  ///
+  /// Returns: Tensor of shape [n, i, oh, ow]\
+  /// where:
+  ///   - oh = (ih - (kh - 1) + 2 * ph - 1) / sh + 1
+  ///   - ow = (iw - (kw - 1) + 2 * pw - 1) / sw + 1
   pub fn max_pool2d(&self, args: &Pool2dArgs) -> Tensor4<f32> {
     let (output, _) = max_pool2d_forward(self, args, false);
     output
   }
 }
 
-pub fn conv2d_backward_input<S1: DataMut<Elem=f32>>
+fn conv2d_backward_input<S1: DataMut<Elem=f32>>
   (input_grad: &mut TensorBase<S1, Ix4>, weight: &TensorView4<f32>, args: &Conv2dArgs, output_grad: &TensorView4<f32>) {
   debug_assert_eq!(input_grad.device(), weight.device());
   debug_assert_eq!(input_grad.device(), output_grad.device());
-  /*println!("conv2d_backward_input");
-  println!("input_grad(in)\n{:?}", input_grad.as_slice());
-  println!("weight:\n{:?}", weight.as_array());
-  println!("output_grad:\n{:?}", output_grad.as_array());*/
   match input_grad.device() {
     Device::Cpu(_) => cpu::conv2d_backward_input(input_grad, weight, args, output_grad),
     #[cfg(feature="cuda")]
     Device::Cuda(_) => cuda::conv2d_backward_input(input_grad, weight, args, output_grad)
   } 
-  /*println!("input_grad(out):\n{:?}", input_grad.as_array());
-  println!("conv2d_backward_input end");*/
 }
 
-pub fn conv2d_backward_weight_bias<S1: DataRef<Elem=f32>>
+fn conv2d_backward_weight_bias<S1: DataRef<Elem=f32>>
   (input: &TensorBase<S1, Ix4>, weight_grad: &mut TensorViewMut4<f32>, bias_grad: Option<&mut TensorViewMut1<f32>>, args: &Conv2dArgs, output_grad: &TensorView4<f32>) {
   debug_assert_eq!(input.device(), weight_grad.device());
-  /*println!("conv2d_backward_weight_bias");
-  println!("input:\n{:?}", input.as_array());
-  println!("weight_grad(in):\n{:?}", weight_grad.as_array());
-  println!("output_grad:\n{:?}", output_grad.as_array());*/
   #[cfg(debug_assertions)]
   {
     if let Some(bias_grad) = &bias_grad {
@@ -1006,8 +1112,6 @@ pub fn conv2d_backward_weight_bias<S1: DataRef<Elem=f32>>
     #[cfg(feature="cuda")]
     Device::Cuda(_) => cuda::conv2d_backward_weight_bias(input, weight_grad, bias_grad, args, output_grad)
   } 
-  /*println!("weight_grad(out):\n{:?}", weight_grad.as_array());
-  println!("conv2d_backward_weight_bias end");*/
 }
 
 fn max_pool2d_forward<S1: DataRef<Elem=f32>>
@@ -1039,13 +1143,10 @@ fn max_pool2d_backward<S1: DataRef<Elem=f32>, S2: DataMut<Elem=f32>, S3: DataRef
   debug_assert_eq!(input.device(), input_grad.device());
   debug_assert_eq!(input.device(), output_grad.device());
   debug_assert_eq!(input.raw_dim(), input_grad.raw_dim());
-  //println!("max_pool2d_backward");
-  //println!("output_grad:\n{:?}", output_grad.as_array());
   match input.device() {
     Device::Cpu(_) => cpu::max_pool2d_backward(input, input_grad, args, workspace, output_grad),
     #[cfg(feature="cuda")]
     Device::Cuda(_) => cuda::max_pool2d_backward(input, input_grad, args, output_grad)
   } 
-  //println!("max_pool2d_backward end");
 }
 

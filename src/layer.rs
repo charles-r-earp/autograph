@@ -34,28 +34,70 @@ use builders::{
   MaxPool2dBuilder
 };
 
+/// Trait for Layers\
+/// Custom Models should impl Layer
 pub trait Layer {
+  /// Returns a Vec of all the parameters in the Layer (including its children). Parameter acts like an Arc so it can be cloned to copy references. Layers that do not have parameters (like Activations) do not have to implement this method.
   fn parameters(&self) -> Vec<ParameterD> { Vec::new() }
+  /// Prepares the layer for training if training is true, else prepares for evaluation / inference. This method should be called prior to a forward step ie:
+  ///```
+  /// for data in training_set {
+  ///   let graph = Graph::new();
+  ///   let (x, t) = // data
+  ///   model.set_training(true);
+  ///   let y = model.forward(&x);
+  ///   let loss = // loss function
+  ///   loss.backward(graph);
+  ///   // update model
+  /// }
+  /// for data in evaluation_set {
+  ///   let (x, t) = // data
+  ///   model.set_training(false);
+  ///   let y = model.forward(&x);
+  ///   let loss = // loss function
+  /// }
+  ///```
+  /// The implementation shoud recursively call set_training on all of its child layers, and or all of its parameters. 
   fn set_training(&mut self, training: bool) {} 
 }
 
+/// Trait for forward pass, implemented by layers\
+/// Typically this will call a method or custom Trait method on Variable\
+/// A layer like Conv2d will implement Forward, and a model composed of layers will also implement forward. 
 pub trait Forward<D: Dimension> {
   type OutputDim: Dimension;
   fn forward(&self, input: &Variable<D>) -> Variable<Self::OutputDim>;
 }
 
 impl<D: Dimension> Variable<D> {
+  /// Convenience method for senquencing several layers:
+  ///```
+  ///  let y = x.forward(&layer1)
+  ///    .forward(&layer2)
+  ///    .forward(&layer3)
+  ///```
   pub fn forward<D2: Dimension>(&self, layer: &impl Forward<D, OutputDim=D2>) -> Variable<D2> {
     layer.forward(self) 
   }
 }
 
+/// A linear or fully connected layer with an optional bias
 pub struct Dense {
   weight: Parameter2,
   bias: Option<Parameter1>
 }
 
 impl Dense {
+  /// Constructs a default DenseBuilder. For example:
+  ///```
+  /// let dense = Dense::builder()
+  ///   .device(&device)
+  ///   .inputs(2)
+  ///   .outputs(1)
+  ///   .bias()
+  ///   .build();
+  ///```
+  /// Device, inputs, and outputs must be specified, there are no defaults. Bias is None if not specified. 
   pub fn builder() -> DenseBuilder {
     DenseBuilder::default()
   }
@@ -106,6 +148,7 @@ impl Forward<Ix2> for Dense {
   }
 }
 
+/// A 2D Convolutional layer
 pub struct Conv2d {
   weight: Parameter4,
   bias: Option<Parameter1>,
@@ -113,6 +156,17 @@ pub struct Conv2d {
 }
 
 impl Conv2d {
+  /// Constructs a default Conv2dBuilder. For example:
+  ///```
+  /// let conv2d = Conv2d::builder()
+  ///   .device(&device)
+  ///   .inputs(2)
+  ///   .outputs(1)
+  ///   .kernel(3)
+  ///   .bias()
+  ///   .build();
+  ///```
+  /// Device, inputs, outputs, and kernel must be specified, there are no defaults. Bias is None if not specified. 
   pub fn builder() -> Conv2dBuilder {
     Conv2dBuilder::default()
   }
@@ -163,6 +217,20 @@ impl Layer for Conv2d {
 
 impl Forward<Ix4> for Conv2d {
   type OutputDim = Ix4;
+  /// Performs a 2D convolution\
+  /// Input: Variable of shape [n, i, ih, iw]\
+  ///
+  /// Parameters: 
+  ///   * weight: Tensor of shape [o, i, kh, kw]
+  ///   * bias: Optional Tensor of shape [o]
+  ///   * args: 
+  ///     - strides: [sh, sw]
+  ///     - padding: [ph, pw]\
+  ///
+  /// Returns: Variable of shape [n, o, oh, ow]\
+  /// where:
+  ///  - oh = (ih - kh + 2 * ph) / sh + 1
+  ///  - ow = (iw - kw + 2 * pw) / sw + 1
   fn forward(&self, input: &Variable4) -> Variable4 {
     input.conv2d(&self.weight, self.bias.as_ref(), &self.args)
   }

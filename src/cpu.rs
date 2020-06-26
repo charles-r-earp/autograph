@@ -92,12 +92,15 @@ impl Stream {
   }
 } 
 
+/// Threadsafe wrapper for oneDNN engine and stream
 pub struct Cpu {
   engine: Engine,
+  /// I don't know if we can cheaply construct a stream, and since operations modify the stream we must use a mutex. This means that cpu operations on the same Cpu are sequential. All cpu operations are blocking. Regardless, concurrent operations on cpu are allowed as a feature, but aren't necessarily optimal because the operations themselves are using multiple threads. So general use will not have contested locking of the stream.
   stream: Mutex<Stream>  
 }
 
 impl Cpu {
+  /// Constructs a new Cpu wrapped in an Arc for threadsafe shared access
   pub fn new() -> Arc<Self> {
     let engine = Engine::new();
     let stream = Mutex::new(Stream::new(&engine));
