@@ -26,6 +26,7 @@ use rand_distr::{Distribution, Normal, Uniform};
 use num_traits::ToPrimitive;
 use argparse::{ArgumentParser, Store, StoreTrue};
 
+// A version of the LeNet5 Model 
 struct Lenet5 {
   conv1: Conv2d,
   conv2: Conv2d,
@@ -35,6 +36,9 @@ struct Lenet5 {
 }
 
 impl Lenet5 {
+  // new is the primary constructor for a struct
+  // Here we construct the model on the given device
+  // Note that currently Conv2d and Dense layers fill their parameters with zeros, so the model must be manually initialized
   pub fn new(device: &Device) -> Self {
     let conv1 = Conv2d::builder()
       .device(&device)
@@ -74,7 +78,9 @@ impl Lenet5 {
   } 
 }
 
+// Layer is a core trait for Layers and Models
 impl Layer for Lenet5 {
+  // Gathers all the parameters in the model
   fn parameters(&self) -> Vec<ParameterD> {
     self.conv1.parameters()
       .into_iter()
@@ -84,6 +90,7 @@ impl Layer for Lenet5 {
       .chain(self.dense3.parameters())
       .collect()
   }
+  // Prepares the model for training (or evaluation)
   fn set_training(&mut self, training: bool) {
     self.conv1.set_training(training);
     self.conv2.set_training(training);
@@ -93,12 +100,16 @@ impl Layer for Lenet5 {
   }
 }
 
+// Forward is a trait for Layers and Models
+// Forward executes the forward pass, returning the prediction of the model
 impl Forward<Ix4> for Lenet5 {
   type OutputDim = Ix2;
   fn forward(&self, input: &Variable4) -> Variable2 {
     let pool_args = Pool2dArgs::default()
       .kernel(2)
       .strides(2);
+    // Variable has a forward(layer: impl Forward) method
+    // This makes it easy to chain several operations
     input.forward(&self.conv1)
       .relu()
       .max_pool2d(&pool_args)
@@ -163,7 +174,7 @@ fn main() {
     .into_iter()
     .for_each(|w| {
       let dim = w.value().raw_dim();
-      if dim.ndim() > 1 {
+      if dim.ndim() > 1 { // Leave biases as zeros
         w.value()
           .write()
           .unwrap()

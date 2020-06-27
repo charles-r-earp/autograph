@@ -16,6 +16,8 @@ use std::sync::{Arc, Weak, Mutex, LockResult, PoisonError};
 use ndarray::{IntoDimension, Dimension, Ix0, Ix1, Ix2, Ix3, Ix4, IxDyn, RemoveAxis};
 use num_traits::ToPrimitive;
 
+/// Wrapper around a RwTensor\
+/// Gradient lazily allocates its tensor with zeros, to minimize memory footprint. If the backward pass is never called, then no allocation is needed. 
 #[derive(Clone)]
 pub struct Gradient<D: Dimension> {
   tensor: RwTensor<f32, D>
@@ -43,6 +45,9 @@ impl<D: Dimension> Gradient<D> {
       tensor
     }
   }
+  /// Similar to RwTensor::read(), this method returns an optional LockResult<RwReadTensor>.\
+  /// Some: If write has been called, returns the result for locking the RwLock\
+  /// None: If write has not been called, returns None (the tensor has no data).
   pub fn read(&self) -> Option<LockResult<RwReadTensor<f32, D>>> {
     match self.tensor.read() {
       Ok(x) => {
@@ -64,6 +69,9 @@ impl<D: Dimension> Gradient<D> {
       }
     }  
   }
+  /// Similar to RwTensor::write(), this method additionally allocates a tensor filled with zeros the first time this method is called.\
+  /// Ok: If the RwLock has not been poisoned\
+  /// Err: Returns the PoisonError
   pub fn write(&self) -> LockResult<RwWriteTensor<f32, D>> {
     self.tensor.write()
       .map(|mut x| {
@@ -371,12 +379,14 @@ impl From<ReluBackward> for BackwardVariableOp {
   }
 }
 
+/// Stores backward ops on the forward pass. On the backward pass, executes variable ops in first in last out order (ie reverse) and then executes parameter ops in first in last out order.
 pub struct Graph {
   backward_variable_ops: Mutex<Vec<BackwardVariableOp>>,
   backward_parameter_ops: Mutex<Vec<BackwardParameterOp>>
 }
 
 impl Graph {
+  /// Constructs a new Graph wrapped in an Arc to allow for shared access
   pub fn new() -> Arc<Self> {
     Arc::new(Self {
       backward_variable_ops: Mutex::new(Vec::new()),
@@ -409,6 +419,7 @@ impl Graph {
   }
 }
 
+/// Variable is the struct that represents inputs and outputs of a model. Operations on Variable enqueue backward ops, that are executed in reverse, such that the parameter gradients are evaluated, which are then used to optimize the model. Like ArcTensor, Variable can be cloned to copy the pointer to its data, as well as the pointers to the graph and the gradient data.  
 #[derive(Clone)]
 pub struct Variable<D: Dimension> {
   graph: Weak<Graph>,
@@ -422,6 +433,7 @@ pub type Variable4 = Variable<Ix4>;
 pub type VariableD = Variable<IxDyn>;
 
 impl<D: Dimension> Variable<D> {
+  /// Constructs a new Variable from an Optional graph, a tensor, potentially with a gradient. If Graph is none, no backward operations will be enqueued for this variable (ie inference). Value may be either a Tensor<f32, D> or an ArcTensor<f32, D>, the tensor will be consumed (ie moved) without copying its data. If graph is Some and requires_grad is true, this variable will have a gradient computed on the backward pass.  
   pub fn new(graph: Option<&Arc<Graph>>, value: impl Into<ArcTensor<f32, D>>, requires_grad: bool) -> Self {
     let value = value.into();
     let (graph, grad) = if let Some(graph) = graph {
@@ -440,15 +452,20 @@ impl<D: Dimension> Variable<D> {
       grad
     }
   }
+  /// Convienance accessor to self.value().device()
   pub fn device(&self) -> &Device {
     self.value.device()
   }
+  /// Returns a reference to the value of the variable
   pub fn value(&self) -> &ArcTensor<f32, D> {
     &self.value
   }
+  /// Returns an optional reference to the gradient of this variable\
+  /// Some: If requires_grad was true on Variable::new(_)
   pub fn grad(&self) -> Option<&Gradient<D>> {
     self.grad.as_ref()
   }
+  /// Returns a new Variable with a clone of the value (copying the pointer not the data), without a graph.\
   pub fn detach(&self) -> Self {
     Self {
       graph: Weak::new(),
@@ -456,6 +473,7 @@ impl<D: Dimension> Variable<D> {
       grad: None
     }
   }
+  /// Equivalent to Tensor::into_dyn(), but also maps the gradient as well
   pub fn into_dyn(self) -> VariableD {
     let Variable{graph, value, grad} = self;
     Variable {
@@ -464,6 +482,7 @@ impl<D: Dimension> Variable<D> {
       grad: grad.map(|grad| grad.into_dyn())
     }
   }
+  /// Equivalent to Tensor::into_dimensionality(), but also maps the gradient as well
   pub fn into_dimensionality<D2: Dimension>(self) -> Option<Variable<D2>> {
     let Variable{graph, value, grad} = self;
     value.into_dimensionality()
@@ -479,6 +498,7 @@ impl<D: Dimension> Variable<D> {
         }
       })
   }
+  /// Equivalent to Tensor::into_shape(), but also maps the gradient as well
   pub fn into_shape<D2: Dimension>(self, shape: impl IntoDimension<Dim=D2>) -> Option<Variable<D2>> {
     let Variable{graph, value, grad} = self;
     value.into_shape(shape)
@@ -494,6 +514,7 @@ impl<D: Dimension> Variable<D> {
         }
       })
   }
+  /// Similar to Tensor::into_flatten, this method returns a new 2D Variable (copying the data pointers) with the trailing dimensions folded into 1, with the first dimension the same as the input. 
   pub fn flatten(&self) -> Variable2
     where D: RemoveAxis {
     let dims = self.value.dim.slice();
@@ -503,6 +524,7 @@ impl<D: Dimension> Variable<D> {
       .into_shape([batch_size, inputs])
       .unwrap()
   }
+  /// Performs the ReLU function, potentially computing the gradient on the backward pass
   pub fn relu(&self) -> Self {
     let graph = Weak::upgrade(&self.graph);
     let output = Self::new(
@@ -531,6 +553,8 @@ impl<D: Dimension> Variable<D> {
 }
 
 impl Variable0 {
+  /// Fills gradient with 1., and computes the backward pass, computing backward variable ops in reverse order, then backward parameter ops in reverse order. 
+  // Panics: Graph should be unique (ie no other copies of the Arc<Graph> exist). This ensures the graph will be dropped when this function exits. 
   pub fn backward(&self, graph: Arc<Graph>) {
     debug_assert!(
       Arc::ptr_eq(&graph, &Weak::upgrade(&self.graph).unwrap())
@@ -549,6 +573,8 @@ impl Variable0 {
 }
 
 impl Variable2 {
+  /// Performs the dense operation: Y = X*W^T + b\
+  /// Potentially computes gradients for the input and or the parameters if they have a gradient.
   pub fn dense(&self, weight: &Parameter2, bias: Option<&Parameter1>) -> Self {
     let graph = Weak::upgrade(&self.graph);
     let output_value = {
@@ -589,6 +615,7 @@ impl Variable2 {
     }
     output
   }
+  /// Computes sum(-log_softmax(x) * t) returning a Variable with a single element. Additionally computes the input gradient as: dx = dy * (x - t).
   pub fn cross_entropy_loss(&self, target: &ArcTensor2<f32>) -> Variable0 {
     let graph = Weak::upgrade(&self.graph);
     let output = Variable::new(
@@ -614,6 +641,7 @@ impl Variable2 {
 }
 
 impl Variable4 {
+  /// Computes a 2D Convolution with given weight, bias, and args. Additionally computes the gradients on the backward pass if required. 
   pub fn conv2d(&self, weight: &Parameter4, bias: Option<&Parameter1>, args: &Conv2dArgs) -> Self {
     let graph = Weak::upgrade(&self.graph);
     let output_value = {
@@ -655,6 +683,7 @@ impl Variable4 {
     }
     output
   }
+  /// Computes a 2D max pool. Additionally computes the input gradient on the backward pass if required.
   pub fn max_pool2d(&self, args: &Pool2dArgs) -> Self {
     let graph = Weak::upgrade(&self.graph);
     let train = self.grad.is_some(); 
@@ -686,6 +715,7 @@ impl Variable4 {
   }
 }
 
+/// A trainable parameter of a neural network model. Can be cloned (copying the pointer not the data) to share access. Note that if the gradient is or is set to None (via set_training(false)) then the gradients will not be shared. 
 #[derive(Clone)]
 pub struct Parameter<D: Dimension> {
   value: RwTensor<f32, D>,
@@ -698,17 +728,22 @@ pub type Parameter4 = Parameter<Ix4>;
 pub type ParameterD = Parameter<IxDyn>;
 
 impl<D: Dimension> Parameter<D> {
+  /// Constructs a new Parameter from either a Tensor or RwTensor. Its gradient is initially None. 
   pub fn new(value: impl Into<RwTensor<f32, D>>) -> Self {
     let value = value.into();
     let grad = None;
     Self{value, grad}
   }
+  /// Returns a reference to the value of the parameter
   pub fn value(&self) -> &RwTensor<f32, D> {
     &self.value
   }
+  /// Returs an optional reference to the gradient of the parameter\
+  /// Some: If the most recent call to set_training() was training=true
   pub fn grad(&self) -> Option<&Gradient<D>> {
     self.grad.as_ref()
   }
+  /// Selects whether to train this parameter.
   pub fn set_training(&mut self, training: bool) {
     if training {
       self.grad.replace(
@@ -722,6 +757,7 @@ impl<D: Dimension> Parameter<D> {
       self.grad = None;
     }
   }
+  /// Similar to Tensor::into_dyn(), this method additionally maps the gradient
   pub fn into_dyn(self) -> ParameterD {
     let Parameter{value, grad} = self;
     Parameter {
@@ -729,6 +765,7 @@ impl<D: Dimension> Parameter<D> {
       grad: grad.map(|grad| grad.into_dyn())
     }
   }
+  /// Similar to Tensor::into_dimensionality(), this method additionally maps the gradient
   pub fn into_dimensionality<D2: Dimension>(self) -> Option<Parameter<D2>> {
     let Parameter{value, grad} = self;
     value.into_dimensionality()
@@ -743,6 +780,7 @@ impl<D: Dimension> Parameter<D> {
         }
       })
   }
+  /// Similar to Tensor::into_shape(), this method additionally maps the gradient
   pub fn into_shape<D2: Dimension>(self, shape: impl IntoDimension<Dim=D2>) -> Option<Parameter<D2>> {
     let Parameter{value, grad} = self;
     value.into_shape(shape)

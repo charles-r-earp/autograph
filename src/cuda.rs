@@ -160,6 +160,7 @@ impl<T: Num> Clone for CudaBuffer<T> {
   }
 }
 
+/// Safe wrapper for several CUDA implementation handles
 pub struct CudaGpu {
   index: usize,
   device: CudaDevice,
@@ -171,6 +172,7 @@ pub struct CudaGpu {
 }
 
 impl CudaGpu {
+  /// Constructs a CudaGpu one the given device index wrapped in an Arc
   pub fn new(index: usize) -> Arc<Self> {
     rustacuda::init(CudaFlags::empty())
       .unwrap();
