@@ -1,4 +1,4 @@
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/charles-r-earp/autograph/LICENSE)
+[![License-MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/charles-r-earp/autograph/LICENSE-MIT)
 ![Rust](https://github.com/charles-r-earp/autograph/workflows/Rust/badge.svg?branch=master)
 # autograph
 Machine Learning Library for Rust
