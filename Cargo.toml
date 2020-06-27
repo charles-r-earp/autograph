@@ -1,12 +1,15 @@
 [package]
 name = "autograph"
 version = "0.0.1"
-authors = ["charles-r-earp <charles.r.earp@gmail.com>"]
+authors = ["Charles R Earp <charles.r.earp@gmail.com>"]
 edition = "2018"
-license = "MIT"
-description = "Machine Learning Library built on ndarray."
+license = "MIT/Apache-2.0"
+description = "Machine Learning Library for Rust"
 homepage = "https://github.com/charles-r-earp/autograph"
 repository = "https://github.com/charles-r-earp/autograph"
+keywords = ["neural-networks", "machine-learning", "cuda", "deep-learning", "autograd"]
+categories = ["science"]
+readme = "README.md"
 
 [dependencies]
 cpp = "0.5.4"
