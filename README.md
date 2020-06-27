@@ -19,7 +19,7 @@ During training, first a forward pass is run to determine the outputs of a model
   - Relu
   
 # Extension
-Currently autograph hides it's implementation, and new ops cannot be added externally. Backward ops are stored in an enum rather than a Box<dyn _>. Further experimentation is needed to determine the cost of using dynamic dispatch (ie a vtable). Ops should also be implemented for both CPU and CUDA and potentially additional devices. Exposing an interface to rapid developement is worthwhile but isn't trivial. 
+See branch extend_api. This branch adds feature xapi which enables additional methods needed to add ops to autograph. This is experimental and feedback welcome. Currently only supports cpu operations. Autograph is highly modularized, cpu operations can be implemented using pure Rust, or via c/c++ to oneDNN (see https://oneapi-src.github.io/oneDNN/), or some other means. The xapi feature provides access to the dnnl::engine and dnnl::stream needed to perform operations with dnnl (now oneDNN). 
 
 # Supported Platforms
 Tested on Ubuntu-18.04, Windows Server 2019, and macOS Catalina 10.15. Generally you will want to make sure that OpenMP is installed. Currently cmake / oneDNN has trouble finding OpenMP on mac and builds in sequential mode. This greatly degrades performance (approx 10x slower) but it will otherwise run without issues. If you have trouble building autograph, please create an issue. 
@@ -65,8 +65,6 @@ cargo bench [--features cuda]
 ```
 
 # Roadmap 
-  - Documentation
-  - Experiment with public methods for extending autograph
   - Optimizers (SGD, Adam)
   - Saving and loading of models / Serde
   - Data transfers between devices (local model parallel)
