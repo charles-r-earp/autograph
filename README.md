@@ -31,10 +31,7 @@ See branch extend_api. This branch adds feature xapi which enables additional me
 Tested on Ubuntu-18.04, Windows Server 2019, and macOS Catalina 10.15. Generally you will want to make sure that OpenMP is installed. Currently cmake / oneDNN has trouble finding OpenMP on mac and builds in sequential mode. This greatly degrades performance (approx 10x slower) but it will otherwise run without issues. If you have trouble building autograph, please create an issue. 
 
 # CUDA
-Cuda can be enabled by passing the feature "cuda" to cargo. CUDA https://developer.nvidia.com/cuda-downloads and cuDNN https://developer.nvidia.com/cudnn must be installed. See https://github.com/bheisler/RustaCUDA for additional help. CUDA is only tested during developement and is not tested via Actions, so it may not work on different platforms and CUDA versions. Currently it will only work on linux.
-```
-cargo run --features cuda
-```
+Cuda can be enabled by passing the feature "cuda" to cargo. CUDA https://developer.nvidia.com/cuda-downloads and cuDNN https://developer.nvidia.com/cudnn must be installed. See https://github.com/bheisler/RustaCUDA and https://github.com/charles-r-earp/cuda-cudnn-sys for additional information. 
 
 # Datasets
 Autograph includes a datasets module enabled with the features datasets. This currently has the MNIST dataset, which is downloaded and saved automatically. The implementation of this is old and outdated (it uses reqwest among others which now uses async), and compiles slowly. Potentially overkill for such a small dataset, but for adding new datasets (like ImageNet), we will need an updated, fast implementation. 
@@ -48,12 +45,9 @@ cargo doc --open [--features "[datasets] [cuda]"]
 To add autograph to your project add it as a dependency in your cargo.toml (features are optional):
 ```
 [dependencies]
-autograph = { git = "https://github.com/charles-r-earp/autograph", features = ["datasets", "cuda"] }
-```
-Autograph is also available on crates.io, but it is not up-to-date. With the next release, you can use the following instead:
-```
 autograph = { version = 0.0.2, features = ["datasets", "cuda"] }
 ```
+
 # Tests
 Run the unit-tests with (passing the feature cuda additionally runs cuda tests):
 ```
