@@ -48,6 +48,17 @@ To add autograph to your project add it as a dependency in your cargo.toml (feat
 autograph = { version = 0.0.2, features = ["datasets", "cuda"] }
 ```
 
+CPU computing needs **oneDNN**, and ideally the **OpenMP** runtime for parallel computation.
+If you use autograph as a dependency, cargo will run the `git clone --recursive` command and fetch oneDNN for you, but to just run the examples here you’ll have to install it.
+
+oneDNN can be installed by either of:
+  - `git submodule update --init --recursive`
+  - Download it from https://github.com/oneapi-src/oneDNN and put its contents in `oneDNN/`.
+
+For the OpenMP runtime:
+  - Linux with GCC: install `libgomp1` for Debian/Ubuntu, `libgomp-devel` for Void.
+  - Linux with Clang: install `libomp-dev` for Debian/Ubuntu, `libomp-devel` for Void.
+
 # Tests
 Run the unit-tests with (passing the feature cuda additionally runs cuda tests):
 ```
