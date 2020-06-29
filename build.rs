@@ -34,6 +34,12 @@ fn main() {
                 if found {
                     println!("cargo:rustc-link-lib=dylib=gomp");    
                 }
+                else {
+                    println!("cargo:warning=Unable to located OpenMP.")
+                }
+            }
+            else {
+                println!("cargo:warning=Command locate libomp.so failed, unable to locate OpenMP.")
             }
         }
         else if cfg!(target_family = "windows") {
@@ -53,10 +59,14 @@ fn main() {
                 if found {
                     println!("cargo:rustc-link-lib=dylib=gomp");    
                 }
+                else {
+                    println!("cargo:warning=Unable to located OpenMP.")
+                }
             }
         }
         else {
             // probably unreachable
+            println!("cargo:warning=Unknown platform, unable to locate OpenMP.");
         }
         cpp_build::Config::new()
             .include(dst.join("include").display().to_string())
@@ -77,4 +87,5 @@ fn main() {
             assert!(status.success());
         }
     }
+    println!("cargo:rustc-rerun-if-changed=build.rs");
 }
