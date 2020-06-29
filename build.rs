@@ -13,6 +13,10 @@ fn main() {
             "cargo:rustc-link-search=native={}",
             dst.join("lib").display()
         );
+        println!(
+            "cargo:rustc-link-search=native={}",
+            dst.join("lib64").display()
+        );
         println!("cargo:rustc-link-lib=static=dnnl");
         if cfg!(target_os = "linux") {
             println!("cargo:rustc-link-lib=dylib=gomp");
