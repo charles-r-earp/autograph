@@ -18,8 +18,45 @@ fn main() {
             dst.join("lib64").display()
         );
         println!("cargo:rustc-link-lib=static=dnnl");
-        if cfg!(target_os = "linux") {
-            println!("cargo:rustc-link-lib=dylib=gomp");
+        if cfg!(target_family = "unix") {
+            if let Ok(output) = Command::new("locate")
+                .arg("libomp.so")
+                .output() {
+                let output = String::from_utf8(output.stdout).unwrap();
+                let mut found = false;
+                for line in output.lines() {
+                    if !line.is_empty() {
+                        // this will be a possible path to libomp.so
+                        found = true;
+                        break;
+                    }
+                }
+                if found {
+                    println!("cargo:rustc-link-lib=dylib=gomp");    
+                }
+            }
+        }
+        else if cfg!(target_family = "windows") {
+            if let Ok(output) = Command::new("dir")
+                .arg("libomp.dll")
+                .arg("/s")
+                .output() {
+                let output = String::from_utf8(output.stdout).unwrap();
+                let mut found = false;
+                for line in output.lines() {
+                    if !line.is_empty() {
+                        // this will be a possible path to libomp.dll
+                        found = true;
+                        break;
+                    }
+                }
+                if found {
+                    println!("cargo:rustc-link-lib=dylib=gomp");    
+                }
+            }
+        }
+        else {
+            // probably unreachable
         }
         cpp_build::Config::new()
             .include(dst.join("include").display().to_string())
