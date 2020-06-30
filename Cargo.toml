@@ -25,6 +25,7 @@ reqwest = { version = "0.9.22", optional = true }
 rand = "0.7.3"
 rand_distr = "0.2.2"
 argmm = "0.1.0"
+autograph_derive = { path = "autograph_derive" }
 
 [build-dependencies]
 cmake = "0.1.42"
