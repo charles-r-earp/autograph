@@ -29,6 +29,7 @@ argmm = "0.1.0"
 [build-dependencies]
 cmake = "0.1.42"
 cpp_build = "0.5.4"
+cc = "1.0.55"
 
 [features]
 datasets = ["byteorder", "flate2", "reqwest"]
