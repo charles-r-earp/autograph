@@ -38,6 +38,20 @@ Autograph includes a datasets module enabled with the features datasets. This cu
 
 # Getting Started
 If you are new to Rust, you can get it and find documentation here: https://www.rust-lang.org/
+
+If you have git installed (see https://git-scm.com/book/en/v2/Getting-Started-Installing-Git) you can clone the repo by:
+```
+git clone --recursive https://github.com/charles-r-earp/autograph
+```
+If cloned without the --recursive option, the oneDNN directory will be empty. Either: 
+  - `git submodule update --init --recursive`
+  - Download it from https://github.com/oneapi-src/oneDNN and put its contents in `oneDNN/`.
+
+OpenMP is used when available in oneDNN. Without it, execution will be very slow. This requires a C++ compiler that supports OpenMP 2.0 or later:
+  - gcc 4.2.0 or later `gcc --version`
+  - clang/llvm 
+    - Linux with Clang: may need to install `libomp-dev` for Debian/Ubuntu, `libomp-devel` for Void
+
 View the documentation by:
 ```
 cargo doc --open [--features "[datasets] [cuda]"]
@@ -46,6 +60,8 @@ To add autograph to your project add it as a dependency in your cargo.toml (feat
 ```
 [dependencies]
 autograph = { version = 0.0.2, features = ["datasets", "cuda"] }
+// or from github
+autograph = { git = https://github.com/charles-r-earp/autograph, features = ["datasets", "cuda"] }
 ```
 
 # Tests
