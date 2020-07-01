@@ -1,4 +1,4 @@
-use super::{Conv2d, Dense, MaxPool2d};
+use super::{Conv2d, Dense, MaxPool2d, Sequential, SequentialEmpty, SequentialBase};
 use crate::{Conv2dArgs, Device, Into2d, Pool2dArgs};
 
 #[derive(Default, Clone)]
@@ -91,3 +91,27 @@ impl MaxPool2dBuilder {
         self.into()
     }
 }
+
+pub struct SequentialBuilder<S>(pub(super) S);
+
+impl Default for SequentialBuilder<SequentialEmpty> {
+    fn default() -> Self {
+        SequentialBuilder(SequentialEmpty{})
+    }
+}
+
+impl<S> SequentialBuilder<S> {
+    pub fn layer<N>(self, layer: N) -> SequentialBuilder<SequentialBase<S, N>> {
+        SequentialBuilder(SequentialBase { 
+            seq: self.0,
+            node: layer
+        })
+    }
+    pub fn build(self) -> Sequential<S> {
+        self.into()
+    }
+}
+
+
+
+

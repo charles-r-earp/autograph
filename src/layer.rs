@@ -8,7 +8,7 @@ use crate::{
 use ndarray::{Dimension, Ix2, Ix4};
 
 pub mod builders;
-use builders::{Conv2dBuilder, DenseBuilder, MaxPool2dBuilder};
+use builders::{Conv2dBuilder, DenseBuilder, MaxPool2dBuilder, SequentialBuilder};
 
 /// Trait for Layers\
 /// Custom Models should impl Layer
@@ -252,5 +252,139 @@ impl Forward<Ix4> for MaxPool2d {
     type OutputDim = Ix4;
     fn forward(&self, input: &Variable4) -> Variable4 {
         input.max_pool2d(&self.args)
+    }
+}
+
+#[doc(hidden)]
+pub struct SequentialEmpty {}
+
+#[doc(hidden)]
+pub struct SequentialBase<S, N> {
+    seq: S,
+    node: N
+}
+
+/// A Typed Sequence of Layers\
+///
+///```
+///use autograph::Device;
+///use autograph::layer::{Layer, Forward, Sequential, Conv2d, Dense, Flatten, Relu};
+///use ndarray::{Ix2, Ix4};
+/// 
+///fn my_model(device: &Device) -> impl Layer + Forward<Ix4, OutputDim=Ix2> {
+///    Sequential::builder()
+///        .layer(
+///           Conv2d::builder()
+///               .device(&device)
+///               .inputs(1)
+///               .outputs(8)
+///               .kernel(7)
+///               .build()           
+///        )
+///        .layer(Relu::default())
+///        .layer(Flatten::default())
+///        .layer(
+///            Dense::builder()
+///                .device(&device)
+///                .inputs(8*24*24)
+///                .outputs(10)
+///                .build()
+///        )
+///        .build()            
+///} 
+///```
+pub struct Sequential<S>(S);
+
+impl Sequential<SequentialEmpty> {
+    pub fn builder() -> SequentialBuilder<SequentialEmpty> {
+        SequentialBuilder::default()
+    }
+}
+
+impl<S> From<SequentialBuilder<S>> for Sequential<S> {
+    fn from(builder: SequentialBuilder<S>) -> Self {
+        Sequential(builder.0)
+    }
+}
+
+impl Layer for SequentialEmpty {}
+
+impl<D: Dimension> Forward<D> for SequentialEmpty {
+    type OutputDim = D;
+    fn forward(&self, input: &Variable<D>) -> Variable<D> {
+        input.clone()
+    }
+}
+
+impl<S: Layer, N: Layer> Layer for SequentialBase<S, N> {
+    fn parameters(&self) -> Vec<ParameterD> {
+        self.seq.parameters()
+            .into_iter()
+            .chain(self.node.parameters())
+            .collect()
+    }
+    fn set_training(&mut self, training: bool) {
+        self.seq.set_training(training);
+        self.node.set_training(training);
+    }
+} 
+
+impl<D: Dimension, S: Forward<D>, N: Forward<S::OutputDim>> Forward<D> for SequentialBase<S, N> {
+    type OutputDim = N::OutputDim;
+    fn forward(&self, input: &Variable<D>) -> Variable<N::OutputDim> {
+        input.forward(&self.seq)
+            .forward(&self.node)
+    }
+}
+
+impl<S: Layer> Layer for Sequential<S> {
+    fn parameters(&self) -> Vec<ParameterD> {
+        self.0.parameters()
+    }
+    fn set_training(&mut self, training: bool) {
+        self.0.set_training(training);
+    }
+}
+
+impl<D: Dimension, S: Forward<D>> Forward<D> for Sequential<S> {
+    type OutputDim = S::OutputDim;
+    fn forward(&self, input: &Variable<D>) -> Variable<S::OutputDim> {
+        self.0.forward(input)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Device, Cpu};
+    
+    #[test]
+    fn test_sequential_builder() {
+        let device = Device::from(Cpu::new());
+        let mut seq1 = Sequential::builder()
+            .layer(
+                Dense::builder()
+                    .device(&device)
+                    .inputs(1)
+                    .outputs(1)
+                    .build()
+            )
+            .layer(Relu::default())
+            .layer(
+                Dense::builder()
+                    .device(&device)
+                    .inputs(1)
+                    .outputs(1)
+                    .build()
+            )
+            .build();
+        seq1.set_training(false);
+        
+        let x = Variable::new(
+            None,
+            Tensor::ones(&device, [1, 1]),
+            false
+       );
+       seq1.forward(&x);
     }
 }
