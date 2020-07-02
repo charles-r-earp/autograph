@@ -1267,3 +1267,33 @@ pub(super) fn max_pool2d_backward<
     };
     assert_eq!(status, cudnnStatus_t::CUDNN_STATUS_SUCCESS);
 }
+
+pub(super) fn sgd_with_momentum<S1: DataMut<Elem=f32>, S2: DataRef<Elem=f32>, S3: DataMut<Elem=f32>, D: Dimension>
+    (weight: &mut TensorBase<S1, D>, weight_grad: &TensorBase<S2, D>,
+     learning_rate: f32, momentum: f32,
+     velocity: &mut TensorBase<S3, D>) {
+    let gpu = weight_grad.device.cuda().unwrap();
+    gpu.make_current();
+    let stream = gpu.stream();
+    let module = gpu.kernels();
+    let len = weight.len() as u32;
+    let nthreads = 32;
+    let mut nblocks = len / nthreads;
+    if len % nthreads != 0 {
+        nblocks += 1;
+    }
+    let mut w = weight.as_mut_cuda_ptr().unwrap();
+    let dw = weight_grad.as_cuda_ptr().unwrap();
+    let mut v = velocity.as_mut_cuda_ptr().unwrap();
+    unsafe {
+        launch!(module.sgd_with_momentum<<<nblocks, nthreads, 0, stream>>>(
+          DevicePointer::wrap(w),
+          DevicePointer::wrap(dw as *mut f32),
+          learning_rate, 
+          momentum,
+          DevicePointer::wrap(v),
+          len
+        ))
+        .unwrap()
+    }
+}

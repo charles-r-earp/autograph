@@ -1200,3 +1200,19 @@ pub(super) fn max_pool2d_backward<
       stream.wait();
     });
 }
+
+pub(super) fn sgd_with_momentum<S1: DataMut<Elem=f32>, S2: DataRef<Elem=f32>, S3: DataMut<Elem=f32>, D: Dimension>
+    (weight: &mut TensorBase<S1, D>, weight_grad: &TensorBase<S2, D>,
+     learning_rate: f32, momentum: f32,
+     velocity: &mut TensorBase<S3, D>) {
+     let mut weight = weight.as_mut_cpu_slice().unwrap();
+     let weight_grad = weight_grad.as_cpu_slice().unwrap();
+     let mut velocity = velocity.as_mut_cpu_slice().unwrap();
+     weight.iter_mut()
+        .zip(weight_grad.iter())
+        .zip(velocity.iter_mut())
+        .for_each(|((w, &dw), v)| {
+            *v = momentum * *v + dw;
+            *w -= learning_rate * *v;
+        });
+}
