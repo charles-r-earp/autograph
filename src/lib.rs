@@ -682,14 +682,14 @@ impl<S: DataRef<Elem = f32>, D: Dimension> TensorBase<S, D> {
 }
 
 impl<S: DataMut<Elem = f32>, D: Dimension> TensorBase<S, D> {
-    pub fn add<S2: DataRef<Elem=f32>>(&self, rhs: &TensorBase<S2, D>) -> Tensor<f32, D> {
+    pub fn add<S2: DataRef<Elem = f32>>(&self, rhs: &TensorBase<S2, D>) -> Tensor<f32, D> {
         debug_assert_eq!(&self.device, &rhs.device);
         debug_assert_eq!(&self.dim, &rhs.dim);
         let mut output = unsafe { Tensor::uninitialized(self.device(), self.raw_dim()) };
         match &self.device {
             Device::Cpu(cpu) => cpu::add(self, rhs, &mut output),
             #[cfg(feature = "cuda")]
-            Device::Cuda(cuda_gpu) => cuda::add(self, rhs, &mut output)
+            Device::Cuda(cuda_gpu) => cuda::add(self, rhs, &mut output),
         }
         output
     }

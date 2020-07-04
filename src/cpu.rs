@@ -375,10 +375,15 @@ pub(super) fn relu_backward<
     });
 }
 
-pub(super) fn add<S1: DataRef<Elem = f32>, S2: DataRef<Elem = f32>, S3: DataMut<Elem = f32>, D: Dimension>(
+pub(super) fn add<
+    S1: DataRef<Elem = f32>,
+    S2: DataRef<Elem = f32>,
+    S3: DataMut<Elem = f32>,
+    D: Dimension,
+>(
     lhs: &TensorBase<S1, D>,
     rhs: &TensorBase<S2, D>,
-    output: &mut TensorBase<S3, D>
+    output: &mut TensorBase<S3, D>,
 ) {
     let cpu = lhs.device().cpu().unwrap();
     let engine_ptr = unsafe { &cpu.engine as *const Engine };
@@ -388,7 +393,7 @@ pub(super) fn add<S1: DataRef<Elem = f32>, S2: DataRef<Elem = f32>, S3: DataMut<
     let x1 = lhs.as_cpu_ptr().unwrap();
     let x2 = rhs.as_cpu_ptr().unwrap();
     let y = output.as_mut_cpu_ptr().unwrap();
-    
+
     cpp!(unsafe [engine_ptr as "const dnnl::engine*",
                  stream_ptr as "dnnl::stream*",
                  n as "dnnl_dim_t",

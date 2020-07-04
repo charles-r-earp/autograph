@@ -18,20 +18,21 @@ fn main() {
             dst.join("lib64").display()
         );
         println!("cargo:rustc-link-lib=static=dnnl");
-         { // check if OpenMP is available 
+        {
+            // check if OpenMP is available
             cc::Build::new()
                 .file(
                     dst.join("build")
                         .join("CMakeFiles")
                         .join("FindOpenMP")
-                        .join("OpenMPTryFlag.c")
+                        .join("OpenMPTryFlag.c"),
                 )
                 .flag_if_supported("-fopenmp")
                 // Don't link to the crate
                 .cargo_metadata(false)
                 .try_compile("openmp_try_flag")
                 .map(|_| {
-                    println!("cargo:rustc-link-lib=dylib=gomp"); 
+                    println!("cargo:rustc-link-lib=dylib=gomp");
                 });
         }
         /*if cfg!(target_family = "unix") {
@@ -48,7 +49,7 @@ fn main() {
                     }
                 }
                 if found {
-                    println!("cargo:rustc-link-lib=dylib=gomp");    
+                    println!("cargo:rustc-link-lib=dylib=gomp");
                 }
                 else {
                     println!("cargo:warning=Unable to located OpenMP.")
@@ -73,7 +74,7 @@ fn main() {
                     }
                 }
                 if found {
-                    println!("cargo:rustc-link-lib=dylib=gomp");    
+                    println!("cargo:rustc-link-lib=dylib=gomp");
                 }
                 else {
                     println!("cargo:warning=Unable to located OpenMP.")

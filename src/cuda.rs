@@ -753,10 +753,15 @@ pub(super) fn relu_backward<
     assert_eq!(status, cudnnStatus_t::CUDNN_STATUS_SUCCESS);
 }
 
-pub(super) fn add<S1: DataRef<Elem = f32>, S2: DataRef<Elem = f32>, S3: DataMut<Elem = f32>, D: Dimension>(
+pub(super) fn add<
+    S1: DataRef<Elem = f32>,
+    S2: DataRef<Elem = f32>,
+    S3: DataMut<Elem = f32>,
+    D: Dimension,
+>(
     lhs: &TensorBase<S1, D>,
     rhs: &TensorBase<S2, D>,
-    output: &mut TensorBase<S3, D>
+    output: &mut TensorBase<S3, D>,
 ) {
     let gpu = lhs.device.cuda().unwrap();
     gpu.make_current();
