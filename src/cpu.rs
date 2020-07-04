@@ -375,6 +375,54 @@ pub(super) fn relu_backward<
     });
 }
 
+pub(super) fn add<S1: DataRef<Elem = f32>, S2: DataRef<Elem = f32>, S3: DataMut<Elem = f32>, D: Dimension>(
+    lhs: &TensorBase<S1, D>,
+    rhs: &TensorBase<S2, D>,
+    output: &mut TensorBase<S3, D>
+) {
+    let cpu = lhs.device().cpu().unwrap();
+    let engine_ptr = unsafe { &cpu.engine as *const Engine };
+    let mut stream = cpu.stream.lock().unwrap();
+    let stream_ptr = unsafe { &mut *stream as *mut Stream };
+    let n = lhs.len();
+    let x1 = lhs.as_cpu_ptr().unwrap();
+    let x2 = rhs.as_cpu_ptr().unwrap();
+    let y = output.as_mut_cpu_ptr().unwrap();
+    
+    cpp!(unsafe [engine_ptr as "const dnnl::engine*",
+                 stream_ptr as "dnnl::stream*",
+                 n as "dnnl_dim_t",
+                 x1 as "const float*",
+                 x2 as "const float*",
+                 y as "float*"] {
+
+      auto engine = *engine_ptr;
+      auto stream = *stream_ptr;
+
+      auto x1_md = dnnl::memory::desc({n}, dnnl_dt::f32, dnnl_tag::a);
+      auto x1_mem = dnnl::memory(x1_md, engine, (float*) x1);
+      auto x2_md = dnnl::memory::desc({n}, dnnl_dt::f32, dnnl_tag::a);
+      auto x2_mem = dnnl::memory(x2_md, engine, (float*) x2);
+      auto y_md = dnnl::memory::desc({n}, dnnl_dt::f32, dnnl_tag::a);
+      auto y_mem = dnnl::memory(y_md, engine, y);
+
+      {
+        std::vector<float> scales{1., 1.};
+        std::vector<dnnl::memory::desc> srcs{x1_md, x2_md};
+        auto sum_pd = dnnl::sum::primitive_desc(scales, srcs, engine);
+        auto sum = dnnl::sum(sum_pd);
+        argmap args;
+        args.insert({DNNL_ARG_MULTIPLE_SRC, x1_mem});
+        args.insert({DNNL_ARG_MULTIPLE_SRC+1, x2_mem});
+        args.insert({DNNL_ARG_DST, y_mem});
+
+        sum.execute(stream, args);
+      }
+
+      stream.wait();
+    });
+}
+
 pub(super) fn scaled_add<S1: DataMut<Elem = f32>, S2: DataRef<Elem = f32>, D: Dimension>(
     lhs: &mut TensorBase<S1, D>,
     alpha: f32,
