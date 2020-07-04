@@ -285,17 +285,18 @@ fn test_add(device: impl Into<Device>) {
     let x1 = Tensor::from_shape_vec(&device, 10, x1_vec.as_slice());
     let x2 = Tensor::from_shape_vec(&device, 10, x2_vec.as_slice());
     let y = x1.add(&x2);
-    let y_true: Vec<f32> = x1_vec.iter()
+    let y_true: Vec<f32> = x1_vec
+        .iter()
         .zip(x2_vec.iter())
         .map(|(&x1, &x2)| x1 + x2)
-        .collect(); 
+        .collect();
     assert_eq!(&*y.as_slice(), &*y_true);
 }
 #[test]
 fn test_add_cpu() {
     test_add(Cpu::new());
 }
-#[cfg(feature="cuda")]
+#[cfg(feature = "cuda")]
 #[test]
 fn test_add_cuda() {
     test_add(CudaGpu::new(0));

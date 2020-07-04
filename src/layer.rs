@@ -5,7 +5,7 @@ use crate::{
     Conv2dArgs, Device, Num, Pool2dArgs, RwTensor, Tensor, Tensor2, Tensor4, TensorView,
     TensorView2, TensorView4,
 };
-use ndarray::{Dimension, RemoveAxis, Ix2, Ix4};
+use ndarray::{Dimension, Ix2, Ix4, RemoveAxis};
 
 pub mod builders;
 use builders::{Conv2dBuilder, DenseBuilder, MaxPool2dBuilder};

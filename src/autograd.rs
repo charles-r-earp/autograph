@@ -101,9 +101,8 @@ impl<D: Dimension> Gradient<D> {
 #[proxy_enum::proxy(BackwardVariableOp)]
 pub mod backward_variable_op_proxy {
     use super::{
-        Conv2dBackwardInput, CrossEntropyBackward, DenseBackwardInput, MaxPool2dBackward,
-        ReluBackward,
-        AddBackward
+        AddBackward, Conv2dBackwardInput, CrossEntropyBackward, DenseBackwardInput,
+        MaxPool2dBackward, ReluBackward,
     };
 
     pub enum BackwardVariableOp {
@@ -112,7 +111,7 @@ pub mod backward_variable_op_proxy {
         Conv2dBackwardInput(Conv2dBackwardInput),
         MaxPool2dBackward(MaxPool2dBackward),
         ReluBackward(ReluBackward),
-        AddBackward(AddBackward)
+        AddBackward(AddBackward),
     }
 
     impl BackwardVariableOp {
@@ -363,7 +362,7 @@ impl From<ReluBackward> for BackwardVariableOp {
 #[doc(hidden)]
 pub struct AddBackward {
     input_grad: GradientD,
-    output_grad: GradientD
+    output_grad: GradientD,
 }
 
 impl AddBackward {
@@ -537,13 +536,17 @@ impl<D: Dimension> Variable<D> {
                 (Some(lhs_graph), Some(rhs_graph)) => {
                     debug_assert!(Arc::ptr_eq(&lhs_graph, &rhs_graph));
                     Some(lhs_graph)
-                },
+                }
                 (Some(lhs_graph), None) => Some(lhs_graph),
                 (None, Some(rhs_graph)) => Some(rhs_graph),
-                (None, None) => None   
+                (None, None) => None,
             }
-        }; 
-        let output = Self::new(graph.as_ref(), self.value.relu(), self.grad().is_some() || rhs.grad().is_some());
+        };
+        let output = Self::new(
+            graph.as_ref(),
+            self.value.relu(),
+            self.grad().is_some() || rhs.grad().is_some(),
+        );
         if let Some(output_grad) = output.grad() {
             let graph = graph.unwrap();
             if let Some(lhs_grad) = self.grad() {
