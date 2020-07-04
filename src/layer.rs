@@ -256,6 +256,18 @@ impl Forward<Ix4> for MaxPool2d {
 }
 
 #[derive(Default)]
+pub struct Identity {}
+
+impl Layer for Identity {}
+
+impl<D: Dimension> Forward<D> for Identity {
+    type OutputDim = D;
+    fn forward(&self, input: &Variable<D>) -> Variable<D> {
+        input.clone()
+    }
+}
+
+#[derive(Default)]
 pub struct Flatten {}
 
 impl Layer for Flatten {}
