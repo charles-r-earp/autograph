@@ -1,11 +1,12 @@
 use crate::{
+    TensorD,
     ArcTensor, ArcTensor2, ArcTensor4, ArcTensorD, Buffer, Conv2dArgs, DataOwned, Device, Num,
     Pool2dArgs, RwReadTensor, RwRepr, RwTensor, RwTensor0, RwTensor1, RwTensor2, RwTensor4,
     RwTensorD, RwWriteTensor, Tensor, Tensor2, Transpose,
 };
 use ndarray::{Dimension, IntoDimension, Ix0, Ix1, Ix2, Ix3, Ix4, IxDyn, RemoveAxis};
 use num_traits::ToPrimitive;
-use std::sync::{Arc, LockResult, Mutex, PoisonError, Weak};
+use std::sync::{Arc, RwLock, LockResult, Mutex, PoisonError, Weak};
 
 /// Wrapper around a RwTensor\
 /// Gradient lazily allocates its tensor with zeros, to minimize memory footprint. If the backward pass is never called, then no allocation is needed.
@@ -720,11 +721,31 @@ impl Variable4 {
     }
 }
 
+pub enum OptimizerDataEntry {
+    VelocityTensor(TensorD<f32>)
+}
+
+pub struct ParameterMeta {
+    optimizer_data: RwLock<Vec<OptimizerDataEntry>>
+}
+
+impl ParameterMeta {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            optimizer_data: RwLock::new(Vec::new())
+        })
+    }
+    pub fn optimizer_data(&self) -> &RwLock<Vec<OptimizerDataEntry>> {
+        &self.optimizer_data
+    }
+}
+
 /// A trainable parameter of a neural network model. Can be cloned (copying the pointer not the data) to share access. Note that if the gradient is or is set to None (via set_training(false)) then the gradients will not be shared.
 #[derive(Clone)]
 pub struct Parameter<D: Dimension> {
     value: RwTensor<f32, D>,
     grad: Option<Gradient<D>>,
+    meta: Arc<ParameterMeta>
 }
 
 pub type Parameter1 = Parameter<Ix1>;
@@ -737,7 +758,8 @@ impl<D: Dimension> Parameter<D> {
     pub fn new(value: impl Into<RwTensor<f32, D>>) -> Self {
         let value = value.into();
         let grad = None;
-        Self { value, grad }
+        let meta = ParameterMeta::new();
+        Self { value, grad, meta }
     }
     /// Returns a reference to the value of the parameter
     pub fn value(&self) -> &RwTensor<f32, D> {
@@ -757,20 +779,24 @@ impl<D: Dimension> Parameter<D> {
             self.grad = None;
         }
     }
+    /// Optional meta data attached to the Parameter\
+    /// This is used to store optimizer data (like Velocity for Sgd)
+    pub(crate) fn meta(&self) -> &ParameterMeta { &self.meta } 
     /// Similar to Tensor::into_dyn(), this method additionally maps the gradient
     pub fn into_dyn(self) -> ParameterD {
-        let Parameter { value, grad } = self;
+        let Parameter { value, grad, meta } = self;
         Parameter {
             value: value.into_dyn(),
             grad: grad.map(|grad| grad.into_dyn()),
+            meta
         }
     }
     /// Similar to Tensor::into_dimensionality(), this method additionally maps the gradient
     pub fn into_dimensionality<D2: Dimension>(self) -> Option<Parameter<D2>> {
-        let Parameter { value, grad } = self;
+        let Parameter { value, grad, meta } = self;
         value.into_dimensionality().map(|value| {
             let grad = grad.map(|grad| grad.into_dimensionality().unwrap());
-            Parameter { value, grad }
+            Parameter { value, grad, meta }
         })
     }
     /// Similar to Tensor::into_shape(), this method additionally maps the gradient
@@ -778,10 +804,10 @@ impl<D: Dimension> Parameter<D> {
         self,
         shape: impl IntoDimension<Dim = D2>,
     ) -> Option<Parameter<D2>> {
-        let Parameter { value, grad } = self;
+        let Parameter { value, grad, meta } = self;
         value.into_shape(shape).map(|value| {
             let grad = grad.map(|grad| grad.into_shape(value.raw_dim()).unwrap());
-            Parameter { value, grad }
+            Parameter { value, grad, meta }
         })
     }
 }
