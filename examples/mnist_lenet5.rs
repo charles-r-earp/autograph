@@ -3,6 +3,7 @@ use argparse::{ArgumentParser, Store, StoreTrue};
 use autograph::autograd::{Graph, ParameterD, Variable, Variable2, Variable4};
 use autograph::datasets::Mnist; // requires feature "datasets"
 use autograph::layer::{Conv2d, Dense, Forward, Layer};
+use autograph::optimizer::{Optimizer, Sgd};
 use autograph::utils::classification_accuracy;
 #[cfg(feature = "cuda")]
 use autograph::CudaGpu;
@@ -113,9 +114,10 @@ impl Forward<Ix4> for Lenet5 {
 }
 
 fn main() {
-    let (epochs, lr, train_batch_size, eval_batch_size, no_cuda) = {
+    let (epochs, learning_rate, momentum, train_batch_size, eval_batch_size, no_cuda) = {
         let mut epochs = 50;
-        let mut lr = 0.001;
+        let mut learning_rate = 0.001;
+        let mut momentum = 0.1;
         let mut train_batch_size: usize = 256;
         let mut eval_batch_size: usize = 1024;
         let mut no_cuda = false;
@@ -127,8 +129,10 @@ fn main() {
                 Store,
                 "Number of epochs to train for.",
             );
-            ap.refer(&mut lr)
+            ap.refer(&mut learning_rate)
                 .add_option(&["--learning-rate"], Store, "Learning Rate");
+            ap.refer(&mut momentum)
+                .add_option(&["--momentum"], Store, "Momentum for SGD");
             ap.refer(&mut train_batch_size).add_option(
                 &["--train-batch_size"],
                 Store,
@@ -146,7 +150,7 @@ fn main() {
             );
             ap.parse_args_or_exit();
         }
-        (epochs, lr, train_batch_size, eval_batch_size, no_cuda)
+        (epochs, learning_rate, momentum, train_batch_size, eval_batch_size, no_cuda)
     };
 
     #[cfg(not(feature = "cuda"))]
@@ -159,7 +163,8 @@ fn main() {
     };
 
     println!("epochs: {}", epochs);
-    println!("lr: {}", lr);
+    println!("learning_rate: {}", learning_rate);
+    println!("momentum: {}", momentum);
     println!("train_batch_size: {}", train_batch_size);
     println!("eval_batch_size: {}", eval_batch_size);
     println!("no_cuda: {}", no_cuda);
@@ -178,6 +183,11 @@ fn main() {
                 .fill_random(&Normal::new(0., 0.01).unwrap(), &mut rng)
         }
     });
+    
+    let mut optim = Sgd::builder()
+        .learning_rate(learning_rate)
+        .momentum(momentum)
+        .build();
 
     let dataset = Mnist::new();
 
@@ -197,11 +207,7 @@ fn main() {
             let y = model.forward(&x);
             let loss = y.cross_entropy_loss(&t);
             loss.backward(graph);
-            model.parameters().iter().for_each(|w| {
-                let mut w_value = w.value().write().unwrap();
-                let w_grad = w.grad().unwrap().read().unwrap().unwrap();
-                w_value.scaled_add(-lr, &w_grad);
-            });
+            optim.step(model.parameters());
             train_correct += classification_accuracy(&y.value().as_array().view(), &t_arr);
             train_loss += loss.value().as_slice()[0];
         });
