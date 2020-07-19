@@ -15,7 +15,6 @@ use ndarray::{Ix2, Ix4, RemoveAxis};
 extern crate autograph_derive;
 
 
-
 #[impl_forward(Ix2, Ix2)]
 #[derive(Layer)]
 struct DenseNet1 (
@@ -38,3 +37,12 @@ struct Lenet5 (
     Relu,
     Dense
 );
+
+#[impl_forward(Ix4, Ix2)]
+#[derive(Layer)]
+struct TestSkip {
+    flatten1: Flatten,
+    #[autograph(skip_layer)]
+    meta: String,
+    dense1: Dense
+}

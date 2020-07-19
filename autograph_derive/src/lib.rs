@@ -6,11 +6,24 @@ use syn::{
     Fields,
     Index,
     ItemStruct,
-    AttributeArgs,
+    Attribute,
+    //AttributeArgs,
     Meta,
     NestedMeta
 };
-use quote::quote;
+use quote::{ToTokens, quote};
+
+fn is_autograph_skip(attributes: &[Attribute]) -> bool {
+    let skip = quote! {
+        #[autograph(skip_layer)]    
+    };
+    for attribute in attributes {
+        if attribute.to_token_stream().to_string() == skip.to_string() {
+            return true;
+        }
+    }
+    return false;
+}
 
 #[proc_macro_derive(Layer)]
 pub fn derive_layer(input: BaseTokenStream) -> BaseTokenStream {
@@ -35,6 +48,9 @@ pub fn derive_layer(input: BaseTokenStream) -> BaseTokenStream {
             let mut parameters_impl = TokenStream::new();
             let mut set_training_impl = TokenStream::new();
             for (i, field) in fields.into_iter().enumerate() {
+                if is_autograph_skip(&field.attrs) {
+                    continue;
+                }
                 if let Some(ident) = &field.ident {
                     if len == 1 {
                         parameters_impl.extend(quote! { self. #ident .parameters() });
@@ -120,6 +136,7 @@ pub fn impl_forward(attr: BaseTokenStream, item: BaseTokenStream) -> BaseTokenSt
         if !fields.is_empty() {
             let forward_impl: TokenStream = fields.into_iter()
                 .enumerate()
+                .filter(|(_, field)| !is_autograph_skip(&field.attrs))
                 .map(|(i, field)| {
                     if let Some(ident) = &field.ident {
                         quote! { .forward(&self. #ident) }
@@ -141,6 +158,9 @@ pub fn impl_forward(attr: BaseTokenStream, item: BaseTokenStream) -> BaseTokenSt
             };
             output.extend(BaseTokenStream::from(gen));
         }
+    }
+    else {
+        output.extend(BaseTokenStream::from(identity_impl));
     }
     output
 }
