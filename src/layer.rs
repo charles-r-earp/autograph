@@ -267,7 +267,8 @@ impl<D: RemoveAxis> Forward<D> for Flatten {
     }
 }
 
-pub struct Sequential<S>(pub S); 
+/// A Sequence of Layers
+pub struct Sequential<S>(S); 
 
 impl<L> From<Vec<L>> for Sequential<Vec<L>> {
     fn from(layers: Vec<L>) -> Self {
