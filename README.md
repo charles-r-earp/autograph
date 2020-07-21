@@ -23,9 +23,6 @@ Machine Learning Library for Rust
 
 # Graphs
 During training, first a forward pass is run to determine the outputs of a model and compute the loss. Then a backward pass is run to compute the gradients which are used to update the model parameters. Autograph constructs a graph of operations in the forward pass that is then used for the backward pass. This allows for intermediate values and gradients to be lazily allocated and deallocated using RAII in order to minimize memory usage. Native control flow like loops, if statements etc. can be used to define a forward pass, which does not need to be the same each time. This allows for novel deep learning structures like RNN's and GAN's to be constructed, without special hardcoding. 
-  
-# Extension
-See branch extend_api. This branch adds feature xapi which enables additional methods needed to add ops to autograph. This is experimental and feedback welcome. Currently only supports cpu operations. Autograph is highly modularized, cpu operations can be implemented using pure Rust, or via c/c++ to oneDNN (see https://oneapi-src.github.io/oneDNN/), or some other means. The xapi feature provides access to the dnnl::engine and dnnl::stream needed to perform operations with dnnl (now oneDNN). 
 
 # Supported Platforms
 Tested on Ubuntu-18.04, Windows Server 2019, and macOS Catalina 10.15. Generally you will want to make sure that OpenMP is installed. Currently cmake / oneDNN has trouble finding OpenMP on mac and builds in sequential mode. This greatly degrades performance (approx 10x slower) but it will otherwise run without issues. If you have trouble building autograph, please create an issue. 
