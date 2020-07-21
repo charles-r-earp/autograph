@@ -7,7 +7,6 @@ use syn::{
     Index,
     ItemStruct,
     Attribute,
-    //AttributeArgs,
     Meta,
     NestedMeta
 };
@@ -25,7 +24,7 @@ fn is_autograph_skip(attributes: &[Attribute]) -> bool {
     return false;
 }
 
-#[proc_macro_derive(Layer)]
+#[proc_macro_derive(Layer, attributes(autograph))]
 pub fn derive_layer(input: BaseTokenStream) -> BaseTokenStream {
     let input: DeriveInput = syn::parse(input).unwrap();
     let fields = match &input.data {
