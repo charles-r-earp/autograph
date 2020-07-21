@@ -12,6 +12,7 @@ categories = ["science"]
 readme = "README.md"
 
 [dependencies]
+onednn-sys = { git = "https://github.com/charles-r-earp/onednn-sys" }
 cpp = "0.5.4"
 rustacuda = { version = "0.1.2", optional = true }
 cuda-sys = { version = "0.2.0", optional = true }
