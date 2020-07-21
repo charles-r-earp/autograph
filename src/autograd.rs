@@ -101,8 +101,8 @@ impl<D: Dimension> Gradient<D> {
 #[proxy_enum::proxy(BackwardVariableOp)]
 pub mod backward_variable_op_proxy {
     use super::{
-        Conv2dBackwardInput, CrossEntropyBackward, DenseBackwardInput, MaxPool2dBackward,
-        ReluBackward,
+        AddBackward, Conv2dBackwardInput, CrossEntropyBackward, DenseBackwardInput,
+        MaxPool2dBackward, ReluBackward,
     };
 
     pub enum BackwardVariableOp {
@@ -111,6 +111,7 @@ pub mod backward_variable_op_proxy {
         Conv2dBackwardInput(Conv2dBackwardInput),
         MaxPool2dBackward(MaxPool2dBackward),
         ReluBackward(ReluBackward),
+        AddBackward(AddBackward),
     }
 
     impl BackwardVariableOp {
@@ -358,6 +359,26 @@ impl From<ReluBackward> for BackwardVariableOp {
     }
 }
 
+#[doc(hidden)]
+pub struct AddBackward {
+    input_grad: GradientD,
+    output_grad: GradientD,
+}
+
+impl AddBackward {
+    fn exec(&self) {
+        let mut input_grad = self.input_grad.write().unwrap();
+        let output_grad = self.output_grad.read().unwrap().unwrap();
+        input_grad.scaled_add(1., &output_grad);
+    }
+}
+
+impl From<AddBackward> for BackwardVariableOp {
+    fn from(op: AddBackward) -> Self {
+        BackwardVariableOp::AddBackward(op)
+    }
+}
+
 /// Stores backward ops on the forward pass. On the backward pass, executes variable ops in first in last out order (ie reverse) and then executes parameter ops in first in last out order.
 pub struct Graph {
     backward_variable_ops: Mutex<Vec<BackwardVariableOp>>,
@@ -503,6 +524,43 @@ impl<D: Dimension> Variable<D> {
                 input_grad,
                 output_grad,
             });
+        }
+        output
+    }
+    /// Adds self to rhs, potentially computing gradient on the backward pass
+    pub fn add(&self, rhs: &Variable<D>) -> Variable<D> {
+        let graph = {
+            let lhs_graph = Weak::upgrade(&self.graph);
+            let rhs_graph = Weak::upgrade(&rhs.graph);
+            match (lhs_graph, rhs_graph) {
+                (Some(lhs_graph), Some(rhs_graph)) => {
+                    debug_assert!(Arc::ptr_eq(&lhs_graph, &rhs_graph));
+                    Some(lhs_graph)
+                }
+                (Some(lhs_graph), None) => Some(lhs_graph),
+                (None, Some(rhs_graph)) => Some(rhs_graph),
+                (None, None) => None,
+            }
+        };
+        let output = Self::new(
+            graph.as_ref(),
+            self.value.relu(),
+            self.grad().is_some() || rhs.grad().is_some(),
+        );
+        if let Some(output_grad) = output.grad() {
+            let graph = graph.unwrap();
+            if let Some(lhs_grad) = self.grad() {
+                graph.backward_variable_op(AddBackward {
+                    input_grad: lhs_grad.clone().into_dyn(),
+                    output_grad: output_grad.clone().into_dyn(),
+                });
+            }
+            if let Some(rhs_grad) = rhs.grad() {
+                graph.backward_variable_op(AddBackward {
+                    input_grad: rhs_grad.clone().into_dyn(),
+                    output_grad: output_grad.clone().into_dyn(),
+                });
+            }
         }
         output
     }

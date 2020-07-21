@@ -12,6 +12,12 @@ extern "C" {
       y[tid*nclasses+x[tid]] = 1.0f;
     }
   } 
+  __global__ void add(const float* x1, const float* x2, float* y, unsigned int len) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid < len) {
+        y[tid] = x1[tid] + x2[tid];
+    }
+  } 
   __global__ void cross_entropy_forward(unsigned int batch_size, unsigned int nclasses, const float* x, const float* t, float* y) {
     int tid = blockIdx.x * blockDim.x + threadIdx.x; 
     if (tid < batch_size) {

@@ -753,6 +753,40 @@ pub(super) fn relu_backward<
     assert_eq!(status, cudnnStatus_t::CUDNN_STATUS_SUCCESS);
 }
 
+pub(super) fn add<
+    S1: DataRef<Elem = f32>,
+    S2: DataRef<Elem = f32>,
+    S3: DataMut<Elem = f32>,
+    D: Dimension,
+>(
+    lhs: &TensorBase<S1, D>,
+    rhs: &TensorBase<S2, D>,
+    output: &mut TensorBase<S3, D>,
+) {
+    let gpu = lhs.device.cuda().unwrap();
+    gpu.make_current();
+    let x1 = lhs.as_cuda_ptr().unwrap();
+    let x2 = rhs.as_cuda_ptr().unwrap();
+    let y = output.as_mut_cuda_ptr().unwrap();
+    let len = lhs.len() as u32;
+    let nthreads = 32;
+    let mut nblocks = len / nthreads;
+    if len % nthreads != 0 {
+        nblocks += 1;
+    }
+    let stream = gpu.stream();
+    let module = gpu.kernels();
+    unsafe {
+        launch!(module.add<<<nblocks, nthreads, 0, stream>>>(
+          DevicePointer::wrap(x1 as *mut f32),
+          DevicePointer::wrap(x2 as *mut f32),
+          DevicePointer::wrap(y),
+          len
+        ))
+        .unwrap()
+    }
+}
+
 pub(super) fn scaled_add<S1: DataMut<Elem = f32>, S2: DataRef<Elem = f32>, D: Dimension>(
     lhs: &mut TensorBase<S1, D>,
     alpha: f32,
