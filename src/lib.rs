@@ -13,6 +13,8 @@ use rand_distr::Distribution;
 use rustacuda::memory::{DeviceCopy, DeviceSlice};
 use std::borrow::Cow;
 use std::sync::{Arc, LockResult, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
+#[macro_use]
+extern crate serde;
 
 #[doc(hidden)]
 pub mod cpu;
@@ -141,6 +143,13 @@ impl<T: Num> Buffer<T> {
             Buffer::Cpu(cpu_buffer) => cpu_buffer.as_slice().into(),
             #[cfg(feature = "cuda")]
             Buffer::Cuda(cuda_buffer) => cuda_buffer.to_vec().into(),
+        }
+    }
+    fn copy_from_slice<'a>(&mut self, slice: impl Into<Cow<'a, [T]>>) {
+        match self {
+            Buffer::Cpu(cpu_buffer) => cpu_buffer.copy_from_slice(slice),
+            #[cfg(feature = "cuda")]
+            Buffer::Cuda(cuda_buffer) => cuda_buffer.copy_from_slice(slice)
         }
     }
     fn cpu(&self) -> Option<&CpuBuffer<T>> {
@@ -734,6 +743,10 @@ impl<T: Num, S: DataMut<Elem = T>, D: Dimension> TensorBase<S, D> {
         let dim = self.dim.clone();
         let data = ViewRepr::new(self.data.buffer_mut());
         TensorViewMut { device, dim, data }
+    }
+    pub fn copy_from_slice<'a>(&mut self, slice: impl Into<Cow<'a, [T]>>) {
+        self.data.buffer_mut()
+            .copy_from_slice(slice);
     }
     fn as_mut_cpu_slice(&mut self) -> Option<&mut [T]> {
         self.data

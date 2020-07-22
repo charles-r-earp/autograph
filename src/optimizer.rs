@@ -6,6 +6,8 @@ use std::{
     sync::{Arc, Weak, RwLock}
 };
 use ndarray::Dimension;
+use serde::{Serialize, Deserialize};
+use std::fmt::Debug;
 
 pub mod builders;
 use builders::SgdBuilder;
@@ -27,6 +29,7 @@ pub trait Optimizer {
 ///    .momentum(0.1)
 ///    .build();
 ///```
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Sgd {
     learning_rate: f32,
     momentum: f32

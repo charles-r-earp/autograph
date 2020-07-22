@@ -4,9 +4,11 @@ use crate::{
     Pool2dArgs, RwReadTensor, RwRepr, RwTensor, RwTensor0, RwTensor1, RwTensor2, RwTensor4,
     RwTensorD, RwWriteTensor, Tensor, Tensor2, Transpose,
 };
+use std::sync::{Arc, RwLock, LockResult, Mutex, PoisonError, Weak};
 use ndarray::{Dimension, IntoDimension, Ix0, Ix1, Ix2, Ix3, Ix4, IxDyn, RemoveAxis};
 use num_traits::ToPrimitive;
-use std::sync::{Arc, RwLock, LockResult, Mutex, PoisonError, Weak};
+
+pub mod checkpoint;
 
 /// Wrapper around a RwTensor\
 /// Gradient lazily allocates its tensor with zeros, to minimize memory footprint. If the backward pass is never called, then no allocation is needed.
@@ -663,10 +665,13 @@ impl Variable4 {
     }
 }
 
+#[doc(hidden)]
+#[non_exhaustive]
 pub enum OptimizerDataEntry {
     VelocityTensor(TensorD<f32>)
 }
 
+#[doc(hidden)]
 pub struct ParameterMeta {
     optimizer_data: RwLock<Vec<OptimizerDataEntry>>
 }
@@ -753,3 +758,5 @@ impl<D: Dimension> Parameter<D> {
         })
     }
 }
+
+
