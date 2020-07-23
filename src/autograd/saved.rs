@@ -4,23 +4,41 @@ use ndarray::{Dimension, IntoDimension, IxDyn};
 use serde::{Serialize, Deserialize, de::DeserializeOwned};
 use std::{io, error::Error, fs::{self, File}, path::{Path, PathBuf}, str::FromStr};
 
+/// Saved model parameters\
+///
+/// Typically the "model" implements Layer, which has a parameters() method. Only the parameter data is stored, not dimensions or model hyperparameters. A different model representation can be used to load the parameters, as long as the parameters are in the same order and the same shape. Models trained on a gpu can be saved and loaded into a model on the cpu and vice versa.  
+/// Saving:\
+///```
+/// SavedModel::new(model.parameters())
+///     .save("mymodel")
+///     .expect("Unable to save model!");
+///```
+/// Loading:\
+///```
+/// SavedModel::load("mymodel")
+///     .expect("Unable to load model!")
+///     .load_parameters(model.parameters());
+///```
 #[derive(Serialize, Deserialize)]
 pub struct SavedModel {
     parameters: Vec<SavedParameter>
 }
 
 impl SavedModel {
+    /// Prepare a collection of parameters for serialization\
     pub fn new(parameters: impl IntoIterator<Item=ParameterD>) -> Self {
         let parameters = parameters.into_iter()
             .map(|parameter| parameter.to_saved(false))
             .collect();
         Self { parameters }
     }
+    /// Move the data in self to the collection of parameters 
     pub fn load_parameters(self, parameters: impl IntoIterator<Item=ParameterD>) {
         self.parameters.into_iter()
             .zip(parameters)
             .for_each(|(saved, parameter)| parameter.load(saved, false));
     } 
+    /// Save the parameters to a file with extension ".model"
     pub fn save(&self, name: impl AsRef<Path>) -> Result<(), Box<dyn Error>> {
         let name = name.as_ref()
             .with_extension("model");
@@ -28,6 +46,7 @@ impl SavedModel {
         bincode::serialize_into(&mut file, self)?;
         Ok(())
     }
+    /// Load the parameters from a file with extension ".model"
     pub fn load(name: impl AsRef<Path>) -> Result<Self, Box<dyn Error>> {
         let name = name.as_ref()
             .with_extension("model");
@@ -37,6 +56,21 @@ impl SavedModel {
     }
 }
 
+/// Saved checkpoint\
+///
+/// A checkpoint saves training progress, allowing training to be resumed if interupted. As with SavedModel, training can saved from one device and resumed from a different device.\
+/// Saving:\
+///```
+/// SavedCheckpoint::new(epoch, model.parameters(), &optim)
+///     .save("mymodel")
+///     .expect("Unable to save checkpoint!");
+///```
+/// Loading:\
+///```
+/// let (epoch, optim) = SavedCheckpoint::load("mymodel")
+///     .expect("Unable to load checkpoint!")
+///     .load_parameters(model.parameters());
+///```
 #[derive(Serialize, Deserialize)]
 pub struct SavedCheckpoint<O> {
     epoch: usize,
@@ -45,18 +79,23 @@ pub struct SavedCheckpoint<O> {
 }
 
 impl<O> SavedCheckpoint<O> {
+    /// Prepare a collection of parameters and an optimizer for serialization
     pub fn new(epoch: usize, parameters: impl IntoIterator<Item=ParameterD>, optimizer: O) -> Self {
         let parameters = parameters.into_iter()
             .map(|parameter| parameter.to_saved(true))
             .collect();
         Self { epoch, parameters, optimizer }
     }
+    /// Move the data in self to the parameters, and return the epoch and optimizer
     pub fn load_parameters(self, parameters: impl IntoIterator<Item=ParameterD>) -> (usize, O) {
         self.parameters.into_iter()
             .zip(parameters)
             .for_each(|(saved, parameter)| parameter.load(saved, true));
         (self.epoch, self.optimizer)
     }
+    /// Save the checkpoint to a file: name + "_epoch" + epoch, with extension ".checkpoint"\
+    /// ie "mymodel_epoch10.checkpoint"\
+    /// Err: Returns an error if the file cannot be created or serialiation fails
     pub fn save(&self, name: impl AsRef<Path>) -> Result<(), Box<dyn Error>>
         where O: Serialize {
         let name = name.as_ref();
@@ -71,6 +110,8 @@ impl<O> SavedCheckpoint<O> {
         bincode::serialize_into(&mut file, self)?;
         Ok(())
     }
+    /// Load a checkpoint created by save(). The most recent checkpoint, ie the one with the largest epoch, will be loaded.\
+    /// Err: Returns an error if the file cannot be opened or deserialization fails
     pub fn load(name: impl AsRef<Path>) -> Result<Self, Box<dyn Error>> 
         where O: DeserializeOwned {
         let name = name.as_ref();
