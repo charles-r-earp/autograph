@@ -8,7 +8,7 @@ use std::sync::{Arc, RwLock, LockResult, Mutex, PoisonError, Weak};
 use ndarray::{Dimension, IntoDimension, Ix0, Ix1, Ix2, Ix3, Ix4, IxDyn, RemoveAxis};
 use num_traits::ToPrimitive;
 
-pub mod checkpoint;
+pub mod saved;
 
 /// Wrapper around a RwTensor\
 /// Gradient lazily allocates its tensor with zeros, to minimize memory footprint. If the backward pass is never called, then no allocation is needed.

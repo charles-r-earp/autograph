@@ -29,7 +29,7 @@ pub trait Optimizer {
 ///    .momentum(0.1)
 ///    .build();
 ///```
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Sgd {
     learning_rate: f32,
     momentum: f32
