@@ -268,7 +268,7 @@ fn main() {
             println!("epoch: {} elapsed {:.0?} train_loss: {:.5} train_acc: {:.2}% eval_loss: {:.5} eval_acc: {:.2}%", 
                 epoch, elapsed, train_loss, train_acc, eval_loss, eval_acc);
                 
-            SavedCheckpoint::new(epoch, model.parameters(), optim.clone())
+            SavedCheckpoint::new(epoch, model.parameters(), &optim)
                 .save(&checkpoint_path)
                 .expect("Unable to save checkpoint!");
         }   
