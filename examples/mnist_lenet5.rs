@@ -7,9 +7,7 @@ use autograph::datasets::Mnist; // requires feature "datasets"
 use autograph::layer::{Conv2d, Dense, Forward, Layer};
 use autograph::optimizer::{Optimizer, Sgd};
 use autograph::utils::classification_accuracy;
-#[cfg(feature = "cuda")]
-use autograph::CudaGpu;
-use autograph::{ArcTensor, Cpu, Device, Pool2dArgs, Tensor, Tensor2, Tensor4, TensorView4};
+use autograph::{ArcTensor, Device, Pool2dArgs, Tensor, Tensor2, Tensor4, TensorView4};
 use ndarray::{Dimension, Ix2, Ix4};
 use num_traits::ToPrimitive;
 use rand::{rngs::SmallRng, Rng, SeedableRng};
@@ -130,20 +128,20 @@ fn main() {
         (epochs, learning_rate, momentum, train_batch_size, eval_batch_size)
     };
 
-    #[cfg(not(feature = "cuda"))]
-    let device = Device::from(Cpu::new());
-    #[cfg(feature = "cuda")]
-    Device::from(Cpu::new());
-
     println!("epochs: {}", epochs);
     println!("learning_rate: {}", learning_rate);
     println!("momentum: {}", momentum);
     println!("train_batch_size: {}", train_batch_size);
     println!("eval_batch_size: {}", eval_batch_size);
+    
+
+    // Devices can be created with the From trait
+    // ie Device::from(Cpu::new()) 
+    // or Device::from(CudaGpu::new(index))
+    // Default returns a CudaGpu if cuda is enabled, otherwise a Cpu
+    let device = Device::default();
     println!("device: {:?}", &device);
-
-    let mut rng = SmallRng::seed_from_u64(0);
-
+    
     let mut model = Lenet5::new(&device);
     
     let dataset = Mnist::new();
@@ -185,6 +183,7 @@ fn main() {
             }
             else {
                 // initialize
+                let mut rng = SmallRng::seed_from_u64(0);
                 model.parameters().into_iter().for_each(|w| {
                     let dim = w.value().raw_dim();
                     if dim.ndim() > 1 {
