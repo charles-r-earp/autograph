@@ -16,6 +16,12 @@ use std::sync::{Arc, LockResult, PoisonError, RwLock, RwLockReadGuard, RwLockWri
 #[macro_use]
 extern crate serde;
 
+#[cfg(feature = "autograph_derive")]
+#[macro_use]
+extern crate autograph_derive;
+#[cfg(feature = "autograph_derive")]
+pub use autograph_derive::*;
+
 #[doc(hidden)]
 pub mod cpu;
 pub use cpu::Cpu;

@@ -1,5 +1,7 @@
 #![allow(warnings)]
 use argparse::{ArgumentParser, Store, StoreTrue};
+#[macro_use]
+extern crate autograph;
 use autograph::autograd::{Graph, ParameterD, Variable, Variable2, Variable4, saved::{SavedModel, SavedCheckpoint}};
 use autograph::datasets::Mnist; // requires feature "datasets"
 use autograph::layer::{Conv2d, Dense, Forward, Layer};
@@ -16,6 +18,9 @@ use std::time::Instant;
 use std::fs;
 
 // A version of the LeNet5 Model
+// Layer can be derived for meta layers
+// Use #[autograph(skip)] before a field to skip it
+#[derive(Layer)]
 struct Lenet5 {
     conv1: Conv2d,
     conv2: Conv2d,
@@ -67,29 +72,6 @@ impl Lenet5 {
     }
 }
 
-// Layer is a core trait for Layers and Models
-impl Layer for Lenet5 {
-    // Gathers all the parameters in the model
-    fn parameters(&self) -> Vec<ParameterD> {
-        self.conv1
-            .parameters()
-            .into_iter()
-            .chain(self.conv2.parameters())
-            .chain(self.dense1.parameters())
-            .chain(self.dense2.parameters())
-            .chain(self.dense3.parameters())
-            .collect()
-    }
-    // Prepares the model for training (or evaluation)
-    fn set_training(&mut self, training: bool) {
-        self.conv1.set_training(training);
-        self.conv2.set_training(training);
-        self.dense1.set_training(training);
-        self.dense2.set_training(training);
-        self.dense3.set_training(training);
-    }
-}
-
 // Forward is a trait for Layers and Models
 // Forward executes the forward pass, returning the prediction of the model
 impl Forward<Ix4> for Lenet5 {
@@ -115,13 +97,12 @@ impl Forward<Ix4> for Lenet5 {
 }
 
 fn main() {
-    let (epochs, learning_rate, momentum, train_batch_size, eval_batch_size, no_cuda) = {
+    let (epochs, learning_rate, momentum, train_batch_size, eval_batch_size) = {
         let mut epochs = 50;
         let mut learning_rate = 0.001;
         let mut momentum = 0.1;
         let mut train_batch_size: usize = 256;
         let mut eval_batch_size: usize = 1024;
-        let mut no_cuda = false;
         {
             let mut ap = ArgumentParser::new();
             ap.set_description("MNIST Lenet5 Example");
@@ -144,31 +125,21 @@ fn main() {
                 Store,
                 "Evaluation Batch Size",
             );
-            ap.refer(&mut no_cuda).add_option(
-                &["--no-cuda"],
-                StoreTrue,
-                "Uses cpu even if cuda feature is enabled.",
-            );
             ap.parse_args_or_exit();
         }
-        (epochs, learning_rate, momentum, train_batch_size, eval_batch_size, no_cuda)
+        (epochs, learning_rate, momentum, train_batch_size, eval_batch_size)
     };
 
     #[cfg(not(feature = "cuda"))]
     let device = Device::from(Cpu::new());
     #[cfg(feature = "cuda")]
-    let device = if no_cuda {
-        Device::from(Cpu::new())
-    } else {
-        Device::from(CudaGpu::new(0))
-    };
+    Device::from(Cpu::new());
 
     println!("epochs: {}", epochs);
     println!("learning_rate: {}", learning_rate);
     println!("momentum: {}", momentum);
     println!("train_batch_size: {}", train_batch_size);
     println!("eval_batch_size: {}", eval_batch_size);
-    println!("no_cuda: {}", no_cuda);
     println!("device: {:?}", &device);
 
     let mut rng = SmallRng::seed_from_u64(0);
@@ -179,9 +150,12 @@ fn main() {
 
     fs::create_dir_all("models/mnist_lenet5/checkpoints");
     
+    // models are saved as [name].model
     let model_path = "models/mnist_lenet5/mnist_lenet5";
+    // checkpoints are saved as [name]_epoch[epoch].checkpoint
     let checkpoint_path = "models/mnist_lenet5/checkpoints/mnist_lenet5";
     
+    // Load and test the model if found
     if let Ok(saved_model) = SavedModel::load(model_path) {
         saved_model.load_parameters(model.parameters());
         let mut eval_loss = 0.;
@@ -204,6 +178,7 @@ fn main() {
     }
     else {
         let (epoch, mut optim) = {
+            // continue training if checkpoint is found
             if let Ok(saved_checkpoint) = SavedCheckpoint::load(checkpoint_path) {
                 let (epoch, optim) = saved_checkpoint.load_parameters(model.parameters());
                 (epoch + 1, optim)

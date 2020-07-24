@@ -12,6 +12,7 @@ categories = ["science"]
 readme = "README.md"
 
 [dependencies]
+autograph_derive = { path = "autograph_derive", optional = true }
 onednn-sys = { git = "https://github.com/charles-r-earp/onednn-sys" }
 cpp = "0.5.4"
 rustacuda = { version = "0.1.2", optional = true }
@@ -35,6 +36,8 @@ cpp_build = "0.5.4"
 cc = "1.0.55"
 
 [features]
+default = ["derive", "datasets"]
+derive = ["autograph_derive"]
 datasets = ["byteorder", "flate2", "reqwest"]
 cuda = ["rustacuda", "cuda-sys", "cuda-cudnn-sys"]
 
