@@ -13,6 +13,8 @@ use rand_distr::Distribution;
 use rustacuda::memory::{DeviceCopy, DeviceSlice};
 use std::borrow::Cow;
 use std::sync::{Arc, LockResult, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
+#[macro_use]
+extern crate serde;
 
 #[doc(hidden)]
 pub mod cpu;
@@ -30,6 +32,8 @@ pub use cuda::CudaGpu;
 pub mod autograd;
 
 pub mod layer;
+
+pub mod optimizer;
 
 #[cfg(feature = "datasets")]
 pub mod datasets;
@@ -139,6 +143,13 @@ impl<T: Num> Buffer<T> {
             Buffer::Cpu(cpu_buffer) => cpu_buffer.as_slice().into(),
             #[cfg(feature = "cuda")]
             Buffer::Cuda(cuda_buffer) => cuda_buffer.to_vec().into(),
+        }
+    }
+    fn copy_from_slice<'a>(&mut self, slice: impl Into<Cow<'a, [T]>>) {
+        match self {
+            Buffer::Cpu(cpu_buffer) => cpu_buffer.copy_from_slice(slice),
+            #[cfg(feature = "cuda")]
+            Buffer::Cuda(cuda_buffer) => cuda_buffer.copy_from_slice(slice)
         }
     }
     fn cpu(&self) -> Option<&CpuBuffer<T>> {
@@ -454,6 +465,7 @@ pub type Tensor0<T> = Tensor<T, Ix0>;
 pub type Tensor1<T> = Tensor<T, Ix1>;
 pub type Tensor2<T> = Tensor<T, Ix2>;
 pub type Tensor4<T> = Tensor<T, Ix4>;
+pub type TensorD<T> = Tensor<T, IxDyn>;
 
 /// Tensor which has an immutable (shared) borrow of its data
 pub type TensorView<'a, T, D> = TensorBase<ViewRepr<&'a Buffer<T>>, D>;
@@ -743,6 +755,10 @@ impl<T: Num, S: DataMut<Elem = T>, D: Dimension> TensorBase<S, D> {
         let data = ViewRepr::new(self.data.buffer_mut());
         TensorViewMut { device, dim, data }
     }
+    pub fn copy_from_slice<'a>(&mut self, slice: impl Into<Cow<'a, [T]>>) {
+        self.data.buffer_mut()
+            .copy_from_slice(slice);
+    }
     fn as_mut_cpu_slice(&mut self) -> Option<&mut [T]> {
         self.data
             .buffer_mut()
@@ -798,7 +814,7 @@ impl<T: Num, D: Dimension> From<Tensor<T, D>> for ArcTensor<T, D> {
         let data = ArcRepr::from_buffer(data.buffer);
         Self { device, dim, data }
     }
-}
+} 
 
 impl<T: Num, D: Dimension> RwTensor<T, D> {
     /// Similar to RwLock::read(), blocks the current thread until any write access is released, ensures that no writes occur as long as the RwReadTensor is held
@@ -1249,3 +1265,18 @@ fn max_pool2d_backward<
         Device::Cuda(_) => cuda::max_pool2d_backward(input, input_grad, args, output_grad),
     }
 }
+
+fn sgd_with_momentum<S1: DataMut<Elem=f32>, S2: DataRef<Elem=f32>, S3: DataMut<Elem=f32>, D: Dimension>
+    (weight: &mut TensorBase<S1, D>, weight_grad: &TensorBase<S2, D>,
+     learning_rate: f32, momentum: f32,
+     velocity: &mut TensorBase<S3, D>) {
+    debug_assert_eq!(weight.device(), weight_grad.device());
+    debug_assert_eq!(weight.device(), velocity.device());
+    debug_assert_eq!(weight.raw_dim(), weight_grad.raw_dim());
+    debug_assert_eq!(weight.raw_dim(), velocity.raw_dim());
+    match weight.device() {
+        Device::Cpu(_) => cpu::sgd_with_momentum(weight, weight_grad, learning_rate, momentum, velocity),
+        #[cfg(feature="cuda")]
+        Device::Cuda(_) => cuda::sgd_with_momentum(weight, weight_grad, learning_rate, momentum, velocity)
+    }                                     
+} 

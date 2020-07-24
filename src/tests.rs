@@ -898,3 +898,45 @@ fn test_max_pool2d_backward_cpu() {
 fn test_max_pool_backward_cuda() {
     test_max_pool2d_backward(CudaGpu::new(0));
 }
+fn test_sgd_with_momentum(device: impl Into<Device>) {
+    let device = device.into();
+    let mut weight = Tensor::from_shape_vec(&device, 4, vec![0.1, 0.2, 0.3, 0.4]);
+    let weight_grad = Tensor::from_shape_vec(&device, weight.raw_dim(), vec![0.01, 0.02, 0.03, 0.04]);
+    let mut velocity = Tensor::from_shape_vec(&device, weight.raw_dim(), vec![1., 2., 3., 4.]);
+    let learning_rate = 0.001;
+    let momentum = 0.1;
+    let (weight_true, velocity_true) = {
+        let dim = weight.raw_dim();
+        let mut weight = weight.as_slice().into_owned();
+        let weight_grad = weight_grad.as_slice();
+        let mut velocity = velocity.as_slice().into_owned();
+        weight.iter_mut()
+            .zip(weight_grad.iter())
+            .zip(velocity.iter_mut())
+            .for_each(|((w, &dw), v)| {
+                *v = momentum * *v + dw;
+                *w -= learning_rate * *v;
+            });
+       let weight_true = Array::from_shape_vec(dim, weight).unwrap();
+       let velocity_true = Array::from_shape_vec(dim, velocity).unwrap();
+       (weight_true, velocity_true)
+    };
+    sgd_with_momentum(
+        &mut weight,
+        &weight_grad,
+        learning_rate,
+        momentum,
+        &mut velocity
+    );
+    assert_eq!(velocity.as_array().view(), velocity_true.view());
+    assert_eq!(weight.as_array().view(), weight_true.view());
+}
+#[test]
+fn test_sgd_with_momentum_cpu() {
+    test_sgd_with_momentum(Cpu::new());
+}
+#[test]
+#[cfg(feature="cuda")]
+fn test_sgd_with_momentum_cuda() {
+    test_sgd_with_momentum(CudaGpu::new(0));
+}
