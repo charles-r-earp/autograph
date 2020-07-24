@@ -266,3 +266,32 @@ impl<D: RemoveAxis> Forward<D> for Flatten {
         input.flatten()
     }
 }
+
+/// A Sequence of Layers
+pub struct Sequential<S>(S); 
+
+impl<L> From<Vec<L>> for Sequential<Vec<L>> {
+    fn from(layers: Vec<L>) -> Self {
+        Sequential(layers)
+    }
+} 
+
+impl<L: Layer> Layer for Sequential<Vec<L>> {
+    fn parameters(&self) -> Vec<ParameterD> {
+        self.0.iter()
+            .flat_map(|layer| layer.parameters())
+            .collect()
+    } 
+    fn set_training(&mut self, training: bool) {
+        self.0.iter_mut()
+            .for_each(|layer| layer.set_training(training));
+    }
+}
+
+impl<D: Dimension, L: Forward<D, OutputDim=D>> Forward<D> for Sequential<Vec<L>> {
+    type OutputDim = D;
+    fn forward(&self, input: &Variable<D>) -> Variable<D> {
+        self.0.iter()
+            .fold(input.clone(), |x, layer| layer.forward(&x)) 
+    }
+} 
