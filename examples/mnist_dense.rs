@@ -3,8 +3,6 @@ use argparse::{ArgumentParser, Store, StoreTrue};
 use autograph::autograd::{Graph, Parameter, Variable};
 use autograph::datasets::Mnist; // requires feature "datasets"
 use autograph::utils::classification_accuracy;
-#[cfg(feature = "cuda")]
-use autograph::CudaGpu;
 use autograph::{ArcTensor, Cpu, Device, RwTensor, Tensor};
 use num_traits::ToPrimitive;
 use rand::{rngs::SmallRng, SeedableRng};
@@ -13,12 +11,11 @@ use std::time::Instant;
 
 fn main() {
     // Use argparse to get command line arguments
-    let (epochs, lr, train_batch_size, eval_batch_size, no_cuda) = {
+    let (epochs, learning_rate, train_batch_size, eval_batch_size) = {
         let mut epochs = 10;
-        let mut lr = 0.001;
+        let mut learning_rate = 0.001;
         let mut train_batch_size: usize = 100;
         let mut eval_batch_size: usize = 1000;
-        let mut no_cuda = false;
         {
             let mut ap = ArgumentParser::new();
             ap.set_description("MNIST Dense Example");
@@ -27,7 +24,7 @@ fn main() {
                 Store,
                 "Number of epochs to train for.",
             );
-            ap.refer(&mut lr)
+            ap.refer(&mut learning_rate)
                 .add_option(&["--learning-rate"], Store, "Learning Rate");
             ap.refer(&mut train_batch_size).add_option(
                 &["--train-batch_size"],
@@ -39,30 +36,22 @@ fn main() {
                 Store,
                 "Evaluation Batch Size",
             );
-            ap.refer(&mut no_cuda).add_option(
-                &["--no-cuda"],
-                StoreTrue,
-                "Uses cpu even if cuda feature is enabled.",
-            );
             ap.parse_args_or_exit();
         }
-        (epochs, lr, train_batch_size, eval_batch_size, no_cuda)
+        (epochs, learning_rate, train_batch_size, eval_batch_size)
     };
 
     // Construct a device that will be used to create Tensors
-    let device = Device::from(Cpu::new());
-    #[cfg(feature = "cuda")]
-    let device = if no_cuda {
-        Device::from(Cpu::new())
-    } else {
-        Device::from(CudaGpu::new(0))
-    };
+    // Devices can be created with the From trait
+    // ie Device::from(Cpu::new()) 
+    // or Device::from(CudaGpu::new(index))
+    // Default returns a CudaGpu if cuda is enabled, otherwise a Cpu
+    let device = Device::default();
 
     println!("epochs: {}", epochs);
-    println!("lr: {}", lr);
+    println!("learning_rate: {}", learning_rate);
     println!("train_batch_size: {}", train_batch_size);
     println!("eval_batch_size: {}", eval_batch_size);
-    println!("no_cuda: {}", no_cuda);
     println!("device: {:?}", &device);
 
     // Construct a Random Number Generator to initialize our model.
@@ -110,7 +99,7 @@ fn main() {
                 // Construct a tensor from the input array view
                 // Tensor::to_f32() converts the u8 data to f32 on the device
                 Tensor::from_array(&device, x_arr.view()).to_f32(),
-                // requires_grad is false because this is an input, we don't need to compute it's gradient
+                // requires_grad is false because this is an input, we don't need to compute its gradient
                 false,
             );
             // Construct an ArcTensor for our target
@@ -127,7 +116,7 @@ fn main() {
             // Here graph is consumed (ie dropped). Variables x, y, and loss will no longer be tied to this graph and any further operations will not compute gradients.
             // The gradient of y will be computed, then the gradients of w and b
             loss.backward(graph);
-            let lr = lr / x_arr.shape()[0].to_f32().unwrap();
+            let lr = learning_rate / x_arr.shape()[0].to_f32().unwrap();
             // Lock the weight value, acquiring exclusive write access
             let mut w_value = w.value().write().unwrap(); // Unwraps the LockResult
                                                           // Lock the weight gradient, acquiring shared read access
