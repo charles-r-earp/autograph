@@ -42,7 +42,7 @@ struct Lenet5 (
 #[derive(Layer)]
 struct TestSkip {
     flatten1: Flatten,
-    #[autograph(skip_layer)]
+    #[autograph(skip)]
     meta: String,
     dense1: Dense
 }

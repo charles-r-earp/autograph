@@ -14,7 +14,7 @@ use quote::{ToTokens, quote};
 
 fn is_autograph_skip(attributes: &[Attribute]) -> bool {
     let skip = quote! {
-        #[autograph(skip_layer)]    
+        #[autograph(skip)]    
     };
     for attribute in attributes {
         if attribute.to_token_stream().to_string() == skip.to_string() {
