@@ -217,6 +217,16 @@ impl Device {
     }
 }
 
+/// Use Device::default() to get a gpu if available, or a cpu
+impl Default for Device {
+    fn default() -> Self {
+        #[cfg(feature = "cuda")] {
+            return CudaGpu::new(0).into();
+        }
+        Cpu::new().into()
+    }
+}
+
 impl From<Arc<Cpu>> for Device {
     fn from(cpu: Arc<Cpu>) -> Self {
         Device::Cpu(cpu)
