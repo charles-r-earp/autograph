@@ -218,6 +218,9 @@ impl Forward<Ix4> for Conv2d {
     }
 }
 
+/// ReLU Activation\
+///
+/// see Tensor::relu()
 #[derive(Default)]
 pub struct Relu {}
 
@@ -230,6 +233,9 @@ impl<D: Dimension> Forward<D> for Relu {
     }
 }
 
+/// MaxPool2d\
+///
+/// see Tensor::max_pool2d() 
 pub struct MaxPool2d {
     args: Pool2dArgs,
 }
@@ -255,6 +261,9 @@ impl Forward<Ix4> for MaxPool2d {
     }
 }
 
+/// Identity\
+///
+/// Useful as a placeholder activation
 #[derive(Default)]
 pub struct Identity {}
 
@@ -267,6 +276,9 @@ impl<D: Dimension> Forward<D> for Identity {
     }
 }
 
+/// Flatten\
+///
+/// see Tensor::flatten()
 #[derive(Default)]
 pub struct Flatten {}
 
