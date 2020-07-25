@@ -1,5 +1,4 @@
-use autograph::{Device, Cpu};
-use autograph::autograd::{Variable, Variable2, ParameterD};
+use autograph::autograd::{Variable, ParameterD};
 use autograph::layer::{
     Layer, 
     Forward,
@@ -9,7 +8,7 @@ use autograph::layer::{
     Relu,
     Flatten
 }; 
-use ndarray::{Ix2, Ix4, RemoveAxis};
+use ndarray::{Ix2, Ix4};
 
 #[macro_use]
 extern crate autograph_derive;

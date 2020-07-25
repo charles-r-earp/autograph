@@ -1,3 +1,92 @@
+//! # Derive Layer and implement Forward
+//! Layer can be derived for a struct composed of other layers\
+//! #[impl_forward(D, Dy)] generates an sequential implementation for Forward<D, OutputDim=Dy>\
+//! use #[autograph(skip)] to skip fields\
+//!```
+//! use autograph::autograd::{Variable, ParameterD};
+//! use autograph::layer::{
+//!    Layer, 
+//!    Forward,
+//!    Dense,
+//!    Conv2d,
+//!    MaxPool2d,
+//!    Relu,
+//!    Flatten
+//! }; 
+//! use ndarray::{Ix2, Ix4};
+//!
+//! #[impl_forward(Ix4, Ix2)] 
+//! #[derive(Layer)]
+//! struct Lenet5 (
+//!     Conv2d,
+//!     Relu,
+//!     MaxPool2d,
+//!     Conv2d,
+//!     Relu,
+//!     MaxPool2d,
+//!     Flatten,
+//!     Dense,
+//!     Relu,
+//!     Dense,
+//!     Relu,
+//!     Dense
+//! );
+//!```
+//! Generates:\
+//! ```
+//! impl Layer for Lenet5 {
+//!     fn parameters(&self) -> Vec<ParameterD> {
+//!         self.0
+//!             .parameters()
+//!             .into_iter()
+//!             .chain(self.1.parameters())
+//!             .chain(self.2.parameters())
+//!             .chain(self.3.parameters())
+//!             .chain(self.4.parameters())
+//!             .chain(self.5.parameters())
+//!             .chain(self.6.parameters())
+//!             .chain(self.7.parameters())
+//!             .chain(self.8.parameters())
+//!             .chain(self.9.parameters())
+//!             .chain(self.10.parameters())
+//!             .chain(self.11.parameters())
+//!             .collect()
+//!     }
+//!     fn set_training(&mut self, training: bool) {
+//!         self.0.set_training(training);
+//!         self.1.set_training(training);
+//!         self.2.set_training(training);
+//!         self.3.set_training(training);
+//!         self.4.set_training(training);
+//!         self.5.set_training(training);
+//!         self.6.set_training(training);
+//!         self.7.set_training(training);
+//!         self.8.set_training(training);
+//!         self.9.set_training(training);
+//!         self.10.set_training(training);
+//!         self.11.set_training(training);
+//!    }
+//! }
+//! impl Forward<Ix4> for Lenet5 {
+//!     type OutputDim = Ix2;
+//!     fn forward(&self, input: &Variable<Ix4>) -> Variable<Ix2> {
+//!         input
+//!             .forward(&self.0)
+//!             .forward(&self.1)
+//!             .forward(&self.2)
+//!             .forward(&self.3)
+//!             .forward(&self.4)
+//!             .forward(&self.5)
+//!             .forward(&self.6)
+//!             .forward(&self.7)
+//!             .forward(&self.8)
+//!             .forward(&self.9)
+//!             .forward(&self.10)
+//!             .forward(&self.11)
+//!     }
+//! }
+//!```
+
 use proc_macro::TokenStream as BaseTokenStream;
 use proc_macro2::TokenStream;
 use syn::{
