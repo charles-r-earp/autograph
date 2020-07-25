@@ -1,5 +1,5 @@
 use crate::{Device, Tensor};
-use super::{Parameter, ParameterD, ParameterMeta, OptimizerDataEntry};
+use super::autograd::{Parameter, ParameterD, ParameterMeta, OptimizerDataEntry};
 use ndarray::{Dimension, IntoDimension, IxDyn};
 use serde::{Serialize, Deserialize, de::DeserializeOwned};
 use std::{io, error::Error, fs::{self, File}, path::{Path, PathBuf}, str::FromStr};
@@ -58,7 +58,7 @@ impl SavedModel {
 
 /// Saved checkpoint\
 ///
-/// A checkpoint saves training progress, allowing training to be resumed if interupted. As with SavedModel, training can saved from one device and resumed from a different device.\
+/// A checkpoint saves training progress, allowing training to be resumed if interupted. As with SavedModel, training saved from one device can be resumed from a different device.\
 /// Saving:\
 ///```
 /// SavedCheckpoint::new(epoch, model.parameters(), &optim)
@@ -204,7 +204,8 @@ struct SavedParameterMeta {
 impl ParameterMeta {
     fn to_saved(&self, with_optimizer_data: bool) -> SavedParameterMeta {
         let optimizer_data = if with_optimizer_data {
-            self.optimizer_data.read()
+            self.optimizer_data()
+                .read()
                 .unwrap()
                 .iter()
                 .map(|entry| entry.to_saved())
@@ -219,7 +220,8 @@ impl ParameterMeta {
     }
     fn load(&self, device: &Device, shape: impl IntoDimension<Dim=IxDyn>, saved: SavedParameterMeta, with_optimizer_data: bool) {
         if with_optimizer_data { 
-            let mut optimizer_data = self.optimizer_data.write()
+            let mut optimizer_data = self.optimizer_data()
+                .write()
                 .unwrap();
             if optimizer_data.is_empty() {
                 let dim = shape.into_dimension();
@@ -246,20 +248,24 @@ struct SavedParameter {
 
 impl<D: Dimension> Parameter<D> {
     fn to_saved(&self, with_optimizer_data: bool) -> SavedParameter {
-        let value = self.value.read()
+        let value = self.value()
+            .read()
             .unwrap()
             .as_slice()
             .into_owned();
-        let meta = self.meta.to_saved(with_optimizer_data);
+        let meta = self.meta()
+            .to_saved(with_optimizer_data);
         SavedParameter {
             value,
             meta
         }
     }
     fn load(&self, saved: SavedParameter, with_optimizer_data: bool) {
-        let mut value = self.value.write()
+        let mut value = self.value()
+            .write()
             .unwrap();
         value.copy_from_slice(saved.value);
-        self.meta.load(value.device(), value.raw_dim().into_dyn(), saved.meta, with_optimizer_data);
+        self.meta()
+            .load(value.device(), value.raw_dim().into_dyn(), saved.meta, with_optimizer_data);
     }
 }

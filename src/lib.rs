@@ -35,11 +35,7 @@ use cuda::CudaBuffer;
 #[cfg(feature = "cuda")]
 pub use cuda::CudaGpu;
 
-pub mod autograd;
-
-pub mod layer;
-
-pub mod optimizer;
+pub mod nn;
 
 #[cfg(feature = "datasets")]
 pub mod datasets;

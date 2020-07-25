@@ -1,6 +1,6 @@
 #![allow(warnings)]
 use argparse::{ArgumentParser, Store, StoreTrue};
-use autograph::autograd::{Graph, Parameter, Variable};
+use autograph::nn::autograd::{Graph, Parameter, Variable};
 use autograph::datasets::Mnist; // requires feature "datasets"
 use autograph::utils::classification_accuracy;
 use autograph::{ArcTensor, Cpu, Device, RwTensor, Tensor};
