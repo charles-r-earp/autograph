@@ -16,6 +16,12 @@ use std::sync::{Arc, LockResult, PoisonError, RwLock, RwLockReadGuard, RwLockWri
 #[macro_use]
 extern crate serde;
 
+#[cfg(feature = "autograph_derive")]
+#[macro_use]
+extern crate autograph_derive;
+#[cfg(feature = "autograph_derive")]
+pub use autograph_derive::*;
+
 #[doc(hidden)]
 pub mod cpu;
 pub use cpu::Cpu;
@@ -214,6 +220,16 @@ impl Device {
         {
             self.cuda().map(|gpu| gpu.synchronize());
         }
+    }
+}
+
+/// Use Device::default() to get a gpu if available, or a cpu
+impl Default for Device {
+    fn default() -> Self {
+        #[cfg(feature = "cuda")] {
+            return CudaGpu::new(0).into();
+        }
+        Cpu::new().into()
     }
 }
 
