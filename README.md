@@ -23,6 +23,9 @@ Machine Learning Library for Rust
  
 ## Datasets
   - MNIST
+  
+## Saving 
+Model parameters can be saved to a file or serialized using serde (see https://github.com/serde-rs/serde). Training progress can also be saved via checkpoints. Data saved this way is portable between cpu and gpu. 
 
 # Graphs
 During training, first a forward pass is run to determine the outputs of a model and compute the loss. Then a backward pass is run to compute the gradients which are used to update the model parameters. Autograph constructs a graph of operations in the forward pass that is then used for the backward pass. This allows for intermediate values and gradients to be lazily allocated and deallocated using RAII in order to minimize memory usage. Native control flow like loops, if statements etc. can be used to define a forward pass, which does not need to be the same each time. This allows for novel deep learning structures like RNN's and GAN's to be constructed, without special hardcoding. 
