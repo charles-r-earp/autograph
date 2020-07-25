@@ -2,10 +2,13 @@
 use argparse::{ArgumentParser, Store, StoreTrue};
 #[macro_use]
 extern crate autograph;
-use autograph::autograd::{Graph, ParameterD, Variable, Variable2, Variable4, saved::{SavedModel, SavedCheckpoint}};
+use autograph::nn::{
+    Conv2d, Dense, Forward, Layer,
+    autograd::{Graph, ParameterD, Variable, Variable2, Variable4},
+    optimizer::{Optimizer, Sgd},
+    saved::{SavedModel, SavedCheckpoint},
+};
 use autograph::datasets::Mnist; // requires feature "datasets"
-use autograph::layer::{Conv2d, Dense, Forward, Layer};
-use autograph::optimizer::{Optimizer, Sgd};
 use autograph::utils::classification_accuracy;
 use autograph::{ArcTensor, Device, Pool2dArgs, Tensor, Tensor2, Tensor4, TensorView4};
 use ndarray::{Dimension, Ix2, Ix4};

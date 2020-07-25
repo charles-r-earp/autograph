@@ -1,5 +1,5 @@
 use crate::{Buffer, Tensor, TensorD};
-use crate::autograd::{Parameter, ParameterD, OptimizerDataEntry};
+use super::autograd::{Parameter, ParameterD, OptimizerDataEntry};
 use std::{
     hash::{Hash, Hasher},
     collections::HashMap,
