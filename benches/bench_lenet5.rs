@@ -1,6 +1,10 @@
 #![allow(warnings)]
-use autograph::autograd::{Graph, ParameterD, Variable, Variable2, Variable4};
-use autograph::layer::{Conv2d, Dense, Forward, Layer};
+#[macro_use]
+extern crate autograph;
+use autograph::nn::{
+    Conv2d, Dense, Forward, Layer,
+    autograd::{Graph, ParameterD, Variable, Variable2, Variable4}
+};
 #[cfg(feature = "cuda")]
 use autograph::CudaGpu;
 use autograph::{ArcTensor, Cpu, Device, Pool2dArgs, Tensor, Tensor2, Tensor4, TensorView4};
@@ -11,6 +15,7 @@ use rand::{rngs::SmallRng, Rng, SeedableRng};
 use rand_distr::{Distribution, Normal};
 use std::time::Instant;
 
+#[derive(Layer)]
 struct Lenet5 {
     conv1: Conv2d,
     conv2: Conv2d,
@@ -56,26 +61,6 @@ impl Lenet5 {
             dense2,
             dense3,
         }
-    }
-}
-
-impl Layer for Lenet5 {
-    fn parameters(&self) -> Vec<ParameterD> {
-        self.conv1
-            .parameters()
-            .into_iter()
-            .chain(self.conv2.parameters())
-            .chain(self.dense1.parameters())
-            .chain(self.dense2.parameters())
-            .chain(self.dense3.parameters())
-            .collect()
-    }
-    fn set_training(&mut self, training: bool) {
-        self.conv1.set_training(training);
-        self.conv2.set_training(training);
-        self.dense1.set_training(training);
-        self.dense2.set_training(training);
-        self.dense3.set_training(training);
     }
 }
 
