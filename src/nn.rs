@@ -1,6 +1,3 @@
-use crate::autograd::{
-    Parameter, Parameter1, Parameter2, Parameter4, ParameterD, Variable, Variable2, Variable4,
-};
 use crate::{
     Conv2dArgs, Device, Num, Pool2dArgs, RwTensor, Tensor, Tensor2, Tensor4, TensorView,
     TensorView2, TensorView4,
@@ -9,6 +6,13 @@ use ndarray::{Dimension, Ix2, Ix4, RemoveAxis};
 
 pub mod builders;
 use builders::{Conv2dBuilder, DenseBuilder, MaxPool2dBuilder};
+
+pub mod autograd;
+use autograd::{Parameter, Parameter1, Parameter2, Parameter4, ParameterD, Variable, Variable2, Variable4};
+
+pub mod optimizer;
+
+pub mod saved;
 
 /// Trait for Layers\
 /// Custom Models should impl Layer
