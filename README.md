@@ -14,6 +14,7 @@ Machine Learning Library for Rust
   - Conv2d
   - MaxPool2d
   - Relu
+  - Sequential
 
 ## Optimizers
   - SGD
