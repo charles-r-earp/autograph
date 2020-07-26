@@ -4,6 +4,7 @@ version = "0.0.1"
 authors = ["Charles R Earp <charles.r.earp@gmail.com>"]
 edition = "2018"
 license = "MIT/Apache-2.0"
+description = "Procedural macro crate for autograph"
 homepage = "https://github.com/charles-r-earp/autograph"
 repository = "https://github.com/charles-r-earp/autograph"
 
