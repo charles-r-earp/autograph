@@ -32,6 +32,7 @@ fn test_u8_to_f32_cpu() {
     test_u8_to_f32(Cpu::new());
 }
 #[cfg(feature = "cuda")]
+#[test]
 fn test_u8_to_f32_cuda() {
     test_u8_to_f32(CudaGpu::new(0));
 }
@@ -249,6 +250,7 @@ fn test_relu_cpu() {
     test_relu(Cpu::new());
 }
 #[cfg(feature = "cuda")]
+#[test]
 fn test_relu_cuda() {
     test_relu(CudaGpu::new(0));
 }
@@ -275,6 +277,7 @@ fn test_relu_backard_cpu() {
     test_relu(Cpu::new());
 }
 #[cfg(feature = "cuda")]
+#[test]
 fn test_relu_backward_cuda() {
     test_relu(CudaGpu::new(0));
 }
@@ -895,6 +898,7 @@ fn test_max_pool2d_backward_cpu() {
   test_max_pool2d(Cpu::new());
 }*/
 #[cfg(feature = "cuda")]
+#[test]
 fn test_max_pool_backward_cuda() {
     test_max_pool2d_backward(CudaGpu::new(0));
 }
@@ -935,8 +939,8 @@ fn test_sgd_with_momentum(device: impl Into<Device>) {
 fn test_sgd_with_momentum_cpu() {
     test_sgd_with_momentum(Cpu::new());
 }
-#[test]
 #[cfg(feature="cuda")]
+#[test]
 fn test_sgd_with_momentum_cuda() {
     test_sgd_with_momentum(CudaGpu::new(0));
 }
