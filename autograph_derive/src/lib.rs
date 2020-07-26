@@ -1,6 +1,6 @@
 //! # Derive Layer and implement Forward
 //! Layer can be derived for a struct composed of other layers\
-//! #[impl_forward(D, Dy)] generates an sequential implementation for Forward<D, OutputDim=Dy>\
+//! #[impl_forward(D, Dy)] generates a sequential implementation for Forward<D, OutputDim=Dy>\
 //! use #[autograph(skip)] to skip fields\
 //!```
 //! use autograph::autograd::{Variable, ParameterD};
