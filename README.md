@@ -60,7 +60,7 @@ cargo doc --open [--features cuda]
 To add autograph to your project add it as a dependency in your cargo.toml (features are optional):
 ```
 [dependencies]
-autograph = { version = 0.0.2, features = ["cuda"] }
+autograph = { version = 0.0.3, features = ["cuda"] }
 // or from github
 autograph = { git = https://github.com/charles-r-earp/autograph, features = ["cuda"] }
 ```
