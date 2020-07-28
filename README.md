@@ -1,7 +1,11 @@
 [![License-MIT/Apache-2.0](https://img.shields.io/badge/license-MIT/Apache_2.0-blue.svg)](https://github.com/charles-r-earp/autograph/blob/master/LICENSE-APACHE)
+![](https://docs.rs/autograph/badge.svg?)
 ![Rust](https://github.com/charles-r-earp/autograph/workflows/Rust/badge.svg?branch=master)
+
 # autograph
 Machine Learning Library for Rust
+
+[User Guide](https://charles-r-earp.github.io/autograph/?) ***Under construction***
 
 # Features
   - Safe API
@@ -42,6 +46,8 @@ Autograph includes a datasets module enabled with the features datasets. This cu
 
 # Getting Started
 If you are new to Rust, you can get it and find documentation here: https://www.rust-lang.org/
+
+Read the [user guide](https://charles-r-earp.github.io/autograph/?) or the [docs](https://docs.rs/autograph/0.0.3/autograph/)
 
 If you have git installed (see https://git-scm.com/book/en/v2/Getting-Started-Installing-Git) you can clone the repo by:
 ```
