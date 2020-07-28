@@ -36,6 +36,7 @@ use cuda::CudaBuffer;
 pub use cuda::CudaGpu;
 
 pub mod nn;
+use nn::{Conv2dArgs, Pool2dArgs};
 
 #[cfg(feature = "datasets")]
 pub mod datasets;
@@ -1038,87 +1039,6 @@ impl Into2d for (usize, usize) {
 impl Into2d for usize {
     fn into_2d(self) -> [usize; 2] {
         [self, self]
-    }
-}
-
-/// Builder struct for 2D Convolution functions\
-/// Additional features may be added\
-///
-/// Defaults:
-///   - strides: [1, 1]
-///   - padding: [0, 0]
-///
-/// To use the builder pattern, for example for strides 2 and padding 1
-///```
-/// let args = Conv2dArgs::default().strides(2).padding(1);
-///```
-#[derive(Clone, Copy)]
-pub struct Conv2dArgs {
-    strides: [usize; 2],
-    padding: [usize; 2],
-}
-
-impl Conv2dArgs {
-    /// Sets strides to the given strides (either usize or [usize, usize])
-    pub fn strides(mut self, strides: impl Into2d) -> Self {
-        self.strides = strides.into_2d();
-        self
-    }
-    // Sets padding to the given padding
-    pub fn padding(mut self, padding: impl Into2d) -> Self {
-        self.padding = padding.into_2d();
-        self
-    }
-}
-
-impl Default for Conv2dArgs {
-    fn default() -> Self {
-        Self {
-            strides: [1, 1],
-            padding: [0, 0],
-        }
-    }
-}
-
-/// Similar to Conv2dArgs, but for pooling functions\
-///
-/// Defaults:
-///   - kernel: [2, 2]
-///   - strides: [1, 1]
-///   - padding: [0, 0]
-#[derive(Clone, Copy)]
-pub struct Pool2dArgs {
-    kernel: [usize; 2],
-    strides: [usize; 2],
-    padding: [usize; 2],
-}
-
-impl Default for Pool2dArgs {
-    fn default() -> Self {
-        Self {
-            kernel: [2, 2],
-            strides: [1, 1],
-            padding: [0, 0],
-        }
-    }
-}
-
-impl Pool2dArgs {
-    /// Sets the kernel\
-    /// Note: unlike Pytorch, does not affect strides
-    pub fn kernel(mut self, kernel: impl Into2d) -> Self {
-        self.kernel = kernel.into_2d();
-        self
-    }
-    /// Sets the strides
-    pub fn strides(mut self, strides: impl Into2d) -> Self {
-        self.strides = strides.into_2d();
-        self
-    }
-    /// Sets the padding
-    pub fn padding(mut self, padding: impl Into2d) -> Self {
-        self.padding = padding.into_2d();
-        self
     }
 }
 

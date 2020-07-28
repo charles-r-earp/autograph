@@ -2,12 +2,12 @@
 #[macro_use]
 extern crate autograph;
 use autograph::nn::{
-    Conv2d, Dense, Forward, Layer,
+    Conv2d, Dense, Forward, Layer, Pool2dArgs,
     autograd::{Graph, ParameterD, Variable, Variable2, Variable4}
 };
 #[cfg(feature = "cuda")]
 use autograph::CudaGpu;
-use autograph::{ArcTensor, Cpu, Device, Pool2dArgs, Tensor, Tensor2, Tensor4, TensorView4};
+use autograph::{ArcTensor, Cpu, Device, Tensor, Tensor2, Tensor4, TensorView4};
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use ndarray::{Dimension, Ix2, Ix4};
 use num_traits::ToPrimitive;

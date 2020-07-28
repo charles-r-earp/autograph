@@ -1,5 +1,5 @@
-use super::{Conv2d, Dense, MaxPool2d};
-use crate::{Conv2dArgs, Device, Into2d, Pool2dArgs};
+use super::{Conv2dArgs, Pool2dArgs, Conv2d, Dense, MaxPool2d};
+use crate::{Device, Into2d};
 
 #[derive(Default, Clone)]
 pub struct DenseBuilder {

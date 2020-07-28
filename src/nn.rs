@@ -1,6 +1,7 @@
 use crate::{
-    Conv2dArgs, Device, Num, Pool2dArgs, RwTensor, Tensor, Tensor2, Tensor4, TensorView,
+    Device, Num, RwTensor, Tensor, Tensor2, Tensor4, TensorView,
     TensorView2, TensorView4,
+    Into2d
 };
 use ndarray::{Dimension, Ix2, Ix4, RemoveAxis};
 
@@ -13,6 +14,87 @@ use autograd::{Parameter, Parameter1, Parameter2, Parameter4, ParameterD, Variab
 pub mod optimizer;
 
 pub mod saved;
+
+/// Builder struct for 2D Convolution functions\
+/// Additional features may be added\
+///
+/// Defaults:
+///   - strides: [1, 1]
+///   - padding: [0, 0]
+///
+/// To use the builder pattern, for example for strides 2 and padding 1
+///```
+/// let args = Conv2dArgs::default().strides(2).padding(1);
+///```
+#[derive(Clone, Copy)]
+pub struct Conv2dArgs {
+    pub(crate) strides: [usize; 2],
+    pub(crate) padding: [usize; 2],
+}
+
+impl Conv2dArgs {
+    /// Sets strides to the given strides (either usize or [usize, usize])
+    pub fn strides(mut self, strides: impl Into2d) -> Self {
+        self.strides = strides.into_2d();
+        self
+    }
+    // Sets padding to the given padding
+    pub fn padding(mut self, padding: impl Into2d) -> Self {
+        self.padding = padding.into_2d();
+        self
+    }
+}
+
+impl Default for Conv2dArgs {
+    fn default() -> Self {
+        Self {
+            strides: [1, 1],
+            padding: [0, 0],
+        }
+    }
+}
+
+/// Similar to Conv2dArgs, but for pooling functions\
+///
+/// Defaults:
+///   - kernel: [2, 2]
+///   - strides: [1, 1]
+///   - padding: [0, 0]
+#[derive(Clone, Copy)]
+pub struct Pool2dArgs {
+    pub(crate) kernel: [usize; 2],
+    pub(crate) strides: [usize; 2],
+    pub(crate) padding: [usize; 2],
+}
+
+impl Default for Pool2dArgs {
+    fn default() -> Self {
+        Self {
+            kernel: [2, 2],
+            strides: [1, 1],
+            padding: [0, 0],
+        }
+    }
+}
+
+impl Pool2dArgs {
+    /// Sets the kernel\
+    /// Note: unlike Pytorch, does not affect strides
+    pub fn kernel(mut self, kernel: impl Into2d) -> Self {
+        self.kernel = kernel.into_2d();
+        self
+    }
+    /// Sets the strides
+    pub fn strides(mut self, strides: impl Into2d) -> Self {
+        self.strides = strides.into_2d();
+        self
+    }
+    /// Sets the padding
+    pub fn padding(mut self, padding: impl Into2d) -> Self {
+        self.padding = padding.into_2d();
+        self
+    }
+}
 
 /// Trait for Layers\
 /// Custom Models should impl Layer
