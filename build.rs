@@ -16,14 +16,14 @@ fn main() {
     }
     #[cfg(feature = "cuda")]
     {
-        {
+        if cfg!(feature = "compile-kernels") {
             // compile custom cuda source
             println!("cargo:rustc-rerun-if-changed=src/cuda/kernels.cu");
             let status = Command::new("nvcc")
                 .arg("src/cuda/kernels.cu")
                 .arg("--ptx")
-                .arg("-odir")
-                .arg(env::var("OUT_DIR").unwrap())
+                .arg("-o")
+                .arg("src/cuda/kernels.ptx")
                 .status()
                 .unwrap();
             assert!(status.success());
