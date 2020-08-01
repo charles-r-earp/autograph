@@ -1,19 +1,14 @@
 
-pub struct CudaBuffer<T: Num> {
-    data: DeviceBuffer<T>,
-    device: Arc<CudaGpu>,
-}
-
-impl<T: Num> CudaBuffer<T> {
-    pub(super) unsafe fn uninitialized(gpu: &Arc<CudaGpu>, len: usize) -> Self {
+impl<T: Num> GpuBuffer<T> {
+    pub(super) unsafe fn uninitialized(gpu: &Arc<Gpu>, len: usize) -> Self {
         gpu.lock()
             .unwrap();
         let data = DeviceBuffer::uninitialized(len).unwrap();
-        let device = gpu.clone();
-        Self { data, device }
+        let gpu = gpu.clone();
+        Self { data, gpu }
     }
     pub(super) fn fill(&mut self, elem: T) {
-        self.device.lock()
+        self.gpu.lock()
             .unwrap();
         let p = unsafe { self.data.as_mut_ptr() as u64 };
         let len = self.data.len();
@@ -55,7 +50,7 @@ impl<T: Num> CudaBuffer<T> {
         self.data.as_mut_ptr()
     }
     pub(super) fn to_vec(&self) -> Vec<T> {
-        self.device.lock()
+        self.gpu.lock()
             .unwrap();
         let mut vec = Vec::with_capacity(self.data.len());
         unsafe { vec.set_len(self.data.len()) };
@@ -64,17 +59,17 @@ impl<T: Num> CudaBuffer<T> {
     }
     pub(super) fn copy_from_slice<'a>(&mut self, slice: impl Into<Cow<'a, [T]>>) {
         let slice = slice.into();
-        self.device.lock()
+        self.gpu.lock()
             .unwrap();
         self.data.copy_from(slice.as_ref()).unwrap();
     }
 }
 
-impl<T: Num> Clone for CudaBuffer<T> {
+impl<T: Num> Clone for GpuBuffer<T> {
     fn clone(&self) -> Self {
-        self.device.lock()
+        self.gpu.lock()
             .unwrap();
-        let mut output = unsafe { Self::uninitialized(&self.device, self.data.len()) };
+        let mut output = unsafe { Self::uninitialized(&self.gpu, self.data.len()) };
         self.data.copy_to(&mut output.data);
         output
     }

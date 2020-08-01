@@ -227,7 +227,15 @@ impl Debug for CudaGpu {
     }
 }
 
+pub struct CudaBuffer<T: Num> {
+    data: DeviceBuffer<T>,
+    gpu: Arc<CudaGpu>,
+}
+
+type Gpu = CudaGpu;
+type GpuBuffer<T> = CudaBuffer<T>;
+
 /// Warp Size
 const WARP_SIZE: u32 = 32;
 
-include!("cuda/common_impl.rs");
+include!{"cuda/common_impl.rs"}
