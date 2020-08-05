@@ -89,7 +89,7 @@
 
         <nav id="sidebar" class="sidebar" aria-label="Table of contents">
             <div class="sidebar-scrollbox">
-                <ol class="chapter"><li class="chapter-item expanded "><a href="introduction.html"><strong aria-hidden="true">1.</strong> Introduction</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="what-is-machine-learning.html"><strong aria-hidden="true">1.1.</strong> What is Machine Learning?</a></li><li class="chapter-item expanded "><a href="what-is-a-neural-network.html"><strong aria-hidden="true">1.2.</strong> What is a Neural Network?</a></li></ol></li><li class="chapter-item expanded "><a href="device.html"><strong aria-hidden="true">2.</strong> Device</a></li><li class="chapter-item expanded "><a href="num.html"><strong aria-hidden="true">3.</strong> Num</a></li><li class="chapter-item expanded "><a href="tensor-base.html"><strong aria-hidden="true">4.</strong> TensorBase</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="tensor.html"><strong aria-hidden="true">4.1.</strong> Tensor</a></li><li class="chapter-item expanded "><a href="tensor-view.html" class="active"><strong aria-hidden="true">4.2.</strong> TensorView</a></li></ol></li></ol>
+                <ol class="chapter"><li class="chapter-item expanded "><a href="introduction.html"><strong aria-hidden="true">1.</strong> Introduction</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="what-is-machine-learning.html"><strong aria-hidden="true">1.1.</strong> What is Machine Learning?</a></li><li class="chapter-item expanded "><a href="what-is-a-neural-network.html"><strong aria-hidden="true">1.2.</strong> What is a Neural Network?</a></li></ol></li><li class="chapter-item expanded "><a href="device.html"><strong aria-hidden="true">2.</strong> Device</a></li><li class="chapter-item expanded "><a href="num.html"><strong aria-hidden="true">3.</strong> Num</a></li><li class="chapter-item expanded "><a href="tensor-base.html"><strong aria-hidden="true">4.</strong> TensorBase</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="tensor.html"><strong aria-hidden="true">4.1.</strong> Tensor</a></li><li class="chapter-item expanded "><a href="tensor-view.html" class="active"><strong aria-hidden="true">4.2.</strong> TensorView</a></li><li class="chapter-item expanded "><a href="arc-tensor.html"><strong aria-hidden="true">4.3.</strong> ArcTensor</a></li><li class="chapter-item expanded "><a href="rw-tensor.html"><strong aria-hidden="true">4.4.</strong> RwTensor</a></li></ol></li><li class="chapter-item expanded "><a href="nn.html"><strong aria-hidden="true">5.</strong> nn</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="layer.html"><strong aria-hidden="true">5.1.</strong> Layer</a></li><li class="chapter-item expanded "><a href="forward.html"><strong aria-hidden="true">5.2.</strong> Forward</a></li><li class="chapter-item expanded "><a href="autograd.html"><strong aria-hidden="true">5.3.</strong> autograd</a></li></ol></li></ol>
             </div>
             <div id="sidebar-resize-handle" class="sidebar-resize-handle"></div>
         </nav>
@@ -158,7 +158,12 @@
                         <h1><a class="header" href="#tensorview" id="tensorview">TensorView</a></h1>
 <pre><code>pub type TensorView&lt;'a, T, D&gt; = TensorBase&lt;ViewRepr&lt;&amp;'a Buffer&lt;T&gt;&gt;, D&gt;;
 </code></pre>
-<p>A TensorView is like a &amp;<code>[T]</code>, it represents a borrowed tensor. Tensors with S: DataRef can be borrowed as views.</p>
+<p>A TensorView is like a &amp;<code>[T]</code>, it represents a borrowed tensor. Tensors with S: DataRef can be borrowed as views with the view() method. </p>
+<h1><a class="header" href="#tensorviewmut" id="tensorviewmut">TensorViewMut</a></h1>
+<pre><code>pub type TensorViewMut&lt;'a, T, D&gt; = TensorBase&lt;ViewRepr&lt;&amp;'a mut Buffer&lt;T&gt;&gt;, D&gt;;
+</code></pre>
+<p>A TensorViewMut is lke a &amp;<code>[T]</code>, it represents a mutably borrowed tensor. Tensors with S: DataMut can be borrowed as mutable views with the view_mut() method.</p>
+<pre><code></code></pre>
 
                     </main>
 
@@ -170,6 +175,10 @@
                             </a>
                         
 
+                        
+                            <a rel="next" href="arc-tensor.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
                         
 
                         <div style="clear: both"></div>
@@ -184,6 +193,10 @@
                     </a>
                 
 
+                
+                    <a rel="next" href="arc-tensor.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
                 
             </nav>
 

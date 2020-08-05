@@ -121,7 +121,7 @@ pub trait Layer {
     ///   let loss = // loss function
     /// }
     ///```
-    /// The implementation shoud recursively call set_training on all of its child layers, and or all of its parameters.
+    /// The implementation should recursively call set_training on all of its child layers, and or all of its parameters.
     fn set_training(&mut self, training: bool) {}
 }
 

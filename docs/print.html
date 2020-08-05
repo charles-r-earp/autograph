@@ -91,7 +91,7 @@
 
         <nav id="sidebar" class="sidebar" aria-label="Table of contents">
             <div class="sidebar-scrollbox">
-                <ol class="chapter"><li class="chapter-item expanded "><a href="introduction.html"><strong aria-hidden="true">1.</strong> Introduction</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="what-is-machine-learning.html"><strong aria-hidden="true">1.1.</strong> What is Machine Learning?</a></li><li class="chapter-item expanded "><a href="what-is-a-neural-network.html"><strong aria-hidden="true">1.2.</strong> What is a Neural Network?</a></li></ol></li><li class="chapter-item expanded "><a href="device.html"><strong aria-hidden="true">2.</strong> Device</a></li><li class="chapter-item expanded "><a href="num.html"><strong aria-hidden="true">3.</strong> Num</a></li><li class="chapter-item expanded "><a href="tensor-base.html"><strong aria-hidden="true">4.</strong> TensorBase</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="tensor.html"><strong aria-hidden="true">4.1.</strong> Tensor</a></li><li class="chapter-item expanded "><a href="tensor-view.html"><strong aria-hidden="true">4.2.</strong> TensorView</a></li></ol></li></ol>
+                <ol class="chapter"><li class="chapter-item expanded "><a href="introduction.html"><strong aria-hidden="true">1.</strong> Introduction</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="what-is-machine-learning.html"><strong aria-hidden="true">1.1.</strong> What is Machine Learning?</a></li><li class="chapter-item expanded "><a href="what-is-a-neural-network.html"><strong aria-hidden="true">1.2.</strong> What is a Neural Network?</a></li></ol></li><li class="chapter-item expanded "><a href="device.html"><strong aria-hidden="true">2.</strong> Device</a></li><li class="chapter-item expanded "><a href="num.html"><strong aria-hidden="true">3.</strong> Num</a></li><li class="chapter-item expanded "><a href="tensor-base.html"><strong aria-hidden="true">4.</strong> TensorBase</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="tensor.html"><strong aria-hidden="true">4.1.</strong> Tensor</a></li><li class="chapter-item expanded "><a href="tensor-view.html"><strong aria-hidden="true">4.2.</strong> TensorView</a></li><li class="chapter-item expanded "><a href="arc-tensor.html"><strong aria-hidden="true">4.3.</strong> ArcTensor</a></li><li class="chapter-item expanded "><a href="rw-tensor.html"><strong aria-hidden="true">4.4.</strong> RwTensor</a></li></ol></li><li class="chapter-item expanded "><a href="nn.html"><strong aria-hidden="true">5.</strong> nn</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="layer.html"><strong aria-hidden="true">5.1.</strong> Layer</a></li><li class="chapter-item expanded "><a href="forward.html"><strong aria-hidden="true">5.2.</strong> Forward</a></li><li class="chapter-item expanded "><a href="autograd.html"><strong aria-hidden="true">5.3.</strong> autograd</a></li></ol></li></ol>
             </div>
             <div id="sidebar-resize-handle" class="sidebar-resize-handle"></div>
         </nav>
@@ -321,7 +321,210 @@ pub fn from_array&lt;'a&gt;(device: &amp;Device, array: impl Into&lt;CowArray&lt
 <h1><a class="header" href="#tensorview" id="tensorview">TensorView</a></h1>
 <pre><code>pub type TensorView&lt;'a, T, D&gt; = TensorBase&lt;ViewRepr&lt;&amp;'a Buffer&lt;T&gt;&gt;, D&gt;;
 </code></pre>
-<p>A TensorView is like a &amp;<code>[T]</code>, it represents a borrowed tensor. Tensors with S: DataRef can be borrowed as views.</p>
+<p>A TensorView is like a &amp;<code>[T]</code>, it represents a borrowed tensor. Tensors with S: DataRef can be borrowed as views with the view() method. </p>
+<h1><a class="header" href="#tensorviewmut" id="tensorviewmut">TensorViewMut</a></h1>
+<pre><code>pub type TensorViewMut&lt;'a, T, D&gt; = TensorBase&lt;ViewRepr&lt;&amp;'a mut Buffer&lt;T&gt;&gt;, D&gt;;
+</code></pre>
+<p>A TensorViewMut is lke a &amp;<code>[T]</code>, it represents a mutably borrowed tensor. Tensors with S: DataMut can be borrowed as mutable views with the view_mut() method.</p>
+<pre><code></code></pre>
+<h1><a class="header" href="#arctensor" id="arctensor">ArcTensor</a></h1>
+<pre><code>pub type ArcTensor&lt;T, D&gt; = TensorBase&lt;ArcRepr&lt;T&gt;, D&gt;;
+</code></pre>
+<p>An ArcTensor is like Arc&lt;Vec<T>&gt;. Cloning an ArcTensor copies the pointer, sharing the data. The data is dropped when the last ArcTensor pointing to it is dropped.</p>
+<h1><a class="header" href="#rwtensor" id="rwtensor">RwTensor</a></h1>
+<pre><code>pub type RwTensor&lt;T, D&gt; = TensorBase&lt;RwRepr&lt;T&gt;, D&gt;;
+</code></pre>
+<p>A RwTensor is like an Arc&lt;RwLock&lt;Vec<T>&gt;&gt;. Cloning the RwTensor copies the pointer, like ArcTensor. Unlike ArcTensor, the data is wrapped in a RwLock. This allows either shared immutable access with the read() method (returning a RwReadTensor), or exclusive access with the write() method (returning a RwWriteTensor). </p>
+<h2><a class="header" href="#rwreadtensor" id="rwreadtensor">RwReadTensor</a></h2>
+<pre><code>pub type RwReadTensor&lt;'a, T, D&gt; = TensorBase&lt;RwReadRepr&lt;'a, T&gt;, D&gt;;
+</code></pre>
+<p>A RwReadTensor is like a RwLockReadGuard&lt;Vec<T>&gt;. On creation, the RwLock is locked in read mode, which blocks until a writer has released the lock, and then blocks any writers from obtaining the lock. A RwReadTensor can be borrowed as a TensorView with the view() method, and many methods are implemented generically over both. This is safe because the view will borrow the RwReadTensor, which holds the lock.</p>
+<h2><a class="header" href="#rwwwritetensor" id="rwwwritetensor">RwWWriteTensor</a></h2>
+<pre><code>pub type RwWriteTensor&lt;'a, T, D&gt; = TensorBase&lt;RwWriteRepr&lt;'a, T&gt;, D&gt;;
+</code></pre>
+<p>A RwReadTensor is like a RwLockWriteGuard&lt;Vec<T>&gt;. On creation, the RwLock is locked in write mode, which blocks until all readers and writers have released the lock, and then blocks any readers or writers from obtaining the lock. A RwWriteTensor can be borrowed as a TensorViewMut with the view_mut() method, and many methods are implemented generically over both. This is safe because the view will borrow the RwWriteTensor, which holds the lock.</p>
+<h1><a class="header" href="#nn" id="nn">nn</a></h1>
+<p>The nn module (short for Neural Network). </p>
+<h2><a class="header" href="#api-hierarchy" id="api-hierarchy">API Hierarchy</a></h2>
+<ul>
+<li>Layers (Dense, Conv2d, MaxPool2d, etc)</li>
+<li>Variable (ie functional interface)</li>
+<li>Tensor (Variable methods call Tensor methods, much of this is private)</li>
+<li>Device specific implementations on Tensor (private)</li>
+</ul>
+<h1><a class="header" href="#layers" id="layers">Layers</a></h1>
+<p>It is common to compose neural networks with layers. Layers represent functions, but may also store both parameters like weights, and hyper parameters like the padding of a convolution. Layers make it easy to define a model, as they translate hyper parameters into the shape of the parameters. For example, you could create a simple Dense layer with this:</p>
+<pre><code>let w = Parameter::new(
+    ArcTensor::zeros(&amp;device, `[outputs, inputs]`)
+);
+let b = Parameter::new(
+    ArcTensor::zeros(&amp;device, outputs)
+);
+
+// forward 
+let y = x.dense(&amp;w, Some(&amp;b));
+</code></pre>
+<p>Or you could use a Dense layer:</p>
+<pre><code>let dense = Dense::builder()
+    .device(&amp;device)
+    .inputs(inputs)
+    .outputs(outputs)
+    .build();
+    
+/// forward
+let y = x.forward(&amp;dense);
+</code></pre>
+<h2><a class="header" href="#layer-trait" id="layer-trait">Layer Trait</a></h2>
+<pre><code>/// Trait for Layers\
+/// Custom Models should impl Layer
+pub trait Layer {
+    /// Returns a Vec of all the parameters in the Layer (including its children). Parameter acts like an Arc so it can be cloned to copy references. Layers that do not have parameters (like Activations) do not have to implement this method.
+    fn parameters(&amp;self) -&gt; Vec&lt;ParameterD&gt; {
+        Vec::new()
+    }
+    /// Prepares the layer for training if training is true, else prepares for evaluation / inference. This method should be called prior to a forward step ie:
+    ///```
+    /// for data in training_set {
+    ///   let graph = Graph::new();
+    ///   let (x, t) = // data
+    ///   model.set_training(true);
+    ///   let y = model.forward(&amp;x);
+    ///   let loss = // loss function
+    ///   loss.backward(graph);
+    ///   // update model
+    /// }
+    /// for data in evaluation_set {
+    ///   let (x, t) = // data
+    ///   model.set_training(false);
+    ///   let y = model.forward(&amp;x);
+    ///   let loss = // loss function
+    /// }
+    ///```
+    /// The implementation should recursively call set_training on all of its child layers, and or all of its parameters.
+    fn set_training(&amp;mut self, training: bool) {}
+}
+</code></pre>
+<p>The Layer trait provides a minimal interface for accessing parameters and setting the training mode. It is similar to PyTorch's Module. Layers can be composed in a struct:</p>
+<pre><code>struct MyModel {
+    layer1: Layer1,
+    layer2: Layer2,
+    // etc... 
+}
+
+// Note: you can also use a tuple struct, with unnamed fields
+struct MyModel (
+    Layer1, // my_model.0
+    Layer2, // my_model.1
+    // etc... 
+);
+</code></pre>
+<p>There is a derive macro that will generate a Layer implementation for a struct composed of other layers:</p>
+<pre><code>#[derive(Layer)]
+struct MyModel { /*fields*/ }
+</code></pre>
+<h1><a class="header" href="#forward" id="forward">Forward</a></h1>
+<pre><code>/// Trait for forward pass, implemented by layers\
+/// Typically this will call a method or custom Trait method on Variable\
+/// A layer like Conv2d will implement Forward, and a model composed of layers will also implement forward.
+pub trait Forward&lt;D: Dimension&gt; {
+    type OutputDim: Dimension;
+    fn forward(&amp;self, input: &amp;Variable&lt;D&gt;) -&gt; Variable&lt;Self::OutputDim&gt;;
+}
+</code></pre>
+<p>The Forward trait is used to compute the output given the input. When training, backward ops are enqueued into the graph attached to the input. The Layer and Forward traits combine to form the common interface of all layers / models. </p>
+<h1><a class="header" href="#implementing-forward" id="implementing-forward">Implementing Forward</a></h1>
+<p>Implementing forward for a struct is straightforward. For an image classifier, the input will be a Variable4 (NCHW), with D = Ix4, and the output will be Variable2 (NC). Use Variable's forward() method to sequence several methods, like this:</p>
+<pre><code>struct ConvNet {
+    conv: Conv2d,
+    dense: Dense
+}
+
+impl Forward&lt;Ix4&gt; for ConvNet { // 
+    type OutputDim = Ix2;
+    fn forward(&amp;self, input: &amp;Variable4) -&gt; Variable2 {
+        input
+            .forward(&amp;self.conv)
+            .relu()
+            .flatten()
+            .forward(&amp;self.dense)
+    }
+}
+</code></pre>
+<p>Similar to how Layer can be derived, Forward can be implemented with the impl_forward macro. We have to add the Relu and Flatten layers to our struct:</p>
+<pre><code>#[impl_forward(Ix4, Ix2)]
+#[derive(Layer)]
+struct ConvNet (
+    Conv2d,
+    Relu,
+    Dense,
+    Flatten
+);
+</code></pre>
+<p>Note that Rust has zero sized types. Relu and Flatten have no cost, they will only affect the derived implementations, not the size of the struct. Now you only have to write a constructor for the model, potentially something like this:</p>
+<pre><code>impl ConvNet {
+    pub fn new(device: &amp;Device) -&gt; Self {
+        let conv = Conv2d::builder()
+            .device(device)
+            .inputs(1)
+            .outputs(8)
+            .args(
+                Conv2dArgs::default()
+                    .kernel(7)
+            )
+            .build();
+        let relu = Relu::default();
+        let flatten = Flatten::default();
+        let Dense = Dense::builder()
+            .inputs(8*22*22)
+            .outputs(10)
+            .bias()
+            .build();
+        ConvNet(
+            conv,
+            relu,
+            flatten,
+            dense
+        ) 
+    }
+}
+</code></pre>
+<p>When developing it may be useful to experiment with several models. You can hide the type of the model in a few ways:</p>
+<pre><code>// some models, with a new method like above
+struct Model1 { .. }
+struct Model2 { .. }
+
+// define a type alias for use in training code
+type MyModel = ConvNet; // ConvNet2
+
+fn train() {
+    let device = Device::default();
+    let model = MyModel::new(&amp;device);
+}
+</code></pre>
+<pre><code>// use a function that returns impl Trait
+
+fn create_model(device: &amp;Device) -&gt; impl Layer + Forward&lt;Ix4, Output=Ix2&gt; {
+    Model1::new(device) // Model2::new(device)
+}
+
+fn train() {
+    let device = Device::default();
+    let model = create_model();
+}
+</code></pre>
+<p>Use a boxed dyn Trait:</p>
+<pre><code>#[impl_forward(Ix4, Ix2)]
+#[derive(Layer)]
+struct DynModel(Box&lt;dyn (Layer + Forward&lt;Ix4, OutputDim=Ix2&gt;)&gt;);
+
+impl DynModel {
+    fn new(device: &amp;Device) -&gt; Self {
+        let model = Model1::new(device) // Model2::new(device)
+        DynModel(Box::new(model))
+    }
+}
+</code></pre>
+<h1><a class="header" href="#forward-1" id="forward-1">Forward</a></h1>
 
                     </main>
 

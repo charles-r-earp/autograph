@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>What is Machine Learning? - autograph</title>
+        <title>Layer - autograph</title>
         
         
 
@@ -89,7 +89,7 @@
 
         <nav id="sidebar" class="sidebar" aria-label="Table of contents">
             <div class="sidebar-scrollbox">
-                <ol class="chapter"><li class="chapter-item expanded "><a href="introduction.html"><strong aria-hidden="true">1.</strong> Introduction</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="what-is-machine-learning.html" class="active"><strong aria-hidden="true">1.1.</strong> What is Machine Learning?</a></li><li class="chapter-item expanded "><a href="what-is-a-neural-network.html"><strong aria-hidden="true">1.2.</strong> What is a Neural Network?</a></li></ol></li><li class="chapter-item expanded "><a href="device.html"><strong aria-hidden="true">2.</strong> Device</a></li><li class="chapter-item expanded "><a href="num.html"><strong aria-hidden="true">3.</strong> Num</a></li><li class="chapter-item expanded "><a href="tensor-base.html"><strong aria-hidden="true">4.</strong> TensorBase</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="tensor.html"><strong aria-hidden="true">4.1.</strong> Tensor</a></li><li class="chapter-item expanded "><a href="tensor-view.html"><strong aria-hidden="true">4.2.</strong> TensorView</a></li><li class="chapter-item expanded "><a href="arc-tensor.html"><strong aria-hidden="true">4.3.</strong> ArcTensor</a></li><li class="chapter-item expanded "><a href="rw-tensor.html"><strong aria-hidden="true">4.4.</strong> RwTensor</a></li></ol></li><li class="chapter-item expanded "><a href="nn.html"><strong aria-hidden="true">5.</strong> nn</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="layer.html"><strong aria-hidden="true">5.1.</strong> Layer</a></li><li class="chapter-item expanded "><a href="forward.html"><strong aria-hidden="true">5.2.</strong> Forward</a></li><li class="chapter-item expanded "><a href="autograd.html"><strong aria-hidden="true">5.3.</strong> autograd</a></li></ol></li></ol>
+                <ol class="chapter"><li class="chapter-item expanded "><a href="introduction.html"><strong aria-hidden="true">1.</strong> Introduction</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="what-is-machine-learning.html"><strong aria-hidden="true">1.1.</strong> What is Machine Learning?</a></li><li class="chapter-item expanded "><a href="what-is-a-neural-network.html"><strong aria-hidden="true">1.2.</strong> What is a Neural Network?</a></li></ol></li><li class="chapter-item expanded "><a href="device.html"><strong aria-hidden="true">2.</strong> Device</a></li><li class="chapter-item expanded "><a href="num.html"><strong aria-hidden="true">3.</strong> Num</a></li><li class="chapter-item expanded "><a href="tensor-base.html"><strong aria-hidden="true">4.</strong> TensorBase</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="tensor.html"><strong aria-hidden="true">4.1.</strong> Tensor</a></li><li class="chapter-item expanded "><a href="tensor-view.html"><strong aria-hidden="true">4.2.</strong> TensorView</a></li><li class="chapter-item expanded "><a href="arc-tensor.html"><strong aria-hidden="true">4.3.</strong> ArcTensor</a></li><li class="chapter-item expanded "><a href="rw-tensor.html"><strong aria-hidden="true">4.4.</strong> RwTensor</a></li></ol></li><li class="chapter-item expanded "><a href="nn.html"><strong aria-hidden="true">5.</strong> nn</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="layer.html" class="active"><strong aria-hidden="true">5.1.</strong> Layer</a></li><li class="chapter-item expanded "><a href="forward.html"><strong aria-hidden="true">5.2.</strong> Forward</a></li><li class="chapter-item expanded "><a href="autograd.html"><strong aria-hidden="true">5.3.</strong> autograd</a></li></ol></li></ol>
             </div>
             <div id="sidebar-resize-handle" class="sidebar-resize-handle"></div>
         </nav>
@@ -155,21 +155,89 @@
 
                 <div id="content" class="content">
                     <main>
-                        <h1><a class="header" href="#what-is-machine-learning" id="what-is-machine-learning">What is Machine Learning?</a></h1>
-<p>Machine Learning refers to algorithms that solve problems by iteratively improving until they converge to a solution. Unlike handcrafted logic, such algorithms scale to &quot;Big Data&quot;, potentially with billions of individually tuned parameters. Typically, such models separate datapoints into several classes, known as classification. This may be supervised, which means that some of the datapoints have been labeled by hand, or unsupervised, where the algorithm is not provided labeled datapoints. </p>
+                        <h1><a class="header" href="#layers" id="layers">Layers</a></h1>
+<p>It is common to compose neural networks with layers. Layers represent functions, but may also store both parameters like weights, and hyper parameters like the padding of a convolution. Layers make it easy to define a model, as they translate hyper parameters into the shape of the parameters. For example, you could create a simple Dense layer with this:</p>
+<pre><code>let w = Parameter::new(
+    ArcTensor::zeros(&amp;device, `[outputs, inputs]`)
+);
+let b = Parameter::new(
+    ArcTensor::zeros(&amp;device, outputs)
+);
+
+// forward 
+let y = x.dense(&amp;w, Some(&amp;b));
+</code></pre>
+<p>Or you could use a Dense layer:</p>
+<pre><code>let dense = Dense::builder()
+    .device(&amp;device)
+    .inputs(inputs)
+    .outputs(outputs)
+    .build();
+    
+/// forward
+let y = x.forward(&amp;dense);
+</code></pre>
+<h2><a class="header" href="#layer-trait" id="layer-trait">Layer Trait</a></h2>
+<pre><code>/// Trait for Layers\
+/// Custom Models should impl Layer
+pub trait Layer {
+    /// Returns a Vec of all the parameters in the Layer (including its children). Parameter acts like an Arc so it can be cloned to copy references. Layers that do not have parameters (like Activations) do not have to implement this method.
+    fn parameters(&amp;self) -&gt; Vec&lt;ParameterD&gt; {
+        Vec::new()
+    }
+    /// Prepares the layer for training if training is true, else prepares for evaluation / inference. This method should be called prior to a forward step ie:
+    ///```
+    /// for data in training_set {
+    ///   let graph = Graph::new();
+    ///   let (x, t) = // data
+    ///   model.set_training(true);
+    ///   let y = model.forward(&amp;x);
+    ///   let loss = // loss function
+    ///   loss.backward(graph);
+    ///   // update model
+    /// }
+    /// for data in evaluation_set {
+    ///   let (x, t) = // data
+    ///   model.set_training(false);
+    ///   let y = model.forward(&amp;x);
+    ///   let loss = // loss function
+    /// }
+    ///```
+    /// The implementation should recursively call set_training on all of its child layers, and or all of its parameters.
+    fn set_training(&amp;mut self, training: bool) {}
+}
+</code></pre>
+<p>The Layer trait provides a minimal interface for accessing parameters and setting the training mode. It is similar to PyTorch's Module. Layers can be composed in a struct:</p>
+<pre><code>struct MyModel {
+    layer1: Layer1,
+    layer2: Layer2,
+    // etc... 
+}
+
+// Note: you can also use a tuple struct, with unnamed fields
+struct MyModel (
+    Layer1, // my_model.0
+    Layer2, // my_model.1
+    // etc... 
+);
+</code></pre>
+<p>There is a derive macro that will generate a Layer implementation for a struct composed of other layers:</p>
+<pre><code>#[derive(Layer)]
+struct MyModel { /*fields*/ }
+</code></pre>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
                         
-                            <a rel="prev" href="introduction.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="nn.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <i class="fa fa-angle-left"></i>
                             </a>
                         
 
                         
-                            <a rel="next" href="what-is-a-neural-network.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next" href="forward.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <i class="fa fa-angle-right"></i>
                             </a>
                         
@@ -181,13 +249,13 @@
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
                 
-                    <a rel="prev" href="introduction.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="nn.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <i class="fa fa-angle-left"></i>
                     </a>
                 
 
                 
-                    <a rel="next" href="what-is-a-neural-network.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next" href="forward.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <i class="fa fa-angle-right"></i>
                     </a>
                 

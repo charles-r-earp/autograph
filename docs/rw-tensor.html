@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Devices - autograph</title>
+        <title>RwTensor - autograph</title>
         
         
 
@@ -89,7 +89,7 @@
 
         <nav id="sidebar" class="sidebar" aria-label="Table of contents">
             <div class="sidebar-scrollbox">
-                <ol class="chapter"><li class="chapter-item expanded "><a href="introduction.html"><strong aria-hidden="true">1.</strong> Introduction</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="what-is-machine-learning.html"><strong aria-hidden="true">1.1.</strong> What is Machine Learning?</a></li><li class="chapter-item expanded "><a href="what-is-a-neural-network.html"><strong aria-hidden="true">1.2.</strong> What is a Neural Network?</a></li></ol></li><li class="chapter-item expanded "><a href="devices.html" class="active"><strong aria-hidden="true">2.</strong> Devices</a></li><li class="chapter-item expanded "><a href="num.html"><strong aria-hidden="true">3.</strong> Num</a></li><li class="chapter-item expanded "><a href="tensor-base.html"><strong aria-hidden="true">4.</strong> TensorBase</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="tensor.html"><strong aria-hidden="true">4.1.</strong> Tensor</a></li><li class="chapter-item expanded "><a href="tensor-view.html"><strong aria-hidden="true">4.2.</strong> TensorView</a></li></ol></li></ol>
+                <ol class="chapter"><li class="chapter-item expanded "><a href="introduction.html"><strong aria-hidden="true">1.</strong> Introduction</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="what-is-machine-learning.html"><strong aria-hidden="true">1.1.</strong> What is Machine Learning?</a></li><li class="chapter-item expanded "><a href="what-is-a-neural-network.html"><strong aria-hidden="true">1.2.</strong> What is a Neural Network?</a></li></ol></li><li class="chapter-item expanded "><a href="device.html"><strong aria-hidden="true">2.</strong> Device</a></li><li class="chapter-item expanded "><a href="num.html"><strong aria-hidden="true">3.</strong> Num</a></li><li class="chapter-item expanded "><a href="tensor-base.html"><strong aria-hidden="true">4.</strong> TensorBase</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="tensor.html"><strong aria-hidden="true">4.1.</strong> Tensor</a></li><li class="chapter-item expanded "><a href="tensor-view.html"><strong aria-hidden="true">4.2.</strong> TensorView</a></li><li class="chapter-item expanded "><a href="arc-tensor.html"><strong aria-hidden="true">4.3.</strong> ArcTensor</a></li><li class="chapter-item expanded "><a href="rw-tensor.html" class="active"><strong aria-hidden="true">4.4.</strong> RwTensor</a></li></ol></li><li class="chapter-item expanded "><a href="nn.html"><strong aria-hidden="true">5.</strong> nn</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="layer.html"><strong aria-hidden="true">5.1.</strong> Layer</a></li><li class="chapter-item expanded "><a href="forward.html"><strong aria-hidden="true">5.2.</strong> Forward</a></li><li class="chapter-item expanded "><a href="autograd.html"><strong aria-hidden="true">5.3.</strong> autograd</a></li></ol></li></ol>
             </div>
             <div id="sidebar-resize-handle" class="sidebar-resize-handle"></div>
         </nav>
@@ -155,37 +155,31 @@
 
                 <div id="content" class="content">
                     <main>
-                        <h1><a class="header" href="#devices" id="devices">Devices</a></h1>
-<p>A Device represents either a cpu or gpu. Generally the gpu has its own memory. Transferring data from cpu to gpu memory is relatively expensive compared to executing operations. Generally operations can only be performed on data that is in a particular device's memory, at least multi device operations are slower than single device operations. </p>
-<p>In autograph, a Device is an enum:</p>
-<pre><code>#[derive(Clone, Debug)]
-pub enum Device {
-    Cpu(Arc&lt;Cpu&gt;),
-    #[cfg(feature = &quot;cuda&quot;)]
-    Cuda(Arc&lt;CudaGpu&gt;),
-}
+                        <h1><a class="header" href="#rwtensor" id="rwtensor">RwTensor</a></h1>
+<pre><code>pub type RwTensor&lt;T, D&gt; = TensorBase&lt;RwRepr&lt;T&gt;, D&gt;;
 </code></pre>
-<p>This represents either a Cpu or CudaGpu (potentially more in the future). A Device can be created from a Cpu or CudaGpu using the From trait:</p>
-<pre><code>let cpu = Device::from(Cpu::new());
-let gpu = Device::from(CudaGpu::new(0)); // Get the first gpu
+<p>A RwTensor is like an Arc&lt;RwLock&lt;Vec<T>&gt;&gt;. Cloning the RwTensor copies the pointer, like ArcTensor. Unlike ArcTensor, the data is wrapped in a RwLock. This allows either shared immutable access with the read() method (returning a RwReadTensor), or exclusive access with the write() method (returning a RwWriteTensor). </p>
+<h2><a class="header" href="#rwreadtensor" id="rwreadtensor">RwReadTensor</a></h2>
+<pre><code>pub type RwReadTensor&lt;'a, T, D&gt; = TensorBase&lt;RwReadRepr&lt;'a, T&gt;, D&gt;;
 </code></pre>
-<p>Device also implements Default, which can be used to get a device, potentially the first gpu if available:</p>
-<pre><code>let device = Device::default();
+<p>A RwReadTensor is like a RwLockReadGuard&lt;Vec<T>&gt;. On creation, the RwLock is locked in read mode, which blocks until a writer has released the lock, and then blocks any writers from obtaining the lock. A RwReadTensor can be borrowed as a TensorView with the view() method, and many methods are implemented generically over both. This is safe because the view will borrow the RwReadTensor, which holds the lock.</p>
+<h2><a class="header" href="#rwwwritetensor" id="rwwwritetensor">RwWWriteTensor</a></h2>
+<pre><code>pub type RwWriteTensor&lt;'a, T, D&gt; = TensorBase&lt;RwWriteRepr&lt;'a, T&gt;, D&gt;;
 </code></pre>
-<p>Device can be cloned, which clones the internal Arc (a threadsafe shared pointer). Devices cloned this way refer to the same object. The Cpu and CudaGpu structs store handles used to execute operations on with the backends (oneDNN and cuDNN for example).</p>
+<p>A RwReadTensor is like a RwLockWriteGuard&lt;Vec<T>&gt;. On creation, the RwLock is locked in write mode, which blocks until all readers and writers have released the lock, and then blocks any readers or writers from obtaining the lock. A RwWriteTensor can be borrowed as a TensorViewMut with the view_mut() method, and many methods are implemented generically over both. This is safe because the view will borrow the RwWriteTensor, which holds the lock.</p>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
                         
-                            <a rel="prev" href="what-is-a-neural-network.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="arc-tensor.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <i class="fa fa-angle-left"></i>
                             </a>
                         
 
                         
-                            <a rel="next" href="num.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next" href="nn.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <i class="fa fa-angle-right"></i>
                             </a>
                         
@@ -197,13 +191,13 @@ let gpu = Device::from(CudaGpu::new(0)); // Get the first gpu
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
                 
-                    <a rel="prev" href="what-is-a-neural-network.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="arc-tensor.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <i class="fa fa-angle-left"></i>
                     </a>
                 
 
                 
-                    <a rel="next" href="num.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next" href="nn.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <i class="fa fa-angle-right"></i>
                     </a>
                 
@@ -211,6 +205,21 @@ let gpu = Device::from(CudaGpu::new(0)); // Get the first gpu
 
         </div>
 
+        
+        <!-- Livereload script (if served using the cli tool) -->
+        <script type="text/javascript">
+            var socket = new WebSocket("ws://localhost:3000/__livereload");
+            socket.onmessage = function (event) {
+                if (event.data === "reload") {
+                    socket.close();
+                    location.reload();
+                }
+            };
+
+            window.onbeforeunload = function() {
+                socket.close();
+            }
+        </script>
         
 
         
