@@ -40,6 +40,8 @@ default = ["derive", "datasets"]
 derive = ["autograph_derive"]
 datasets = ["byteorder", "flate2", "reqwest"]
 cuda = ["rustacuda", "cuda-sys", "cuda-cudnn-sys"]
+# dev use only!
+compile-kernels = []
 
 [dev-dependencies]
 rand = { version = "0.7.3", features=["small_rng"] }

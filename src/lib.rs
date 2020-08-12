@@ -190,6 +190,7 @@ impl<T: Num> Buffer<T> {
 /// let cpu = Device::from(Cpu::new());
 /// ```
 /// Device can be cloned, which copies the pointer. Each Tensor will have a copy of the Device so that it can execute operations.
+#[non_exhaustive]
 #[derive(Clone, Debug)]
 pub enum Device {
     Cpu(Arc<Cpu>),
