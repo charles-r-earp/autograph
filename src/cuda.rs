@@ -649,7 +649,7 @@ pub(super) fn unsigned_to_one_hot_f32<
         unreachable!()
     }
 }
-
+/*
 pub(super) fn broadcast<T: Num, D: Dimension, S1: DataRef<Elem = T>, S2: DataMut<Elem = T>>(
     input: &TensorBase<S1, D>,
     output: &mut TensorBase<S2, D::Larger>,
@@ -662,6 +662,35 @@ pub(super) fn broadcast<T: Num, D: Dimension, S1: DataRef<Elem = T>, S2: DataMut
         .for_each(|mut output| {
             input.copy_to(output);
         });
+}*/
+
+pub(super) fn broadcast<T: Num, D: Dimension, S1: DataRef<Elem = T>, S2: DataMut<Elem = T>>(
+    input: &TensorBase<S1, D>,
+    output: &mut TensorBase<S2, D::Larger>,
+) {
+    let gpu = input.device()
+        .cuda()
+        .unwrap()
+        .lock()
+        .unwrap();
+    let module = gpu.kernels();
+    let stream = gpu.stream();
+    
+    let x = input.as_cuda_ptr().unwrap();
+    let y = output.as_mut_cuda_ptr().unwrap();
+    
+    let n = input.len();
+    let len = output.raw_dim()[0];
+    let (nblocks, nthreads) = get_nblocks_nthreads(len);
+    unsafe {
+        launch!(module.broadcast<<<nblocks, nthreads, 0, stream>>>(
+                DevicePointer::wrap(x as *mut f32),
+                DevicePointer::wrap(y),
+                n,
+                len
+        )).into_result()
+            .unwrap();
+    }
 }
 
 pub(super) fn broadcast_backward<S1: DataMut<Elem = f32>, S2: DataRef<Elem = f32>, D: Dimension>(
