@@ -22,6 +22,8 @@ use cuda_cudnn_sys::{
     cudnnSetActivationDescriptor, cudnnSetConvolution2dDescriptor, cudnnSetConvolutionMathType,
     cudnnSetFilter4dDescriptor, cudnnSetPooling2dDescriptor, cudnnSetTensor4dDescriptor,
     cudnnSetTensor4dDescriptorEx, cudnnStatus_t, cudnnTensorDescriptor_t, cudnnTensorFormat_t,
+    cudnnOpTensorDescriptor_t, cudnnCreateOpTensorDescriptor, cudnnOpTensorOp_t, cudnnSetOpTensorDescriptor, 
+    cudnnOpTensor, cudnnDestroyOpTensorDescriptor
 };
 use cuda_sys::cublas::{
     cublasHandle_t, cublasCreate_v2, cublasDestroy_v2, cublasSetStream_v2, cublasOperation_t_CUBLAS_OP_N,
@@ -29,7 +31,7 @@ use cuda_sys::cublas::{
 };
 use cuda_sys::cuda::{cuMemsetD32_v2, cuMemsetD8_v2, cudaError_t};
 use cuda_sys::cudart::cudaStream_t;
-use ndarray::{Dimension, Ix0, Ix1, Ix2, Ix4};
+use ndarray::{Dimension, IntoDimension, Ix0, Ix1, Ix2, Ix4};
 use rustacuda::{
     context::{Context, ContextFlags, CurrentContext},
     device::Device as CudaDevice,
@@ -322,6 +324,62 @@ struct TensorDescriptor {
 }
 
 impl TensorDescriptor {
+    fn new_v2<D: IntoDimension>(dim: D, strides: Option<D>, data_type: cudnnDataType_t) -> Self {
+        let mut tensor_descriptor = unsafe { std::ptr::null_mut() };
+        let status = unsafe {
+            cudnnCreateTensorDescriptor(
+                &mut tensor_descriptor as *mut cudnnTensorDescriptor_t
+            )
+        };
+        status.into_result()
+            .unwrap();
+            
+        let dim = dim.into_dimension();
+        
+        if dim.ndim() <= 4 {
+            fn to_nchw(slice: &[usize]) -> [i32; 4] {
+                match slice {
+                    &[n, c, h, w] => [n as i32, c as i32, h as i32, w as i32],
+                    &[n, c, h] => [n as i32, c as i32, h as i32, 1],
+                    &[n, c] => [n as i32, c as i32, 1, 1],
+                    &[c] => [1, c as i32, 1, 1],
+                    &[] => [1, 1, 1, 1],
+                    _ => unreachable!()
+                }
+            }
+            let [n, c, h, w] = to_nchw(dim.slice());
+            if let Some(strides) = strides {
+                let strides = strides.into_dimension();
+                assert_eq!(dim.ndim(), strides.ndim());
+                let [ns, cs, hs, ws] = to_nchw(strides.slice());
+                unsafe {
+                    cudnnSetTensor4dDescriptorEx(
+                        tensor_descriptor,
+                        data_type,
+                        n, c, h, w,
+                        ns, cs, hs, ws
+                    ).into_result()
+                        .unwrap();
+                }
+            }
+            else {
+                unsafe {
+                    cudnnSetTensor4dDescriptor(
+                        tensor_descriptor,
+                        cudnnTensorFormat_t::CUDNN_TENSOR_NCHW,
+                        data_type, 
+                        n, c, h, w
+                    ).into_result()
+                        .unwrap();
+                }
+            }
+        }
+        else {
+            unimplemented!();
+        }
+
+        Self { tensor_descriptor }
+    }
     fn new(shape: impl AsRef<[usize]>, data_type: cudnnDataType_t) -> Self {
         let mut tensor_descriptor = unsafe { std::ptr::null_mut() };
         unsafe {
@@ -442,6 +500,41 @@ impl FilterDescriptor {
 impl Drop for FilterDescriptor {
     fn drop(&mut self) {
         let status = unsafe { cudnnDestroyFilterDescriptor(self.filter_descriptor) };
+        status.into_result()
+            .unwrap();
+    }
+}
+
+struct OpTensorDescriptor {
+    op_tensor_descriptor: cudnnOpTensorDescriptor_t,
+}
+
+impl OpTensorDescriptor {
+    fn new(op: cudnnOpTensorOp_t, data_type: cudnnDataType_t, nan_propagation: cudnnNanPropagation_t) -> Self {
+        let mut op_tensor_descriptor: cudnnOpTensorDescriptor_t = std::ptr::null_mut();
+        unsafe {
+            cudnnCreateOpTensorDescriptor(
+                &mut op_tensor_descriptor as *mut cudnnOpTensorDescriptor_t
+            ).into_result()
+                .unwrap();
+            cudnnSetOpTensorDescriptor(
+                op_tensor_descriptor,
+                op,
+                data_type,
+                nan_propagation
+            ).into_result()
+                .unwrap();
+        }
+        Self { op_tensor_descriptor }
+    }
+    unsafe fn as_mut_ptr(&self) -> cudnnOpTensorDescriptor_t {
+        self.op_tensor_descriptor
+    }
+}
+
+impl Drop for OpTensorDescriptor {
+    fn drop(&mut self) {
+        let status = unsafe { cudnnDestroyOpTensorDescriptor(self.op_tensor_descriptor) };
         status.into_result()
             .unwrap();
     }
@@ -649,20 +742,6 @@ pub(super) fn unsigned_to_one_hot_f32<
         unreachable!()
     }
 }
-/*
-pub(super) fn broadcast<T: Num, D: Dimension, S1: DataRef<Elem = T>, S2: DataMut<Elem = T>>(
-    input: &TensorBase<S1, D>,
-    output: &mut TensorBase<S2, D::Larger>,
-) {
-    let input = &input.as_cuda_slice().unwrap();
-    output
-        .as_mut_cuda_slice()
-        .unwrap()
-        .chunks_mut(input.len())
-        .for_each(|mut output| {
-            input.copy_to(output);
-        });
-}*/
 
 pub(super) fn broadcast<T: Num, D: Dimension, S1: DataRef<Elem = T>, S2: DataMut<Elem = T>>(
     input: &TensorBase<S1, D>,
@@ -679,17 +758,16 @@ pub(super) fn broadcast<T: Num, D: Dimension, S1: DataRef<Elem = T>, S2: DataMut
     let x = input.as_cuda_ptr().unwrap();
     let y = output.as_mut_cuda_ptr().unwrap();
     
-    let n = input.len();
-    let len = output.raw_dim()[0];
+    let c = input.len() as u32;
+    let len = output.len() as u32;
     let (nblocks, nthreads) = get_nblocks_nthreads(len);
     unsafe {
         launch!(module.broadcast<<<nblocks, nthreads, 0, stream>>>(
                 DevicePointer::wrap(x as *mut f32),
                 DevicePointer::wrap(y),
-                n,
+                c,
                 len
-        )).into_result()
-            .unwrap();
+        )).unwrap();
     }
 }
 
@@ -697,28 +775,28 @@ pub(super) fn broadcast_backward<S1: DataMut<Elem = f32>, S2: DataRef<Elem = f32
     input_grad: &mut TensorBase<S1, D>,
     output_grad: &TensorBase<S2, D::Larger>,
 ) {
-    let gpu = output_grad.device.cuda()
+    let gpu = output_grad.device()
+        .cuda()
         .unwrap()
         .lock()
         .unwrap();
-    let alpha = unsafe { &1f32 as *const f32 };
+    let module = gpu.kernels();
+    let stream = gpu.stream();
+    
     let dx = input_grad.as_mut_cuda_ptr().unwrap();
-    let len = input_grad.len();
-    output_grad
-        .as_cuda_slice()
-        .unwrap()
-        .chunks(len)
-        .for_each(|output_grad| unsafe {
-            cublasSaxpy_v2(
-                gpu.cublas().as_mut_ptr(),
-                len as i32,
-                alpha,
-                output_grad.as_ptr(),
-                1,
-                dx,
-                1,
-            );
-        });
+    let dy = output_grad.as_cuda_ptr().unwrap();
+    
+    let c = input_grad.len() as u32;
+    let len = output_grad.len() as u32;
+    let (nblocks, nthreads) = get_nblocks_nthreads(len);
+    unsafe {
+        launch!(module.broadcast_backward<<<nblocks, nthreads, 0, stream>>>(
+                DevicePointer::wrap(dx),
+                DevicePointer::wrap(dy as *mut f32),
+                c,
+                len
+        )).unwrap();
+    }
 }
 
 pub(super) fn gemm<S1: DataRef<Elem = f32>, S2: DataRef<Elem = f32>, S3: DataMut<Elem = f32>>(

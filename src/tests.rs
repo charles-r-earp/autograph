@@ -164,7 +164,7 @@ fn test_gemm_mkn(m: usize, k: usize, n: usize, device: impl Into<Device>) {
         .into_iter()
         .map(|x| x.to_f32().unwrap())
         .collect();
-
+        
     {
         // MxK * KxN
         let x1 = Tensor::from_shape_vec(&device, [m, k], &vec1);
@@ -219,6 +219,42 @@ fn test_gemm_cpu() {
 #[test]
 fn test_gemm_cuda() {
     test_gemm(CudaGpu::new(0));
+}
+fn test_dense(device: impl Into<Device>) {
+    let device = device.into();
+    let m = 33;
+    let k = 43;
+    let n = 53;
+    let vec1: Vec<f32> = (1..=m * k)
+        .into_iter()
+        .map(|x| x.to_f32().unwrap())
+        .collect();
+    let vec2: Vec<f32> = (1..=k * n)
+        .into_iter()
+        .map(|x| x.to_f32().unwrap())
+        .collect(); 
+    let vec3: Vec<f32> = (1..=n)
+        .into_iter()
+        .rev()
+        .map(|x| x.to_f32().unwrap())
+        .collect(); 
+    let x = Tensor::from_shape_vec(&device, [m, k], vec1.as_slice());
+    let x_arr = Array::from_shape_vec([m, k], vec1).unwrap();
+    let w = Tensor::from_shape_vec(&device, [n, k], vec2.as_slice());
+    let w_arr = Array::from_shape_vec([n, k], vec2).unwrap();
+    let b = Tensor::from_shape_vec(&device, n, vec3.as_slice());
+    
+    let y = x.dense(&w.view(), Some(&b.view()));
+    let mut y_arr = x_arr.dot(&w_arr.t());
+    y_arr.iter_mut()
+        .zip(vec3.iter().cycle())
+        .for_each(|(y, b)| *y += *b);
+    compare_vectors(&y.as_slice(), y_arr.as_slice().unwrap(), m, k, n);
+    //assert_eq!(y.as_array().view(), y_arr.view());
+}
+#[test]
+fn test_dense_cpu() {
+    test_dense(Cpu::new());
 }
 fn test_sum(device: impl Into<Device>) {
     let device = device.into();

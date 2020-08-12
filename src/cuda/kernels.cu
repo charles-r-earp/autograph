@@ -24,12 +24,16 @@ extern "C" {
             y[tid*nclasses+x[tid]] = 1.0f;
         }
     } 
-    __global__ void broadcast(const float* x, float* y, unsigned int n, unsigned int len) {
+    __global__ void broadcast(const float* x, float* y, unsigned int c, unsigned int len) {
         int tid = blockIdx.x * blockDim.x + threadIdx.x; 
         if (tid < len) {
-            for(int i = 0; i < n; ++i) {
-                y[tid*n + i] = x[i];
-            }
+            y[tid] = x[tid % c];
+        }
+    }
+    __global__ void broadcast_backward(float* dx, const float* dy, unsigned int c, unsigned int len) {
+        int tid = blockIdx.x * blockDim.x + threadIdx.x; 
+        if (tid < len) {
+            atomicAdd(&dx[tid % c], dy[tid]);
         }
     }
     __global__ void add(const float* x1, const float* x2, float* y, unsigned int len) {
