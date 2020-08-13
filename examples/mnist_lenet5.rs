@@ -98,12 +98,13 @@ impl Forward<Ix4> for Lenet5 {
 }
 
 fn main() {
-    let (epochs, learning_rate, momentum, train_batch_size, eval_batch_size) = {
+    let (epochs, learning_rate, momentum, train_batch_size, eval_batch_size, save) = {
         let mut epochs = 50;
         let mut learning_rate = 0.001;
         let mut momentum = 0.1;
         let mut train_batch_size: usize = 256;
         let mut eval_batch_size: usize = 1024;
+        let mut save = true;
         {
             let mut ap = ArgumentParser::new();
             ap.set_description("MNIST Lenet5 Example");
@@ -126,9 +127,15 @@ fn main() {
                 Store,
                 "Evaluation Batch Size",
             );
+            ap.refer(&mut save)
+                .add_option(
+                &["--save"],
+                Store,
+                "Save"
+            );
             ap.parse_args_or_exit();
         }
-        (epochs, learning_rate, momentum, train_batch_size, eval_batch_size)
+        (epochs, learning_rate, momentum, train_batch_size, eval_batch_size, save)
     };
 
     println!("epochs: {}", epochs);
@@ -136,6 +143,7 @@ fn main() {
     println!("momentum: {}", momentum);
     println!("train_batch_size: {}", train_batch_size);
     println!("eval_batch_size: {}", eval_batch_size);
+    println!("save: {}", save);
     
 
     // Devices can be created with the From trait
@@ -244,14 +252,16 @@ fn main() {
             let elapsed = Instant::now() - start;
             println!("epoch: {} elapsed {:.0?} train_loss: {:.5} train_acc: {:.2}% eval_loss: {:.5} eval_acc: {:.2}%", 
                 epoch, elapsed, train_loss, train_acc, eval_loss, eval_acc);
-                
-            SavedCheckpoint::new(epoch, model.parameters(), &optim)
-                .save(&checkpoint_path)
-                .expect("Unable to save checkpoint!");
+            if save {    
+                SavedCheckpoint::new(epoch, model.parameters(), &optim)
+                    .save(&checkpoint_path)
+                    .expect("Unable to save checkpoint!");
+            }        
         }   
-        
-        SavedModel::new(model.parameters())
-            .save(&model_path)
-            .expect("Unable to save model!");
+        if save {
+            SavedModel::new(model.parameters())
+                .save(&model_path)
+                .expect("Unable to save model!");
+        }
     }
 }

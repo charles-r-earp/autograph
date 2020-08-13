@@ -877,7 +877,7 @@ impl<T: Num, D: Dimension> From<Tensor<T, D>> for RwTensor<T, D> {
     }
 }
 
-fn broadcast<T: Num, S1: DataRef<Elem = T>, S2: DataMut<Elem = T>, D: Dimension>(
+fn broadcast<S1: DataRef<Elem = f32>, S2: DataMut<Elem = f32>, D: Dimension>(
     input: &TensorBase<S1, D>,
     output: &mut TensorBase<S2, D::Larger>,
 ) {
@@ -982,27 +982,34 @@ impl<S1: DataRef<Elem = f32>> TensorBase<S1, Ix2> {
         let (outputs, inputs2) = weight.dim();
         debug_assert_eq!(inputs, inputs2);
         let mut output = unsafe { Tensor::uninitialized(&self.device, [batch_size, outputs]) };
-        if let Some(bias) = bias {
-            broadcast(bias, &mut output);
-            gemm(
-                1.,
-                &self,
-                Transpose::No,
-                &weight,
-                Transpose::Yes,
-                1.,
-                &mut output,
-            );
-        } else {
-            gemm(
-                1.,
-                &self,
-                Transpose::No,
-                &weight,
-                Transpose::Yes,
-                0.,
-                &mut output,
-            );
+        match self.device() {
+            // Benchmark showed this was slower
+            //Device::Cpu(_) => cpu::dense(self, weight, bias, &mut output),
+            _ => {
+                if let Some(bias) = bias {
+                    broadcast(bias, &mut output);
+                    gemm(
+                        1.,
+                        &self,
+                        Transpose::No,
+                        &weight,
+                        Transpose::Yes,
+                        1.,
+                        &mut output,
+                    );
+                }   
+                else {
+                    gemm(
+                        1.,
+                        &self,
+                        Transpose::No,
+                        &weight,
+                        Transpose::Yes,
+                        0.,
+                        &mut output,
+                    );
+                }
+            }   
         }
         output
     }

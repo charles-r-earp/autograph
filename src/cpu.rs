@@ -242,6 +242,71 @@ pub(super) fn gemm<S1: DataRef<Elem = f32>, S2: DataRef<Elem = f32>, S3: DataMut
     });
 }
 
+pub fn dense<S1: DataRef<Elem = f32>, S2: DataRef<Elem = f32>, S3: DataMut<Elem = f32>>(
+    input: &TensorBase<S1, Ix2>,
+    weight: &TensorBase<S2, Ix2>,
+    bias: Option<&TensorView1<f32>>,
+    output: &mut TensorBase<S3, Ix2>
+) {
+    let cpu = input.device().cpu().unwrap();
+    let engine_ptr = unsafe { &cpu.engine as *const Engine };
+    let mut stream = cpu.stream.lock().unwrap();
+    let stream_ptr = unsafe { &mut *stream as *mut Stream };
+    let (batch_size, inputs) = input.dim();
+    let (outputs, _) = weight.dim();
+    
+    let x = input.as_cpu_ptr().unwrap();
+    let w = weight.as_cpu_ptr().unwrap();
+    let y = output.as_mut_cpu_ptr().unwrap();
+    
+    let n = batch_size as i64;
+    let i = inputs as i64;
+    let o = outputs as i64;
+    
+    if let Some(bias) = bias {
+        let b = bias.as_cpu_ptr().unwrap();
+        
+        cpp!(unsafe [engine_ptr as "const dnnl::engine*",
+                     stream_ptr as "dnnl::stream*",
+                     n as "dnnl_dim_t",
+                     i as "dnnl_dim_t",
+                     o as "dnnl_dim_t",
+                     x as "const float*",
+                     w as "const float*",
+                     b as "const float*",
+                     y as "float*"] {
+            auto engine = *engine_ptr;
+            auto stream = *stream_ptr;
+            
+            auto x_desc = dnnl::memory::desc({n, i}, dnnl_dt::f32, dnnl_tag::ab);
+            auto x_mem = dnnl::memory(x_desc, engine, (float*)x);
+            auto w_desc = dnnl::memory::desc({i, o}, dnnl_dt::f32, dnnl_tag::ba);
+            auto w_mem = dnnl::memory(w_desc, engine, (float*)w);
+            auto b_desc = dnnl::memory::desc({1, o}, dnnl_dt::f32, dnnl_tag::ab);
+            auto b_mem = dnnl::memory(b_desc, engine, (float*)b);
+            auto y_desc = dnnl::memory::desc({n, o}, dnnl_dt::f32, dnnl_tag::ab);
+            auto y_mem = dnnl::memory(y_desc, engine, y);
+            
+            auto matmul_d = dnnl::matmul::desc(x_desc, w_desc, b_desc, y_desc);
+            dnnl::primitive_attr attr;
+            auto matmul_pd = dnnl::matmul::primitive_desc(matmul_d, attr, engine);
+            auto matmul = dnnl::matmul(matmul_pd);
+            argmap args;
+            args.insert({DNNL_ARG_SRC, x_mem});
+            args.insert({DNNL_ARG_WEIGHTS, w_mem});
+            args.insert({DNNL_ARG_BIAS, b_mem});
+            args.insert({DNNL_ARG_DST, y_mem});
+            
+            matmul.execute(stream, args);
+            
+            stream.wait();
+        });
+    }
+    else {
+        unimplemented!();
+    }
+}
+
 pub(super) fn reduce_sum<S1: DataRef<Elem = f32>, S2: DataMut<Elem = f32>, D: Dimension>(
     input: &TensorBase<S1, D>,
     output: &mut TensorBase<S2, Ix0>,
