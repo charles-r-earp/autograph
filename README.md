@@ -1,6 +1,13 @@
-[![License-MIT/Apache-2.0](https://img.shields.io/badge/license-MIT/Apache_2.0-blue.svg)](https://github.com/charles-r-earp/autograph/blob/master/LICENSE-APACHE)
-![](https://docs.rs/autograph/badge.svg?)
+[![LicenseBadge]][License]
+[![DocsBadge]][Docs]
 ![Rust](https://github.com/charles-r-earp/autograph/workflows/Rust/badge.svg?branch=master)
+
+[License]: https://github.com/charles-r-earp/autograph/blob/master/LICENSE-APACHE
+[LicenseBadge]: https://img.shields.io/badge/license-MIT/Apache_2.0-blue.svg
+
+[Docs]: https://docs.rs/autograph
+[DocsBadge]: https://docs.rs/autograph/badge.svg
+
 
 # autograph
 Machine Learning Library for Rust
