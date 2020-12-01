@@ -1,42 +1,47 @@
-name: Rust
+name: Continuous integration
 
 on:
-  - push
-  - pull_request
+  push:
+    branches:
+      - main
+  pull_request:
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
+  check:
     runs-on: ${{ matrix.os }} 
     strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+      include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: macos-latest
+            target: x86_64-apple-darwin
     steps:
     - uses: actions/checkout@v2
-      with: 
-        submodules: recursive
+    - name: cargo fetch
+        run: cargo fetch --target ${{ matrix.target }}
     - name: Check
-      run: cargo check -vv --features datasets
-    - name: Check Bins
-      run: cargo check --bins -vv --features datasets
-    - name: Build
-      run: cargo build -vv --features datasets
-    - name: Build Bins
-      run: cargo build --bins -vv --features datasets
-    - name: Run tests
-      run: cargo test --tests -vv
-    - name: Run MNIST Dense Example
-      run: cargo run --example mnist_dense -vv --features datasets -- --epochs 1
-    - name: Run MNIST Lenet5 Example
-      run: cargo run --example mnist_lenet5 -vv --features datasets -- --epochs 1
-  benchmark:
+      run: cargo check 
+    - name: Test 
+      run: cargo test
+
+  lint:
+    name: Lint
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v2
-      with: 
-        submodules: recursive
-    - name: Bench
-      run: cargo bench -vv
+      # Note that we are explicitly NOT checking out submodules, to validate
+      # that we haven't accidentally enabled spirv-tools native compilation
+      # and regressed CI times
+      - uses: actions/checkout@v2
+      - name: Install rustup components
+        run: rustup component add rustfmt clippy
+      - name: Rustfmt
+        run: cargo fmt --all -- --check
+      - name: cargo fetch
+        run: cargo fetch
+      - name: Clippy
+        run: cargo clippy -D warnings
