@@ -1,9 +1,10 @@
 use crate::backend::Mem;
 use crate::Result;
-use std::fmt::{self, Debug};
-use std::borrow::Cow;
-use wgpu::util::DeviceExt;
 use async_std::future::Future;
+use std::borrow::Cow;
+use std::fmt::{self, Debug};
+use std::sync::Arc;
+use wgpu::util::DeviceExt;
 
 #[derive(Clone, Debug)]
 pub enum GpuSpecifier {
@@ -29,7 +30,7 @@ pub(super) use builder::GpuBuilder;
 pub struct Gpu {
     #[allow(unused)]
     adapter: wgpu::Adapter,
-    device: wgpu::Device,
+    device: Arc<wgpu::Device>,
     queue: CommandQueue,
     buffers: BufferMap,
 }
@@ -43,25 +44,21 @@ impl Gpu {
         let instance = wgpu::Instance::new(backend);
         let specifier = builder.specifier;
         let adapter = match specifier {
-            Some(GpuSpecifier::Index(index)) => {
-                instance
-                    .enumerate_adapters(backend)
-                    .skip(index as usize)
-                    .next()
-                    .ok_or_else(|| format!("Invalid gpu index {:?}!", specifier))?
-            },
-            None => {
-                instance
-                    .request_adapter(&wgpu::RequestAdapterOptions {
-                        power_preference: wgpu::PowerPreference::default(),
-                        compatible_surface: None,
-                    })
-                    .await
-                    .ok_or("No gpus!")?
-            }
+            Some(GpuSpecifier::Index(index)) => instance
+                .enumerate_adapters(backend)
+                .skip(index as usize)
+                .next()
+                .ok_or_else(|| format!("Invalid gpu index {:?}!", specifier))?,
+            None => instance
+                .request_adapter(&wgpu::RequestAdapterOptions {
+                    power_preference: wgpu::PowerPreference::default(),
+                    compatible_surface: None,
+                })
+                .await
+                .ok_or("No gpus!")?,
         };
         let mut limits = wgpu::Limits::default();
-        limits.max_push_constant_size = 128;    
+        limits.max_push_constant_size = 128;
         let (device, queue) = adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
@@ -72,30 +69,39 @@ impl Gpu {
                 None,
             )
             .await?;
+        let device = Arc::new(device);
         let queue = CommandQueue::new(queue);
         let buffers = BufferMap::new();
-        Ok(Self { 
-            adapter, 
-            device, 
+        Ok(Self {
+            adapter,
+            device,
             queue,
             buffers,
         })
     }
-    pub(super) fn alloc<'a>(&self, mem: Mem, size: usize, data: Option<Cow<'a, [u8]>>) -> Result<()> {
+    pub(super) fn alloc<'a>(
+        &self,
+        mem: Mem,
+        size: usize,
+        data: Option<Cow<'a, [u8]>>,
+    ) -> Result<()> {
         let label = None;
-        let usage = wgpu::BufferUsage::STORAGE | wgpu::BufferUsage::COPY_SRC | wgpu::BufferUsage::COPY_DST;
+        let usage =
+            wgpu::BufferUsage::STORAGE | wgpu::BufferUsage::COPY_SRC | wgpu::BufferUsage::COPY_DST;
         let buffer = match data {
-            Some(data) => self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: None,
-                contents: data.as_ref(),
-                usage,
-            }),
+            Some(data) => self
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: None,
+                    contents: data.as_ref(),
+                    usage,
+                }),
             None => self.device.create_buffer(&wgpu::BufferDescriptor {
                 label,
-                size: size as _, 
+                size: size as _,
                 usage,
                 mapped_at_creation: false,
-            })
+            }),
         };
         self.buffers.insert(mem, buffer)
     }
@@ -103,39 +109,36 @@ impl Gpu {
         self.buffers.remove(&mem)
     }
     pub(super) fn read<'a>(
-        &'a self,
+        &self,
         mem: Mem,
         offset: usize,
         data: &'a mut [u8],
-    ) -> Result<impl Future<Output=Result<()>> + 'a> {
+    ) -> Result<impl Future<Output = Result<()>> + 'a> {
         let offset = offset as wgpu::BufferAddress;
         let size = data.len() as wgpu::BufferAddress;
-        let buffer = self.buffers.get(&mem)
-            .ok_or_else(|| format!("Gpu invalid {:?}!", mem))?; 
+        let buffer = self
+            .buffers
+            .get(&mem)
+            .ok_or_else(|| format!("Gpu invalid {:?}!", mem))?;
         let read_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
             size: data.len() as wgpu::BufferAddress,
             usage: wgpu::BufferUsage::COPY_DST | wgpu::BufferUsage::MAP_READ,
             mapped_at_creation: false,
         });
-        
+
         let mut encoder = self.device.create_command_encoder(&Default::default());
-        encoder.copy_buffer_to_buffer(
-            &buffer,
-            offset,
-            &read_buffer,
-            0,
-            size      
-        );
+        encoder.copy_buffer_to_buffer(&buffer, offset, &read_buffer, 0, size);
         self.queue.push(encoder.finish());
-        
+
         let submit_future = self.queue.submit();
-        
+
+        let device = self.device.clone();
         Ok(async move {
             submit_future.await?;
-            let slice = read_buffer.slice(offset .. size); 
+            let slice = read_buffer.slice(offset..size);
             let slice_future = slice.map_async(wgpu::MapMode::Read);
-            self.device.poll(wgpu::Maintain::Wait);
+            device.poll(wgpu::Maintain::Wait);
             slice_future.await?;
             data.copy_from_slice(&slice.get_mapped_range());
             read_buffer.unmap();
@@ -152,11 +155,11 @@ impl Debug for Gpu {
 
 #[doc(hidden)]
 pub mod buffer_map {
-    use super::{Result, Mem};
-    use std::sync::{Arc, Mutex};
-    use std::ops::Deref;
-    use std::hash::{Hash, Hasher};
+    use super::{Mem, Result};
     use evmap_derive::ShallowCopy;
+    use std::hash::{Hash, Hasher};
+    use std::ops::Deref;
+    use std::sync::{Arc, Mutex};
 
     #[doc(hidden)]
     #[derive(ShallowCopy)]
@@ -173,7 +176,7 @@ pub mod buffer_map {
 
     impl PartialEq for ArcBuffer {
         fn eq(&self, other: &Self) -> bool {
-            Arc::ptr_eq(&self.0, &other.0) 
+            Arc::ptr_eq(&self.0, &other.0)
         }
     }
 
@@ -202,32 +205,32 @@ pub mod buffer_map {
         pub(super) fn new() -> Self {
             let (reader, writer) = evmap::new();
             let writer = Mutex::new(writer);
-            Self {
-                reader,
-                writer
-            }
+            Self { reader, writer }
         }
         pub(super) fn insert(&self, mem: Mem, buffer: wgpu::Buffer) -> Result<()> {
             let buffer = ArcBuffer::new(buffer);
-            self.writer.lock()
+            self.writer
+                .lock()
                 .or_else(|_| Err("BufferMap is poisoned!"))?
                 .insert(mem, buffer)
                 .refresh();
             Ok(())
         }
         pub(super) fn remove(&self, mem: &Mem) -> Result<()> {
-            self.writer.lock()
+            self.writer
+                .lock()
                 .or_else(|_| Err("BufferMap is poisoned!"))?
                 .clear(*mem)
                 .refresh();
             Ok(())
         }
-        pub(super) fn get(&self, mem: &Mem) -> Option<impl Deref<Target=wgpu::Buffer> + '_> {
-            self.reader.get_one(mem)
+        pub(super) fn get(&self, mem: &Mem) -> Option<impl Deref<Target = wgpu::Buffer> + '_> {
+            self.reader
+                .get_one(mem)
                 .map(|guard| BufferMapReadGuard(guard))
         }
     }
-    
+
     pub(super) struct BufferMapReadGuard<'a>(evmap::ReadGuard<'a, ArcBuffer>);
 
     impl Deref for BufferMapReadGuard<'_> {
@@ -235,24 +238,22 @@ pub mod buffer_map {
         fn deref(&self) -> &Self::Target {
             &*self.0
         }
-    } 
-
+    }
 }
 use buffer_map::BufferMap;
 
-
 #[doc(hidden)]
 pub mod command_queue {
-    use super::{Result, Future};
+    use super::{Future, Result};
+    use std::sync::mpsc::{channel, Receiver, Sender};
     use std::sync::{Arc, Mutex, TryLockError};
-    use std::sync::mpsc::{channel, Sender, Receiver};
-    
+
     pub struct CommandQueue {
         queue: Arc<wgpu::Queue>,
         sender: Sender<wgpu::CommandBuffer>,
-        receiver: Arc<Mutex<Receiver<wgpu::CommandBuffer>>>
+        receiver: Arc<Mutex<Receiver<wgpu::CommandBuffer>>>,
     }
-    
+
     impl CommandQueue {
         pub(super) fn new(queue: wgpu::Queue) -> Self {
             let queue = Arc::new(queue);
@@ -261,28 +262,30 @@ pub mod command_queue {
             Self {
                 queue,
                 sender,
-                receiver
+                receiver,
             }
         }
         pub(super) fn push(&self, command: wgpu::CommandBuffer) {
             self.sender.send(command).unwrap();
         }
-        pub(super) fn submit(&self) -> impl Future<Output=Result<()>> {
+        pub(super) fn submit(&self) -> impl Future<Output = Result<()>> {
             let queue = self.queue.clone();
             let receiver = self.receiver.clone();
             async move {
                 loop {
                     match receiver.try_lock() {
                         Ok(receiver) => {
-                            let commands = std::iter::from_fn(|| {
-                                receiver.try_recv().ok()
-                            });
+                            let commands = std::iter::from_fn(|| receiver.try_recv().ok());
                             queue.submit(commands);
                             return Ok(());
-                        },
-                        Err(TryLockError::Poisoned(_)) => { Err("CommandQueue poisoned!")?; },
-                        Err(TryLockError::WouldBlock) => { async_std::task::yield_now().await; },
-                    } 
+                        }
+                        Err(TryLockError::Poisoned(_)) => {
+                            Err("CommandQueue poisoned!")?;
+                        }
+                        Err(TryLockError::WouldBlock) => {
+                            async_std::task::yield_now().await;
+                        }
+                    }
                 }
             }
         }

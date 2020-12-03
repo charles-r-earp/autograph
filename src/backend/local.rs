@@ -1,15 +1,14 @@
 use super::Mem;
 use crate::Result;
 use async_std::future::Future;
-use std::fmt::Debug;
 use std::borrow::Cow;
+use std::fmt::Debug;
 
 #[doc(hidden)]
 pub mod gpu;
-#[doc(inline)]
-pub use gpu::Gpu;
-use gpu::GpuBuilder;
+use gpu::{Gpu, GpuBuilder};
 
+#[doc(hidden)]
 #[proxy_enum::proxy(Device)]
 pub mod device_proxy {
     use super::*;
@@ -21,24 +20,32 @@ pub mod device_proxy {
 
     impl Device {
         #[implement]
-        pub(super) fn alloc<'a>(&self, mem: Mem, size: usize, data: Option<Cow<'a, [u8]>>) -> Result<()> {}
+        pub(super) fn alloc<'a>(
+            &self,
+            mem: Mem,
+            size: usize,
+            data: Option<Cow<'a, [u8]>>,
+        ) -> Result<()> {
+        }
         #[implement]
         pub(super) fn dealloc(&self, mem: Mem) -> Result<()> {}
         #[implement]
         pub(super) fn read<'a>(
-            &'a self,
+            &self,
             mem: Mem,
             offset: usize,
-            data: &'a mut [u8]
-        ) -> Result<impl Future<Output=Result<()>> + 'a> {
+            data: &'a mut [u8],
+        ) -> Result<impl Future<Output = Result<()>> + 'a> {
         }
     }
 }
+#[doc(inline)]
 pub use device_proxy::Device;
 
 pub mod builder {
     use super::*;
 
+    #[doc(hidden)]
     #[proxy_enum::proxy(DeviceBuilder)]
     pub mod device_builder_proxy {
         use super::*;
@@ -58,8 +65,7 @@ pub mod builder {
             pub(super) fn build(self) -> impl Future<Output = Result<Device>> {}
         }
     }
-    #[doc(inline)]
-    pub use device_builder_proxy::DeviceBuilder;
+    use device_builder_proxy::DeviceBuilder;
 
     #[derive(Default)]
     pub struct NodeBuilder {
@@ -104,20 +110,25 @@ impl Node {
             .into()
         })
     }
-    pub(super) fn alloc<'a>(&self, device: u32, mem: Mem, size: usize, data: Option<Cow<'a, [u8]>>) -> Result<()> {
+    pub(super) fn alloc<'a>(
+        &self,
+        device: u32,
+        mem: Mem,
+        size: usize,
+        data: Option<Cow<'a, [u8]>>,
+    ) -> Result<()> {
         self.device(device)?.alloc(mem, size, data)
     }
     pub(super) fn dealloc(&self, device: u32, mem: Mem) -> Result<()> {
         self.device(device)?.dealloc(mem)
     }
     pub(super) fn read<'a>(
-        &'a self,
+        &self,
         device: u32,
         mem: Mem,
         offset: usize,
-        data: &'a mut [u8]
-    ) -> Result<impl Future<Output=Result<()>> + 'a> {
-        self.device(device)?
-            .read(mem, offset, data)
+        data: &'a mut [u8],
+    ) -> Result<impl Future<Output = Result<()>> + 'a> {
+        self.device(device)?.read(mem, offset, data)
     }
 }

@@ -1,15 +1,14 @@
 use crate::Result;
 use async_std::future::Future;
-use std::fmt::{self, Debug};
-use std::marker::PhantomData;
-use std::sync::{Arc, Mutex};
-use std::hash::Hash;
-use std::borrow::Cow;
 use bytemuck::Pod;
-use std::ops::DerefMut;
+use std::borrow::Cow;
+use std::fmt::{self, Debug};
+use std::hash::Hash;
+use std::marker::PhantomData;
+use std::ops::{DerefMut, RangeBounds};
+use std::sync::{Arc, Mutex};
 
 pub mod local;
-pub use local::Node as LocalNode;
 
 /// This is a virtual slice in device memory
 #[doc(hidden)]
@@ -27,13 +26,11 @@ pub struct Node(Arc<NodeBase>);
 
 impl Node {
     fn new(dyn_node: DynNode) -> Self {
-        let mem_sets = (0 .. dyn_node.num_devices()).into_iter()
+        let mem_sets = (0..dyn_node.num_devices())
+            .into_iter()
             .map(|_| Mutex::new(MemSet::new()))
             .collect();
-        Self(Arc::new(NodeBase {
-            dyn_node,
-            mem_sets
-        }))
+        Self(Arc::new(NodeBase { dyn_node, mem_sets }))
     }
     pub fn devices(&self) -> Vec<Device> {
         (0..self.0.dyn_node.num_devices() as u32)
@@ -44,14 +41,17 @@ impl Node {
             })
             .collect()
     }
-    fn mem_set(&self, device: u32) -> Result<impl DerefMut<Target=MemSet> + '_> {
-        self.0.mem_sets.get(device as usize).ok_or_else(|| {
-            format!(
-                "Node: Device {} out of range ({} mem sets)!",
-                device,
-                self.0.mem_sets.len()
-            )
-        })?
+    fn mem_set(&self, device: u32) -> Result<impl DerefMut<Target = MemSet> + '_> {
+        self.0
+            .mem_sets
+            .get(device as usize)
+            .ok_or_else(|| {
+                format!(
+                    "Node: Device {} out of range ({} mem sets)!",
+                    device,
+                    self.0.mem_sets.len()
+                )
+            })?
             .lock()
             .map_err(|_| "Node: Unable to lock Mutex<MetSet>!".into())
     }
@@ -68,12 +68,12 @@ impl Node {
         self.dyn_node().dealloc(device, mem)
     }
     fn read<'a>(
-        &'a self,
+        &self,
         device: u32,
         mem: Mem,
         offset: usize,
-        data: &'a mut [u8]
-    ) -> Result<impl Future<Output=Result<()>> + 'a> {
+        data: &'a mut [u8],
+    ) -> Result<impl Future<Output = Result<()>> + 'a> {
         self.dyn_node().read(device, mem, offset, data)
     }
 }
@@ -87,22 +87,20 @@ impl Debug for Node {
 #[doc(hidden)]
 pub mod mem_set {
     use super::Mem;
-    use std::collections::HashSet;
     use std::alloc::{alloc, dealloc, Layout};
-    
+    use std::collections::HashSet;
+
     pub struct MemSet(HashSet<Mem>);
-    
+
     impl MemSet {
         pub(super) fn new() -> Self {
             Self(HashSet::new())
-        }    
+        }
         pub(super) fn get(&mut self) -> Mem {
-            let ptr = unsafe {
-                alloc(Layout::new::<u8>())
-            };
+            let ptr = unsafe { alloc(Layout::new::<u8>()) };
             let mem = Mem(ptr as _);
             self.0.insert(mem);
-            mem        
+            mem
         }
         pub(super) fn remove(&mut self, mem: &Mem) {
             if let Some(mem) = self.0.take(mem) {
@@ -123,24 +121,31 @@ pub mod dyn_node_proxy {
 
     #[derive(Debug)]
     pub enum DynNode {
-        Local(LocalNode),
+        Local(local::Node),
     }
 
     impl DynNode {
         #[implement]
         pub(super) fn num_devices(&self) -> usize {}
         #[implement]
-        pub(super) fn alloc<'a>(&self, device: u32, mem: Mem, size: usize, data: Option<Cow<'a, [u8]>>) -> Result<()> {}
+        pub(super) fn alloc<'a>(
+            &self,
+            device: u32,
+            mem: Mem,
+            size: usize,
+            data: Option<Cow<'a, [u8]>>,
+        ) -> Result<()> {
+        }
         #[implement]
         pub(super) fn dealloc(&self, device: u32, mem: Mem) -> Result<()> {}
         #[implement]
         pub(super) fn read<'a>(
-            &'a self,
+            &self,
             device: u32,
             mem: Mem,
             offset: usize,
-            data: &'a mut [u8]
-        ) -> Result<impl Future<Output=Result<()>> + 'a> {
+            data: &'a mut [u8],
+        ) -> Result<impl Future<Output = Result<()>> + 'a> {
         }
     }
 }
@@ -159,9 +164,51 @@ impl Device {
     fn dealloc(&self, mem: Mem) -> Result<()> {
         self.node.dealloc(self.id, mem)
     }
-    fn read<'a>(&'a self, mem: Mem, offset: usize, data: &'a mut [u8]) -> Result<impl Future<Output=Result<()>> + 'a> {
+    fn read<'a>(
+        &self,
+        mem: Mem,
+        offset: usize,
+        data: &'a mut [u8],
+    ) -> Result<impl Future<Output = Result<()>> + 'a> {
         self.node.read(self.id, mem, offset, data)
     }
+}
+
+mod sealed {
+    pub trait Sealed {}
+}
+use sealed::Sealed;
+
+trait RangeBoundsExt: RangeBounds<usize> {
+    fn to_offset_len(&self) -> (usize, Option<usize>);
+}
+
+impl<B: RangeBounds<usize>> RangeBoundsExt for B {
+    fn to_offset_len(&self) -> (usize, Option<usize>) {
+        use std::ops::Bound::*;
+        let offset = match self.start_bound() {
+            Included(&b) => b,
+            Excluded(&b) => b + 1,
+            Unbounded => 0,
+        };
+        let len = match self.end_bound() {
+            Included(&b) => Some(b),
+            Excluded(&b) => Some(b - 1),
+            Unbounded => None,
+        };
+        (offset, len)
+    }
+}
+
+pub trait AsSlice: Sealed {
+    type Elem;
+    fn as_slice(&self) -> Slice<Self::Elem>;
+    fn slice(&self, bounds: impl RangeBounds<usize>) -> Option<Slice<Self::Elem>>;
+}
+
+pub trait AsSliceMut: AsSlice {
+    fn as_slice_mut(&mut self) -> SliceMut<Self::Elem>;
+    fn slice_mut(&mut self, bounds: impl RangeBounds<usize>) -> Option<SliceMut<Self::Elem>>;
 }
 
 pub struct Buffer<T> {
@@ -171,10 +218,10 @@ pub struct Buffer<T> {
     _m: PhantomData<T>,
 }
 
-impl<T: Pod> Buffer<T> {
+impl<T> Buffer<T> {
     /// # Safety
     ///   
-    /// The caller should ensure that the data is not read, or that T is safe to read uninitialized. 
+    /// The caller should ensure that the data is overwritten prior to being read.
     pub unsafe fn uninitialized(device: &Device, len: usize) -> Result<Self> {
         let device = device.clone();
         let mem = device.alloc(len * std::mem::size_of::<T>(), None)?;
@@ -185,37 +232,26 @@ impl<T: Pod> Buffer<T> {
             _m: PhantomData::default(),
         })
     }
-    pub fn from_vec<'a>(device: &Device, data: impl Into<Cow<'a, [T]>>) -> Result<Self> {
+    pub fn from_vec<'a>(device: &Device, data: impl Into<Cow<'a, [T]>>) -> Result<Self>
+    where
+        T: Pod,
+    {
         let device = device.clone();
         let data = data.into();
         let len = data.len();
-        let mem = device.alloc(len * std::mem::size_of::<T>(), Some(bytemuck::cast_slice(&data).into()))?;
+        let mem = device.alloc(
+            len * std::mem::size_of::<T>(),
+            Some(bytemuck::cast_slice(&data).into()),
+        )?;
         Ok(Self {
             device,
             mem,
             len,
             _m: PhantomData::default(),
         })
-    } 
-    pub fn read<'a>(&'a self, data: &'a mut [T]) -> Result<impl Future<Output=Result<()>> + 'a> {
-        let data: &mut [u8] = bytemuck::cast_slice_mut(data);
-        self.device.read(self.mem, 0, data)
     }
-    pub fn to_vec(&self) -> Result<impl Future<Output=Result<Vec<T>>> + '_>
-        where T: Pod + Sync {
-        use std::cell::UnsafeCell;
-        let vec = Arc::new(UnsafeCell::new(vec![T::zeroed(); self.len]));
-        let read_future = {
-            let slice = unsafe { &mut *vec.get() };
-            self.read(slice)?
-        };
-        Ok(async move {
-            read_future.await?;
-            let vec = Arc::try_unwrap(vec)
-                .map_err(|_| "Unable to unwrap!")?
-                .into_inner();
-            Ok(vec)
-        })
+    fn offset(&self) -> usize {
+        0
     }
 }
 
@@ -244,6 +280,24 @@ pub struct Slice<'a, T> {
     _m: PhantomData<&'a T>,
 }
 
+impl<T> Slice<'_, T> {
+    // Needed for impl_buffer_methods!
+    fn offset(&self) -> usize {
+        self.offset
+    }
+}
+
+impl<T> Debug for Slice<'_, T> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct(&format!("Slice<{}>", std::any::type_name::<T>()))
+            .field("device", &self.device)
+            .field("mem", &self.mem)
+            .field("offset", &self.offset)
+            .field("len", &self.len)
+            .finish()
+    }
+}
+
 #[allow(unused)]
 pub struct SliceMut<'a, T> {
     device: Device,
@@ -252,3 +306,138 @@ pub struct SliceMut<'a, T> {
     len: usize,
     _m: PhantomData<&'a mut T>,
 }
+
+impl<T> SliceMut<'_, T> {
+    fn offset(&self) -> usize {
+        self.offset
+    }
+}
+
+impl<T> Debug for SliceMut<'_, T> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct(&format!("SliceMut<{}>", std::any::type_name::<T>()))
+            .field("device", &self.device)
+            .field("mem", &self.mem)
+            .field("offset", &self.offset)
+            .field("len", &self.len)
+            .finish()
+    }
+}
+
+// We can't use Deref / AsRef, and can't use a trait with futures, and there are lifetime issues,
+// so we have to implement these for each via a macro
+macro_rules! impl_buffer_methods {
+    ($t:ty) => {
+        impl<T> $t {
+            pub fn len(&self) -> usize {
+                self.len
+            }
+            pub fn as_slice(&self) -> Slice<T> {
+                Slice {
+                    device: self.device.clone(),
+                    mem: self.mem,
+                    offset: self.offset(),
+                    len: self.len,
+                    _m: PhantomData::default(),
+                }
+            }
+            pub fn slice(&self, bounds: impl RangeBounds<usize>) -> Option<Slice<T>> {
+                let (offset, len) = bounds.to_offset_len();
+                let len = len.unwrap_or(self.len() - offset);
+                let offset = self.offset() + offset;
+                if offset + len < self.offset() + self.len() {
+                    Some(Slice {
+                        device: self.device.clone(),
+                        mem: self.mem,
+                        offset,
+                        len,
+                        _m: PhantomData::default(),
+                    })
+                } else {
+                    None
+                }
+            }
+        }
+
+        impl<T> Sealed for $t {}
+
+        impl<T> AsSlice for $t {
+            type Elem = T;
+            fn as_slice(&self) -> Slice<T> {
+                Self::as_slice(self)
+            }
+            fn slice(&self, bounds: impl RangeBounds<usize>) -> Option<Slice<T>> {
+                Self::slice(self, bounds)
+            }
+        }
+
+        impl<T: Pod + Sync> $t {
+            pub fn read<'a>(
+                &self,
+                data: &'a mut [T],
+            ) -> Result<impl Future<Output = Result<()>> + 'a> {
+                let data: &mut [u8] = bytemuck::cast_slice_mut(data);
+                self.device.read(self.mem, self.offset(), data)
+            }
+            pub fn to_vec(&self) -> Result<impl Future<Output = Result<Vec<T>>>> {
+                use std::cell::UnsafeCell;
+                let vec = Arc::new(UnsafeCell::new(vec![T::zeroed(); self.len]));
+                let read_future = {
+                    let slice = unsafe { &mut *vec.get() };
+                    self.read(slice)?
+                };
+                Ok(async move {
+                    read_future.await?;
+                    let vec = Arc::try_unwrap(vec)
+                        .map_err(|_| "Unable to unwrap!")?
+                        .into_inner();
+                    Ok(vec)
+                })
+            }
+        }
+    };
+    (mut $t:ty) => {
+        impl_buffer_methods!($t);
+
+        impl<T> $t {
+            pub fn as_slice_mut(&mut self) -> SliceMut<T> {
+                SliceMut {
+                    device: self.device.clone(),
+                    mem: self.mem,
+                    offset: self.offset(),
+                    len: self.len,
+                    _m: PhantomData::default(),
+                }
+            }
+            pub fn slice_mut(&mut self, bounds: impl RangeBounds<usize>) -> Option<SliceMut<T>> {
+                let (offset, len) = bounds.to_offset_len();
+                let len = len.unwrap_or(self.len() - offset);
+                let offset = self.offset() + offset;
+                if offset + len < self.offset() + self.len() {
+                    Some(SliceMut {
+                        device: self.device.clone(),
+                        mem: self.mem,
+                        offset,
+                        len,
+                        _m: PhantomData::default(),
+                    })
+                } else {
+                    None
+                }
+            }
+        }
+
+        impl<T> AsSliceMut for $t {
+            fn as_slice_mut(&mut self) -> SliceMut<T> {
+                Self::as_slice_mut(self)
+            }
+            fn slice_mut(&mut self, bounds: impl RangeBounds<usize>) -> Option<SliceMut<T>> {
+                Self::slice_mut(self, bounds)
+            }
+        }
+    };
+}
+
+impl_buffer_methods!(mut Buffer<T>);
+impl_buffer_methods!(Slice<'_, T>);
+impl_buffer_methods!(mut SliceMut<'_, T>);

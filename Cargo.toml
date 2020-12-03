@@ -19,6 +19,7 @@ async-std = { version = "1.7.0", features = ["attributes", "unstable"] }
 evmap = "10.0.2"
 evmap-derive = "0.2.0"
 bytemuck = "1.4.1"
+ndarray = "0.14.0"
 
 
 
