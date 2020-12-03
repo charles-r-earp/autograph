@@ -13,7 +13,8 @@ jobs:
   check:
     runs-on: ${{ matrix.os }} 
     strategy:
-      include:
+      matrix:
+        include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
           - os: windows-latest
@@ -23,7 +24,7 @@ jobs:
     steps:
     - uses: actions/checkout@v2
     - name: cargo fetch
-        run: cargo fetch --target ${{ matrix.target }}
+      run: cargo fetch --target ${{ matrix.target }}
     - name: Check
       run: cargo check 
     - name: Test 
