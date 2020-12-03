@@ -1,9 +1,0 @@
-[book]
-authors = ["Charles R Earp"]
-language = "en"
-multilingual = false
-src = "src"
-title = "autograph"
-
-[build]
-build-dir = "../docs"
