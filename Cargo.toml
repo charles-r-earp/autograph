@@ -15,11 +15,16 @@ publish = false
 [dependencies]
 wgpu = "0.6.0"
 proxy-enum = "0.3.0"
-async-std = { version = "1.7.0", features = ["attributes", "unstable"] }
-evmap = "10.0.2"
-evmap-derive = "0.2.0"
 bytemuck = "1.4.1"
 ndarray = "0.14.0"
+smol = "1.2.5"
+dashmap = "3.11.10"
+rspirv = "0.7.0"
+spirv_headers = { version = "1.5.0", features = ["serialize", "deserialize"] }
+serde = { version = "1.0.118", features = ["derive"] }
+# staticvec requires nightly
+staticvec = { version = "0.10.5", optional = true, features = ["serde_support"] }
+ahash = "0.6.1"
 
 
 
