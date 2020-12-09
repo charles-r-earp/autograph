@@ -45,4 +45,4 @@ jobs:
       - name: cargo fetch
         run: cargo fetch
       - name: Clippy
-        run: cargo clippy -D warnings
+        run: RUSTFLAGS="-Dwarnings" cargo clippy -- -D warnings
