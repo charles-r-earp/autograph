@@ -1,6 +1,6 @@
 [![LicenseBadge]][License]
 [![DocsBadge]][Docs]
-![Rust](https://github.com/charles-r-earp/autograph/workflows/Rust/badge.svg?branch=main)
+![Continuous Integration](https://github.com/charles-r-earp/autograph/workflows/Continuous%20Integration/badge.svg?branch=main)
 
 [License]: https://github.com/charles-r-earp/autograph/blob/main/LICENSE-APACHE
 [LicenseBadge]: https://img.shields.io/badge/license-MIT/Apache_2.0-blue.svg
