@@ -1,6 +1,6 @@
 [![LicenseBadge]][License]
 [![DocsBadge]][Docs]
-![Continuous Integration](https://github.com/charles-r-earp/autograph/workflows/Continuous%20Integration/badge.svg?branch=main)
+[![Build Status](https://github.com/charles-r-earp/autograph/workflows/Continuous%20Integration/badge.svg?branch=main)](https://github.com/charles-r-earp/autograph/actions)
 
 [License]: https://github.com/charles-r-earp/autograph/blob/main/LICENSE-APACHE
 [LicenseBadge]: https://img.shields.io/badge/license-MIT/Apache_2.0-blue.svg
