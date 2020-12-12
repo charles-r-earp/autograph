@@ -1,19 +1,18 @@
-use crate::Result;
+use super::{BufferDescriptor, EntryDescriptor, PushConstantDescriptor, PushConstantRange};
 use crate::error::ShaderModuleError::InvalidSpirv;
-use super::{EntryDescriptor, BufferDescriptor, PushConstantDescriptor, PushConstantRange};
+use crate::Result;
 use rspirv::binary::Parser;
 use rspirv::dr::{Loader, Operand};
-use rspirv::spirv::{Word, Op, ExecutionModel, ExecutionMode, Decoration, StorageClass};
-use std::collections::{HashMap, HashSet};
+use rspirv::spirv::{Decoration, ExecutionMode, ExecutionModel, Op, StorageClass, Word};
 use std::alloc::Layout;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 
 pub fn compile_glsl(src: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     use std::io::Read;
     let mut spirv = Vec::new();
-    glsl_to_spirv::compile(src, glsl_to_spirv::ShaderType::Compute)?
-        .read_to_end(&mut spirv)?;
-    Ok(spirv)            
+    glsl_to_spirv::compile(src, glsl_to_spirv::ShaderType::Compute)?.read_to_end(&mut spirv)?;
+    Ok(spirv)
 }
 
 #[derive(Clone, Debug)]
@@ -35,112 +34,115 @@ pub(super) fn entry_descriptors_from_spirv(spirv: &[u8]) -> Result<Vec<EntryDesc
         .parse()
         .or(Err(InvalidSpirv))?;
     let module = loader.module();
-    
+
     let mut entry_points = HashMap::<Word, EntryPoint>::new();
-    
+
     for inst in module.entry_points.iter() {
         if inst.class.opcode == Op::EntryPoint {
             match inst.operands.get(0) {
                 Some(Operand::ExecutionModel(ExecutionModel::GLCompute)) => (),
-                _ => continue
+                _ => continue,
             };
             let fn_id = match inst.operands.get(1) {
                 Some(&Operand::IdRef(fn_id)) => fn_id,
-                _ => Err(InvalidSpirv)?
+                _ => Err(InvalidSpirv)?,
             };
             let name = match inst.operands.get(2) {
                 Some(Operand::LiteralString(name)) => name.to_string(),
-                _ => Err(InvalidSpirv)?
+                _ => Err(InvalidSpirv)?,
             };
             entry_points.insert(
                 fn_id,
                 EntryPoint {
                     name,
-                    local_size: [1, 1, 1]
-                }
+                    local_size: [1, 1, 1],
+                },
             );
         }
     }
-    
+
     for inst in module.execution_modes.iter() {
         if inst.class.opcode == Op::ExecutionMode {
             match inst.operands.get(1) {
                 Some(Operand::ExecutionMode(ExecutionMode::LocalSize)) => (),
-                _ => continue
+                _ => continue,
             }
             let fn_id = match inst.operands.get(0) {
                 Some(&Operand::IdRef(fn_id)) => fn_id,
-                _ => Err(InvalidSpirv)?
+                _ => Err(InvalidSpirv)?,
             };
-            let local_size = match inst.operands.get(2 ..= 4) {
-                Some(&[Operand::LiteralInt32(x), Operand::LiteralInt32(y), Operand::LiteralInt32(z)]) => [x, y, z],
-                _ => Err(InvalidSpirv)?
+            let local_size = match inst.operands.get(2..=4) {
+                Some(
+                    &[Operand::LiteralInt32(x), Operand::LiteralInt32(y), Operand::LiteralInt32(z)],
+                ) => [x, y, z],
+                _ => Err(InvalidSpirv)?,
             };
             if let Some(entry_point) = entry_points.get_mut(&fn_id) {
                 entry_point.local_size = local_size;
             }
         }
     }
-    
+
     let mut descriptor_sets = HashMap::<Word, u32>::new();
     let mut bindings = HashMap::<Word, u32>::new();
     let mut nonwritable = HashSet::<Word>::new();
     let mut field_offsets = HashMap::<(Word, u32), u32>::new();
-    
+
     for inst in module.annotations.iter() {
         match inst.class.opcode {
             Op::Decorate => {
                 let id = match inst.operands.get(0) {
                     Some(&Operand::IdRef(id)) => Ok(id),
-                    _ => Err(InvalidSpirv)
+                    _ => Err(InvalidSpirv),
                 };
                 let x = match inst.operands.get(2) {
                     Some(&Operand::LiteralInt32(x)) => Ok(x),
-                    _ => Err(InvalidSpirv)
+                    _ => Err(InvalidSpirv),
                 };
                 match inst.operands.get(1) {
-                    Some(&Operand::Decoration(decoration)) => {
-                        match decoration {
-                            Decoration::DescriptorSet => { descriptor_sets.insert(id?, x?); },
-                            Decoration::Binding => { bindings.insert(id?, x?); },
-                            _ => ()
+                    Some(&Operand::Decoration(decoration)) => match decoration {
+                        Decoration::DescriptorSet => {
+                            descriptor_sets.insert(id?, x?);
                         }
-                    }
-                    _ => ()
+                        Decoration::Binding => {
+                            bindings.insert(id?, x?);
+                        }
+                        _ => (),
+                    },
+                    _ => (),
                 }
             }
             Op::MemberDecorate => {
                 let id = match inst.operands.get(0) {
                     Some(&Operand::IdRef(id)) => Ok(id),
-                    _ => Err(InvalidSpirv)
+                    _ => Err(InvalidSpirv),
                 };
                 match inst.operands.get(2) {
                     Some(&Operand::Decoration(Decoration::Offset)) => {
                         let index = match inst.operands.get(1) {
                             Some(&Operand::LiteralInt32(index)) => index,
-                            _ => Err(InvalidSpirv)?
+                            _ => Err(InvalidSpirv)?,
                         };
                         let offset = match inst.operands.get(3) {
                             Some(&Operand::LiteralInt32(index)) => index,
-                            _ => Err(InvalidSpirv)?
+                            _ => Err(InvalidSpirv)?,
                         };
                         field_offsets.insert((id?, index), offset);
                     }
                     Some(&Operand::Decoration(Decoration::NonWritable)) => {
                         nonwritable.insert(id?);
                     }
-                    _ => ()
+                    _ => (),
                 }
-                
             }
             _ => (),
         }
     }
-    
+
     let mut layouts = HashMap::<Word, Layout>::new();
     let mut pointers = HashMap::<Word, (StorageClass, Word)>::new();
     let mut variables = HashMap::<Word, (StorageClass, Word)>::new();
-    
+
     for inst in module.types_global_values.iter() {
         match inst.class.opcode {
             Op::TypeBool => {
@@ -158,7 +160,7 @@ pub(super) fn entry_descriptors_from_spirv(spirv: &[u8]) -> Result<Vec<EntryDesc
                         64 => Layout::new::<u64>(),
                         _ => Err(InvalidSpirv)?,
                     },
-                    _ => Err(InvalidSpirv)?
+                    _ => Err(InvalidSpirv)?,
                 };
                 layouts.insert(result_id, layout);
             }
@@ -169,10 +171,11 @@ pub(super) fn entry_descriptors_from_spirv(spirv: &[u8]) -> Result<Vec<EntryDesc
                     match operand {
                         &Operand::IdRef(field) => {
                             if let Some(&field_layout) = layouts.get(&field) {
-                                let (next_layout, offset) = layout.unwrap()
-                                    .extend(field_layout)
-                                    .or(Err(InvalidSpirv))?;
-                                if field_offsets.get(&(result_id, o as u32)) != Some(&(offset as u32)) {
+                                let (next_layout, offset) =
+                                    layout.unwrap().extend(field_layout).or(Err(InvalidSpirv))?;
+                                if field_offsets.get(&(result_id, o as u32))
+                                    != Some(&(offset as u32))
+                                {
                                     Err(InvalidSpirv)?;
                                 }
                                 layout.replace(next_layout);
@@ -180,8 +183,8 @@ pub(super) fn entry_descriptors_from_spirv(spirv: &[u8]) -> Result<Vec<EntryDesc
                                 layout.take();
                                 break;
                             }
-                        },
-                        _ => Err(InvalidSpirv)?
+                        }
+                        _ => Err(InvalidSpirv)?,
                     }
                 }
                 if let Some(layout) = layout {
@@ -192,17 +195,16 @@ pub(super) fn entry_descriptors_from_spirv(spirv: &[u8]) -> Result<Vec<EntryDesc
                 let result_id = inst.result_id.ok_or(InvalidSpirv)?;
                 let elem = match inst.operands.get(0) {
                     Some(&Operand::IdRef(elem)) => elem,
-                    _ => Err(InvalidSpirv)?
+                    _ => Err(InvalidSpirv)?,
                 };
                 let n = match inst.operands.get(1) {
                     Some(&Operand::LiteralInt32(n)) => n,
-                    _ => Err(InvalidSpirv)?
+                    _ => Err(InvalidSpirv)?,
                 };
                 if let Some(&elem_layout) = layouts.get(&elem) {
                     let mut layout = Layout::from_size_align(0, 1).unwrap();
                     for _ in 0..n {
-                        let (next_layout, _) = layout.extend(elem_layout)
-                            .or(Err(InvalidSpirv))?;
+                        let (next_layout, _) = layout.extend(elem_layout).or(Err(InvalidSpirv))?;
                         layout = next_layout;
                     }
                     layouts.insert(result_id, layout);
@@ -212,18 +214,19 @@ pub(super) fn entry_descriptors_from_spirv(spirv: &[u8]) -> Result<Vec<EntryDesc
                 let storage_class = match inst.operands.get(0) {
                     Some(&Operand::StorageClass(storage_class)) => {
                         if !(storage_class == StorageClass::StorageBuffer
-                            || storage_class == StorageClass::Uniform 
-                            || storage_class == StorageClass::PushConstant) {
-                            continue
+                            || storage_class == StorageClass::Uniform
+                            || storage_class == StorageClass::PushConstant)
+                        {
+                            continue;
                         } else {
                             storage_class
                         }
                     }
-                    _ => continue
+                    _ => continue,
                 };
                 let pointee = match inst.operands.get(1) {
                     Some(&Operand::IdRef(pointee)) => pointee,
-                    _ => Err(InvalidSpirv)?
+                    _ => Err(InvalidSpirv)?,
                 };
                 let result_id = inst.result_id.ok_or(InvalidSpirv)?;
                 pointers.insert(result_id, (storage_class, pointee));
@@ -231,15 +234,16 @@ pub(super) fn entry_descriptors_from_spirv(spirv: &[u8]) -> Result<Vec<EntryDesc
             Op::Variable => {
                 let storage_class = match inst.operands.get(0) {
                     Some(&Operand::StorageClass(storage_class)) => {
-                        if !(storage_class == StorageClass::StorageBuffer 
+                        if !(storage_class == StorageClass::StorageBuffer
                             || storage_class == StorageClass::Uniform
-                            || storage_class == StorageClass::PushConstant) {
-                            continue
+                            || storage_class == StorageClass::PushConstant)
+                        {
+                            continue;
                         } else {
                             storage_class
                         }
                     }
-                    _ => continue
+                    _ => continue,
                 };
                 let result_type = inst.result_type.ok_or(InvalidSpirv)?;
                 let result_id = inst.result_id.ok_or(InvalidSpirv)?;
@@ -248,31 +252,31 @@ pub(super) fn entry_descriptors_from_spirv(spirv: &[u8]) -> Result<Vec<EntryDesc
             _ => (),
         }
     }
-    
+
     let mut buffer_bindings = HashMap::<Word, BufferBinding>::new();
     let mut push_constants = HashMap::<Word, PushConstantDescriptor>::new();
     let mut push_constant_offset = 0;
 
     for (&variable, &(storage_class, pointer)) in variables.iter() {
-        let &(storage_class2, pointee) = pointers.get(&pointer)
-            .ok_or(InvalidSpirv)?;
-        
+        let &(storage_class2, pointee) = pointers.get(&pointer).ok_or(InvalidSpirv)?;
+
         if storage_class != storage_class2 {
             Err(InvalidSpirv)?;
         }
-        
+
         match storage_class {
             StorageClass::StorageBuffer | StorageClass::Uniform => {
-                let &descriptor_set = descriptor_sets.get(&variable)
-                    .ok_or(InvalidSpirv)?;
-                let &binding = bindings.get(&variable)
-                    .ok_or(InvalidSpirv)?;
+                let &descriptor_set = descriptor_sets.get(&variable).ok_or(InvalidSpirv)?;
+                let &binding = bindings.get(&variable).ok_or(InvalidSpirv)?;
                 let mutable = !nonwritable.contains(&pointee);
-                buffer_bindings.insert(variable, BufferBinding { 
-                    descriptor_set, 
-                    binding,
-                    mutable 
-                });
+                buffer_bindings.insert(
+                    variable,
+                    BufferBinding {
+                        descriptor_set,
+                        binding,
+                        mutable,
+                    },
+                );
             }
             StorageClass::PushConstant => {
                 let layout = layouts.get(&pointee).ok_or(InvalidSpirv)?;
@@ -283,17 +287,17 @@ pub(super) fn entry_descriptors_from_spirv(spirv: &[u8]) -> Result<Vec<EntryDesc
                 push_constant_offset += layout.size();
                 push_constants.insert(variable, PushConstantDescriptor { range });
             }
-            _ => unreachable!()
+            _ => unreachable!(),
         }
     }
-    
+
     let mut entry_descriptors = Vec::<EntryDescriptor>::new();
-    
+
     for function in module.functions.iter() {
         let fn_id = if let Some(def) = function.def.as_ref() {
             def.result_id.ok_or(InvalidSpirv)?
         } else {
-            continue
+            continue;
         };
         if let Some(entry_point) = entry_points.get(&fn_id) {
             let mut parameters = HashSet::<Word>::new();
@@ -307,7 +311,7 @@ pub(super) fn entry_descriptors_from_spirv(spirv: &[u8]) -> Result<Vec<EntryDesc
                         | Op::PtrAccessChain => {
                             let variable = match inst.operands.get(0) {
                                 Some(&Operand::IdRef(variable)) => variable,
-                                _ => Err(InvalidSpirv)?
+                                _ => Err(InvalidSpirv)?,
                             };
                             parameters.insert(variable);
                         }
@@ -331,28 +335,29 @@ pub(super) fn entry_descriptors_from_spirv(spirv: &[u8]) -> Result<Vec<EntryDesc
                         Err(InvalidSpirv)?;
                     }
                     push_constant_descriptor.replace(push_constant);
-                } 
+                }
             }
             buffer_descriptors.sort_by_key(|b| b.binding);
-            entry_descriptors.push(EntryDescriptor { 
+            entry_descriptors.push(EntryDescriptor {
                 name: entry_point.name.clone(),
                 local_size: entry_point.local_size,
                 buffer_descriptors,
-                push_constant_descriptor
+                push_constant_descriptor,
             });
         }
     }
-    
+
     Ok(entry_descriptors)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn add() {
-        let spirv = compile_glsl(r#"
+        let spirv = compile_glsl(
+            r#"
         #version 450
         
         layout(local_size_x=64) in;
@@ -380,17 +385,19 @@ mod tests {
             }
         }
         
-        "#).unwrap();
-        
+        "#,
+        )
+        .unwrap();
+
         let entry_descriptors = entry_descriptors_from_spirv(&spirv).unwrap();
-        
+
         let target = vec![EntryDescriptor {
             name: String::from("main"),
             local_size: [64, 1, 1],
             buffer_descriptors: vec![
                 BufferDescriptor {
                     binding: 0,
-                    mutable: false,   
+                    mutable: false,
                 },
                 BufferDescriptor {
                     binding: 1,
@@ -399,13 +406,17 @@ mod tests {
                 BufferDescriptor {
                     binding: 2,
                     mutable: true,
-                }
+                },
             ],
             push_constant_descriptor: Some(PushConstantDescriptor {
-                range: PushConstantRange { start: 0, end: 4 } 
-            })
+                range: PushConstantRange { start: 0, end: 4 },
+            }),
         }];
-        
-        assert_eq!(&entry_descriptors, &target, "output:\n{:#?}\n!=\ntarget\n{:#?}", entry_descriptors, target);
+
+        assert_eq!(
+            &entry_descriptors, &target,
+            "output:\n{:#?}\n!=\ntarget\n{:#?}",
+            entry_descriptors, target
+        );
     }
 }

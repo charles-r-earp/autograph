@@ -1,4 +1,4 @@
-use crate::{Result, error::ShaderModuleError};
+use crate::{error::ShaderModuleError, Result};
 use bytemuck::Pod;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
@@ -25,7 +25,7 @@ macro_rules! include_bytes_align_as {
             pub bytes: Bytes,
         }
 
-        static ALIGNED: &AlignedAs::<$align_ty, [u8]> = &AlignedAs {
+        static ALIGNED: &AlignedAs<$align_ty, [u8]> = &AlignedAs {
             _align: [],
             bytes: *include_bytes!($file),
         };
@@ -114,7 +114,7 @@ const MAX_PUSH_CONSTANT_SIZE: usize = 32;
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct BufferDescriptor {
     binding: u32,
-    mutable: bool
+    mutable: bool,
 }
 
 #[doc(hidden)]
@@ -127,7 +127,7 @@ pub struct PushConstantRange {
 #[doc(hidden)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PushConstantDescriptor {
-    range: PushConstantRange
+    range: PushConstantRange,
 }
 
 #[doc(hidden)]
@@ -150,10 +150,7 @@ impl<'a> ShaderModule<'a> {
     fn from_spirv(spirv: impl Into<Cow<'a, [u8]>>) -> Result<Self> {
         let spirv = spirv.into();
         let entries = shader_util::entry_descriptors_from_spirv(&spirv)?;
-        Ok(Self {
-            spirv,
-            entries
-        })
+        Ok(Self { spirv, entries })
     }
 }
 
@@ -193,7 +190,8 @@ impl Device {
         let module_id = ModuleId(spirv.as_ptr() as usize as u64);
         let (entry_id, entry_descriptor) = match self.modules.entry(module_id) {
             Occupied(occupied) => {
-                let (i, entry_descriptor) = occupied.get()
+                let (i, entry_descriptor) = occupied
+                    .get()
                     .entries
                     .iter()
                     .enumerate()
@@ -217,7 +215,7 @@ impl Device {
             entry_descriptor,
             compute_pass: ComputePass {
                 module_id,
-                entry_id,   
+                entry_id,
                 buffer_bindings: Vec::new(),
                 push_constants: Vec::new(),
             },
