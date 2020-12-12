@@ -1,22 +1,45 @@
-use crate::Result;
+use crate::{Result, error::ShaderModuleError};
 use bytemuck::Pod;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use smol::future::Future;
-use spirv::AccessQualifier;
-use spirv_headers as spirv;
 use std::borrow::Cow;
 use std::fmt::{self, Debug};
 use std::hash::Hash;
 use std::marker::PhantomData;
 use std::mem::size_of;
+use std::sync::Arc;
 
-#[cfg(feature = "staticvec")]
-use staticvec::StaticVec;
+pub mod shader_util;
 
 #[doc(hidden)]
 pub mod gpu;
 use gpu::Gpu;
+
+#[allow(unused)]
+macro_rules! include_bytes_align_as {
+    ($align_ty:ty, $file:expr) => {{
+        #[repr(C)]
+        pub struct AlignedAs<Align, Bytes: ?Sized> {
+            pub _align: [Align; 0],
+            pub bytes: Bytes,
+        }
+
+        static ALIGNED: &AlignedAs::<$align_ty, [u8]> = &AlignedAs {
+            _align: [],
+            bytes: *include_bytes!($file),
+        };
+
+        &ALIGNED.bytes
+    }};
+}
+
+#[macro_export]
+macro_rules! include_spirv {
+    ($file:expr) => {{
+        include_bytes_align_as!(u32, $file)
+    }};
+}
 
 #[doc(hidden)]
 #[proxy_enum::proxy(DynDevice)]
@@ -88,24 +111,32 @@ const MAX_BUFFERS_PER_COMPUTE_PASS: usize = 4;
 const MAX_PUSH_CONSTANT_SIZE: usize = 32;
 
 #[doc(hidden)]
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct BufferDescriptor {
+    binding: u32,
+    mutable: bool
+}
+
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PushConstantRange {
     start: u32,
     end: u32,
 }
 
 #[doc(hidden)]
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PushConstantDescriptor {
+    range: PushConstantRange
+}
+
+#[doc(hidden)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct EntryDescriptor {
     name: String,
-    #[cfg(feature = "staticvec")]
-    buffers: StaticVec<AccessQualifier, MAX_BUFFERS_PER_COMPUTE_PASS>,
-    #[cfg(not(feature = "staticvec"))]
-    buffers: Vec<AccessQualifier>,
-    #[cfg(feature = "staticvec")]
-    push_constants: StaticVec<u8, MAX_PUSH_CONSTANT_SIZE>,
-    #[cfg(not(feature = "staticvec"))]
-    push_constants: Vec<u8>,
+    local_size: [u32; 3],
+    buffer_descriptors: Vec<BufferDescriptor>,
+    push_constant_descriptor: Option<PushConstantDescriptor>,
 }
 
 #[doc(hidden)]
@@ -115,10 +146,21 @@ pub struct ShaderModule<'a> {
     entries: Vec<EntryDescriptor>,
 }
 
+impl<'a> ShaderModule<'a> {
+    fn from_spirv(spirv: impl Into<Cow<'a, [u8]>>) -> Result<Self> {
+        let spirv = spirv.into();
+        let entries = shader_util::entry_descriptors_from_spirv(&spirv)?;
+        Ok(Self {
+            spirv,
+            entries
+        })
+    }
+}
+
 #[derive(Clone)]
 pub struct Device {
     dyn_device: DynDevice,
-    modules: DashMap<ModuleId, ShaderModule<'static>>,
+    modules: Arc<DashMap<ModuleId, ShaderModule<'static>>>,
 }
 
 impl Device {
@@ -126,7 +168,7 @@ impl Device {
         Gpu::new(index).map(|gpu| async move {
             Ok(Self {
                 dyn_device: gpu.await?.into(),
-                modules: DashMap::default(),
+                modules: Arc::new(DashMap::default()),
             })
         })
     }
@@ -142,13 +184,45 @@ impl Device {
             .filter_map(|task| smol::block_on(task).ok())
             .collect()
     }
-    #[allow(unused)]
     pub fn compute_pass(
         &self,
         spirv: &'static [u8],
         entry_point: impl AsRef<str>,
     ) -> Result<ComputePassBuilder<()>> {
-        todo!()
+        use dashmap::mapref::entry::Entry::*;
+        let module_id = ModuleId(spirv.as_ptr() as usize as u64);
+        let (entry_id, entry_descriptor) = match self.modules.entry(module_id) {
+            Occupied(occupied) => {
+                let (i, entry_descriptor) = occupied.get()
+                    .entries
+                    .iter()
+                    .enumerate()
+                    .find(|(_, e)| &e.name == entry_point.as_ref())
+                    .ok_or(ShaderModuleError::EntryNotFound)?;
+                (EntryId(i as u64), entry_descriptor.clone())
+            }
+            Vacant(vacant) => {
+                let module = vacant.insert(ShaderModule::from_spirv(spirv)?);
+                let (i, entry_descriptor) = module
+                    .entries
+                    .iter()
+                    .enumerate()
+                    .find(|(_, e)| &e.name == entry_point.as_ref())
+                    .ok_or(ShaderModuleError::EntryNotFound)?;
+                (EntryId(i as u64), entry_descriptor.clone())
+            }
+        };
+        Ok(ComputePassBuilder {
+            device: self,
+            entry_descriptor,
+            compute_pass: ComputePass {
+                module_id,
+                entry_id,   
+                buffer_bindings: Vec::new(),
+                push_constants: Vec::new(),
+            },
+            borrows: (),
+        })
     }
     pub fn synchronize(&self) -> Result<impl Future<Output = Result<()>>> {
         self.dyn_device.synchronize()
@@ -164,8 +238,8 @@ impl Debug for Device {
 #[doc(hidden)]
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct BufferBinding {
+    binding: u32,
     id: BufferId,
-    access: AccessQualifier,
     offset: u64,
     len: u64,
 }
@@ -173,6 +247,7 @@ pub struct BufferBinding {
 #[allow(unused)]
 pub struct ComputePassBuilder<'a, T> {
     device: &'a Device,
+    entry_descriptor: EntryDescriptor,
     compute_pass: ComputePass,
     borrows: T,
 }
@@ -180,15 +255,9 @@ pub struct ComputePassBuilder<'a, T> {
 #[doc(hidden)]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ComputePass {
-    module: ModuleId,
-    entry: EntryId,
-    #[cfg(feature = "staticvec")]
-    buffer_bindings: StaticVec<BufferBinding, MAX_BUFFERS_PER_COMPUTE_PASS>,
-    #[cfg(not(feature = "staticvec"))]
+    module_id: ModuleId,
+    entry_id: EntryId,
     buffer_bindings: Vec<BufferBinding>,
-    #[cfg(feature = "staticvec")]
-    push_constants: StaticVec<u8, MAX_PUSH_CONSTANT_SIZE>,
-    #[cfg(not(feature = "staticvec"))]
     push_constants: Vec<u8>,
 }
 

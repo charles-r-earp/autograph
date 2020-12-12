@@ -7,6 +7,7 @@ use std::fmt::{self, Debug, Display};
 pub enum Error {
     ShapeError(ShapeError),
     GpuError(GpuError),
+    ShaderModuleError(ShaderModuleError),
 }
 
 impl Display for Error {
@@ -94,5 +95,17 @@ impl From<wgpu::RequestDeviceError> for Error {
 impl From<wgpu::BufferAsyncError> for Error {
     fn from(e: wgpu::BufferAsyncError) -> Self {
         GpuError::from(e).into()
+    }
+}
+
+#[derive(Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum ShaderModuleError {
+    EntryNotFound,
+    InvalidSpirv,
+}
+
+impl From<ShaderModuleError> for Error {
+    fn from(e: ShaderModuleError) -> Self {
+        Self::ShaderModuleError(e)
     }
 }
