@@ -188,6 +188,7 @@ impl Device {
     ) -> Result<ComputePassBuilder<()>> {
         use dashmap::mapref::entry::Entry::*;
         let module_id = ModuleId(spirv.as_ptr() as usize as u64);
+        let entry_point = entry_point.as_ref();
         let (entry_id, entry_descriptor) = match self.modules.entry(module_id) {
             Occupied(occupied) => {
                 let (i, entry_descriptor) = occupied
@@ -195,7 +196,7 @@ impl Device {
                     .entries
                     .iter()
                     .enumerate()
-                    .find(|(_, e)| &e.name == entry_point.as_ref())
+                    .find(|(_, e)| e.name == entry_point)
                     .ok_or(ShaderModuleError::EntryNotFound)?;
                 (EntryId(i as u64), entry_descriptor.clone())
             }
@@ -205,7 +206,7 @@ impl Device {
                     .entries
                     .iter()
                     .enumerate()
-                    .find(|(_, e)| &e.name == entry_point.as_ref())
+                    .find(|(_, e)| e.name == entry_point)
                     .ok_or(ShaderModuleError::EntryNotFound)?;
                 (EntryId(i as u64), entry_descriptor.clone())
             }
