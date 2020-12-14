@@ -15,14 +15,16 @@ publish = false
 [dependencies]
 wgpu = "0.6.0"
 proxy-enum = "0.3.0"
-bytemuck = "1.4.1"
+bytemuck = { version = "1.4.1", features = ["derive"] }
 ndarray = "0.14.0"
 smol = "1.2.5"
 dashmap = "3.11.10"
 rspirv = "0.7.0"
 serde = { version = "1.0.118", features = ["derive"] }
 ahash = "0.6.1"
-glsl-to-spirv = "0.1.7"
+
+[build-dependencies]
+shaderc = "0.7.0"
 
 
 

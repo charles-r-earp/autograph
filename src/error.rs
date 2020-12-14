@@ -1,4 +1,4 @@
-use crate::backend::BufferId;
+use crate::backend::{BufferId, ModuleId, EntryId};
 use serde::{Deserialize, Serialize};
 use std::fmt::{self, Debug, Display};
 
@@ -8,6 +8,7 @@ pub enum Error {
     ShapeError(ShapeError),
     GpuError(GpuError),
     ShaderModuleError(ShaderModuleError),
+    ComputePassBuilder(ComputePassBuilderError),
 }
 
 impl Display for Error {
@@ -66,6 +67,8 @@ pub enum GpuError {
     RequestDeviceError,
     BufferAsyncError,
     BufferNotFound(BufferId),
+    ModuleNotFound(ModuleId),
+    EntryNotFound(EntryId),
 }
 
 impl From<wgpu::RequestDeviceError> for GpuError {
@@ -109,3 +112,16 @@ impl From<ShaderModuleError> for Error {
         Self::ShaderModuleError(e)
     }
 }
+
+#[derive(Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum ComputePassBuilderError {
+    PushConstantSize,
+    NumberOfBuffers,
+    BufferMutability,   
+}
+
+impl From<ComputePassBuilderError> for Error {
+    fn from(e: ComputePassBuilderError) -> Self {
+        Self::ComputePassBuilder(e)
+    }
+} 

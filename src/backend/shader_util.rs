@@ -8,13 +8,6 @@ use std::alloc::Layout;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 
-pub fn compile_glsl(src: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    use std::io::Read;
-    let mut spirv = Vec::new();
-    glsl_to_spirv::compile(src, glsl_to_spirv::ShaderType::Compute)?.read_to_end(&mut spirv)?;
-    Ok(spirv)
-}
-
 #[derive(Clone, Debug)]
 struct EntryPoint {
     name: String,
@@ -373,7 +366,15 @@ pub(super) fn entry_descriptors_from_spirv(spirv: &[u8]) -> Result<Vec<EntryDesc
 #[cfg(test)]
 mod tests {
     use super::*;
-
+    
+    /*
+    fn compile_glsl(src: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        use std::io::Read;
+        let mut spirv = Vec::new();
+        glsl_to_spirv::compile(src, glsl_to_spirv::ShaderType::Compute)?.read_to_end(&mut spirv)?;
+        Ok(spirv)
+    }
+    
     #[test]
     fn add() {
         let spirv = compile_glsl(
@@ -430,6 +431,33 @@ mod tests {
             ],
             push_constant_descriptor: Some(PushConstantDescriptor {
                 range: PushConstantRange { start: 0, end: 4 },
+            }),
+        }];
+
+        assert_eq!(
+            &entry_descriptors, &target,
+            "output:\n{:#?}\n!=\ntarget\n{:#?}",
+            entry_descriptors, target
+        );
+    }*/
+    
+    #[test]
+    fn shader_module_fill_u32() {
+        let spirv = include_bytes!(env!("glsl::fill::fill_u32"));
+        
+        let entry_descriptors = entry_descriptors_from_spirv(spirv).unwrap();
+
+        let target = vec![EntryDescriptor {
+            name: String::from("main"),
+            local_size: [1024, 1, 1],
+            buffer_descriptors: vec![
+                BufferDescriptor {
+                    binding: 0,
+                    mutable: true,
+                },
+            ],
+            push_constant_descriptor: Some(PushConstantDescriptor {
+                range: PushConstantRange { start: 0, end: 8 },
             }),
         }];
 

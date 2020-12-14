@@ -1,4 +1,4 @@
-use crate::{error::ShaderModuleError, Result};
+use crate::{error::{ShaderModuleError, ComputePassBuilderError}, Result};
 use bytemuck::Pod;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
@@ -15,31 +15,6 @@ pub mod shader_util;
 #[doc(hidden)]
 pub mod gpu;
 use gpu::Gpu;
-
-#[allow(unused)]
-macro_rules! include_bytes_align_as {
-    ($align_ty:ty, $file:expr) => {{
-        #[repr(C)]
-        pub struct AlignedAs<Align, Bytes: ?Sized> {
-            pub _align: [Align; 0],
-            pub bytes: Bytes,
-        }
-
-        static ALIGNED: &AlignedAs<$align_ty, [u8]> = &AlignedAs {
-            _align: [],
-            bytes: *include_bytes!($file),
-        };
-
-        &ALIGNED.bytes
-    }};
-}
-
-#[macro_export]
-macro_rules! include_spirv {
-    ($file:expr) => {{
-        include_bytes_align_as!(u32, $file)
-    }};
-}
 
 #[doc(hidden)]
 #[proxy_enum::proxy(DynDevice)]
@@ -77,7 +52,7 @@ pub mod dyn_device_proxy {
         ) -> Result<impl Future<Output = Result<Vec<T>>>> {
         }
         #[implement]
-        pub(super) fn compile_shader_module(&self, module: &ShaderModule) -> Result<()> {}
+        pub(super) fn compile_shader_module(&self, id: ModuleId, module: &ShaderModule) -> Result<()> {}
         #[implement]
         pub(super) fn enqueue_compute_pass(&self, compute_pass: ComputePass) -> Result<()> {}
         #[implement]
@@ -124,6 +99,12 @@ pub struct PushConstantRange {
     end: u32,
 }
 
+impl Into<std::ops::Range<u32>> for PushConstantRange {
+    fn into(self) -> std::ops::Range<u32> {
+        self.start .. self.end
+    }
+}
+
 #[doc(hidden)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PushConstantDescriptor {
@@ -143,14 +124,14 @@ pub struct EntryDescriptor {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ShaderModule<'a> {
     spirv: Cow<'a, [u8]>,
-    entries: Vec<EntryDescriptor>,
+    entry_descriptors: Vec<EntryDescriptor>,
 }
 
 impl<'a> ShaderModule<'a> {
     fn from_spirv(spirv: impl Into<Cow<'a, [u8]>>) -> Result<Self> {
         let spirv = spirv.into();
-        let entries = shader_util::entry_descriptors_from_spirv(&spirv)?;
-        Ok(Self { spirv, entries })
+        let entry_descriptors = shader_util::entry_descriptors_from_spirv(&spirv)?;
+        Ok(Self { spirv, entry_descriptors })
     }
 }
 
@@ -193,7 +174,7 @@ impl Device {
             Occupied(occupied) => {
                 let (i, entry_descriptor) = occupied
                     .get()
-                    .entries
+                    .entry_descriptors
                     .iter()
                     .enumerate()
                     .find(|(_, e)| e.name == entry_point)
@@ -201,9 +182,11 @@ impl Device {
                 (EntryId(i as u64), entry_descriptor.clone())
             }
             Vacant(vacant) => {
-                let module = vacant.insert(ShaderModule::from_spirv(spirv)?);
+                let module = ShaderModule::from_spirv(spirv)?;
+                self.dyn_device.compile_shader_module(module_id, &module)?;
+                let module = vacant.insert(module);
                 let (i, entry_descriptor) = module
-                    .entries
+                    .entry_descriptors
                     .iter()
                     .enumerate()
                     .find(|(_, e)| e.name == entry_point)
@@ -211,14 +194,16 @@ impl Device {
                 (EntryId(i as u64), entry_descriptor.clone())
             }
         };
+        let buffer_bindings = Vec::with_capacity(entry_descriptor.buffer_descriptors.len());
         Ok(ComputePassBuilder {
             device: self,
             entry_descriptor,
             compute_pass: ComputePass {
                 module_id,
                 entry_id,
-                buffer_bindings: Vec::new(),
+                buffer_bindings,
                 push_constants: Vec::new(),
+                work_groups: [1, 1, 1]
             },
             borrows: (),
         })
@@ -244,11 +229,91 @@ pub struct BufferBinding {
 }
 
 #[allow(unused)]
-pub struct ComputePassBuilder<'a, T> {
+pub struct ComputePassBuilder<'a, B> {
     device: &'a Device,
     entry_descriptor: EntryDescriptor,
     compute_pass: ComputePass,
-    borrows: T,
+    borrows: B,
+}
+
+impl<'a, B> ComputePassBuilder<'a, B> {
+    pub fn buffer_slice<'b, T>(mut self, slice: &'b BufferSlice<'b, T>) -> Result<ComputePassBuilder<'a, (B, &'b BufferSlice<T>)>> {
+        if let Some(buffer_descriptor) = self.entry_descriptor
+            .buffer_descriptors.get(self.compute_pass.buffer_bindings.len()) {
+            if !buffer_descriptor.mutable {
+                self.compute_pass.buffer_bindings.push(BufferBinding {
+                    binding: buffer_descriptor.binding,
+                    id: slice.id,
+                    offset: (slice.offset * size_of::<T>()) as u64,
+                    len: (slice.len * size_of::<T>()) as u64
+                });
+                Ok(ComputePassBuilder {
+                    device: self.device,
+                    entry_descriptor: self.entry_descriptor,
+                    compute_pass: self.compute_pass,
+                    borrows: (self.borrows, slice)
+                })
+            } else {
+                Err(ComputePassBuilderError::BufferMutability.into())
+            }
+        } else {
+            Err(ComputePassBuilderError::NumberOfBuffers.into())
+        }           
+    }
+    pub fn buffer_slice_mut<'b, T>(mut self, slice: &'b BufferSliceMut<'b, T>) -> Result<ComputePassBuilder<'a, (B, &'b BufferSliceMut<T>)>> {
+        if let Some(buffer_descriptor) = self.entry_descriptor
+            .buffer_descriptors.get(self.compute_pass.buffer_bindings.len()) {
+            if buffer_descriptor.mutable {
+                self.compute_pass.buffer_bindings.push(BufferBinding {
+                    binding: buffer_descriptor.binding,
+                    id: slice.id,
+                    offset: (slice.offset * size_of::<T>()) as u64,
+                    len: (slice.len * size_of::<T>()) as u64
+                });
+                Ok(ComputePassBuilder {
+                    device: self.device,
+                    entry_descriptor: self.entry_descriptor,
+                    compute_pass: self.compute_pass,
+                    borrows: (self.borrows, slice)
+                })
+            } else {
+                Err(ComputePassBuilderError::BufferMutability.into())
+            }
+        } else {
+            Err(ComputePassBuilderError::NumberOfBuffers.into())
+        }           
+    }
+    pub fn push_constants<C>(mut self, push_constants: C) -> Result<Self>
+        where C: Pod {
+        if let Some(push_constant_descriptor) = self.entry_descriptor.push_constant_descriptor.as_ref() {
+            let PushConstantRange { start, end } = push_constant_descriptor.range;
+            if size_of::<C>() == (end - start) as usize {
+                self.compute_pass.push_constants = bytemuck::cast_slice(&[push_constants]).to_vec();
+                Ok(self)
+            } else {
+                Err(ComputePassBuilderError::PushConstantSize.into())
+            }
+        } else {
+            Err(ComputePassBuilderError::PushConstantSize.into())
+        }
+    }
+    /// Sets the number of work groups\ 
+    ///
+    /// The provided function f takes the local size [x, y, z] and returns\
+    /// the work groups [x, y, z]
+    pub fn work_groups(mut self, f: impl Fn([u32; 3]) -> [u32; 3]) -> Self {
+        self.compute_pass.work_groups = f(self.entry_descriptor.local_size);
+        self
+    }
+    /// Enqueues the compute pass\
+    ///
+    /// The backend may wait for additional work before executing.\
+    /// Use Device::synchronize()?.await to force completion.  
+    pub fn enqueue(self) -> Result<()> {
+        self.device
+            .dyn_device
+            .enqueue_compute_pass(self.compute_pass)
+    }
 }
 
 #[doc(hidden)]
@@ -258,6 +323,7 @@ pub struct ComputePass {
     entry_id: EntryId,
     buffer_bindings: Vec<BufferBinding>,
     push_constants: Vec<u8>,
+    work_groups: [u32; 3],
 }
 
 #[doc(hidden)]

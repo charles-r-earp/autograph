@@ -10,10 +10,10 @@ use std::mem::{replace, size_of};
 use std::sync::Arc;
 use wgpu::{
     AdapterInfo, BackendBit, BindGroupLayout, Buffer, BufferAddress, ComputePipeline, Device,
-    Instance, Queue,
+    Instance, Queue, BufferDescriptor, BufferUsage, DeviceDescriptor, Features, Limits, Maintain, MapMode,
+    CommandBuffer, CommandEncoderDescriptor, BindingType, ShaderStage, BindGroupLayoutDescriptor, BindGroupLayoutEntry, ComputePipelineDescriptor, ProgrammableStageDescriptor,
+    PipelineLayoutDescriptor, BindGroupEntry, BindingResource, BindGroupDescriptor,
 };
-use wgpu::{BufferDescriptor, BufferUsage, DeviceDescriptor, Features, Limits, Maintain, MapMode};
-use wgpu::{CommandBuffer, CommandEncoderDescriptor};
 
 type DashMap<K, V, S = RandomState> = dashmap::DashMap<K, V, S>;
 type Entry<'a, K, V, S = RandomState> = dashmap::mapref::entry::Entry<'a, K, V, S>;
@@ -220,13 +220,71 @@ impl Gpu {
             }
         })
     }
-    #[allow(unused)]
-    pub(super) fn compile_shader_module(&self, module: &ShaderModule) -> Result<()> {
-        todo!()
+    pub(super) fn compile_shader_module(&self, id: ModuleId, module: &ShaderModule) -> Result<()> {
+        let device = &self.base.device;
+        let spirv = bytemuck::cast_slice(&module.spirv).into();
+        let shader = device.create_shader_module(
+            wgpu::ShaderModuleSource::SpirV(spirv)
+        );
+        let compute_pipelines = module.entry_descriptors.iter()
+            .map(|entry_descriptor| {
+                
+                let bind_group_layout_entries: Vec<_> = entry_descriptor
+                    .buffer_descriptors
+                    .iter()
+                    .map(|buffer_descriptor| {
+                        BindGroupLayoutEntry {
+                            binding: buffer_descriptor.binding,
+                            visibility: ShaderStage::COMPUTE,
+                            ty: BindingType::StorageBuffer {
+                                dynamic: false,
+                                min_binding_size: None,
+                                readonly: !buffer_descriptor.mutable,
+                            },
+                            count: None
+                        }
+                    })
+                    .collect();
+                let label = format!("{:?}::{}", id, &entry_descriptor.name);
+                let bind_group_layout = device
+                    .create_bind_group_layout(&BindGroupLayoutDescriptor {
+                    label: Some(&label),
+                    entries: &bind_group_layout_entries, 
+                });
+                let push_constant_ranges = entry_descriptor
+                    .push_constant_descriptor.as_ref()
+                        .map_or(Vec::new(), |push_constant_descriptor| {
+                            vec![wgpu::PushConstantRange {
+                                stages: ShaderStage::COMPUTE,
+                                range: push_constant_descriptor.range.into(),
+                            }]
+                        });
+                let pipeline_layout = device
+                    .create_pipeline_layout(&PipelineLayoutDescriptor {
+                    label: Some(&label),
+                    bind_group_layouts: &[&bind_group_layout],
+                    push_constant_ranges: &push_constant_ranges,   
+                });
+                let compute_pipeline = device
+                    .create_compute_pipeline(&ComputePipelineDescriptor {
+                    label: Some(&label),
+                    layout: Some(&pipeline_layout),
+                    compute_stage: ProgrammableStageDescriptor {
+                        module: &shader,
+                        entry_point: &entry_descriptor.name,
+                    },    
+                });
+                (bind_group_layout, compute_pipeline)
+            })
+            .collect();
+        self.base
+            .compute_pipelines
+            .insert(id, compute_pipelines);
+        Ok(())
     }
     #[allow(unused)]
     pub(super) fn enqueue_compute_pass(&self, compute_pass: ComputePass) -> Result<()> {
-        todo!()
+        self.op(Op::ComputePass(compute_pass))
     }
     pub(super) fn synchronize(&self) -> Result<impl Future<Output = Result<()>>> {
         let gpu = self.clone();
@@ -333,14 +391,13 @@ impl Stream {
         buffers: &DashMap<BufferId, Buffer>,
         compute_pipelines: &DashMap<ModuleId, Vec<(BindGroupLayout, ComputePipeline)>>,
     ) -> Result<()> {
-        use Op::*;
         // Ensure compute pass occurs prior to subsequent copy
-        if let CopyBufferToBuffer { .. } = &op {
+        if let Op::CopyBufferToBuffer { .. } = &op {
             if self
                 .ops
                 .iter()
                 .rev()
-                .rfind(|x| matches!(x, ComputePass(_)))
+                .rfind(|x| matches!(x, Op::ComputePass(_)))
                 .is_some()
             {
                 self.flush_ops(device, buffers, compute_pipelines).await?;
@@ -354,12 +411,11 @@ impl Stream {
         &mut self,
         device: &Device,
         buffers: &DashMap<BufferId, Buffer>,
-        #[allow(unused)] compute_pipelines: &DashMap<
+        compute_pipelines: &DashMap<
             ModuleId,
             Vec<(BindGroupLayout, ComputePipeline)>,
         >,
     ) -> Result<()> {
-        use Op::*;
         if self.ops.is_empty() {
             return Ok(());
         }
@@ -370,7 +426,7 @@ impl Stream {
         let mut buffers_to_drop = Vec::new();
         for op in replace(&mut self.ops, Vec::new()) {
             match op {
-                CopyBufferToBuffer {
+                Op::CopyBufferToBuffer {
                     src,
                     src_offset,
                     dst,
@@ -387,10 +443,51 @@ impl Stream {
                         size,
                     );
                 }
-                ComputePass { .. } => {
-                    todo!()
+                Op::ComputePass(ComputePass {
+                    module_id,
+                    entry_id,
+                    buffer_bindings,
+                    push_constants,
+                    work_groups,
+                }) => {
+                    let mut buffer_guards = Vec::with_capacity(buffer_bindings.len());
+                    for buffer_binding in buffer_bindings.iter() {
+                        let id = buffer_binding.id;
+                        buffer_guards.push(buffers.get(&id).ok_or(GpuError::BufferNotFound(id))?);
+                    }
+                    let buffer_slices: Vec<_> = buffer_bindings.iter().zip(buffer_guards.iter())
+                        .map(|(buffer_binding, buffer_guard)| {
+                            buffer_guard.slice(buffer_binding.offset .. buffer_binding.len)
+                        })
+                        .collect();
+                    let bind_group_entries: Vec<_> = buffer_bindings.iter().zip(buffer_slices)
+                        .map(|(buffer_binding, buffer_slice)| {
+                            BindGroupEntry {
+                                binding: buffer_binding.binding,
+                                resource: BindingResource::Buffer(buffer_slice)
+                            }
+                        })
+                        .collect();
+                    let compute_pipelines = compute_pipelines.get(&module_id)
+                        .ok_or(GpuError::ModuleNotFound(module_id))?;
+                    let (bind_group_layout, compute_pipeline) = compute_pipelines
+                        .get(entry_id.0 as usize)
+                        .ok_or(GpuError::EntryNotFound(entry_id))?;
+                    let bind_group = device.create_bind_group(&BindGroupDescriptor {
+                        label: Some(&format!("{:?}::{:?}", module_id, entry_id)),
+                        layout: &bind_group_layout,
+                        entries: &bind_group_entries,
+                    });
+                    let mut cpass = encoder.begin_compute_pass();
+                    cpass.set_bind_group(0, &bind_group, &[]);
+                    cpass.set_pipeline(&compute_pipeline);
+                    if !push_constants.is_empty() {
+                        cpass.set_push_constants(0, bytemuck::cast_slice(&push_constants));
+                    }
+                    let [wgx, wgy, wgz] = work_groups;
+                    cpass.dispatch(wgx, wgy, wgz);
                 }
-                DropBuffer { id } => {
+                Op::DropBuffer { id } => {
                     buffers_to_drop.push(id);
                 }
             }

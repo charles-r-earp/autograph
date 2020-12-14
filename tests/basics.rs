@@ -1,6 +1,7 @@
-use autograph::backend::Device;
+use autograph::backend::{Device, Buffer};
 use autograph::tensor::Tensor;
-use autograph::Result;
+use autograph::{Result, include_spirv};
+use bytemuck::{Zeroable, Pod};
 
 #[test]
 fn device_new_gpu() -> Result<()> {
@@ -36,3 +37,31 @@ fn tensor_from_shape_cow_gpu() -> Result<()> {
     }
     Ok(())
 }
+
+#[derive(Clone, Copy, Zeroable, Pod)]
+#[repr(C)]
+struct FillU32PushConsts {
+    n: u32,
+    x: u32
+}
+
+
+#[test]
+fn compute_pass_fill_u32_gpu() -> Result<()> {
+    let spirv = include_spirv!(env!("glsl::fill::fill_u32"));
+    
+    for gpu in Device::list_gpus() {
+        let n = 10;
+        let mut y = Buffer::<u32>::zeros(&gpu, n)?;
+        gpu.compute_pass(spirv.as_ref(), "main")?
+            .buffer_slice_mut(&y.as_buffer_slice_mut())?
+            .push_constants(FillU32PushConsts { n: n as u32, x: 1 })?
+            .work_groups(|_| [1, 1, 1])
+            .enqueue()?;
+        let y = smol::block_on(y.to_vec()?)?; 
+        assert_eq!(y, vec![1u32; n]);
+    }
+    
+    Ok(())
+}
+
