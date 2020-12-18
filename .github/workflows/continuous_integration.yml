@@ -24,7 +24,7 @@ jobs:
     steps:
     - uses: actions/checkout@v2
     - name: install windows deps
-      if: ${{ matrix.target == x86_64-pc-windows-msvc }}
+      if: ${{ matrix.os == 'windows-latest' }}
       run: choco install ninja
     - name: cargo fetch
       run: cargo fetch --target ${{ matrix.target }}
