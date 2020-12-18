@@ -1,0 +1,105 @@
+#version 450
+
+// T, BIAS, RELU
+
+#define M_TILE 32
+#define K_TILE 32
+#define N_TILE 32
+
+layout(local_size_x = M_TILE, local_size_y = N_TILE) in;
+
+readonly buffer A {
+    T[] a;
+};
+
+readonly buffer B {
+    T[] b;
+};
+
+#ifdef BIAS 
+readonly buffer Bias {
+    T[] bias;
+};
+#endif
+
+restrict buffer C {
+    T[] c;
+};
+
+layout(push_constant) uniform PushConsts {
+    uint m;
+    uint k;
+    uint n;
+    int rsa;
+    int csa;
+    int rsb;
+    int csb;
+    int rsc;
+    int csc; 
+    uint pad;
+    T alpha;
+    T beta;
+    T a0; // ie relu negative slope
+};
+
+shared T a_tile[M_TILE][K_TILE];
+shared T b_tile[K_TILE][N_TILE]; 
+
+void main() {
+    
+    uint global_x = gl_GlobalInvocationID.x;
+    uint global_y = gl_GlobalInvocationID.y;
+    uint local_x = gl_LocalInvocationID.x;
+    uint local_y = gl_LocalInvocationID.y;
+    
+    bool valid = global_x < m && global_y < n;
+    
+    T acc = 0;
+ 
+    uint tile_k;
+    for(uint z = 0; z < k; ++z) {
+        tile_k = (z + K_TILE) % K_TILE;  
+        if (tile_k == 0) {
+            memoryBarrierShared();
+            
+            if (global_x < m) {
+                a_tile[local_x][local_y] = a[global_x * rsa + (z + local_y) * csa];
+            }    
+            
+            if (global_y < n) {    
+                b_tile[local_x][local_y] = b[(z + local_x) * rsb + global_y * csb];
+            }
+            
+            barrier();    
+        }
+        
+        memoryBarrierShared();
+        
+        if (valid) {
+            acc += a_tile[local_x][tile_k] * b_tile[tile_k][local_y];
+        }
+        
+        barrier();
+    } 
+    
+    if (valid) {
+        uint i = global_x * rsc + global_y * csc;
+        T y = alpha * acc;
+        
+        if (beta != 0) {
+            y += beta * c[i];
+        }
+        
+        #ifdef BIAS 
+        y += bias[global_y];
+        #endif 
+        
+        #ifdef RELU 
+        if (y < 0) {
+            y *= a0;
+        }
+        #endif
+        
+        c[i] = y;      
+    }
+}

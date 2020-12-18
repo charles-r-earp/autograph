@@ -22,9 +22,19 @@ dashmap = "3.11.10"
 rspirv = "0.7.0"
 serde = { version = "1.0.118", features = ["derive"] }
 ahash = "0.6.1"
+num-traits = "0.2.14"
 
 [build-dependencies]
 shaderc = "0.7.0"
+
+[dev-dependencies]
+approx = "0.4.0"
+criterion = "0.3.3"
+
+[[bench]]
+name = "benchmarks"
+harness = false
+
 
 
 

@@ -118,6 +118,7 @@ pub enum ComputePassBuilderError {
     PushConstantSize,
     NumberOfBuffers,
     BufferMutability,   
+    InvalidDevice
 }
 
 impl From<ComputePassBuilderError> for Error {

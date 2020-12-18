@@ -9,13 +9,22 @@ pub use ndarray::{
 use smol::future::Future;
 use std::borrow::Cow;
 use std::fmt::{self, Debug};
+use std::sync::Arc;
 
-pub trait Data {
+pub mod gemm;
+
+mod sealed {
+    pub trait Sealed {}
+}
+
+pub trait Data: sealed::Sealed + Sized {
     type Elem;
-    /*#[doc(hidden)]
+    #[doc(hidden)]
     fn into_buffer(self) -> Result<Buffer<Self::Elem>>;
     #[doc(hidden)]
-    fn into_arc_buffer(self) -> Result<Arc<Buffer<Self::Elem>>>;*/
+    fn into_arc_buffer(self) -> Result<Arc<Buffer<Self::Elem>>> {
+        Ok(Arc::new(self.into_buffer()?))
+    }
     #[doc(hidden)]
     fn as_buffer_slice(&self) -> BufferSlice<Self::Elem>;
 }
@@ -32,10 +41,21 @@ pub trait DataMut: Data {
 
 pub struct OwnedRepr<T>(Buffer<T>);
 
+impl<T> sealed::Sealed for OwnedRepr<T> {}
+
 impl<T> Data for OwnedRepr<T> {
     type Elem = T;
+    fn into_buffer(self) -> Result<Buffer<T>> {
+        Ok(self.0)
+    }
     fn as_buffer_slice(&self) -> BufferSlice<T> {
         self.0.as_buffer_slice()
+    }
+}
+
+impl<T> DataMut for OwnedRepr<T> {
+    fn as_buffer_slice_mut(&mut self) -> BufferSliceMut<T> {
+        self.0.as_buffer_slice_mut()
     }
 }
 
@@ -44,6 +64,60 @@ impl<T> DataOwned for OwnedRepr<T> {
         Self(buffer)
     }
 }
+
+pub struct ArcRepr<T>(Arc<Buffer<T>>);
+
+impl<T> sealed::Sealed for ArcRepr<T> {}
+
+impl<T> Data for ArcRepr<T> {
+    type Elem = T;
+    fn into_buffer(self) -> Result<Buffer<T>> {
+        match Arc::try_unwrap(self.0) {
+            Ok(buffer) => Ok(buffer),
+            Err(arc_buffer) => Ok(arc_buffer.to_buffer()?)
+        }
+    }
+    fn into_arc_buffer(self) -> Result<Arc<Buffer<T>>> {
+        Ok(self.0)
+    }
+    fn as_buffer_slice(&self) -> BufferSlice<T> {
+        self.0.as_buffer_slice()
+    }
+}
+
+pub struct ViewRepr<'a, T>(BufferSlice<'a, T>);
+
+impl<T> sealed::Sealed for ViewRepr<'_, T> {}
+
+impl<T> Data for ViewRepr<'_, T> {
+    type Elem = T;
+    fn into_buffer(self) -> Result<Buffer<T>> {
+        self.0.to_buffer()
+    }
+    fn as_buffer_slice(&self) -> BufferSlice<T> {
+        self.0.as_buffer_slice()
+    }
+}
+
+pub struct ViewMutRepr<'a, T>(BufferSliceMut<'a, T>);
+
+impl<T> sealed::Sealed for ViewMutRepr<'_, T> {}
+
+impl<T> Data for ViewMutRepr<'_, T> {
+    type Elem = T;
+    fn into_buffer(self) -> Result<Buffer<T>> {
+        self.0.to_buffer()
+    }
+    fn as_buffer_slice(&self) -> BufferSlice<T> {
+        self.0.as_buffer_slice()
+    }
+}
+
+impl<T> DataMut for ViewMutRepr<'_, T> {
+    fn as_buffer_slice_mut(&mut self) -> BufferSliceMut<T> {
+        self.0.as_buffer_slice_mut()
+    }
+} 
 
 fn strides_from_array<S, D>(array: &ArrayBase<S, D>) -> D
 where
@@ -73,8 +147,28 @@ pub struct TensorBase<S: Data, D: Dimension> {
 }
 
 pub type Tensor<T, D> = TensorBase<OwnedRepr<T>, D>;
+pub type Tensor1<T> = Tensor<T, Ix1>;
+pub type Tensor2<T> = Tensor<T, Ix2>;
+
+pub type ArcTensor<T, D> = TensorBase<ArcRepr<T>, D>;
+
+pub type TensorView<'a, T, D> = TensorBase<ViewRepr<'a, T>, D>;
+pub type TensorView1<'a, T> = TensorView<'a, T, Ix1>;
+pub type TensorView2<'a, T> = TensorView<'a, T, Ix2>;
+
+pub type TensorViewMut<'a, T, D> = TensorBase<ViewMutRepr<'a, T>, D>;
+pub type TensorViewMut2<'a, T> = TensorViewMut<'a, T, Ix2>;
 
 impl<S: Data, D: Dimension> TensorBase<S, D> {
+    pub fn device(&self) -> &Device {
+        &self.device
+    }
+    pub fn dim(&self) -> D::Pattern {
+        self.dim.clone().into_pattern()
+    }
+    pub fn raw_dim(&self) -> D {
+        self.dim.clone()
+    }
     pub fn strides(&self) -> &[isize] {
         bytemuck::cast_slice(self.strides.slice())
     }
@@ -144,6 +238,25 @@ impl<T, S: DataOwned<Elem = T>, D: Dimension> TensorBase<S, D> {
 }
 
 impl<T, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
+    pub fn view(&self) -> TensorView<T, D> {
+        TensorBase {
+            device: self.device.clone(),
+            dim: self.dim.clone(),
+            strides: self.strides.clone(),
+            data: ViewRepr(self.data.as_buffer_slice())
+        }
+    }
+    pub fn reversed_axes(mut self) -> Self {
+        self.dim.slice_mut().reverse();
+        self.strides.slice_mut().reverse();
+        self
+    }
+    pub fn t(&self) -> TensorView<T, D> {
+        self.view().reversed_axes()
+    }
+    pub fn as_buffer_slice(&self) -> BufferSlice<T> {
+        self.data.as_buffer_slice()
+    }
     pub fn to_vec(&self) -> Result<impl Future<Output = Result<Vec<T>>> + '_>
     where
         T: Pod,
@@ -172,6 +285,20 @@ impl<T, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     }
 }
 
+impl<T, S: DataMut<Elem = T>, D: Dimension> TensorBase<S, D> {
+    pub fn view_mut(&mut self) -> TensorViewMut<T, D> {
+        TensorBase {
+            device: self.device.clone(),
+            dim: self.dim.clone(),
+            strides: self.strides.clone(),
+            data: ViewMutRepr(self.data.as_buffer_slice_mut())
+        }
+    }
+    fn as_buffer_slice_mut(&mut self) -> BufferSliceMut<T> {
+        self.data.as_buffer_slice_mut()
+    }
+}
+
 impl<S: Data, D: Dimension> Debug for TensorBase<S, D> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let mut builder = f.debug_struct("TensorBase");
@@ -184,3 +311,24 @@ impl<S: Data, D: Dimension> Debug for TensorBase<S, D> {
         builder.finish()
     }
 }
+
+pub trait Dot<R> {
+    type Output;
+    fn dot(&self, rhs: &R) -> Result<Self::Output>;
+}
+
+impl<T: gemm::Scalar, S1: Data<Elem=T>, S2: Data<Elem=T>> Dot<TensorBase<S2, Ix2>> for TensorBase<S1, Ix2> {
+    type Output = Tensor2<T>;
+    fn dot(&self, rhs: &TensorBase<S2, Ix2>) -> Result<Tensor2<T>> {
+        let (m, k) = self.dim();
+        let (k2, n) = rhs.dim();
+        if k != k2 {
+            return Err(ShapeError::IncompatibleShape.into());
+        }
+        let mut output = Tensor::zeros(self.device(), [m, n])?;
+        gemm::gemm(T::one(), &self.view(), &rhs.view(), T::zero(), &mut output.view_mut())?;
+        Ok(output)
+    }
+}
+
+

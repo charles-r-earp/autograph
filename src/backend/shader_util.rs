@@ -443,7 +443,7 @@ mod tests {
     
     #[test]
     fn shader_module_fill_u32() {
-        let spirv = include_bytes!(env!("glsl::fill::fill_u32"));
+        let spirv = include_bytes!(env!("glsl::fill_u32"));
         
         let entry_descriptors = entry_descriptors_from_spirv(spirv).unwrap();
 

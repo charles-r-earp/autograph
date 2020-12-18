@@ -1,14 +1,16 @@
 #version 450 
 
+// T 
+
 layout(local_size_x=1024) in;
 
-layout(binding=0) buffer Y {
-    uint y[];
+buffer Y {
+    T y[];
 };
 
 layout(push_constant) uniform PushConsts {
     uint n;
-    uint x;
+    T x;
 };
 
 void main() {

@@ -4,71 +4,82 @@ use shaderc::{Compiler, CompileOptions, ShaderKind};
 
 type Result<T, E = Box<dyn std::error::Error>> = std::result::Result<T, E>;
 
-struct GlslCompiler {
-    glsl_dir: PathBuf,
-    compiler: Compiler,
-    options: CompileOptions<'static>,
+fn compile_glsl(compiler: &mut Compiler, src: &str, name: &str, options: Option<&CompileOptions>) -> Result<()> {
+    let artifact = compiler.compile_into_spirv(
+        src,
+        ShaderKind::Compute,
+        name,
+        "main",
+        options,
+    )?;
+    let glsl_path = PathBuf::from(env::var("CARGO_MANIFEST_DIR")?)
+        .join("target")
+        .join("glsl");
+    fs::create_dir_all(&glsl_path)?;
+    let fname = name.replace("::", "__");
+    let fpath = glsl_path.join(&fname);
+    fs::write(&fpath, artifact.as_binary_u8())?;
+    let name = format!("glsl::{}", &name);
+    println!(
+        "cargo:rustc-env={}={}", 
+        name, 
+        fpath.to_str().unwrap_or(&format!("Unable to convert path to str: {:?}", fpath))
+    );
+    Ok(())   
+} 
+
+fn glsl_fill(compiler: &mut Compiler) -> Result<()> {
+    let src = include_str!("src/glsl/fill.comp");
+    for (rust_ty, c_ty) in [("u32", "uint")].iter() {
+        let mut options = CompileOptions::new().unwrap();
+        options.set_auto_bind_uniforms(true);
+        options.add_macro_definition("T", Some(c_ty));
+        compile_glsl(compiler, src, &format!("fill_{}", rust_ty), Some(&options))?;
+    }
+    Ok(())
 }
 
-impl GlslCompiler {
-    fn new() -> Result<Self> {
-        let glsl_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR")?)
-            .join("src")
-            .join("glsl");
-        let compiler = Compiler::new()
-            .ok_or("Unable to create Compiler!")?;
-        let options = CompileOptions::new()
-            .ok_or("Unable to create CompileOptions!")?;
-        Ok(Self {
-            glsl_dir,
-            compiler,
-            options,
-        })
+fn glsl_gemm(compiler: &mut Compiler) -> Result<()> {
+    let src = include_str!("src/glsl/gemm.comp");
+    for (rust_ty, c_ty) in [("f32", "float"), ("f64", "double"), ("i32", "int")].iter() {
+        let mut options = CompileOptions::new().unwrap();
+        options.set_auto_bind_uniforms(true);
+        options.add_macro_definition("T", Some(c_ty));
+        compile_glsl(compiler, src, &format!("gemm_{}", rust_ty), Some(&options))?;
     }
-    fn compile(&mut self, name: impl AsRef<str>) -> Result<()> {
-        let name = name.as_ref();
-        let relative_path: PathBuf = name.split("::")
-            .collect();
-        let src_path = self.glsl_dir.join(relative_path).with_extension("comp");
-        let src = String::from_utf8(
-            fs::read(&src_path)
-                .or(Err(format!("Unable to read src_path: {:?}", src_path)))?
-        )?;
-        let artifact = self.compiler.compile_into_spirv(
-            &src,
-            ShaderKind::Compute,
-            name,
-            "main",
-            Some(&self.options)
-        )?;
-        let glsl_path = PathBuf::from(env::var("CARGO_MANIFEST_DIR")?)
-            .join("target")
-            .join("glsl");
-        fs::create_dir_all(&glsl_path)?;
-        let fname = name.replace("::", "__");
-        let fpath = glsl_path.join(&fname);
-        fs::write(&fpath, artifact.as_binary_u8())?;
-        let name = format!("glsl::{}", &name);
-        println!(
-            "cargo:rustc-env={}={}", 
-            name, 
-            fpath.to_str().unwrap_or(&format!("Unable to convert path to str: {:?}", fpath))
-        );
-        Ok(())   
-    } 
+    for (rust_ty, c_ty) in [("f32", "float")].iter() {
+        { // Relu
+            let mut options = CompileOptions::new().unwrap();
+            options.set_auto_bind_uniforms(true);
+            options.add_macro_definition("T", Some(c_ty));
+            options.add_macro_definition("RELU", None);
+            compile_glsl(compiler, src, &format!("gemm_relu_{}", rust_ty), Some(&options))?;
+        }
+        { // Bias
+            let mut options = CompileOptions::new().unwrap();
+            options.set_auto_bind_uniforms(true);
+            options.add_macro_definition("T", Some(c_ty));
+            options.add_macro_definition("BIAS", None);
+            compile_glsl(compiler, src, &format!("gemm_bias_{}", rust_ty), Some(&options))?;
+        }
+        { // Bias + Relu
+            let mut options = CompileOptions::new().unwrap();
+            options.set_auto_bind_uniforms(true);
+            options.add_macro_definition("T", Some(c_ty));
+            options.add_macro_definition("BIAS", None);
+            options.add_macro_definition("RELU", None);
+            compile_glsl(compiler, src, &format!("gemm_bias_relu_{}", rust_ty), Some(&options))?;
+        }
+    }
+    Ok(())
 }
 
 fn main() -> Result<()> {
     
-    let mut compiler = GlslCompiler::new()?;
+    let mut compiler = Compiler::new().unwrap();
     
-    let glsl_modules = [
-        "fill::fill_u32"
-    ];
-    
-    for module in glsl_modules.iter() {
-        compiler.compile(module)?;
-    }
+    glsl_fill(&mut compiler)?; 
+    glsl_gemm(&mut compiler)?;  
       
     Ok(()) 
 }

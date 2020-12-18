@@ -83,7 +83,7 @@ pub struct ModuleId(u64);
 pub struct EntryId(u64);
 
 const MAX_BUFFERS_PER_COMPUTE_PASS: usize = 4;
-const MAX_PUSH_CONSTANT_SIZE: usize = 32;
+const MAX_PUSH_CONSTANT_SIZE: usize = 64;
 
 #[doc(hidden)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -291,6 +291,7 @@ impl<'a, B> ComputePassBuilder<'a, B> {
                 self.compute_pass.push_constants = bytemuck::cast_slice(&[push_constants]).to_vec();
                 Ok(self)
             } else {
+                eprintln!("{} != {}", size_of::<C>(), end - start);
                 Err(ComputePassBuilderError::PushConstantSize.into())
             }
         } else {
@@ -326,8 +327,12 @@ pub struct ComputePass {
     work_groups: [u32; 3],
 }
 
+mod sealed {
+    pub trait Sealed {}
+}
+
 #[doc(hidden)]
-pub trait Data {
+pub trait Data: sealed::Sealed + Sized {
     type Elem;
     #[doc(hidden)]
     fn needs_drop() -> bool;
@@ -336,6 +341,8 @@ pub trait Data {
 pub trait DataMut: Data {}
 
 pub struct BufferRepr<T>(PhantomData<T>);
+
+impl<T> sealed::Sealed for BufferRepr<T> {}
 
 impl<T> Data for BufferRepr<T> {
     type Elem = T;
@@ -348,12 +355,16 @@ impl<T> DataMut for BufferRepr<T> {}
 
 pub struct BufferSliceRepr<S>(PhantomData<S>);
 
+impl<T> sealed::Sealed for BufferSliceRepr<&'_ T> {}
+
 impl<T> Data for BufferSliceRepr<&'_ T> {
     type Elem = T;
     fn needs_drop() -> bool {
         false
     }
 }
+
+impl<T> sealed::Sealed for BufferSliceRepr<&'_ mut T> {}
 
 impl<T> Data for BufferSliceRepr<&'_ mut T> {
     type Elem = T;
@@ -413,6 +424,17 @@ impl<T, S: Data<Elem = T>> BufferBase<S> {
             _m: PhantomData::default(),
         }
     }
+    pub fn to_buffer(&self) -> Result<Buffer<T>> {
+        let buffer = Buffer::zeros(&self.device, self.len)?;
+        self.device.dyn_device.copy_buffer_to_buffer(
+            self.id,
+            self.offset * size_of::<T>(),
+            buffer.id,
+            0,
+            self.len * size_of::<T>()
+        )?;
+        Ok(buffer)
+    } 
     pub fn to_vec(&self) -> Result<impl Future<Output = Result<Vec<T>>>>
     where
         T: Pod,
