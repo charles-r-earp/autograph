@@ -37,9 +37,6 @@ jobs:
     name: Lint
     runs-on: ubuntu-latest
     steps:
-      # Note that we are explicitly NOT checking out submodules, to validate
-      # that we haven't accidentally enabled spirv-tools native compilation
-      # and regressed CI times
       - uses: actions/checkout@v2
       - name: Install rustup components
         run: rustup component add rustfmt clippy

@@ -32,7 +32,7 @@ fn compile_glsl(
 fn glsl_fill(compiler: &mut Compiler) -> Result<()> {
     let src = include_str!("src/glsl/fill.comp");
     // Note that these can be used for types of the same size, ie u32 and f32
-    for (rust_ty, c_ty) in [("u32", "uint"), ("u64, ulong")].iter() {
+    for (rust_ty, c_ty) in [("u32", "uint"), ("u64", "ulong")].iter() {
         let mut options = CompileOptions::new().unwrap();
         options.set_auto_bind_uniforms(true);
         options.add_macro_definition("T", Some(c_ty));
