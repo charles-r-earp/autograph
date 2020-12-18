@@ -15,7 +15,7 @@ macro_rules! include_spirv {
             pub bytes: Bytes,
         }
 
-        static ALIGNED: &AlignedAs::<u32, [u8]> = &AlignedAs {
+        static ALIGNED: &AlignedAs<u32, [u8]> = &AlignedAs {
             _align: [],
             bytes: *include_bytes!($file),
         };

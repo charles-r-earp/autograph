@@ -74,7 +74,7 @@ impl<T> Data for ArcRepr<T> {
     fn into_buffer(self) -> Result<Buffer<T>> {
         match Arc::try_unwrap(self.0) {
             Ok(buffer) => Ok(buffer),
-            Err(arc_buffer) => Ok(arc_buffer.to_buffer()?)
+            Err(arc_buffer) => Ok(arc_buffer.to_buffer()?),
         }
     }
     fn into_arc_buffer(self) -> Result<Arc<Buffer<T>>> {
@@ -117,7 +117,7 @@ impl<T> DataMut for ViewMutRepr<'_, T> {
     fn as_buffer_slice_mut(&mut self) -> BufferSliceMut<T> {
         self.0.as_buffer_slice_mut()
     }
-} 
+}
 
 fn strides_from_array<S, D>(array: &ArrayBase<S, D>) -> D
 where
@@ -243,7 +243,7 @@ impl<T, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
             device: self.device.clone(),
             dim: self.dim.clone(),
             strides: self.strides.clone(),
-            data: ViewRepr(self.data.as_buffer_slice())
+            data: ViewRepr(self.data.as_buffer_slice()),
         }
     }
     pub fn reversed_axes(mut self) -> Self {
@@ -291,7 +291,7 @@ impl<T, S: DataMut<Elem = T>, D: Dimension> TensorBase<S, D> {
             device: self.device.clone(),
             dim: self.dim.clone(),
             strides: self.strides.clone(),
-            data: ViewMutRepr(self.data.as_buffer_slice_mut())
+            data: ViewMutRepr(self.data.as_buffer_slice_mut()),
         }
     }
     fn as_buffer_slice_mut(&mut self) -> BufferSliceMut<T> {
@@ -317,7 +317,9 @@ pub trait Dot<R> {
     fn dot(&self, rhs: &R) -> Result<Self::Output>;
 }
 
-impl<T: gemm::Scalar, S1: Data<Elem=T>, S2: Data<Elem=T>> Dot<TensorBase<S2, Ix2>> for TensorBase<S1, Ix2> {
+impl<T: gemm::Scalar, S1: Data<Elem = T>, S2: Data<Elem = T>> Dot<TensorBase<S2, Ix2>>
+    for TensorBase<S1, Ix2>
+{
     type Output = Tensor2<T>;
     fn dot(&self, rhs: &TensorBase<S2, Ix2>) -> Result<Tensor2<T>> {
         let (m, k) = self.dim();
@@ -326,9 +328,13 @@ impl<T: gemm::Scalar, S1: Data<Elem=T>, S2: Data<Elem=T>> Dot<TensorBase<S2, Ix2
             return Err(ShapeError::IncompatibleShape.into());
         }
         let mut output = Tensor::zeros(self.device(), [m, n])?;
-        gemm::gemm(T::one(), &self.view(), &rhs.view(), T::zero(), &mut output.view_mut())?;
+        gemm::gemm(
+            T::one(),
+            &self.view(),
+            &rhs.view(),
+            T::zero(),
+            &mut output.view_mut(),
+        )?;
         Ok(output)
     }
 }
-
-

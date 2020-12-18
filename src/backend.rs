@@ -1,4 +1,7 @@
-use crate::{error::{ShaderModuleError, ComputePassBuilderError}, Result};
+use crate::{
+    error::{ComputePassBuilderError, ShaderModuleError},
+    Result,
+};
 use bytemuck::Pod;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
@@ -52,7 +55,12 @@ pub mod dyn_device_proxy {
         ) -> Result<impl Future<Output = Result<Vec<T>>>> {
         }
         #[implement]
-        pub(super) fn compile_shader_module(&self, id: ModuleId, module: &ShaderModule) -> Result<()> {}
+        pub(super) fn compile_shader_module(
+            &self,
+            id: ModuleId,
+            module: &ShaderModule,
+        ) -> Result<()> {
+        }
         #[implement]
         pub(super) fn enqueue_compute_pass(&self, compute_pass: ComputePass) -> Result<()> {}
         #[implement]
@@ -101,7 +109,7 @@ pub struct PushConstantRange {
 
 impl Into<std::ops::Range<u32>> for PushConstantRange {
     fn into(self) -> std::ops::Range<u32> {
-        self.start .. self.end
+        self.start..self.end
     }
 }
 
@@ -131,7 +139,10 @@ impl<'a> ShaderModule<'a> {
     fn from_spirv(spirv: impl Into<Cow<'a, [u8]>>) -> Result<Self> {
         let spirv = spirv.into();
         let entry_descriptors = shader_util::entry_descriptors_from_spirv(&spirv)?;
-        Ok(Self { spirv, entry_descriptors })
+        Ok(Self {
+            spirv,
+            entry_descriptors,
+        })
     }
 }
 
@@ -203,7 +214,7 @@ impl Device {
                 entry_id,
                 buffer_bindings,
                 push_constants: Vec::new(),
-                work_groups: [1, 1, 1]
+                work_groups: [1, 1, 1],
             },
             borrows: (),
         })
@@ -237,55 +248,71 @@ pub struct ComputePassBuilder<'a, B> {
 }
 
 impl<'a, B> ComputePassBuilder<'a, B> {
-    pub fn buffer_slice<'b, T>(mut self, slice: &'b BufferSlice<'b, T>) -> Result<ComputePassBuilder<'a, (B, &'b BufferSlice<T>)>> {
-        if let Some(buffer_descriptor) = self.entry_descriptor
-            .buffer_descriptors.get(self.compute_pass.buffer_bindings.len()) {
+    pub fn buffer_slice<'b, T>(
+        mut self,
+        slice: &'b BufferSlice<'b, T>,
+    ) -> Result<ComputePassBuilder<'a, (B, &'b BufferSlice<T>)>> {
+        if let Some(buffer_descriptor) = self
+            .entry_descriptor
+            .buffer_descriptors
+            .get(self.compute_pass.buffer_bindings.len())
+        {
             if !buffer_descriptor.mutable {
                 self.compute_pass.buffer_bindings.push(BufferBinding {
                     binding: buffer_descriptor.binding,
                     id: slice.id,
                     offset: (slice.offset * size_of::<T>()) as u64,
-                    len: (slice.len * size_of::<T>()) as u64
+                    len: (slice.len * size_of::<T>()) as u64,
                 });
                 Ok(ComputePassBuilder {
                     device: self.device,
                     entry_descriptor: self.entry_descriptor,
                     compute_pass: self.compute_pass,
-                    borrows: (self.borrows, slice)
+                    borrows: (self.borrows, slice),
                 })
             } else {
                 Err(ComputePassBuilderError::BufferMutability.into())
             }
         } else {
             Err(ComputePassBuilderError::NumberOfBuffers.into())
-        }           
+        }
     }
-    pub fn buffer_slice_mut<'b, T>(mut self, slice: &'b BufferSliceMut<'b, T>) -> Result<ComputePassBuilder<'a, (B, &'b BufferSliceMut<T>)>> {
-        if let Some(buffer_descriptor) = self.entry_descriptor
-            .buffer_descriptors.get(self.compute_pass.buffer_bindings.len()) {
+    pub fn buffer_slice_mut<'b, T>(
+        mut self,
+        slice: &'b BufferSliceMut<'b, T>,
+    ) -> Result<ComputePassBuilder<'a, (B, &'b BufferSliceMut<T>)>> {
+        if let Some(buffer_descriptor) = self
+            .entry_descriptor
+            .buffer_descriptors
+            .get(self.compute_pass.buffer_bindings.len())
+        {
             if buffer_descriptor.mutable {
                 self.compute_pass.buffer_bindings.push(BufferBinding {
                     binding: buffer_descriptor.binding,
                     id: slice.id,
                     offset: (slice.offset * size_of::<T>()) as u64,
-                    len: (slice.len * size_of::<T>()) as u64
+                    len: (slice.len * size_of::<T>()) as u64,
                 });
                 Ok(ComputePassBuilder {
                     device: self.device,
                     entry_descriptor: self.entry_descriptor,
                     compute_pass: self.compute_pass,
-                    borrows: (self.borrows, slice)
+                    borrows: (self.borrows, slice),
                 })
             } else {
                 Err(ComputePassBuilderError::BufferMutability.into())
             }
         } else {
             Err(ComputePassBuilderError::NumberOfBuffers.into())
-        }           
+        }
     }
     pub fn push_constants<C>(mut self, push_constants: C) -> Result<Self>
-        where C: Pod {
-        if let Some(push_constant_descriptor) = self.entry_descriptor.push_constant_descriptor.as_ref() {
+    where
+        C: Pod,
+    {
+        if let Some(push_constant_descriptor) =
+            self.entry_descriptor.push_constant_descriptor.as_ref()
+        {
             let PushConstantRange { start, end } = push_constant_descriptor.range;
             if size_of::<C>() == (end - start) as usize {
                 self.compute_pass.push_constants = bytemuck::cast_slice(&[push_constants]).to_vec();
@@ -298,7 +325,7 @@ impl<'a, B> ComputePassBuilder<'a, B> {
             Err(ComputePassBuilderError::PushConstantSize.into())
         }
     }
-    /// Sets the number of work groups\ 
+    /// Sets the number of work groups\
     ///
     /// The provided function f takes the local size [x, y, z] and returns\
     /// the work groups [x, y, z]
@@ -431,10 +458,10 @@ impl<T, S: Data<Elem = T>> BufferBase<S> {
             self.offset * size_of::<T>(),
             buffer.id,
             0,
-            self.len * size_of::<T>()
+            self.len * size_of::<T>(),
         )?;
         Ok(buffer)
-    } 
+    }
     pub fn to_vec(&self) -> Result<impl Future<Output = Result<Vec<T>>>>
     where
         T: Pod,

@@ -1,4 +1,4 @@
-use crate::backend::{BufferId, ModuleId, EntryId};
+use crate::backend::{BufferId, EntryId, ModuleId};
 use serde::{Deserialize, Serialize};
 use std::fmt::{self, Debug, Display};
 
@@ -117,12 +117,12 @@ impl From<ShaderModuleError> for Error {
 pub enum ComputePassBuilderError {
     PushConstantSize,
     NumberOfBuffers,
-    BufferMutability,   
-    InvalidDevice
+    BufferMutability,
+    InvalidDevice,
 }
 
 impl From<ComputePassBuilderError> for Error {
     fn from(e: ComputePassBuilderError) -> Self {
         Self::ComputePassBuilder(e)
     }
-} 
+}
