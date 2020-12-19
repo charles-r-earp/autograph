@@ -130,9 +130,6 @@ fn gemm_impl<T: Scalar>(
     let [rsc, csc]: [isize; 2] = c.strides().try_into().unwrap();
     let [rsc, csc] = [rsc as i32, csc as i32];
 
-    let global_size_x = m as u32;
-    let global_size_y = n as u32;
-
     let push_consts = GemmPushConsts {
         m,
         k,
@@ -149,38 +146,13 @@ fn gemm_impl<T: Scalar>(
         a0,
     };
 
-    let work_groups = |[local_size_x, local_size_y, _]: [u32; 3]| {
-        let work_groups_x = if global_size_x % local_size_x == 0 {
-            global_size_x / local_size_x
-        } else {
-            global_size_x / local_size_x + 1
-        };
-        let work_groups_y = if global_size_y % local_size_y == 0 {
-            global_size_y / local_size_y
-        } else {
-            global_size_y / local_size_y + 1
-        };
-        [work_groups_x, work_groups_y, 1]
-    };
-
-    if let Some(bias) = bias {
-        device
-            .compute_pass(src, "main")?
-            .buffer_slice(&a.as_buffer_slice())?
-            .buffer_slice(&b.as_buffer_slice())?
-            .buffer_slice(&bias.as_buffer_slice())?
-            .buffer_slice_mut(&c.as_buffer_slice_mut())?
-            .push_constants(push_consts)?
-            .work_groups(work_groups)
-            .enqueue()
-    } else {
-        device
-            .compute_pass(src, "main")?
-            .buffer_slice(&a.as_buffer_slice())?
-            .buffer_slice(&b.as_buffer_slice())?
-            .buffer_slice_mut(&c.as_buffer_slice_mut())?
-            .push_constants(push_consts)?
-            .work_groups(work_groups)
-            .enqueue()
-    }
+    device
+        .compute_pass(src, "main")?
+        .buffer_slice(a.as_buffer_slice())?
+        .buffer_slice(b.as_buffer_slice())?
+        .option_buffer_slice(bias.as_ref().map(|bias| bias.as_buffer_slice()))?
+        .buffer_slice_mut(c.as_buffer_slice_mut())?
+        .push_constants(push_consts)?
+        .global_size([m, n, 1])
+        .enqueue()
 }

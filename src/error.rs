@@ -9,6 +9,7 @@ pub enum Error {
     GpuError(GpuError),
     ShaderModuleError(ShaderModuleError),
     ComputePassBuilder(ComputePassBuilderError),
+    Unimplemented,
 }
 
 impl Display for Error {

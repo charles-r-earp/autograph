@@ -13,6 +13,7 @@ use std::marker::PhantomData;
 use std::mem::size_of;
 use std::sync::Arc;
 
+mod fill;
 pub mod shader_util;
 
 #[doc(hidden)]
@@ -161,6 +162,9 @@ impl Device {
             })
         })
     }
+    pub fn list() -> Vec<Self> {
+        Self::list_gpus()
+    }
     pub fn list_gpus() -> Vec<Self> {
         let mut tasks = Vec::new();
         let mut i = 0;
@@ -248,64 +252,114 @@ pub struct ComputePassBuilder<'a, B> {
 }
 
 impl<'a, B> ComputePassBuilder<'a, B> {
-    pub fn buffer_slice<'b, T>(
+    /// Adds an immutable buffer argument\
+    ///
+    /// Must be readonly in spirv\
+    /// Buffers are bound in binding order, low to high\
+    /// Errors if more buffers are provided than in spirv
+    pub fn buffer_slice<T>(
+        self,
+        slice: BufferSlice<T>,
+    ) -> Result<ComputePassBuilder<'a, (B, Option<BufferSlice<T>>)>> {
+        self.option_buffer_slice(Some(slice))
+    }
+    /// Adds an optional immutable buffer argument\
+    ///
+    /// See buffer_slice()
+    pub fn option_buffer_slice<T>(
         mut self,
-        slice: &'b BufferSlice<'b, T>,
-    ) -> Result<ComputePassBuilder<'a, (B, &'b BufferSlice<T>)>> {
-        if let Some(buffer_descriptor) = self
-            .entry_descriptor
-            .buffer_descriptors
-            .get(self.compute_pass.buffer_bindings.len())
-        {
-            if !buffer_descriptor.mutable {
-                self.compute_pass.buffer_bindings.push(BufferBinding {
-                    binding: buffer_descriptor.binding,
-                    id: slice.id,
-                    offset: (slice.offset * size_of::<T>()) as u64,
-                    len: (slice.len * size_of::<T>()) as u64,
-                });
-                Ok(ComputePassBuilder {
-                    device: self.device,
-                    entry_descriptor: self.entry_descriptor,
-                    compute_pass: self.compute_pass,
-                    borrows: (self.borrows, slice),
-                })
+        slice: Option<BufferSlice<T>>,
+    ) -> Result<ComputePassBuilder<'a, (B, Option<BufferSlice<T>>)>> {
+        if let Some(slice) = slice {
+            if let Some(buffer_descriptor) = self
+                .entry_descriptor
+                .buffer_descriptors
+                .get(self.compute_pass.buffer_bindings.len())
+            {
+                if !buffer_descriptor.mutable {
+                    self.compute_pass.buffer_bindings.push(BufferBinding {
+                        binding: buffer_descriptor.binding,
+                        id: slice.id,
+                        offset: (slice.offset * size_of::<T>()) as u64,
+                        len: (slice.len * size_of::<T>()) as u64,
+                    });
+                    Ok(ComputePassBuilder {
+                        device: self.device,
+                        entry_descriptor: self.entry_descriptor,
+                        compute_pass: self.compute_pass,
+                        borrows: (self.borrows, Some(slice)),
+                    })
+                } else {
+                    Err(ComputePassBuilderError::BufferMutability.into())
+                }
             } else {
-                Err(ComputePassBuilderError::BufferMutability.into())
+                Err(ComputePassBuilderError::NumberOfBuffers.into())
             }
         } else {
-            Err(ComputePassBuilderError::NumberOfBuffers.into())
+            Ok(ComputePassBuilder {
+                device: self.device,
+                entry_descriptor: self.entry_descriptor,
+                compute_pass: self.compute_pass,
+                borrows: (self.borrows, None),
+            })
         }
     }
-    pub fn buffer_slice_mut<'b, T>(
+    /// Adds a mutable buffer argument\
+    ///
+    /// Must not be readonly in spirv\
+    /// Buffers are bound in binding order, low to high\
+    /// Errors if more buffers are provided than in spirv
+    pub fn buffer_slice_mut<T>(
+        self,
+        slice: BufferSliceMut<T>,
+    ) -> Result<ComputePassBuilder<'a, (B, Option<BufferSliceMut<T>>)>> {
+        self.option_buffer_slice_mut(Some(slice))
+    }
+    /// Adds an optional mutable buffer argument\
+    ///
+    /// See buffer_slice_mut()
+    pub fn option_buffer_slice_mut<T>(
         mut self,
-        slice: &'b BufferSliceMut<'b, T>,
-    ) -> Result<ComputePassBuilder<'a, (B, &'b BufferSliceMut<T>)>> {
-        if let Some(buffer_descriptor) = self
-            .entry_descriptor
-            .buffer_descriptors
-            .get(self.compute_pass.buffer_bindings.len())
-        {
-            if buffer_descriptor.mutable {
-                self.compute_pass.buffer_bindings.push(BufferBinding {
-                    binding: buffer_descriptor.binding,
-                    id: slice.id,
-                    offset: (slice.offset * size_of::<T>()) as u64,
-                    len: (slice.len * size_of::<T>()) as u64,
-                });
-                Ok(ComputePassBuilder {
-                    device: self.device,
-                    entry_descriptor: self.entry_descriptor,
-                    compute_pass: self.compute_pass,
-                    borrows: (self.borrows, slice),
-                })
+        slice: Option<BufferSliceMut<T>>,
+    ) -> Result<ComputePassBuilder<'a, (B, Option<BufferSliceMut<T>>)>> {
+        if let Some(slice) = slice {
+            if let Some(buffer_descriptor) = self
+                .entry_descriptor
+                .buffer_descriptors
+                .get(self.compute_pass.buffer_bindings.len())
+            {
+                if buffer_descriptor.mutable {
+                    self.compute_pass.buffer_bindings.push(BufferBinding {
+                        binding: buffer_descriptor.binding,
+                        id: slice.id,
+                        offset: (slice.offset * size_of::<T>()) as u64,
+                        len: (slice.len * size_of::<T>()) as u64,
+                    });
+                    Ok(ComputePassBuilder {
+                        device: self.device,
+                        entry_descriptor: self.entry_descriptor,
+                        compute_pass: self.compute_pass,
+                        borrows: (self.borrows, Some(slice)),
+                    })
+                } else {
+                    Err(ComputePassBuilderError::BufferMutability.into())
+                }
             } else {
-                Err(ComputePassBuilderError::BufferMutability.into())
+                Err(ComputePassBuilderError::NumberOfBuffers.into())
             }
         } else {
-            Err(ComputePassBuilderError::NumberOfBuffers.into())
+            Ok(ComputePassBuilder {
+                device: self.device,
+                entry_descriptor: self.entry_descriptor,
+                compute_pass: self.compute_pass,
+                borrows: (self.borrows, None),
+            })
         }
     }
+    /// Sets push constants\
+    ///
+    /// Only one push constant block per pass\
+    /// The size of C must match the spirv
     pub fn push_constants<C>(mut self, push_constants: C) -> Result<Self>
     where
         C: Pod,
@@ -318,7 +372,6 @@ impl<'a, B> ComputePassBuilder<'a, B> {
                 self.compute_pass.push_constants = bytemuck::cast_slice(&[push_constants]).to_vec();
                 Ok(self)
             } else {
-                eprintln!("{} != {}", size_of::<C>(), end - start);
                 Err(ComputePassBuilderError::PushConstantSize.into())
             }
         } else {
@@ -327,10 +380,26 @@ impl<'a, B> ComputePassBuilder<'a, B> {
     }
     /// Sets the number of work groups\
     ///
+    /// Use either this method or global_size()\
     /// The provided function f takes the local size [x, y, z] and returns\
     /// the work groups [x, y, z]
     pub fn work_groups(mut self, f: impl Fn([u32; 3]) -> [u32; 3]) -> Self {
         self.compute_pass.work_groups = f(self.entry_descriptor.local_size);
+        self
+    }
+    /// Sets the global size\
+    ///
+    /// Use either this method or work_groups()\
+    /// This will set the work groups such that work_groups * local_size >= global_size
+    pub fn global_size(mut self, global_size: [u32; 3]) -> Self {
+        for (wg, (gs, ls)) in self.compute_pass.work_groups.iter_mut().zip(
+            global_size
+                .iter()
+                .copied()
+                .zip(self.entry_descriptor.local_size.iter().copied()),
+        ) {
+            *wg = if gs % ls == 0 { gs / ls } else { gs / ls + 1 };
+        }
         self
     }
     /// Enqueues the compute pass\
@@ -439,6 +508,14 @@ impl<T> Buffer<T> {
             _m: PhantomData::default(),
         })
     }
+    pub fn from_elem(device: &Device, elem: T, len: usize) -> Result<Self>
+    where
+        T: Pod,
+    {
+        let mut buffer = Self::zeros(device, len)?;
+        buffer.fill(elem)?;
+        Ok(buffer)
+    }
 }
 
 impl<T, S: Data<Elem = T>> BufferBase<S> {
@@ -481,6 +558,15 @@ impl<T, S: DataMut<Elem = T>> BufferBase<S> {
             len: self.len,
             _m: PhantomData::default(),
         }
+    }
+    /// Fills the buffer with T\
+    ///
+    /// T must be 32 or 64 bits
+    pub fn fill(&mut self, x: T) -> Result<()>
+    where
+        T: Pod,
+    {
+        fill::fill(&self.device.clone(), self.as_buffer_slice_mut(), x)
     }
 }
 

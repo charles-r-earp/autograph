@@ -6,12 +6,13 @@ use ndarray::{Array, ArrayBase, CowArray, RawArrayView};
 pub use ndarray::{
     Dimension, IntoDimension, Ix, Ix1, Ix2, Ix3, Ix4, Ix5, Ix6, IxDyn, ShapeBuilder, StrideShape,
 };
+use num_traits::One;
 use smol::future::Future;
 use std::borrow::Cow;
 use std::fmt::{self, Debug};
 use std::sync::Arc;
 
-pub mod gemm;
+pub mod linalg;
 
 mod sealed {
     pub trait Sealed {}
@@ -199,6 +200,23 @@ impl<T, S: DataOwned<Elem = T>, D: Dimension> TensorBase<S, D> {
             Err(ShapeError::IncompatibleShape.into())
         }
     }
+    /// Fills the Tensor with elem on creation\
+    ///
+    /// T must be 32 or 64 bits
+    pub fn from_elem<Sh>(device: &Device, shape: Sh, elem: T) -> Result<Self>
+    where
+        T: Pod,
+        Sh: ShapeBuilder<Dim = D>,
+    {
+        let (dim, strides) = dim_strides_from_shape(shape.into_shape());
+        let data = S::from_buffer(Buffer::from_elem(device, elem, dim.size())?);
+        Ok(Self {
+            device: device.clone(),
+            dim,
+            strides,
+            data,
+        })
+    }
     pub fn zeros<Sh>(device: &Device, shape: Sh) -> Result<Self>
     where
         Sh: ShapeBuilder<Dim = D>,
@@ -211,6 +229,13 @@ impl<T, S: DataOwned<Elem = T>, D: Dimension> TensorBase<S, D> {
             strides,
             data,
         })
+    }
+    pub fn ones<Sh>(device: &Device, shape: Sh) -> Result<Self>
+    where
+        T: Pod + One,
+        Sh: ShapeBuilder<Dim = D>,
+    {
+        Self::from_elem(device, shape, T::one())
     }
     pub fn from_array<'a>(device: &Device, array: impl Into<CowArray<'a, T, D>>) -> Result<Self>
     where
@@ -294,8 +319,14 @@ impl<T, S: DataMut<Elem = T>, D: Dimension> TensorBase<S, D> {
             data: ViewMutRepr(self.data.as_buffer_slice_mut()),
         }
     }
-    fn as_buffer_slice_mut(&mut self) -> BufferSliceMut<T> {
+    pub fn as_buffer_slice_mut(&mut self) -> BufferSliceMut<T> {
         self.data.as_buffer_slice_mut()
+    }
+    pub fn fill(&mut self, x: T) -> Result<()>
+    where
+        T: Pod,
+    {
+        self.data.as_buffer_slice_mut().fill(x)
     }
 }
 
@@ -317,7 +348,7 @@ pub trait Dot<R> {
     fn dot(&self, rhs: &R) -> Result<Self::Output>;
 }
 
-impl<T: gemm::Scalar, S1: Data<Elem = T>, S2: Data<Elem = T>> Dot<TensorBase<S2, Ix2>>
+impl<T: linalg::Scalar, S1: Data<Elem = T>, S2: Data<Elem = T>> Dot<TensorBase<S2, Ix2>>
     for TensorBase<S1, Ix2>
 {
     type Output = Tensor2<T>;
@@ -328,7 +359,7 @@ impl<T: gemm::Scalar, S1: Data<Elem = T>, S2: Data<Elem = T>> Dot<TensorBase<S2,
             return Err(ShapeError::IncompatibleShape.into());
         }
         let mut output = Tensor::zeros(self.device(), [m, n])?;
-        gemm::gemm(
+        linalg::gemm(
             T::one(),
             &self.view(),
             &rhs.view(),
@@ -336,5 +367,14 @@ impl<T: gemm::Scalar, S1: Data<Elem = T>, S2: Data<Elem = T>> Dot<TensorBase<S2,
             &mut output.view_mut(),
         )?;
         Ok(output)
+    }
+}
+
+impl<S: Data, D: Dimension> TensorBase<S, D> {
+    pub fn dot<R>(&self, rhs: &R) -> Result<<Self as Dot<R>>::Output>
+    where
+        Self: Dot<R>,
+    {
+        Dot::dot(self, rhs)
     }
 }
