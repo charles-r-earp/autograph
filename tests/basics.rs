@@ -51,6 +51,7 @@ fn tensor_from_elem() -> Result<()> {
             assert_eq!(y, vec![x; n]);
         }
         for x in [1f64, 2., 1000.].iter().copied() {
+            eprintln!("tensor_from_elem: {:?}", &device);
             let y = Tensor::from_elem(&device, n, x)?;
             let y = smol::block_on(y.to_vec()?)?;
             assert_eq!(y, vec![x; n]);
