@@ -6,7 +6,7 @@ use ndarray::Array;
 
 #[test]
 fn device_list() {
-    Device::list();
+    panic!("{:?}", Device::list());
 }
 
 #[test]
