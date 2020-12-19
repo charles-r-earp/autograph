@@ -74,7 +74,7 @@ struct FillU32PushConsts {
 
 #[test]
 fn compute_pass_fill_u32() -> Result<()> {
-    let spirv = include_spirv!(env!("glsl::fill_f32"));
+    let spirv = include_spirv!("../src/shaders/glsl/fill_f32.spv");
 
     for gpu in Device::list_gpus() {
         let n = 10;

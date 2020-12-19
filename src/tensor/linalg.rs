@@ -1,6 +1,6 @@
 use super::{TensorView1, TensorView2, TensorViewMut2};
 use crate::error::ShapeError;
-use crate::{include_spirv, Result};
+use crate::Result;
 use bytemuck::{Pod, Zeroable};
 use num_traits::{One, Zero};
 use std::any::TypeId;
@@ -30,7 +30,8 @@ enum PostOp {
     Relu,
 }
 
-#[repr(C, packed(4))]
+#[derive(Clone, Copy)]
+#[repr(C)]
 struct GemmPushConsts<T: Scalar> {
     m: u32,
     k: u32,
@@ -46,14 +47,6 @@ struct GemmPushConsts<T: Scalar> {
     beta: T,
     a0: T, // ie relu negative slope
 }
-
-impl<T: Scalar> Clone for GemmPushConsts<T> {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-
-impl<T: Scalar> Copy for GemmPushConsts<T> {}
 
 unsafe impl<T: Scalar> Zeroable for GemmPushConsts<T> {}
 
@@ -83,32 +76,32 @@ fn gemm_impl<T: Scalar>(
     c: &mut TensorViewMut2<T>,
 ) -> Result<()> {
     let device = a.device();
-
+    
     let src = if TypeId::of::<T>() == TypeId::of::<f32>() {
         match post_op {
             PostOp::Identity => {
                 if bias.is_some() {
-                    include_spirv!(env!("glsl::gemm_bias_f32"))
+                    include_shader!("glsl/gemm_bias_f32.spv")
                 } else {
-                    include_spirv!(env!("glsl::gemm_f32"))
+                    include_shader!("glsl/gemm_f32.spv")
                 }
             }
             PostOp::Relu => {
                 if bias.is_some() {
-                    include_spirv!(env!("glsl::gemm_bias_relu_f32"))
+                    include_shader!("glsl/gemm_bias_relu_f32.spv")
                 } else {
-                    include_spirv!(env!("glsl::gemm_relu_f32"))
+                    include_shader!("glsl/gemm_relu_f32.spv")
                 }
             }
         }
     } else if TypeId::of::<T>() == TypeId::of::<f64>() {
-        include_spirv!(env!("glsl::gemm_f64"))
+        include_shader!("glsl/gemm_f64.spv")
     } else if TypeId::of::<T>() == TypeId::of::<i32>() {
-        include_spirv!(env!("glsl::gemm_i32"))
+        include_shader!("glsl/gemm_i32.spv")
     } else {
         unreachable!()
     };
-
+    
     let (m, k) = a.dim();
     let (k2, n) = b.dim();
     let (m2, n2) = c.dim();

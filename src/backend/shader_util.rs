@@ -367,83 +367,9 @@ pub(super) fn entry_descriptors_from_spirv(spirv: &[u8]) -> Result<Vec<EntryDesc
 mod tests {
     use super::*;
 
-    /*
-    fn compile_glsl(src: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-        use std::io::Read;
-        let mut spirv = Vec::new();
-        glsl_to_spirv::compile(src, glsl_to_spirv::ShaderType::Compute)?.read_to_end(&mut spirv)?;
-        Ok(spirv)
-    }
-
-    #[test]
-    fn add() {
-        let spirv = compile_glsl(
-            r#"
-        #version 450
-
-        layout(local_size_x=64) in;
-
-        layout(binding=0) readonly buffer X1 {
-            float x1[];
-        };
-
-        layout(binding=1) readonly buffer X2 {
-            float x2[];
-        };
-
-        layout(binding=2) buffer Y {
-            float y[];
-        };
-
-        layout(push_constant) uniform PushConsts {
-            uint n;
-        };
-
-        void main() {
-            uint gid = gl_GlobalInvocationID.x;
-            if (gid < n) {
-                y[gid] = x1[gid] + x2[gid];
-            }
-        }
-
-        "#,
-        )
-        .unwrap();
-
-        let entry_descriptors = entry_descriptors_from_spirv(&spirv).unwrap();
-
-        let target = vec![EntryDescriptor {
-            name: String::from("main"),
-            local_size: [64, 1, 1],
-            buffer_descriptors: vec![
-                BufferDescriptor {
-                    binding: 0,
-                    mutable: false,
-                },
-                BufferDescriptor {
-                    binding: 1,
-                    mutable: false,
-                },
-                BufferDescriptor {
-                    binding: 2,
-                    mutable: true,
-                },
-            ],
-            push_constant_descriptor: Some(PushConstantDescriptor {
-                range: PushConstantRange { start: 0, end: 4 },
-            }),
-        }];
-
-        assert_eq!(
-            &entry_descriptors, &target,
-            "output:\n{:#?}\n!=\ntarget\n{:#?}",
-            entry_descriptors, target
-        );
-    }*/
-
     #[test]
     fn shader_module_fill_u32() {
-        let spirv = include_bytes!(env!("glsl::fill_f32"));
+        let spirv = include_bytes!("../shaders/glsl/fill_f32.spv");
 
         let entry_descriptors = entry_descriptors_from_spirv(spirv).unwrap();
 

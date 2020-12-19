@@ -290,7 +290,11 @@ impl<'a, B> ComputePassBuilder<'a, B> {
                         borrows: (self.borrows, Some(slice)),
                     })
                 } else {
-                    Err(ComputePassBuilderError::BufferMutability.into())
+                    Err(ComputePassBuilderError::BufferMutability {
+                        binding: buffer_descriptor.binding,
+                        spirv_mutable: buffer_descriptor.mutable,
+                        rust_mutable: false
+                    }.into())
                 }
             } else {
                 Err(ComputePassBuilderError::NumberOfBuffers.into())
@@ -342,7 +346,11 @@ impl<'a, B> ComputePassBuilder<'a, B> {
                         borrows: (self.borrows, Some(slice)),
                     })
                 } else {
-                    Err(ComputePassBuilderError::BufferMutability.into())
+                    Err(ComputePassBuilderError::BufferMutability {
+                        binding: buffer_descriptor.binding,
+                        spirv_mutable: buffer_descriptor.mutable,
+                        rust_mutable: true
+                    }.into())
                 }
             } else {
                 Err(ComputePassBuilderError::NumberOfBuffers.into())
@@ -372,10 +380,16 @@ impl<'a, B> ComputePassBuilder<'a, B> {
                 self.compute_pass.push_constants = bytemuck::cast_slice(&[push_constants]).to_vec();
                 Ok(self)
             } else {
-                Err(ComputePassBuilderError::PushConstantSize.into())
+                Err(ComputePassBuilderError::PushConstantSize {
+                    spirv: end - start,
+                    rust: size_of::<C>() as u32,
+                }.into())
             }
         } else {
-            Err(ComputePassBuilderError::PushConstantSize.into())
+            Err(ComputePassBuilderError::PushConstantSize {
+                spirv: 0,
+                rust: size_of::<C>() as u32,
+            }.into())
         }
     }
     /// Sets the number of work groups\

@@ -23,15 +23,12 @@ jobs:
             target: x86_64-apple-darwin
     steps:
     - uses: actions/checkout@v2
-    - name: install windows deps
-      if: ${{ matrix.os == 'windows-latest' }}
-      run: choco install ninja
     - name: cargo fetch
       run: cargo fetch --target ${{ matrix.target }}
     - name: Check
-      run: cargo check 
+      run: cargo check --tests --lib --benches
     - name: Test 
-      run: cargo test
+      run: cargo test --tests --lib --benches
 
   lint:
     name: Lint
@@ -43,6 +40,6 @@ jobs:
       - name: Rustfmt
         run: cargo fmt --all -- --check
       - name: cargo fetch
-        run: cargo fetch
+        run: cargo fetch 
       - name: Clippy
         run: RUSTFLAGS="-Dwarnings" cargo clippy -- -D warnings

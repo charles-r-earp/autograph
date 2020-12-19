@@ -12,6 +12,11 @@ categories = ["science"]
 readme = "README.md"
 publish = false
 
+[features]
+# Dev use only / Shaders are shipped with the crate
+# GLSL compilation does not work on Windows
+compile-shaders = []
+
 [dependencies]
 wgpu = "0.6.0"
 proxy-enum = "0.3.0"
@@ -23,9 +28,6 @@ rspirv = "0.7.0"
 serde = { version = "1.0.118", features = ["derive"] }
 ahash = "0.6.1"
 num-traits = "0.2.14"
-
-[build-dependencies]
-shaderc = "0.7.0"
 
 [dev-dependencies]
 approx = "0.4.0"

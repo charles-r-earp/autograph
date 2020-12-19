@@ -1,11 +1,11 @@
 use autograph::backend::Device;
-use autograph::tensor::{gemm::Scalar as GemmScalar, Dot, Tensor};
+use autograph::tensor::{linalg::Scalar as LinalgScalar, Tensor};
 use criterion::{criterion_group, criterion_main, Criterion};
 use ndarray::{Array, ArrayView2};
 use std::any::type_name;
 
-fn gemm_benches<T: GemmScalar>(device: &Device, c: &mut Criterion) {
-    fn bench_dot_nn<T: GemmScalar>(
+fn gemm_benches<T: LinalgScalar>(device: &Device, c: &mut Criterion) {
+    fn bench_dot_nn<T: LinalgScalar>(
         device: &Device,
         c: &mut Criterion,
         x1: &ArrayView2<T>,
@@ -29,7 +29,7 @@ fn gemm_benches<T: GemmScalar>(device: &Device, c: &mut Criterion) {
             },
         );
     }
-    fn bench_dot_nt<T: GemmScalar>(
+    fn bench_dot_nt<T: LinalgScalar>(
         device: &Device,
         c: &mut Criterion,
         x1: &ArrayView2<T>,

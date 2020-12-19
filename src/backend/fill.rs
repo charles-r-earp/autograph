@@ -1,6 +1,5 @@
 use super::{BufferSliceMut, Device};
 use crate::error::Error;
-use crate::include_spirv;
 use crate::Result;
 use bytemuck::{Pod, Zeroable};
 use std::mem::size_of;
@@ -21,9 +20,9 @@ where
     T: Pod,
 {
     let src = if size_of::<T>() == size_of::<f32>() {
-        include_spirv!(env!("glsl::fill_f32"))
+        include_shader!("glsl/fill_f32.spv")
     } else if size_of::<T>() == size_of::<f64>() {
-        include_spirv!(env!("glsl::fill_f64"))
+        include_shader!("glsl/fill_f64.spv")
     } else {
         return Err(Error::Unimplemented);
     };
