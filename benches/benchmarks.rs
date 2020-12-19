@@ -72,7 +72,6 @@ fn gemm_benches<T: LinalgScalar>(device: &Device, c: &mut Criterion) {
 pub fn criterion_benchmark(c: &mut Criterion) {
     for gpu in Device::list_gpus() {
         gemm_benches::<f32>(&gpu, c);
-        gemm_benches::<f64>(&gpu, c);
         gemm_benches::<i32>(&gpu, c);
     }
 }

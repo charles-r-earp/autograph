@@ -16,10 +16,6 @@ impl sealed::Sealed for f32 {}
 
 impl Scalar for f32 {}
 
-impl sealed::Sealed for f64 {}
-
-impl Scalar for f64 {}
-
 impl sealed::Sealed for i32 {}
 
 impl Scalar for i32 {}
@@ -94,8 +90,6 @@ fn gemm_impl<T: Scalar>(
                 }
             }
         }
-    } else if TypeId::of::<T>() == TypeId::of::<f64>() {
-        include_shader!("glsl/gemm_f64.spv")
     } else if TypeId::of::<T>() == TypeId::of::<i32>() {
         include_shader!("glsl/gemm_i32.spv")
     } else {

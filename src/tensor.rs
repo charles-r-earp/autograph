@@ -202,7 +202,7 @@ impl<T, S: DataOwned<Elem = T>, D: Dimension> TensorBase<S, D> {
     }
     /// Fills the Tensor with elem on creation\
     ///
-    /// T must be 32 or 64 bits
+    /// T must be 32 bits
     pub fn from_elem<Sh>(device: &Device, shape: Sh, elem: T) -> Result<Self>
     where
         T: Pod,

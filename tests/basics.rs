@@ -6,7 +6,7 @@ use ndarray::Array;
 
 #[test]
 fn device_list() {
-    panic!("{:?}", Device::list());
+    Device::list();
 }
 
 #[test]
@@ -46,12 +46,6 @@ fn tensor_from_elem() -> Result<()> {
     let n = 1200;
     for device in Device::list() {
         for x in [1f32, 2., 1000.].iter().copied() {
-            let y = Tensor::from_elem(&device, n, x)?;
-            let y = smol::block_on(y.to_vec()?)?;
-            assert_eq!(y, vec![x; n]);
-        }
-        for x in [1f64, 2., 1000.].iter().copied() {
-            eprintln!("tensor_from_elem: {:?}", &device);
             let y = Tensor::from_elem(&device, n, x)?;
             let y = smol::block_on(y.to_vec()?)?;
             assert_eq!(y, vec![x; n]);

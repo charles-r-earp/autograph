@@ -21,8 +21,6 @@ where
 {
     let src = if size_of::<T>() == size_of::<f32>() {
         include_shader!("glsl/fill_f32.spv")
-    } else if size_of::<T>() == size_of::<f64>() {
-        include_shader!("glsl/fill_f64.spv")
     } else {
         return Err(Error::Unimplemented);
     };

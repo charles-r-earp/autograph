@@ -526,6 +526,9 @@ impl<T> Buffer<T> {
             _m: PhantomData::default(),
         })
     }
+    /// Fills the buffer with T on creation\
+    ///
+    /// T must be 32 bits
     pub fn from_elem(device: &Device, elem: T, len: usize) -> Result<Self>
     where
         T: Pod,
@@ -579,7 +582,7 @@ impl<T, S: DataMut<Elem = T>> BufferBase<S> {
     }
     /// Fills the buffer with T\
     ///
-    /// T must be 32 or 64 bits
+    /// T must be 32 bits
     pub fn fill(&mut self, x: T) -> Result<()>
     where
         T: Pod,
