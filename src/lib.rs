@@ -21,7 +21,7 @@ mod macros {
     macro_rules! include_shader {
         ($file:expr) => {{
             include_spirv!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/shaders/", $file))
-        }}
+        }};
     }
 }
 
@@ -32,5 +32,3 @@ pub mod tensor;
 pub use ndarray;
 
 pub type Result<T, E = error::Error> = std::result::Result<T, E>;
-
-

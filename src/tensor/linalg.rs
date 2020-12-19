@@ -76,7 +76,7 @@ fn gemm_impl<T: Scalar>(
     c: &mut TensorViewMut2<T>,
 ) -> Result<()> {
     let device = a.device();
-    
+
     let src = if TypeId::of::<T>() == TypeId::of::<f32>() {
         match post_op {
             PostOp::Identity => {
@@ -101,7 +101,7 @@ fn gemm_impl<T: Scalar>(
     } else {
         unreachable!()
     };
-    
+
     let (m, k) = a.dim();
     let (k2, n) = b.dim();
     let (m2, n2) = c.dim();

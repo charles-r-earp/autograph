@@ -116,9 +116,16 @@ impl From<ShaderModuleError> for Error {
 
 #[derive(Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum ComputePassBuilderError {
-    PushConstantSize { spirv: u32, rust: u32 },
+    PushConstantSize {
+        spirv: u32,
+        rust: u32,
+    },
     NumberOfBuffers,
-    BufferMutability { binding: u32, spirv_mutable: bool, rust_mutable: bool },
+    BufferMutability {
+        binding: u32,
+        spirv_mutable: bool,
+        rust_mutable: bool,
+    },
     InvalidDevice,
 }
 

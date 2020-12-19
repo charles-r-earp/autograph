@@ -293,8 +293,9 @@ impl<'a, B> ComputePassBuilder<'a, B> {
                     Err(ComputePassBuilderError::BufferMutability {
                         binding: buffer_descriptor.binding,
                         spirv_mutable: buffer_descriptor.mutable,
-                        rust_mutable: false
-                    }.into())
+                        rust_mutable: false,
+                    }
+                    .into())
                 }
             } else {
                 Err(ComputePassBuilderError::NumberOfBuffers.into())
@@ -349,8 +350,9 @@ impl<'a, B> ComputePassBuilder<'a, B> {
                     Err(ComputePassBuilderError::BufferMutability {
                         binding: buffer_descriptor.binding,
                         spirv_mutable: buffer_descriptor.mutable,
-                        rust_mutable: true
-                    }.into())
+                        rust_mutable: true,
+                    }
+                    .into())
                 }
             } else {
                 Err(ComputePassBuilderError::NumberOfBuffers.into())
@@ -383,13 +385,15 @@ impl<'a, B> ComputePassBuilder<'a, B> {
                 Err(ComputePassBuilderError::PushConstantSize {
                     spirv: end - start,
                     rust: size_of::<C>() as u32,
-                }.into())
+                }
+                .into())
             }
         } else {
             Err(ComputePassBuilderError::PushConstantSize {
                 spirv: 0,
                 rust: size_of::<C>() as u32,
-            }.into())
+            }
+            .into())
         }
     }
     /// Sets the number of work groups\
