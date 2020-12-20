@@ -36,7 +36,6 @@ layout(push_constant) uniform PushConsts {
     int csb;
     int rsc;
     int csc; 
-    uint pad;
     T alpha;
     T beta;
     T a0; // ie relu negative slope

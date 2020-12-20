@@ -1,24 +1,9 @@
-use super::{TensorView1, TensorView2, TensorViewMut2};
+use super::{Num, TensorView1, TensorView2, TensorViewMut2};
 use crate::error::ShapeError;
 use crate::Result;
 use bytemuck::{Pod, Zeroable};
-use num_traits::{One, Zero};
 use std::any::TypeId;
 use std::convert::TryInto;
-
-mod sealed {
-    pub trait Sealed {}
-}
-
-pub trait Scalar: sealed::Sealed + Copy + Zeroable + Pod + Zero + One + 'static {}
-
-impl sealed::Sealed for f32 {}
-
-impl Scalar for f32 {}
-
-impl sealed::Sealed for i32 {}
-
-impl Scalar for i32 {}
 
 enum PostOp {
     Identity,
@@ -28,7 +13,7 @@ enum PostOp {
 
 #[derive(Clone, Copy)]
 #[repr(C)]
-struct GemmPushConsts<T: Scalar> {
+struct GemmPushConsts<T: Num> {
     m: u32,
     k: u32,
     n: u32,
@@ -38,19 +23,16 @@ struct GemmPushConsts<T: Scalar> {
     csb: i32,
     rsc: i32,
     csc: i32,
-    pad: u32,
     alpha: T,
     beta: T,
     a0: T, // ie relu negative slope
 }
 
-unsafe impl<T: Scalar> Zeroable for GemmPushConsts<T> {}
+unsafe impl<T: Num> Zeroable for GemmPushConsts<T> {}
 
-unsafe impl<T: Scalar> Pod for GemmPushConsts<T> {}
+unsafe impl<T: Num> Pod for GemmPushConsts<T> {}
 
-// For neural networks this should support f32 and eventually bf16
-// For general purpose there's no reason not to support f64, u32, i32, u64, i64 as well, potentially f16
-pub fn gemm<T: Scalar>(
+pub fn gemm<T: Num>(
     alpha: T,
     a: &TensorView2<T>,
     b: &TensorView2<T>,
@@ -61,7 +43,7 @@ pub fn gemm<T: Scalar>(
 }
 
 #[allow(clippy::too_many_arguments, clippy::many_single_char_names)]
-fn gemm_impl<T: Scalar>(
+fn gemm_impl<T: Num>(
     alpha: T,
     a: &TensorView2<T>,
     b: &TensorView2<T>,
@@ -90,6 +72,8 @@ fn gemm_impl<T: Scalar>(
                 }
             }
         }
+    } else if TypeId::of::<T>() == TypeId::of::<u32>() {
+        include_shader!("glsl/gemm_u32.spv")
     } else if TypeId::of::<T>() == TypeId::of::<i32>() {
         include_shader!("glsl/gemm_i32.spv")
     } else {
@@ -127,7 +111,6 @@ fn gemm_impl<T: Scalar>(
         csb,
         rsc,
         csc,
-        pad: 0,
         alpha,
         beta,
         a0,

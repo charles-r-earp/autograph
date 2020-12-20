@@ -20,6 +20,37 @@ pub mod shader_util;
 pub mod gpu;
 use gpu::Gpu;
 
+mod sealed {
+    pub trait Sealed {}
+}
+use sealed::Sealed;
+
+pub trait Scalar: Sealed + Pod + Debug + num_traits::Num {}
+
+impl Sealed for u8 {}
+
+impl Scalar for u8 {}
+
+impl Sealed for f32 {}
+
+impl Scalar for f32 {}
+
+impl Sealed for u32 {}
+
+impl Scalar for u32 {}
+
+impl Sealed for i32 {}
+
+impl Scalar for i32 {}
+
+pub trait Num: Scalar {}
+
+impl Num for f32 {}
+
+impl Num for u32 {}
+
+impl Num for i32 {}
+
 #[doc(hidden)]
 #[proxy_enum::proxy(DynDevice)]
 pub mod dyn_device_proxy {
@@ -257,7 +288,7 @@ impl<'a, B> ComputePassBuilder<'a, B> {
     /// Must be readonly in spirv\
     /// Buffers are bound in binding order, low to high\
     /// Errors if more buffers are provided than in spirv
-    pub fn buffer_slice<T>(
+    pub fn buffer_slice<T: Scalar>(
         self,
         slice: BufferSlice<T>,
     ) -> Result<ComputePassBuilder<'a, (B, Option<BufferSlice<T>>)>> {
@@ -266,7 +297,7 @@ impl<'a, B> ComputePassBuilder<'a, B> {
     /// Adds an optional immutable buffer argument\
     ///
     /// See buffer_slice()
-    pub fn option_buffer_slice<T>(
+    pub fn option_buffer_slice<T: Scalar>(
         mut self,
         slice: Option<BufferSlice<T>>,
     ) -> Result<ComputePassBuilder<'a, (B, Option<BufferSlice<T>>)>> {
@@ -314,7 +345,7 @@ impl<'a, B> ComputePassBuilder<'a, B> {
     /// Must not be readonly in spirv\
     /// Buffers are bound in binding order, low to high\
     /// Errors if more buffers are provided than in spirv
-    pub fn buffer_slice_mut<T>(
+    pub fn buffer_slice_mut<T: Scalar>(
         self,
         slice: BufferSliceMut<T>,
     ) -> Result<ComputePassBuilder<'a, (B, Option<BufferSliceMut<T>>)>> {
@@ -323,7 +354,7 @@ impl<'a, B> ComputePassBuilder<'a, B> {
     /// Adds an optional mutable buffer argument\
     ///
     /// See buffer_slice_mut()
-    pub fn option_buffer_slice_mut<T>(
+    pub fn option_buffer_slice_mut<T: Scalar>(
         mut self,
         slice: Option<BufferSliceMut<T>>,
     ) -> Result<ComputePassBuilder<'a, (B, Option<BufferSliceMut<T>>)>> {
@@ -441,12 +472,8 @@ pub struct ComputePass {
     work_groups: [u32; 3],
 }
 
-mod sealed {
-    pub trait Sealed {}
-}
-
 #[doc(hidden)]
-pub trait Data: sealed::Sealed + Sized {
+pub trait Data: Sealed + Sized {
     type Elem;
     #[doc(hidden)]
     fn needs_drop() -> bool;
@@ -456,7 +483,7 @@ pub trait DataMut: Data {}
 
 pub struct BufferRepr<T>(PhantomData<T>);
 
-impl<T> sealed::Sealed for BufferRepr<T> {}
+impl<T> Sealed for BufferRepr<T> {}
 
 impl<T> Data for BufferRepr<T> {
     type Elem = T;
@@ -469,7 +496,7 @@ impl<T> DataMut for BufferRepr<T> {}
 
 pub struct BufferSliceRepr<S>(PhantomData<S>);
 
-impl<T> sealed::Sealed for BufferSliceRepr<&'_ T> {}
+impl<T> Sealed for BufferSliceRepr<&'_ T> {}
 
 impl<T> Data for BufferSliceRepr<&'_ T> {
     type Elem = T;
@@ -478,7 +505,7 @@ impl<T> Data for BufferSliceRepr<&'_ T> {
     }
 }
 
-impl<T> sealed::Sealed for BufferSliceRepr<&'_ mut T> {}
+impl<T> Sealed for BufferSliceRepr<&'_ mut T> {}
 
 impl<T> Data for BufferSliceRepr<&'_ mut T> {
     type Elem = T;
@@ -504,7 +531,7 @@ pub type BufferSliceMut<'a, T> = BufferBase<BufferSliceRepr<&'a mut T>>;
 impl<T> Buffer<T> {
     pub fn from_cow(device: &Device, cow: Cow<[T]>) -> Result<Self>
     where
-        T: Pod,
+        T: Scalar,
     {
         let len = cow.len();
         let id = device.dyn_device.create_buffer_init(cow)?;
@@ -516,7 +543,10 @@ impl<T> Buffer<T> {
             _m: PhantomData::default(),
         })
     }
-    pub fn zeros(device: &Device, len: usize) -> Result<Self> {
+    pub fn zeros(device: &Device, len: usize) -> Result<Self>
+    where
+        T: Scalar,
+    {
         let id = device.dyn_device.create_buffer(len * size_of::<T>())?;
         Ok(Self {
             device: device.clone(),
@@ -526,12 +556,9 @@ impl<T> Buffer<T> {
             _m: PhantomData::default(),
         })
     }
-    /// Fills the buffer with T on creation\
-    ///
-    /// T must be 32 bits
     pub fn from_elem(device: &Device, elem: T, len: usize) -> Result<Self>
     where
-        T: Pod,
+        T: Num,
     {
         let mut buffer = Self::zeros(device, len)?;
         buffer.fill(elem)?;
@@ -549,7 +576,10 @@ impl<T, S: Data<Elem = T>> BufferBase<S> {
             _m: PhantomData::default(),
         }
     }
-    pub fn to_buffer(&self) -> Result<Buffer<T>> {
+    pub fn to_buffer(&self) -> Result<Buffer<T>>
+    where
+        T: Scalar,
+    {
         let buffer = Buffer::zeros(&self.device, self.len)?;
         self.device.dyn_device.copy_buffer_to_buffer(
             self.id,
@@ -562,7 +592,7 @@ impl<T, S: Data<Elem = T>> BufferBase<S> {
     }
     pub fn to_vec(&self) -> Result<impl Future<Output = Result<Vec<T>>>>
     where
-        T: Pod,
+        T: Scalar,
     {
         self.device
             .dyn_device
@@ -580,12 +610,9 @@ impl<T, S: DataMut<Elem = T>> BufferBase<S> {
             _m: PhantomData::default(),
         }
     }
-    /// Fills the buffer with T\
-    ///
-    /// T must be 32 bits
     pub fn fill(&mut self, x: T) -> Result<()>
     where
-        T: Pod,
+        T: Num,
     {
         fill::fill(&self.device.clone(), self.as_buffer_slice_mut(), x)
     }

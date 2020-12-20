@@ -32,7 +32,7 @@ fn compile_glsl(
 fn glsl_fill(compiler: &mut Compiler) -> Result<()> {
     let src = include_str!("src/glsl/fill.comp");
     // Note that these can be used for types of the same size, ie u32 and f32
-    for (rust_ty, c_ty) in [("f32", "float"), ("f64", "double")].iter() {
+    for (rust_ty, c_ty) in [("f32", "float")].iter() {
         let mut options = glsl_options();
         options.add_macro_definition("T", Some(c_ty));
         compile_glsl(compiler, src, &format!("fill_{}", rust_ty), Some(&options))?;
@@ -42,7 +42,7 @@ fn glsl_fill(compiler: &mut Compiler) -> Result<()> {
 
 fn glsl_gemm(compiler: &mut Compiler) -> Result<()> {
     let src = include_str!("src/glsl/gemm.comp");
-    for (rust_ty, c_ty) in [("f32", "float"), ("f64", "double"), ("i32", "int")].iter() {
+    for (rust_ty, c_ty) in [("f32", "float"), ("u32", "uint"), ("i32", "int")].iter() {
         let mut options = glsl_options();
         options.add_macro_definition("T", Some(c_ty));
         compile_glsl(compiler, src, &format!("gemm_{}", rust_ty), Some(&options))?;

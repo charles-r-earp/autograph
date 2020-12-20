@@ -1,12 +1,11 @@
 use crate::backend::{Buffer, BufferSlice, BufferSliceMut, Device};
+pub use crate::backend::{Num, Scalar};
 use crate::error::ShapeError;
 use crate::Result;
-use bytemuck::Pod;
 use ndarray::{Array, ArrayBase, CowArray, RawArrayView};
 pub use ndarray::{
     Dimension, IntoDimension, Ix, Ix1, Ix2, Ix3, Ix4, Ix5, Ix6, IxDyn, ShapeBuilder, StrideShape,
 };
-use num_traits::One;
 use smol::future::Future;
 use std::borrow::Cow;
 use std::fmt::{self, Debug};
@@ -17,9 +16,10 @@ pub mod linalg;
 mod sealed {
     pub trait Sealed {}
 }
+use sealed::Sealed;
 
-pub trait Data: sealed::Sealed + Sized {
-    type Elem;
+pub trait Data: Sealed + Sized {
+    type Elem: Scalar;
     #[doc(hidden)]
     fn into_buffer(self) -> Result<Buffer<Self::Elem>>;
     #[doc(hidden)]
@@ -42,9 +42,9 @@ pub trait DataMut: Data {
 
 pub struct OwnedRepr<T>(Buffer<T>);
 
-impl<T> sealed::Sealed for OwnedRepr<T> {}
+impl<T> Sealed for OwnedRepr<T> {}
 
-impl<T> Data for OwnedRepr<T> {
+impl<T: Scalar> Data for OwnedRepr<T> {
     type Elem = T;
     fn into_buffer(self) -> Result<Buffer<T>> {
         Ok(self.0)
@@ -54,13 +54,13 @@ impl<T> Data for OwnedRepr<T> {
     }
 }
 
-impl<T> DataMut for OwnedRepr<T> {
+impl<T: Scalar> DataMut for OwnedRepr<T> {
     fn as_buffer_slice_mut(&mut self) -> BufferSliceMut<T> {
         self.0.as_buffer_slice_mut()
     }
 }
 
-impl<T> DataOwned for OwnedRepr<T> {
+impl<T: Scalar> DataOwned for OwnedRepr<T> {
     fn from_buffer(buffer: Buffer<T>) -> Self {
         Self(buffer)
     }
@@ -68,9 +68,9 @@ impl<T> DataOwned for OwnedRepr<T> {
 
 pub struct ArcRepr<T>(Arc<Buffer<T>>);
 
-impl<T> sealed::Sealed for ArcRepr<T> {}
+impl<T> Sealed for ArcRepr<T> {}
 
-impl<T> Data for ArcRepr<T> {
+impl<T: Scalar> Data for ArcRepr<T> {
     type Elem = T;
     fn into_buffer(self) -> Result<Buffer<T>> {
         match Arc::try_unwrap(self.0) {
@@ -88,9 +88,9 @@ impl<T> Data for ArcRepr<T> {
 
 pub struct ViewRepr<'a, T>(BufferSlice<'a, T>);
 
-impl<T> sealed::Sealed for ViewRepr<'_, T> {}
+impl<T> Sealed for ViewRepr<'_, T> {}
 
-impl<T> Data for ViewRepr<'_, T> {
+impl<T: Scalar> Data for ViewRepr<'_, T> {
     type Elem = T;
     fn into_buffer(self) -> Result<Buffer<T>> {
         self.0.to_buffer()
@@ -102,9 +102,9 @@ impl<T> Data for ViewRepr<'_, T> {
 
 pub struct ViewMutRepr<'a, T>(BufferSliceMut<'a, T>);
 
-impl<T> sealed::Sealed for ViewMutRepr<'_, T> {}
+impl<T> Sealed for ViewMutRepr<'_, T> {}
 
-impl<T> Data for ViewMutRepr<'_, T> {
+impl<T: Scalar> Data for ViewMutRepr<'_, T> {
     type Elem = T;
     fn into_buffer(self) -> Result<Buffer<T>> {
         self.0.to_buffer()
@@ -114,7 +114,7 @@ impl<T> Data for ViewMutRepr<'_, T> {
     }
 }
 
-impl<T> DataMut for ViewMutRepr<'_, T> {
+impl<T: Scalar> DataMut for ViewMutRepr<'_, T> {
     fn as_buffer_slice_mut(&mut self) -> BufferSliceMut<T> {
         self.0.as_buffer_slice_mut()
     }
@@ -175,14 +175,13 @@ impl<S: Data, D: Dimension> TensorBase<S, D> {
     }
 }
 
-impl<T, S: DataOwned<Elem = T>, D: Dimension> TensorBase<S, D> {
+impl<T: Scalar, S: DataOwned<Elem = T>, D: Dimension> TensorBase<S, D> {
     pub fn from_shape_cow<'a, Sh>(
         device: &Device,
         shape: Sh,
         cow: impl Into<Cow<'a, [T]>>,
     ) -> Result<Self>
     where
-        T: Pod,
         Sh: Into<StrideShape<D>>,
     {
         let (dim, strides) = dim_strides_from_shape(shape);
@@ -200,12 +199,9 @@ impl<T, S: DataOwned<Elem = T>, D: Dimension> TensorBase<S, D> {
             Err(ShapeError::IncompatibleShape.into())
         }
     }
-    /// Fills the Tensor with elem on creation\
-    ///
-    /// T must be 32 bits
     pub fn from_elem<Sh>(device: &Device, shape: Sh, elem: T) -> Result<Self>
     where
-        T: Pod,
+        T: Num,
         Sh: ShapeBuilder<Dim = D>,
     {
         let (dim, strides) = dim_strides_from_shape(shape.into_shape());
@@ -232,14 +228,14 @@ impl<T, S: DataOwned<Elem = T>, D: Dimension> TensorBase<S, D> {
     }
     pub fn ones<Sh>(device: &Device, shape: Sh) -> Result<Self>
     where
-        T: Pod + One,
+        T: Num,
         Sh: ShapeBuilder<Dim = D>,
     {
         Self::from_elem(device, shape, T::one())
     }
     pub fn from_array<'a>(device: &Device, array: impl Into<CowArray<'a, T, D>>) -> Result<Self>
     where
-        T: Pod,
+        T: Scalar,
     {
         let array = array.into();
         let dim = array.raw_dim();
@@ -262,7 +258,7 @@ impl<T, S: DataOwned<Elem = T>, D: Dimension> TensorBase<S, D> {
     }
 }
 
-impl<T, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
+impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     pub fn view(&self) -> TensorView<T, D> {
         TensorBase {
             device: self.device.clone(),
@@ -282,20 +278,14 @@ impl<T, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     pub fn as_buffer_slice(&self) -> BufferSlice<T> {
         self.data.as_buffer_slice()
     }
-    pub fn to_vec(&self) -> Result<impl Future<Output = Result<Vec<T>>> + '_>
-    where
-        T: Pod,
-    {
+    pub fn to_vec(&self) -> Result<impl Future<Output = Result<Vec<T>>> + '_> {
         // TODO: Convert to contiguous layout here instead of erroring
         if self.strides != self.dim.default_strides() {
             return Err(ShapeError::IncompatibleLayout.into());
         }
         self.data.as_buffer_slice().to_vec()
     }
-    pub fn to_array(&self) -> Result<impl Future<Output = Result<Array<T, D>>> + '_>
-    where
-        T: Pod,
-    {
+    pub fn to_array(&self) -> Result<impl Future<Output = Result<Array<T, D>>> + '_> {
         // TODO: Convert to contiguous layout here instead of erroring
         if self.strides().iter().any(|s| *s <= 0) {
             return Err(ShapeError::IncompatibleLayout.into());
@@ -310,7 +300,7 @@ impl<T, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     }
 }
 
-impl<T, S: DataMut<Elem = T>, D: Dimension> TensorBase<S, D> {
+impl<T: Scalar, S: DataMut<Elem = T>, D: Dimension> TensorBase<S, D> {
     pub fn view_mut(&mut self) -> TensorViewMut<T, D> {
         TensorBase {
             device: self.device.clone(),
@@ -324,7 +314,7 @@ impl<T, S: DataMut<Elem = T>, D: Dimension> TensorBase<S, D> {
     }
     pub fn fill(&mut self, x: T) -> Result<()>
     where
-        T: Pod,
+        T: Num,
     {
         self.data.as_buffer_slice_mut().fill(x)
     }
@@ -348,7 +338,7 @@ pub trait Dot<R> {
     fn dot(&self, rhs: &R) -> Result<Self::Output>;
 }
 
-impl<T: linalg::Scalar, S1: Data<Elem = T>, S2: Data<Elem = T>> Dot<TensorBase<S2, Ix2>>
+impl<T: Num, S1: Data<Elem = T>, S2: Data<Elem = T>> Dot<TensorBase<S2, Ix2>>
     for TensorBase<S1, Ix2>
 {
     type Output = Tensor2<T>;

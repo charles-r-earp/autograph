@@ -1,11 +1,11 @@
 use autograph::backend::Device;
-use autograph::tensor::{linalg::Scalar as LinalgScalar, Tensor};
+use autograph::tensor::{Num, Tensor};
 use criterion::{criterion_group, criterion_main, Criterion};
 use ndarray::{Array, ArrayView2};
 use std::any::type_name;
 
-fn gemm_benches<T: LinalgScalar>(device: &Device, c: &mut Criterion) {
-    fn bench_dot_nn<T: LinalgScalar>(
+fn gemm_benches<T: Num>(device: &Device, c: &mut Criterion) {
+    fn bench_dot_nn<T: Num>(
         device: &Device,
         c: &mut Criterion,
         x1: &ArrayView2<T>,
@@ -29,7 +29,7 @@ fn gemm_benches<T: LinalgScalar>(device: &Device, c: &mut Criterion) {
             },
         );
     }
-    fn bench_dot_nt<T: LinalgScalar>(
+    fn bench_dot_nt<T: Num>(
         device: &Device,
         c: &mut Criterion,
         x1: &ArrayView2<T>,
@@ -72,6 +72,7 @@ fn gemm_benches<T: LinalgScalar>(device: &Device, c: &mut Criterion) {
 pub fn criterion_benchmark(c: &mut Criterion) {
     for gpu in Device::list_gpus() {
         gemm_benches::<f32>(&gpu, c);
+        gemm_benches::<u32>(&gpu, c);
         gemm_benches::<i32>(&gpu, c);
     }
 }
