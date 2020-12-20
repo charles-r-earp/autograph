@@ -4,7 +4,8 @@ use crate::error::ShapeError;
 use crate::Result;
 use ndarray::{Array, ArrayBase, CowArray, RawArrayView};
 pub use ndarray::{
-    Dimension, IntoDimension, Ix, Ix1, Ix2, Ix3, Ix4, Ix5, Ix6, IxDyn, ShapeBuilder, StrideShape,
+    Dimension, IntoDimension, Ix, Ix0, Ix1, Ix2, Ix3, Ix4, Ix5, Ix6, IxDyn, ShapeBuilder,
+    StrideShape,
 };
 use smol::future::Future;
 use std::borrow::Cow;
@@ -86,6 +87,12 @@ impl<T: Scalar> Data for ArcRepr<T> {
     }
 }
 
+impl<T: Scalar> DataOwned for ArcRepr<T> {
+    fn from_buffer(buffer: Buffer<T>) -> Self {
+        Self(Arc::new(buffer))
+    }
+}
+
 pub struct ViewRepr<'a, T>(BufferSlice<'a, T>);
 
 impl<T> Sealed for ViewRepr<'_, T> {}
@@ -148,17 +155,44 @@ pub struct TensorBase<S: Data, D: Dimension> {
 }
 
 pub type Tensor<T, D> = TensorBase<OwnedRepr<T>, D>;
+pub type Tensor0<T> = Tensor<T, Ix0>;
 pub type Tensor1<T> = Tensor<T, Ix1>;
 pub type Tensor2<T> = Tensor<T, Ix2>;
+pub type Tensor3<T> = Tensor<T, Ix3>;
+pub type Tensor4<T> = Tensor<T, Ix4>;
+pub type Tensor5<T> = Tensor<T, Ix5>;
+pub type Tensor6<T> = Tensor<T, Ix6>;
+pub type TensorD<T> = Tensor<T, IxDyn>;
 
 pub type ArcTensor<T, D> = TensorBase<ArcRepr<T>, D>;
+pub type ArcTensor0<T> = ArcTensor<T, Ix0>;
+pub type ArcTensor1<T> = ArcTensor<T, Ix1>;
+pub type ArcTensor2<T> = ArcTensor<T, Ix2>;
+pub type ArcTensor3<T> = ArcTensor<T, Ix3>;
+pub type ArcTensor4<T> = ArcTensor<T, Ix4>;
+pub type ArcTensor5<T> = ArcTensor<T, Ix5>;
+pub type ArcTensor6<T> = ArcTensor<T, Ix6>;
+pub type ArcTensorD<T> = ArcTensor<T, IxDyn>;
 
 pub type TensorView<'a, T, D> = TensorBase<ViewRepr<'a, T>, D>;
+pub type TensorView0<'a, T> = TensorView<'a, T, Ix0>;
 pub type TensorView1<'a, T> = TensorView<'a, T, Ix1>;
 pub type TensorView2<'a, T> = TensorView<'a, T, Ix2>;
+pub type TensorView3<'a, T> = TensorView<'a, T, Ix3>;
+pub type TensorView4<'a, T> = TensorView<'a, T, Ix4>;
+pub type TensorView5<'a, T> = TensorView<'a, T, Ix5>;
+pub type TensorView6<'a, T> = TensorView<'a, T, Ix6>;
+pub type TensorViewD<'a, T> = TensorView<'a, T, IxDyn>;
 
 pub type TensorViewMut<'a, T, D> = TensorBase<ViewMutRepr<'a, T>, D>;
+pub type TensorViewMut0<'a, T> = TensorViewMut<'a, T, Ix0>;
+pub type TensorViewMut1<'a, T> = TensorViewMut<'a, T, Ix1>;
 pub type TensorViewMut2<'a, T> = TensorViewMut<'a, T, Ix2>;
+pub type TensorViewMut3<'a, T> = TensorViewMut<'a, T, Ix3>;
+pub type TensorViewMut4<'a, T> = TensorViewMut<'a, T, Ix4>;
+pub type TensorViewMut5<'a, T> = TensorViewMut<'a, T, Ix5>;
+pub type TensorViewMut6<'a, T> = TensorViewMut<'a, T, Ix6>;
+pub type TensorViewMutD<'a, T> = TensorViewMut<'a, T, IxDyn>;
 
 impl<S: Data, D: Dimension> TensorBase<S, D> {
     pub fn device(&self) -> &Device {
@@ -317,6 +351,17 @@ impl<T: Scalar, S: DataMut<Elem = T>, D: Dimension> TensorBase<S, D> {
         T: Num,
     {
         self.data.as_buffer_slice_mut().fill(x)
+    }
+}
+
+impl<T: Scalar, D: Dimension> From<Tensor<T, D>> for ArcTensor<T, D> {
+    fn from(tensor: Tensor<T, D>) -> ArcTensor<T, D> {
+        TensorBase {
+            device: tensor.device,
+            dim: tensor.dim,
+            strides: tensor.strides,
+            data: ArcRepr::from_buffer(tensor.data.0),
+        }
     }
 }
 

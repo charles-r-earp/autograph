@@ -1,5 +1,5 @@
 use autograph::backend::{Buffer, Device, Num};
-use autograph::tensor::Tensor;
+use autograph::tensor::{Dimension, Tensor};
 use autograph::{include_spirv, Result};
 use bytemuck::{Pod, Zeroable};
 use ndarray::Array;
@@ -55,16 +55,72 @@ fn tensor_from_shape_cow() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn tensor_from_array() -> Result<()> {
+fn tensor_from_array<D: Dimension>(x: Array<u32, D>) -> Result<()> {
     for device in Device::list() {
-        let x = Array::<f32, _>::from_shape_vec([2, 2], vec![1., 2., 3., 4.])?;
         let y = smol::block_on(Tensor::from_array(&device, x.view())?.to_array()?)?;
         assert_eq!(x, y);
         let y_t = smol::block_on(Tensor::from_array(&device, x.t())?.to_array()?)?;
         assert_eq!(x.t(), y_t.view());
     }
     Ok(())
+}
+
+#[test]
+fn test_from_array0() -> Result<()> {
+    tensor_from_array(Array::from_elem((), 1))
+}
+
+#[test]
+fn test_from_array1() -> Result<()> {
+    tensor_from_array(Array::from_shape_vec(3, (1..=3).into_iter().collect())?)
+}
+
+#[test]
+fn test_from_array2() -> Result<()> {
+    tensor_from_array(Array::from_shape_vec(
+        [2, 3],
+        (1..=6).into_iter().collect(),
+    )?)
+}
+
+#[test]
+fn test_from_array3() -> Result<()> {
+    tensor_from_array(Array::from_shape_vec(
+        [2, 3, 4],
+        (1..=24).into_iter().collect(),
+    )?)
+}
+
+#[test]
+fn test_from_array4() -> Result<()> {
+    tensor_from_array(Array::from_shape_vec(
+        [2, 3, 4, 5],
+        (1..=120).into_iter().collect(),
+    )?)
+}
+
+#[test]
+fn test_from_array5() -> Result<()> {
+    tensor_from_array(Array::from_shape_vec(
+        [2, 3, 4, 5, 6],
+        (1..=120 * 6).into_iter().collect(),
+    )?)
+}
+
+#[test]
+fn test_from_array6() -> Result<()> {
+    tensor_from_array(Array::from_shape_vec(
+        [2, 3, 4, 5, 6, 7],
+        (1..=120 * 6 * 7).into_iter().collect(),
+    )?)
+}
+
+#[test]
+fn test_from_arrayD() -> Result<()> {
+    tensor_from_array(Array::from_shape_vec(
+        [2, 3, 4, 5, 6, 7, 8].as_ref(),
+        (1..=120 * 6 * 7 * 8).into_iter().collect(),
+    )?)
 }
 
 fn tensor_from_elem<T: Num>(xs: &[T]) -> Result<()> {
