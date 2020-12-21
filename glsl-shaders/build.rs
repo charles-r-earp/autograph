@@ -11,6 +11,35 @@ fn glsl_options() -> CompileOptions<'static> {
     options
 } 
 
+#[allow(unused)]
+#[derive(Clone, Copy)]
+enum Behavior {
+    Enable,
+    Require,
+    Warn,
+    Disable
+}
+
+impl Behavior {
+    fn to_str(&self) -> &'static str {
+        use Behavior::*;
+        match self {
+            Enable => "enable",
+            Require => "require",
+            Warn => "warn",
+            Disable => "disable",
+        }
+    }
+}
+
+fn glsl_extension(src: &mut String, extension: &str, behavior: Behavior) {
+    let version_str = "#version 450";
+    let index = src.find(version_str)
+        .map(|i| i + version_str.len())
+        .expect(src);
+    src.insert_str(index, &format!("\n#extension {} : {}\n", extension, behavior.to_str()));     
+}
+
 fn compile_glsl(
     compiler: &mut Compiler,
     src: &str,
@@ -32,10 +61,18 @@ fn compile_glsl(
 fn glsl_fill(compiler: &mut Compiler) -> Result<()> {
     let src = include_str!("src/glsl/fill.comp");
     // Note that these can be used for types of the same size, ie u32 and f32
-    for (rust_ty, c_ty) in [("f32", "float")].iter() {
+    for (rust_ty, c_ty) in [("u8", "uint8_t"), ("u16", "uint16_t"), ("u32", "uint")].iter() {
+        let mut src = String::from(src);
         let mut options = glsl_options();
-        options.add_macro_definition("T", Some(c_ty));
-        compile_glsl(compiler, src, &format!("fill_{}", rust_ty), Some(&options))?;
+        if *c_ty == "uint8_t" {
+            glsl_extension(&mut src, "GL_EXT_shader_8bit_storage", Behavior::Require); 
+            options.add_macro_definition("Tx", Some("uint"));
+        } else if *c_ty == "uint16_t" {
+            glsl_extension(&mut src, "GL_EXT_shader_16bit_storage", Behavior::Require); 
+            options.add_macro_definition("Tx", Some("uint"));
+        } 
+        options.add_macro_definition("Ty", Some(c_ty));
+        compile_glsl(compiler, &src, &format!("fill_{}", rust_ty), Some(&options))?;
     }
     Ok(())
 }

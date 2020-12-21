@@ -235,7 +235,7 @@ impl<T: Scalar, S: DataOwned<Elem = T>, D: Dimension> TensorBase<S, D> {
     }
     pub fn from_elem<Sh>(device: &Device, shape: Sh, elem: T) -> Result<Self>
     where
-        T: Num,
+        T: Scalar,
         Sh: ShapeBuilder<Dim = D>,
     {
         let (dim, strides) = dim_strides_from_shape(shape.into_shape());
@@ -262,7 +262,7 @@ impl<T: Scalar, S: DataOwned<Elem = T>, D: Dimension> TensorBase<S, D> {
     }
     pub fn ones<Sh>(device: &Device, shape: Sh) -> Result<Self>
     where
-        T: Num,
+        T: Scalar,
         Sh: ShapeBuilder<Dim = D>,
     {
         Self::from_elem(device, shape, T::one())
@@ -348,7 +348,7 @@ impl<T: Scalar, S: DataMut<Elem = T>, D: Dimension> TensorBase<S, D> {
     }
     pub fn fill(&mut self, x: T) -> Result<()>
     where
-        T: Num,
+        T: Scalar,
     {
         self.data.as_buffer_slice_mut().fill(x)
     }

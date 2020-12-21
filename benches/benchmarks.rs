@@ -57,14 +57,14 @@ fn gemm_benches<T: Num>(device: &Device, c: &mut Criterion) {
         bench_dot_nn::<T>(
             device,
             c,
-            &Array::ones([n; 2]).view(),
-            &Array::ones([n; 2]).view(),
+            &Array::from_elem([n; 2], T::one()).view(),
+            &Array::from_elem([n; 2], T::one()).view(),
         );
         bench_dot_nt::<T>(
             device,
             c,
-            &Array::ones([n; 2]).view(),
-            &Array::ones([n; 2]).view(),
+            &Array::from_elem([n; 2], T::one()).view(),
+            &Array::from_elem([n; 2], T::one()).view(),
         );
     }
 }

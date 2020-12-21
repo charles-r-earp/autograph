@@ -369,7 +369,7 @@ mod tests {
 
     #[test]
     fn shader_module_fill_u32() {
-        let spirv = include_bytes!("../shaders/glsl/fill_f32.spv");
+        let spirv = include_bytes!("../shaders/glsl/fill_u32.spv");
 
         let entry_descriptors = entry_descriptors_from_spirv(spirv).unwrap();
 

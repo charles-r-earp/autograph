@@ -1,12 +1,20 @@
-use autograph::backend::{Buffer, Device, Num};
+use autograph::backend::{Buffer, Device, Scalar};
 use autograph::tensor::{Dimension, Tensor};
 use autograph::{include_spirv, Result};
 use bytemuck::{Pod, Zeroable};
 use ndarray::Array;
+use half::{f16, bf16};
 
 #[test]
 fn device_list() {
     Device::list();
+}
+
+#[test]
+fn bf16_to_bits() {
+    let x = 1.;
+    let y = f32::from_bits(bf16::from_f32(x).to_f32().to_bits());
+    assert_eq!(x, y);
 }
 
 #[derive(Clone, Copy, Zeroable, Pod)]
@@ -18,12 +26,12 @@ struct FillU32PushConsts {
 
 #[test]
 fn compute_pass() -> Result<()> {
-    let spirv = include_spirv!("../src/shaders/glsl/fill_f32.spv");
+    let spirv = include_spirv!("../src/shaders/glsl/fill_u32.spv");
 
-    for gpu in Device::list_gpus() {
+    for device in Device::list() {
         let n = 10;
-        let mut y = Buffer::<u32>::zeros(&gpu, n)?;
-        gpu.compute_pass(spirv.as_ref(), "main")?
+        let mut y = Buffer::<u32>::zeros(&device, n)?;
+        device.compute_pass(spirv.as_ref(), "main")?
             .buffer_slice_mut(y.as_buffer_slice_mut())?
             .push_constants(FillU32PushConsts { n: n as u32, x: 1 })?
             .global_size([n as u32, 1, 1])
@@ -66,17 +74,17 @@ fn tensor_from_array<D: Dimension>(x: Array<u32, D>) -> Result<()> {
 }
 
 #[test]
-fn test_from_array0() -> Result<()> {
+fn tensor_from_array0() -> Result<()> {
     tensor_from_array(Array::from_elem((), 1))
 }
 
 #[test]
-fn test_from_array1() -> Result<()> {
+fn tensor_from_array1() -> Result<()> {
     tensor_from_array(Array::from_shape_vec(3, (1..=3).into_iter().collect())?)
 }
 
 #[test]
-fn test_from_array2() -> Result<()> {
+fn tensor_from_array2() -> Result<()> {
     tensor_from_array(Array::from_shape_vec(
         [2, 3],
         (1..=6).into_iter().collect(),
@@ -84,7 +92,7 @@ fn test_from_array2() -> Result<()> {
 }
 
 #[test]
-fn test_from_array3() -> Result<()> {
+fn tensor_from_array3() -> Result<()> {
     tensor_from_array(Array::from_shape_vec(
         [2, 3, 4],
         (1..=24).into_iter().collect(),
@@ -92,7 +100,7 @@ fn test_from_array3() -> Result<()> {
 }
 
 #[test]
-fn test_from_array4() -> Result<()> {
+fn tensor_from_array4() -> Result<()> {
     tensor_from_array(Array::from_shape_vec(
         [2, 3, 4, 5],
         (1..=120).into_iter().collect(),
@@ -108,22 +116,23 @@ fn test_from_array5() -> Result<()> {
 }
 
 #[test]
-fn test_from_array6() -> Result<()> {
+fn tensor_from_array6() -> Result<()> {
     tensor_from_array(Array::from_shape_vec(
         [2, 3, 4, 5, 6, 7],
         (1..=120 * 6 * 7).into_iter().collect(),
     )?)
 }
 
+#[allow(non_snake_case)]
 #[test]
-fn test_from_arrayD() -> Result<()> {
+fn tensor_from_arrayD() -> Result<()> {
     tensor_from_array(Array::from_shape_vec(
         [2, 3, 4, 5, 6, 7, 8].as_ref(),
         (1..=120 * 6 * 7 * 8).into_iter().collect(),
     )?)
 }
 
-fn tensor_from_elem<T: Num>(xs: &[T]) -> Result<()> {
+fn tensor_from_elem<T: Scalar>(xs: &[T]) -> Result<()> {
     let n = 1200;
     for device in Device::list() {
         for x in xs.iter().copied() {
@@ -137,8 +146,38 @@ fn tensor_from_elem<T: Num>(xs: &[T]) -> Result<()> {
 }
 
 #[test]
+fn test_from_elem_u8() -> Result<()> {
+    tensor_from_elem::<u8>(&[1, 33, 255])
+}
+
+#[test]
+fn test_from_elem_i8() -> Result<()> {
+    tensor_from_elem::<i8>(&[1, -33, 127])
+}
+
+#[test]
+fn test_from_elem_u16() -> Result<()> {
+    tensor_from_elem::<u16>(&[1, 33, 1000])
+}
+
+#[test]
+fn test_from_elem_i16() -> Result<()> {
+    tensor_from_elem::<i16>(&[1, -33, 1000])
+}
+
+#[test]
+fn test_from_elem_f16() -> Result<()> {
+    tensor_from_elem::<f16>(&[f16::from_f32(1.), f16::from_f32(-33.), f16::from_f32(1000.)])
+}
+
+#[test]
+fn test_from_elem_bf16() -> Result<()> {
+    tensor_from_elem::<bf16>(&[bf16::from_f32(1.), bf16::from_f32(-33.), bf16::from_f32(1000.)])
+}
+
+#[test]
 fn test_from_elem_f32() -> Result<()> {
-    tensor_from_elem::<f32>(&[1., 33., 0.1, 1000.])
+    tensor_from_elem::<f32>(&[1., -33., 0.1, 1000.])
 }
 
 #[test]
@@ -148,5 +187,5 @@ fn test_from_elem_u32() -> Result<()> {
 
 #[test]
 fn test_from_elem_i32() -> Result<()> {
-    tensor_from_elem::<i32>(&[1, 33, 1000])
+    tensor_from_elem::<i32>(&[1, -33, 1000])
 }

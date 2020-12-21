@@ -12,6 +12,9 @@ use std::hash::Hash;
 use std::marker::PhantomData;
 use std::mem::size_of;
 use std::sync::Arc;
+use half::{f16, bf16};
+use num_traits::{ToPrimitive, FromPrimitive};
+use crate::util::type_eq;
 
 mod fill;
 pub mod shader_util;
@@ -25,11 +28,53 @@ mod sealed {
 }
 use sealed::Sealed;
 
-pub trait Scalar: Sealed + Pod + Debug + num_traits::Num {}
+pub trait Scalar: Sealed + Debug + Default + ToPrimitive + FromPrimitive + Pod + PartialEq {
+    fn zero() -> Self { Self::default() }
+    fn one() -> Self { Self::from_u32(1).unwrap() }
+    fn to_bits_u32(&self) -> u32 {
+        if type_eq::<Self, u8>() || type_eq::<Self, u16>() || type_eq::<Self, u32>() {
+            self.to_u32().unwrap()
+        } else if type_eq::<Self, i8>() || type_eq::<Self, i16>() || type_eq::<Self, i32>() {
+            u32::from_ne_bytes(self.to_i32().unwrap().to_ne_bytes())
+        } else if type_eq::<Self, f32>() {
+            f32::to_bits(self.to_f32().unwrap())
+        } else {
+            unreachable!()
+        }
+    }
+}
 
 impl Sealed for u8 {}
 
 impl Scalar for u8 {}
+
+impl Sealed for i8 {}
+
+impl Scalar for i8 {}
+
+impl Sealed for u16 {}
+
+impl Scalar for u16 {}
+
+impl Sealed for i16 {}
+
+impl Scalar for i16 {}
+
+impl Sealed for f16 {}
+
+impl Scalar for f16 {
+    fn to_bits_u32(&self) -> u32 {
+        self.to_bits() as u32
+    }
+}
+
+impl Sealed for bf16 {}
+
+impl Scalar for bf16 {
+    fn to_bits_u32(&self) -> u32 {
+        self.to_bits() as u32
+    }
+}
 
 impl Sealed for f32 {}
 
@@ -558,7 +603,7 @@ impl<T> Buffer<T> {
     }
     pub fn from_elem(device: &Device, elem: T, len: usize) -> Result<Self>
     where
-        T: Num,
+        T: Scalar,
     {
         let mut buffer = Self::zeros(device, len)?;
         buffer.fill(elem)?;
@@ -612,7 +657,7 @@ impl<T, S: DataMut<Elem = T>> BufferBase<S> {
     }
     pub fn fill(&mut self, x: T) -> Result<()>
     where
-        T: Num,
+        T: Scalar,
     {
         fill::fill(&self.device.clone(), self.as_buffer_slice_mut(), x)
     }
