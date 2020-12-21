@@ -28,7 +28,7 @@ jobs:
     - name: Check
       run: cargo check --tests --lib --benches
     - name: Test 
-      run: cargo test --tests --lib --benches 
+      run: cargo test
     - name: Test Scalar 8
       continue-on-error: true 
       run: cargo test 8 -- --ignored
