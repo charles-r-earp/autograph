@@ -28,7 +28,7 @@ jobs:
     - name: Check
       run: cargo check --tests --lib --benches
     - name: Test 
-      run: cargo test --tests --lib --benches
+      run: cargo test --tests --lib --benches --no-fail-fast
 
   lint:
     name: Lint
