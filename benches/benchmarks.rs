@@ -1,6 +1,7 @@
 use autograph::backend::Device;
 use autograph::tensor::{Num, Tensor};
 use criterion::{criterion_group, criterion_main, Criterion};
+use half::bf16;
 use ndarray::{Array, ArrayView2};
 use std::any::type_name;
 
@@ -70,10 +71,14 @@ fn gemm_benches<T: Num>(device: &Device, c: &mut Criterion) {
 }
 
 pub fn criterion_benchmark(c: &mut Criterion) {
-    for gpu in Device::list_gpus() {
-        gemm_benches::<f32>(&gpu, c);
-        gemm_benches::<u32>(&gpu, c);
-        gemm_benches::<i32>(&gpu, c);
+    for device in Device::list() {
+        gemm_benches::<bf16>(&device, c);
+        gemm_benches::<u32>(&device, c);
+        gemm_benches::<i32>(&device, c);
+        gemm_benches::<f32>(&device, c);
+        gemm_benches::<u64>(&device, c);
+        gemm_benches::<i64>(&device, c);
+        gemm_benches::<f64>(&device, c);
     }
 }
 

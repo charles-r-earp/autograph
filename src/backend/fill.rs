@@ -1,19 +1,28 @@
 use super::{BufferSliceMut, Device, Scalar};
-use crate::Result;
 use crate::util::size_eq;
+use crate::Result;
 use bytemuck::{Pod, Zeroable};
 
-#[derive(Clone, Copy, Zeroable, Pod)]
-#[repr(C)]
-struct FillU32PushConsts {
+#[derive(Copy)]
+#[repr(C, packed)]
+struct FillPushConsts<T: Scalar> {
+    x: T,
     n: u32,
-    x: u32
 }
 
+impl<T: Scalar> Clone for FillPushConsts<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+unsafe impl<T: Scalar> Zeroable for FillPushConsts<T> {}
+
+unsafe impl<T: Scalar> Pod for FillPushConsts<T> {}
 
 pub(super) fn fill<T: Scalar>(device: &Device, slice: BufferSliceMut<T>, x: T) -> Result<()>
 where
-    T: Pod,
+    T: Scalar,
 {
     let src = if size_eq::<T, u8>() {
         include_shader!("glsl/fill_u8.spv")
@@ -21,23 +30,30 @@ where
         include_shader!("glsl/fill_u16.spv")
     } else if size_eq::<T, u32>() {
         include_shader!("glsl/fill_u32.spv")
+    } else if size_eq::<T, u64>() {
+        include_shader!("glsl/fill_u64.spv")
     } else {
         unreachable!()
     };
-    
-    eprintln!("{:?}", x);
-    
-    let n = slice.len as u32;
-    
-    let push_consts = FillU32PushConsts {
-        n,
-        x: x.to_bits_u32()
-    };
 
-    device
+    let n = slice.len as u32;
+
+    let builder = device
         .compute_pass(src, "main")?
         .buffer_slice_mut(slice)?
-        .push_constants(push_consts)?
-        .global_size([n, 1, 1])
-        .enqueue()
+        .global_size([n, 1, 1]);
+
+    if size_eq::<T, u64>() {
+        let push_consts = FillPushConsts {
+            x: x.to_bits_u64().unwrap(),
+            n,
+        };
+        builder.push_constants(push_consts)?.enqueue()
+    } else {
+        let push_consts = FillPushConsts {
+            x: x.to_bits_u32().unwrap(),
+            n,
+        };
+        builder.push_constants(push_consts)?.enqueue()
+    }
 }

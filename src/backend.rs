@@ -1,9 +1,12 @@
+use crate::util::type_eq;
 use crate::{
     error::{ComputePassBuilderError, ShaderModuleError},
     Result,
 };
 use bytemuck::Pod;
 use dashmap::DashMap;
+use half::{bf16, f16};
+use num_traits::{FromPrimitive, ToPrimitive};
 use serde::{Deserialize, Serialize};
 use smol::future::Future;
 use std::borrow::Cow;
@@ -12,9 +15,6 @@ use std::hash::Hash;
 use std::marker::PhantomData;
 use std::mem::size_of;
 use std::sync::Arc;
-use half::{f16, bf16};
-use num_traits::{ToPrimitive, FromPrimitive};
-use crate::util::type_eq;
 
 mod fill;
 pub mod shader_util;
@@ -28,73 +28,105 @@ mod sealed {
 }
 use sealed::Sealed;
 
+macro_rules! impl_sealed {
+    ($($t:ty,)+) => (
+        $(
+            impl Sealed for $t {}
+        )+
+    )
+}
+
+impl_sealed!(u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64,);
+
+/// Base trait for all shader types
 pub trait Scalar: Sealed + Debug + Default + ToPrimitive + FromPrimitive + Pod + PartialEq {
-    fn zero() -> Self { Self::default() }
-    fn one() -> Self { Self::from_u32(1).unwrap() }
-    fn to_bits_u32(&self) -> u32 {
-        if type_eq::<Self, u8>() || type_eq::<Self, u16>() || type_eq::<Self, u32>() {
-            self.to_u32().unwrap()
-        } else if type_eq::<Self, i8>() || type_eq::<Self, i16>() || type_eq::<Self, i32>() {
-            u32::from_ne_bytes(self.to_i32().unwrap().to_ne_bytes())
-        } else if type_eq::<Self, f32>() {
-            f32::to_bits(self.to_f32().unwrap())
+    fn zero() -> Self {
+        Self::default()
+    }
+    fn one() -> Self {
+        Self::from_u32(1).unwrap()
+    }
+    fn to_bits_u16(&self) -> Option<u16> {
+        if type_eq::<Self, u8>() || type_eq::<Self, u16>() {
+            Some(self.to_u16().unwrap())
+        } else if type_eq::<Self, i8>() || type_eq::<Self, i16>() {
+            Some(u16::from_ne_bytes(self.to_i16().unwrap().to_ne_bytes()))
         } else {
-            unreachable!()
+            None
+        }
+    }
+    fn to_bits_u32(&self) -> Option<u32> {
+        if type_eq::<Self, u32>() {
+            Some(self.to_u32().unwrap())
+        } else if type_eq::<Self, i32>() {
+            Some(u32::from_ne_bytes(self.to_i32().unwrap().to_ne_bytes()))
+        } else if type_eq::<Self, f32>() {
+            Some(f32::to_bits(self.to_f32().unwrap()))
+        } else {
+            self.to_bits_u16().map(|x| x as u32)
+        }
+    }
+    fn to_bits_u64(&self) -> Option<u64> {
+        if type_eq::<Self, u64>() {
+            Some(self.to_u64().unwrap())
+        } else if type_eq::<Self, i64>() {
+            Some(u64::from_ne_bytes(self.to_i64().unwrap().to_ne_bytes()))
+        } else if type_eq::<Self, f64>() {
+            Some(self.to_f64().unwrap().to_bits())
+        } else {
+            self.to_bits_u32().map(|x| x as u64)
         }
     }
 }
 
-impl Sealed for u8 {}
-
 impl Scalar for u8 {}
-
-impl Sealed for i8 {}
 
 impl Scalar for i8 {}
 
-impl Sealed for u16 {}
-
 impl Scalar for u16 {}
-
-impl Sealed for i16 {}
 
 impl Scalar for i16 {}
 
-impl Sealed for f16 {}
-
 impl Scalar for f16 {
-    fn to_bits_u32(&self) -> u32 {
-        self.to_bits() as u32
+    fn to_bits_u16(&self) -> Option<u16> {
+        Some(self.to_bits())
     }
 }
-
-impl Sealed for bf16 {}
 
 impl Scalar for bf16 {
-    fn to_bits_u32(&self) -> u32 {
-        self.to_bits() as u32
+    fn to_bits_u16(&self) -> Option<u16> {
+        Some(self.to_bits())
     }
 }
-
-impl Sealed for f32 {}
-
-impl Scalar for f32 {}
-
-impl Sealed for u32 {}
 
 impl Scalar for u32 {}
 
-impl Sealed for i32 {}
-
 impl Scalar for i32 {}
 
+impl Scalar for f32 {}
+
+impl Scalar for u64 {}
+
+impl Scalar for i64 {}
+
+impl Scalar for f64 {}
+
+/// Marker trait for arithmetic types
 pub trait Num: Scalar {}
 
-impl Num for f32 {}
+impl Num for bf16 {}
 
 impl Num for u32 {}
 
 impl Num for i32 {}
+
+impl Num for f32 {}
+
+impl Num for u64 {}
+
+impl Num for i64 {}
+
+impl Num for f64 {}
 
 #[doc(hidden)]
 #[proxy_enum::proxy(DynDevice)]
@@ -666,6 +698,9 @@ impl<T, S: DataMut<Elem = T>> BufferBase<S> {
 impl<S: Data> Drop for BufferBase<S> {
     fn drop(&mut self) {
         if S::needs_drop() {
+            // We might as well not panic here since there's no way to return a result from drop
+            // The primary failure mode would be another error or a disconnect
+            #[allow(unused)]
             let result = self.device.dyn_device.drop_buffer(self.id);
             #[cfg(debug_assertions)]
             result.unwrap();

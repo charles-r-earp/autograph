@@ -1,8 +1,9 @@
-use super::{Num, TensorView1, TensorView2, TensorViewMut2};
+use super::{Num, Scalar, TensorView1, TensorView2, TensorViewMut2};
 use crate::error::ShapeError;
+use crate::util::{size_eq, type_eq};
 use crate::Result;
 use bytemuck::{Pod, Zeroable};
-use std::any::TypeId;
+use half::bf16;
 use std::convert::TryInto;
 
 enum PostOp {
@@ -11,9 +12,12 @@ enum PostOp {
     Relu,
 }
 
-#[derive(Clone, Copy)]
-#[repr(C)]
+#[derive(Copy)]
+#[repr(C, packed)]
 struct GemmPushConsts<T: Num> {
+    alpha: T,
+    beta: T,
+    a0: T, // ie relu negative slope
     m: u32,
     k: u32,
     n: u32,
@@ -23,9 +27,12 @@ struct GemmPushConsts<T: Num> {
     csb: i32,
     rsc: i32,
     csc: i32,
-    alpha: T,
-    beta: T,
-    a0: T, // ie relu negative slope
+}
+
+impl<T: Num> Clone for GemmPushConsts<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
 }
 
 unsafe impl<T: Num> Zeroable for GemmPushConsts<T> {}
@@ -55,7 +62,24 @@ fn gemm_impl<T: Num>(
 ) -> Result<()> {
     let device = a.device();
 
-    let src = if TypeId::of::<T>() == TypeId::of::<f32>() {
+    let src = if type_eq::<T, bf16>() {
+        match post_op {
+            PostOp::Identity => {
+                if bias.is_some() {
+                    include_shader!("glsl/gemm_bias_bf16_as_f32.spv")
+                } else {
+                    include_shader!("glsl/gemm_bf16_as_f32.spv")
+                }
+            }
+            PostOp::Relu => {
+                if bias.is_some() {
+                    include_shader!("glsl/gemm_bias_relu_bf16_as_f32.spv")
+                } else {
+                    include_shader!("glsl/gemm_relu_bf16_as_f32.spv")
+                }
+            }
+        }
+    } else if type_eq::<T, f32>() {
         match post_op {
             PostOp::Identity => {
                 if bias.is_some() {
@@ -72,10 +96,16 @@ fn gemm_impl<T: Num>(
                 }
             }
         }
-    } else if TypeId::of::<T>() == TypeId::of::<u32>() {
+    } else if type_eq::<T, u32>() {
         include_shader!("glsl/gemm_u32.spv")
-    } else if TypeId::of::<T>() == TypeId::of::<i32>() {
+    } else if type_eq::<T, i32>() {
         include_shader!("glsl/gemm_i32.spv")
+    } else if type_eq::<T, u64>() {
+        include_shader!("glsl/gemm_u64.spv")
+    } else if type_eq::<T, i64>() {
+        include_shader!("glsl/gemm_i64.spv")
+    } else if type_eq::<T, f64>() {
+        include_shader!("glsl/gemm_f64.spv")
     } else {
         unreachable!()
     };
@@ -101,28 +131,58 @@ fn gemm_impl<T: Num>(
     let [rsc, csc]: [isize; 2] = c.strides().try_into().unwrap();
     let [rsc, csc] = [rsc as i32, csc as i32];
 
-    let push_consts = GemmPushConsts {
-        m,
-        k,
-        n,
-        rsa,
-        csa,
-        rsb,
-        csb,
-        rsc,
-        csc,
-        alpha,
-        beta,
-        a0,
-    };
-
-    device
+    let builder = device
         .compute_pass(src, "main")?
         .buffer_slice(a.as_buffer_slice())?
         .buffer_slice(b.as_buffer_slice())?
         .option_buffer_slice(bias.as_ref().map(|bias| bias.as_buffer_slice()))?
         .buffer_slice_mut(c.as_buffer_slice_mut())?
-        .push_constants(push_consts)?
-        .global_size([m, n, 1])
-        .enqueue()
+        .global_size([m, n, 1]);
+
+    if size_eq::<T, u64>() {
+        let push_consts = GemmPushConsts {
+            alpha: alpha.to_bits_u64().unwrap(),
+            beta: beta.to_bits_u64().unwrap(),
+            a0: a0.to_bits_u64().unwrap(),
+            m,
+            k,
+            n,
+            rsa,
+            csa,
+            rsb,
+            csb,
+            rsc,
+            csc,
+        };
+        builder.push_constants(push_consts)?.enqueue()
+    } else {
+        let (alpha, beta, a0) = if type_eq::<T, bf16>() {
+            (
+                alpha.to_f32().unwrap().to_bits_u32().unwrap(),
+                beta.to_f32().unwrap().to_bits_u32().unwrap(),
+                a0.to_f32().unwrap().to_bits_u32().unwrap(),
+            )
+        } else {
+            (
+                alpha.to_bits_u32().unwrap(),
+                beta.to_bits_u32().unwrap(),
+                a0.to_bits_u32().unwrap(),
+            )
+        };
+        let push_consts = GemmPushConsts {
+            alpha,
+            beta,
+            a0,
+            m,
+            k,
+            n,
+            rsa,
+            csa,
+            rsb,
+            csb,
+            rsc,
+            csc,
+        };
+        builder.push_constants(push_consts)?.enqueue()
+    }
 }

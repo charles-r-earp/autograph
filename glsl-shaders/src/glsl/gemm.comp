@@ -1,6 +1,12 @@
 #version 450
 
-// T, BIAS, RELU
+// T, LOAD(x), STORE(x), BF16_AS_F32, BIAS, RELU
+
+#ifdef BF16_AS_F32
+    #define Ts float
+#else 
+    #define Ts T
+#endif    
 
 #define M_TILE 32
 #define K_TILE 32
@@ -27,6 +33,9 @@ restrict buffer C {
 };
 
 layout(push_constant) uniform PushConsts {
+    Ts alpha;
+    Ts beta;
+    Ts a0; // ie relu negative slope
     uint m;
     uint k;
     uint n;
@@ -36,13 +45,10 @@ layout(push_constant) uniform PushConsts {
     int csb;
     int rsc;
     int csc; 
-    T alpha;
-    T beta;
-    T a0; // ie relu negative slope
 };
 
-shared T a_tile[M_TILE][K_TILE];
-shared T b_tile[K_TILE][N_TILE]; 
+shared Ts a_tile[M_TILE][K_TILE];
+shared Ts b_tile[K_TILE][N_TILE]; 
 
 void main() {
     
@@ -53,7 +59,7 @@ void main() {
     
     bool valid = global_x < m && global_y < n;
     
-    T acc = 0;
+    Ts acc = 0;
  
     uint tile_k;
     for(uint z = 0; z < k; ++z) {
@@ -62,11 +68,11 @@ void main() {
             memoryBarrierShared();
             
             if (global_x < m) {
-                a_tile[local_x][local_y] = a[global_x * rsa + (z + local_y) * csa];
+                a_tile[local_x][local_y] = LOAD(a[global_x * rsa + (z + local_y) * csa]);
             }    
             
             if (global_y < n) {    
-                b_tile[local_x][local_y] = b[(z + local_x) * rsb + global_y * csb];
+                b_tile[local_x][local_y] = LOAD(b[(z + local_x) * rsb + global_y * csb]);
             }
             
             barrier();    
@@ -83,14 +89,14 @@ void main() {
     
     if (valid) {
         uint i = global_x * rsc + global_y * csc;
-        T y = alpha * acc;
+        Ts y = alpha * acc;
         
         if (beta != 0) {
-            y += beta * c[i];
+            y += beta * LOAD(c[i]);
         }
         
         #ifdef BIAS 
-        y += bias[global_y];
+        y += LOAD(bias[global_y]);
         #endif 
         
         #ifdef RELU 
@@ -99,6 +105,6 @@ void main() {
         }
         #endif
         
-        c[i] = y;      
+        c[i] = STORE(y);      
     }
 }

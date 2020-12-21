@@ -25,16 +25,12 @@ mod macros {
     }
 }
 
-mod util;
 pub mod backend;
 pub mod error;
-pub mod tensor;
 pub mod neural_network;
+pub mod tensor;
+mod util;
 
 pub use ndarray;
 
 pub type Result<T, E = error::Error> = std::result::Result<T, E>;
-
-
-
-

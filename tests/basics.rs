@@ -2,26 +2,19 @@ use autograph::backend::{Buffer, Device, Scalar};
 use autograph::tensor::{Dimension, Tensor};
 use autograph::{include_spirv, Result};
 use bytemuck::{Pod, Zeroable};
+use half::{bf16, f16};
 use ndarray::Array;
-use half::{f16, bf16};
 
 #[test]
 fn device_list() {
     Device::list();
 }
 
-#[test]
-fn bf16_to_bits() {
-    let x = 1.;
-    let y = f32::from_bits(bf16::from_f32(x).to_f32().to_bits());
-    assert_eq!(x, y);
-}
-
 #[derive(Clone, Copy, Zeroable, Pod)]
 #[repr(C)]
-struct FillU32PushConsts {
-    n: u32,
+struct FillPushConstsU32 {
     x: u32,
+    n: u32,
 }
 
 #[test]
@@ -31,9 +24,10 @@ fn compute_pass() -> Result<()> {
     for device in Device::list() {
         let n = 10;
         let mut y = Buffer::<u32>::zeros(&device, n)?;
-        device.compute_pass(spirv.as_ref(), "main")?
+        device
+            .compute_pass(spirv.as_ref(), "main")?
             .buffer_slice_mut(y.as_buffer_slice_mut())?
-            .push_constants(FillU32PushConsts { n: n as u32, x: 1 })?
+            .push_constants(FillPushConstsU32 { x: 1, n: n as u32 })?
             .global_size([n as u32, 1, 1])
             .enqueue()?;
         let y = smol::block_on(y.to_vec()?)?;
@@ -172,7 +166,11 @@ fn test_from_elem_f16() -> Result<()> {
 
 #[test]
 fn test_from_elem_bf16() -> Result<()> {
-    tensor_from_elem::<bf16>(&[bf16::from_f32(1.), bf16::from_f32(-33.), bf16::from_f32(1000.)])
+    tensor_from_elem::<bf16>(&[
+        bf16::from_f32(1.),
+        bf16::from_f32(-33.),
+        bf16::from_f32(1000.),
+    ])
 }
 
 #[test]
@@ -188,4 +186,19 @@ fn test_from_elem_u32() -> Result<()> {
 #[test]
 fn test_from_elem_i32() -> Result<()> {
     tensor_from_elem::<i32>(&[1, -33, 1000])
+}
+
+#[test]
+fn test_from_elem_f64() -> Result<()> {
+    tensor_from_elem::<f64>(&[1., -33., 0.1, 1000.])
+}
+
+#[test]
+fn test_from_elem_u64() -> Result<()> {
+    tensor_from_elem::<u64>(&[1, 33, 1000])
+}
+
+#[test]
+fn test_from_elem_i64() -> Result<()> {
+    tensor_from_elem::<i64>(&[1, -33, 1000])
 }
