@@ -28,7 +28,16 @@ jobs:
     - name: Check
       run: cargo check --tests --lib --benches
     - name: Test 
-      run: cargo test --tests --lib --benches --no-fail-fast
+      run: cargo test --tests --lib --benches 
+    - name: Test Scalar 8
+      run: cargo test 8 -- --ignored
+      continue-on-error: true 
+    - name: Test Scalar 16
+      run: cargo tests 16 -- --ignored 
+      continue-on-error: true 
+    - name: Test Scalar 64
+      run: cargo test 64 -- --ignored 
+      continue-on-error: true 
 
   lint:
     name: Lint

@@ -60,6 +60,7 @@ fn check_eq<T: Num>(a: &[T], b: &[T]) {
     assert_eq!(a, b);
 }
 
+#[ignore]
 #[test]
 fn tensor_dot_bf16() -> Result<()> {
     tensor_dot_half::<bf16>(
@@ -99,6 +100,7 @@ fn tensor_dot_f32() -> Result<()> {
     Ok(())
 }
 
+#[ignore]
 #[test]
 fn tensor_dot_u64() -> Result<()> {
     tensor_dot::<u64>(
@@ -109,6 +111,7 @@ fn tensor_dot_u64() -> Result<()> {
     Ok(())
 }
 
+#[ignore]
 #[test]
 fn tensor_dot_i64() -> Result<()> {
     tensor_dot::<i64>(
@@ -119,6 +122,7 @@ fn tensor_dot_i64() -> Result<()> {
     Ok(())
 }
 
+#[ignore]
 #[test]
 fn tensor_dot_f64() -> Result<()> {
     tensor_dot::<f64>(

@@ -139,31 +139,37 @@ fn tensor_from_elem<T: Scalar>(xs: &[T]) -> Result<()> {
     Ok(())
 }
 
+#[ignore]
 #[test]
 fn test_from_elem_u8() -> Result<()> {
     tensor_from_elem::<u8>(&[1, 33, 255])
 }
 
+#[ignore]
 #[test]
 fn test_from_elem_i8() -> Result<()> {
     tensor_from_elem::<i8>(&[1, -33, 127])
 }
 
+#[ignore]
 #[test]
 fn test_from_elem_u16() -> Result<()> {
     tensor_from_elem::<u16>(&[1, 33, 1000])
 }
 
+#[ignore]
 #[test]
 fn test_from_elem_i16() -> Result<()> {
     tensor_from_elem::<i16>(&[1, -33, 1000])
 }
 
+#[ignore]
 #[test]
 fn test_from_elem_f16() -> Result<()> {
     tensor_from_elem::<f16>(&[f16::from_f32(1.), f16::from_f32(-33.), f16::from_f32(1000.)])
 }
 
+#[ignore]
 #[test]
 fn test_from_elem_bf16() -> Result<()> {
     tensor_from_elem::<bf16>(&[
@@ -188,16 +194,19 @@ fn test_from_elem_i32() -> Result<()> {
     tensor_from_elem::<i32>(&[1, -33, 1000])
 }
 
+#[ignore]
 #[test]
 fn test_from_elem_f64() -> Result<()> {
     tensor_from_elem::<f64>(&[1., -33., 0.1, 1000.])
 }
 
+#[ignore]
 #[test]
 fn test_from_elem_u64() -> Result<()> {
     tensor_from_elem::<u64>(&[1, 33, 1000])
 }
 
+#[ignore]
 #[test]
 fn test_from_elem_i64() -> Result<()> {
     tensor_from_elem::<i64>(&[1, -33, 1000])
