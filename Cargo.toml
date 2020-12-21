@@ -28,7 +28,7 @@ rspirv = "0.7.0"
 serde = { version = "1.0.118", features = ["derive"] }
 ahash = "0.6.1"
 num-traits = "0.2.14"
-half = { path = "../half-rs", features = ["bytemuck", "num-traits"] }
+half = { git = "https://github.com/charles-r-earp/half-rs", features = ["bytemuck", "num-traits"] }
 
 [dev-dependencies]
 approx = "0.4.0"
