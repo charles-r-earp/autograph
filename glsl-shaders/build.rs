@@ -117,6 +117,8 @@ fn glsl_gemm(compiler: &mut Compiler) -> Result<()> {
         } 
         if rust_ty == "bf16_as_f32" {
             options.add_macro_definition("BF16_AS_F32", None);
+        } else if rust_ty == "u64" || rust_ty == "i64" || rust_ty == "f64" {
+            options.add_macro_definition("T_64", None);
         }
         options.add_macro_definition("T", Some(c_ty));
         add_load_store_macros(&mut options, rust_ty);
@@ -125,7 +127,7 @@ fn glsl_gemm(compiler: &mut Compiler) -> Result<()> {
     for &(rust_ty, c_ty) in NN_TYPES.iter() {
         let mut src = String::from(src);
         if c_ty == "uint16_t" {
-            glsl_extension(&mut src, "GL_EXT_shader_16bit_storage", Behavior::Require); 
+            glsl_extension(&mut src, "GL_AMD_gpu_shader_int16", Behavior::Require); 
         } 
         {
             // Relu

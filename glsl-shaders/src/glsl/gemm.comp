@@ -9,7 +9,13 @@
 #endif    
 
 #define M_TILE 32
-#define K_TILE 32
+
+#ifdef T_64
+    #define K_TILE 64
+#else
+    #define K_TILE 32
+#endif
+
 #define N_TILE 32
 
 layout(local_size_x = M_TILE, local_size_y = N_TILE) in;
@@ -47,8 +53,8 @@ layout(push_constant) uniform PushConsts {
     int csc; 
 };
 
-shared Ts a_tile[M_TILE][K_TILE];
-shared Ts b_tile[K_TILE][N_TILE]; 
+shared Ts a_tile[K_TILE][M_TILE];
+shared Ts b_tile[K_TILE][N_TILE];
 
 void main() {
     
@@ -60,7 +66,7 @@ void main() {
     bool valid = global_x < m && global_y < n;
     
     Ts acc = 0;
- 
+    
     uint tile_k;
     for(uint z = 0; z < k; ++z) {
         tile_k = (z + K_TILE) % K_TILE;  
@@ -68,7 +74,7 @@ void main() {
             memoryBarrierShared();
             
             if (global_x < m) {
-                a_tile[local_x][local_y] = LOAD(a[global_x * rsa + (z + local_y) * csa]);
+                a_tile[local_y][local_x] = LOAD(a[global_x * rsa + (z + local_y) * csa]);
             }    
             
             if (global_y < n) {    
@@ -81,7 +87,7 @@ void main() {
         memoryBarrierShared();
         
         if (valid) {
-            acc += a_tile[local_x][tile_k] * b_tile[tile_k][local_y];
+            acc += a_tile[tile_k][local_x] * b_tile[tile_k][local_y];
         }
         
         barrier();

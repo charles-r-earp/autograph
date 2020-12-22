@@ -492,6 +492,7 @@ impl Stream {
         for id in buffers_to_drop {
             buffers.remove(&id).ok_or(GpuError::BufferNotFound(id))?;
         }
+        device.poll(Maintain::Wait);
         Ok(())
     }
     async fn flush_commands(

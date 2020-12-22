@@ -1,86 +1,102 @@
 use autograph::backend::Device;
-use autograph::tensor::{Num, Tensor};
+use autograph::tensor::{linalg::gemm, Num, Tensor};
 use criterion::{criterion_group, criterion_main, Criterion};
 use half::bf16;
-use ndarray::{Array, ArrayView2};
 use std::any::type_name;
+use std::fmt::Debug;
+use std::time::Instant;
 
-fn gemm_benches<T: Num>(device: &Device, c: &mut Criterion) {
-    fn bench_dot_nn<T: Num>(
+const BATCH_SIZE: usize = 400;
+
+#[allow(unused)]
+#[derive(Clone, Copy, Debug)]
+enum Transpose {
+    N,
+    T,
+}
+
+fn gemm_benches<X: Num>(device: &Device, c: &mut Criterion) {
+    fn bench_gemm<T: Num>(
         device: &Device,
         c: &mut Criterion,
-        x1: &ArrayView2<T>,
-        x2: &ArrayView2<T>,
+        m: usize,
+        k: usize,
+        n: usize,
+        a_t: Transpose,
+        b_t: Transpose,
     ) {
-        c.bench_function(
-            &format!(
-                "{:?} Tensor Dot {:?} x {:?} {}",
-                device,
-                x1.raw_dim(),
-                x2.raw_dim(),
-                type_name::<T>()
-            ),
-            move |b| {
-                let x1 = Tensor::from_array(device, x1.view()).unwrap();
-                let x2 = Tensor::from_array(device, x2.view()).unwrap();
-                b.iter(move || {
-                    x1.dot(&x2).unwrap();
-                    smol::block_on(device.synchronize().unwrap()).unwrap();
-                });
-            },
-        );
-    }
-    fn bench_dot_nt<T: Num>(
-        device: &Device,
-        c: &mut Criterion,
-        x1: &ArrayView2<T>,
-        x2: &ArrayView2<T>,
-    ) {
-        c.bench_function(
-            &format!(
-                "{:?} Tensor Dot {:?} x {:?}T {}",
-                device,
-                x1.raw_dim(),
-                x2.raw_dim(),
-                type_name::<T>()
-            ),
-            move |b| {
-                let x1 = Tensor::from_array(device, x1.view()).unwrap();
-                let x2 = Tensor::from_array(device, x2.view()).unwrap();
-                b.iter(move || {
-                    x1.dot(&x2.t()).unwrap();
-                    smol::block_on(device.synchronize().unwrap()).unwrap();
-                });
-            },
-        );
-    }
-    for n in [10, 100, 256].iter().copied() {
-        bench_dot_nn::<T>(
+        let name = format!(
+            "{:?} Tensor {} GEMM m: {} k: {} n: {} a_t: {:?} b_t: {:?}",
             device,
-            c,
-            &Array::from_elem([n; 2], T::one()).view(),
-            &Array::from_elem([n; 2], T::one()).view(),
+            type_name::<T>(),
+            m,
+            k,
+            n,
+            a_t,
+            b_t
         );
-        bench_dot_nt::<T>(
-            device,
-            c,
-            &Array::from_elem([n; 2], T::one()).view(),
-            &Array::from_elem([n; 2], T::one()).view(),
-        );
+        let alpha = T::one();
+        let beta = T::one();
+        c.bench_function(&name, |b| {
+            let device = device.clone();
+            let x1_dim = match a_t {
+                Transpose::N => [m, k],
+                Transpose::T => [k, m],
+            };
+            let x2_dim = match a_t {
+                Transpose::N => [k, n],
+                Transpose::T => [n, k],
+            };
+            let y_dim = [x1_dim[0], x2_dim[1]];
+            let x1 = Tensor::ones(&device, x1_dim).unwrap();
+            let x2 = Tensor::ones(&device, x2_dim).unwrap();
+            let mut y = Tensor::ones(&device, y_dim).unwrap();
+            b.iter_custom(move |n| {
+                let n = n as usize;
+                let x1 = match a_t {
+                    Transpose::N => x1.view(),
+                    Transpose::T => x1.t(),
+                };
+                let x2 = match b_t {
+                    Transpose::N => x2.view(),
+                    Transpose::T => x2.t(),
+                };
+                let mut y = y.view_mut();
+                smol::block_on(device.synchronize().unwrap()).unwrap();
+                let start = Instant::now();
+                for i in (0..n).into_iter().step_by(BATCH_SIZE) {
+                    for _ in 0..std::cmp::min(n - i, BATCH_SIZE) {
+                        gemm(alpha, &x1, &x2, beta, &mut y).unwrap();
+                    }
+                    smol::block_on(device.synchronize().unwrap()).unwrap();
+                }
+                start.elapsed()
+            });
+        });
+    }
+    use Transpose::*;
+    for n in [32, 64, 100, 256, 1024].iter().copied() {
+        for (a_t, b_t) in [(N, N), (N, T), (T, N), (N, N)].iter().copied() {
+            bench_gemm::<X>(device, c, n, n, n, a_t, b_t);
+        }
     }
 }
 
-pub fn criterion_benchmark(c: &mut Criterion) {
+fn num_bench<T: Num>(device: &Device, c: &mut Criterion) {
+    gemm_benches::<T>(device, c);
+}
+
+pub fn run_num_benches(c: &mut Criterion) {
     for device in Device::list() {
-        gemm_benches::<bf16>(&device, c);
-        gemm_benches::<u32>(&device, c);
-        gemm_benches::<i32>(&device, c);
-        gemm_benches::<f32>(&device, c);
-        gemm_benches::<u64>(&device, c);
-        gemm_benches::<i64>(&device, c);
-        gemm_benches::<f64>(&device, c);
+        num_bench::<bf16>(&device, c);
+        num_bench::<u32>(&device, c);
+        num_bench::<i32>(&device, c);
+        num_bench::<f32>(&device, c);
+        num_bench::<u64>(&device, c);
+        num_bench::<i64>(&device, c);
+        num_bench::<f64>(&device, c);
     }
 }
 
-criterion_group!(benches, criterion_benchmark);
-criterion_main!(benches);
+criterion_group!(num_benches, run_num_benches);
+criterion_main!(num_benches);
