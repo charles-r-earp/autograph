@@ -34,7 +34,7 @@ jobs:
       run: cargo test 8 -- --ignored
     - name: Test Scalar 16
       continue-on-error: true 
-      run: cargo tests 16 -- --ignored
+      run: cargo test 16 -- --ignored
     - name: Test Scalar 64
       continue-on-error: true 
       run: cargo test 64 -- --ignored 
