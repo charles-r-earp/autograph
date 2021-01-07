@@ -446,6 +446,7 @@ pub struct BufferBinding {
     id: BufferId,
     offset: u64,
     len: u64,
+    mutable: bool,
 }
 
 #[allow(unused)]
@@ -493,6 +494,7 @@ impl<'a, B> ComputePassBuilder<'a, B> {
                     id: slice.id,
                     offset: (slice.offset * size_of::<T>()) as u64,
                     len: (slice.len * size_of::<T>()) as u64,
+                    mutable: buffer_descriptor.mutable,
                 });
                 Ok(ComputePassBuilder {
                     device: self.device,
@@ -550,6 +552,7 @@ impl<'a, B> ComputePassBuilder<'a, B> {
                     id: slice.id,
                     offset: (slice.offset * size_of::<T>()) as u64,
                     len: (slice.len * size_of::<T>()) as u64,
+                    mutable: buffer_descriptor.mutable,
                 });
                 Ok(ComputePassBuilder {
                     device: self.device,

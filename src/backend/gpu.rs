@@ -22,7 +22,7 @@ pub struct Gpu {
 }
 
 impl Gpu {
-    #[allow(clippy::new_ret_no_self)]
+    #[allow(clippy::single_match)]
     pub(super) fn new(index: usize) -> Option<Result<Self>> {
         let mut dyn_hal_gpu = None;
         #[allow(unused_mut)]
@@ -36,12 +36,11 @@ impl Gpu {
             Ok(hal) => {
                 dyn_hal_gpu.replace(hal.unwrap().into());
             }
-            #[allow(unused)]
-            Err(n) =>
             #[cfg(any(target_os = "ios", target_os = "macos", windows))]
-            {
+            Err(n) => {
                 num_adapters += n;
             }
+            _ => (),
         }
 
         #[cfg(any(target_os = "ios", target_os = "macos"))]
@@ -49,12 +48,11 @@ impl Gpu {
             Ok(hal) => {
                 dyn_hal_gpu.replace(hal.unwrap().into());
             }
-            #[allow(unused)]
+            #[cfg(windows)]
             Err(n) => {
-                if cfg!(windows) {
-                    num_adapters += n;
-                }
+                num_adapters += n;
             }
+            _ => (),
         }
 
         #[cfg(windows)]
@@ -752,6 +750,7 @@ pub mod hal {
             let mut read_offset = 0;
             let mut write_offset = 0;
             let mut access_flags = HashMap::<BufferId, Access>::with_capacity(self.queued.len());
+            // TODO: Implement complete barriers
             for op in self.queued.iter() {
                 match op {
                     /*Op::CopyBuffer {
@@ -772,24 +771,29 @@ pub mod hal {
                         access_flags
                             .entry(dst.to_buffer_id())
                             .and_modify(|access| {
-                                match *access {
-                                    Access::TRANSFER_READ => unsafe {
-                                        command_buffer.pipeline_barrier(
-                                            PipelineStage::TRANSFER..PipelineStage::TRANSFER,
-                                            Dependencies::empty(),
-                                            once(Barrier::Buffer {
-                                                states: Access::TRANSFER_WRITE
-                                                    ..Access::TRANSFER_READ,
-                                                target: &*storage_buffer,
-                                                range: SubRange {
-                                                    offset: range.start as u64,
-                                                    size: Some(range.len() as u64),
-                                                },
-                                                families: None,
-                                            }),
-                                        );
-                                    },
-                                    _ => todo!(),
+                                let stage = match *access {
+                                    Access::TRANSFER_READ | Access::TRANSFER_WRITE => {
+                                        PipelineStage::TRANSFER
+                                    }
+                                    Access::SHADER_READ | Access::SHADER_WRITE => {
+                                        PipelineStage::COMPUTE_SHADER
+                                    }
+                                    _ => unreachable!(),
+                                };
+                                unsafe {
+                                    command_buffer.pipeline_barrier(
+                                        stage..PipelineStage::TRANSFER,
+                                        Dependencies::empty(),
+                                        once(Barrier::Buffer {
+                                            states: *access..Access::TRANSFER_WRITE,
+                                            target: &*storage_buffer,
+                                            range: SubRange {
+                                                offset: range.start as u64,
+                                                size: Some(range.len() as u64),
+                                            },
+                                            families: None,
+                                        }),
+                                    );
                                 }
                                 *access = Access::TRANSFER_WRITE;
                             })
@@ -819,24 +823,29 @@ pub mod hal {
                         access_flags
                             .entry(src.to_buffer_id())
                             .and_modify(|access| {
-                                match *access {
-                                    Access::TRANSFER_WRITE => unsafe {
-                                        command_buffer.pipeline_barrier(
-                                            PipelineStage::TRANSFER..PipelineStage::TRANSFER,
-                                            Dependencies::empty(),
-                                            once(Barrier::Buffer {
-                                                states: Access::TRANSFER_WRITE
-                                                    ..Access::TRANSFER_READ,
-                                                target: read_buffer,
-                                                range: SubRange {
-                                                    offset: read_offset as u64,
-                                                    size: Some(range.len() as u64),
-                                                },
-                                                families: None,
-                                            }),
-                                        );
-                                    },
-                                    _ => todo!(),
+                                let stage = match *access {
+                                    Access::TRANSFER_READ | Access::TRANSFER_WRITE => {
+                                        PipelineStage::TRANSFER
+                                    }
+                                    Access::SHADER_READ | Access::SHADER_WRITE => {
+                                        PipelineStage::COMPUTE_SHADER
+                                    }
+                                    _ => unreachable!(),
+                                };
+                                unsafe {
+                                    command_buffer.pipeline_barrier(
+                                        stage..PipelineStage::TRANSFER,
+                                        Dependencies::empty(),
+                                        once(Barrier::Buffer {
+                                            states: *access..Access::TRANSFER_READ,
+                                            target: &*storage_buffer,
+                                            range: SubRange {
+                                                offset: range.start as u64,
+                                                size: Some(range.len() as u64),
+                                            },
+                                            families: None,
+                                        }),
+                                    );
                                 }
                                 *access = Access::TRANSFER_READ;
                             })
@@ -870,6 +879,49 @@ pub mod hal {
                             .unwrap()
                             .as_ref()
                             .unwrap();
+                        for buffer_binding in buffer_bindings.iter() {
+                            let buffer = StorageBuffer::from_buffer_id(buffer_binding.id);
+                            let buffer = self.storage.get(&buffer);
+                            let range = buffer.slice(
+                                buffer_binding.offset as usize
+                                    ..buffer_binding.offset as usize + buffer_binding.len as usize,
+                            );
+                            let buffer_access = if buffer_binding.mutable {
+                                Access::SHADER_WRITE
+                            } else {
+                                Access::SHADER_READ
+                            };
+                            access_flags
+                                .entry(buffer_binding.id)
+                                .and_modify(|access| {
+                                    let stage = match *access {
+                                        Access::TRANSFER_READ | Access::TRANSFER_WRITE => {
+                                            PipelineStage::TRANSFER
+                                        }
+                                        Access::SHADER_READ | Access::SHADER_WRITE => {
+                                            PipelineStage::COMPUTE_SHADER
+                                        }
+                                        _ => unreachable!(),
+                                    };
+                                    unsafe {
+                                        command_buffer.pipeline_barrier(
+                                            stage..PipelineStage::COMPUTE_SHADER,
+                                            Dependencies::empty(),
+                                            once(Barrier::Buffer {
+                                                states: *access..buffer_access,
+                                                target: buffer.deref(),
+                                                range: SubRange {
+                                                    offset: range.start as u64,
+                                                    size: Some(range.len() as u64),
+                                                },
+                                                families: None,
+                                            }),
+                                        );
+                                    }
+                                    *access = buffer_access;
+                                })
+                                .or_insert(buffer_access);
+                        }
                         unsafe {
                             command_buffer.bind_compute_pipeline(&shader.compute_pipeline);
                             command_buffer.bind_compute_descriptor_sets(

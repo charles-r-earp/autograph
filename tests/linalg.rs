@@ -69,17 +69,27 @@ macro_rules! check_arrays {
 }
 
 macro_rules! test_dot {
-    (ignore $t:tt; $($tail:tt)+) => (
-        #[ignore]
-        test_dot! ($t; $($tail)*);
-    );
-    (bf16; $($name:ident => $args:expr,)+) => (
+    (ignore bf16; $($name:ident => $args:expr,)+) => (
         $(
+            #[ignore]
             #[test]
             fn $name () -> Result<()> {
                 for device in Device::list() {
                     let (a_true, a_out) = tensor_dot! { f32, bf16, &device, $args };
                     check_arrays!(bf16 => (a_true, a_out));
+                }
+                Ok(())
+            }
+        )+
+    );
+    (ignore $t:tt; $($name:ident => $args:expr,)+) => (
+        $(
+            #[ignore]
+            #[test]
+            fn $name () -> Result<()> {
+                for device in Device::list() {
+                    let (a_true, a_out) = tensor_dot! { $t, $t, &device, $args };
+                    check_arrays!($t => (a_true, a_out));
                 }
                 Ok(())
             }
