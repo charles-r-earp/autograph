@@ -135,19 +135,19 @@ test_dot!(
 test_dot!(
     f32;
     tensor_dot_f32_m21_k31_n41_N_N => (21, 31, 41, N, N),
-    tensor_dot_f32_m1021_k1031_n1041_N_N => (1021, 1031, 1041, N, N),
-    tensor_dot_f32_m1021_k1031_n1041_T_N => (1021, 1031, 1041, T, N),
-    tensor_dot_f32_m1021_k1031_n1041_N_T => (1021, 1031, 1041, N, T),
-    tensor_dot_f32_m1021_k1031_n1041_T_T => (1021, 1031, 1041, T, T),
+    tensor_dot_f32_m121_k131_n141_N_N => (121, 131, 141, N, N),
+    tensor_dot_f32_m121_k131_n141_T_N => (121, 131, 141, T, N),
+    tensor_dot_f32_m121_k131_n141_N_T => (121, 131, 141, N, T),
+    tensor_dot_f32_m121_k131_n141_T_T => (121, 131, 141, T, T),
 );
 
 test_dot!(
     ignore bf16;
     tensor_dot_bf16_m21_k31_n41_N_N => (21, 31, 41, N, N),
-    tensor_dot_bf16_m1021_k1031_n1041_N_N => (1021, 1031, 1041, N, N),
-    tensor_dot_bf16_m1021_k1031_n1041_T_N => (1021, 1031, 1041, T, N),
-    tensor_dot_bf16_m1021_k1031_n1041_N_T => (1021, 1031, 1041, N, T),
-    tensor_dot_bf16_m1021_k1031_n1041_T_T => (1021, 1031, 1041, T, T),
+    tensor_dot_bf16_m121_k131_n141_N_N => (121, 131, 141, N, N),
+    tensor_dot_bf16_m121_k131_n141_T_N => (121, 131, 141, T, N),
+    tensor_dot_bf16_m121_k131_n141_N_T => (121, 131, 141, N, T),
+    tensor_dot_bf16_m121_k131_n141_T_T => (121, 131, 141, T, T),
 );
 
 test_dot!(
