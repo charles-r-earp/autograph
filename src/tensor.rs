@@ -236,7 +236,9 @@ impl<T: Scalar, S: DataOwned<Elem = T>, D: Dimension> TensorBase<S, D> {
     ///
     /// The Tensor is uninitialized.
     pub unsafe fn uninitialized<Sh>(device: &Device, shape: Sh) -> Result<Self>
-    where Sh: ShapeBuilder<Dim = D> {
+    where
+        Sh: ShapeBuilder<Dim = D>,
+    {
         let (dim, strides) = dim_strides_from_shape(shape.into_shape());
         let data = S::from_buffer(Buffer::uninitialized(device, dim.size())?);
         Ok(Self {
@@ -245,7 +247,7 @@ impl<T: Scalar, S: DataOwned<Elem = T>, D: Dimension> TensorBase<S, D> {
             strides,
             data,
         })
-    } 
+    }
     pub fn from_elem<Sh>(device: &Device, shape: Sh, elem: T) -> Result<Self>
     where
         Sh: ShapeBuilder<Dim = D>,
@@ -271,8 +273,7 @@ impl<T: Scalar, S: DataOwned<Elem = T>, D: Dimension> TensorBase<S, D> {
     {
         Self::from_elem(device, shape, T::one())
     }
-    pub fn from_array<'a>(device: &Device, array: impl Into<CowArray<'a, T, D>>) -> Result<Self>
-    {
+    pub fn from_array<'a>(device: &Device, array: impl Into<CowArray<'a, T, D>>) -> Result<Self> {
         let array = array.into();
         let dim = array.raw_dim();
         let strides = strides_from_array(&array);
@@ -389,9 +390,7 @@ impl<T: Num, S1: Data<Elem = T>, S2: Data<Elem = T>> Dot<TensorBase<S2, Ix2>>
         let (m, k) = self.dim();
         let (k2, n) = rhs.dim();
         ensure!(k == k2);
-        let mut output = unsafe { 
-            Tensor::uninitialized(self.device(), [m, n])?
-        };
+        let mut output = unsafe { Tensor::uninitialized(self.device(), [m, n])? };
         linalg::gemm(
             T::one(),
             &self.view(),

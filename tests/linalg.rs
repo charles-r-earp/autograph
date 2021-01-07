@@ -49,10 +49,7 @@ macro_rules! tensor_dot {
             Transpose::T => (a2.t(), t2.t()),
         };
         let a_true = a1.dot(&a2);
-        //let a_out = smol::block_on(t1.dot(&t2)?.to_array()?)?;
-        let t_out = t1.dot(&t2)?;
-        smol::block_on(device.synchronize()?)?;
-        let a_out = smol::block_on(t_out.to_array()?)?;
+        let a_out = smol::block_on(t1.dot(&t2)?.to_array()?)?;
         (a_true, a_out)
     }};
 }

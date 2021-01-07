@@ -27,17 +27,6 @@ jobs:
       run: cargo fetch --target ${{ matrix.target }}
     - name: Check
       run: cargo check --tests --lib --benches
-    - name: Test 
-      run: cargo test -- --test-threads 1
-    - name: Test Scalar 8
-      continue-on-error: true 
-      run: cargo test 8 -- --ignored
-    - name: Test Scalar 16
-      continue-on-error: true 
-      run: cargo test 16 -- --ignored
-    - name: Test Scalar 64
-      continue-on-error: true 
-      run: cargo test 64 -- --ignored 
 
   lint:
     name: Lint
