@@ -155,8 +155,9 @@ pub mod dyn_hal_gpu_proxy {
     #[cfg(any(target_os = "ios", target_os = "macos"))]
     #[derive(Clone)]
     pub enum AppleDynHalGpu {
-        #[cfg(feature = "gfx-backend-vulkan")]
-        Vulkan(VulkanGpu),
+        // TODO: The futures need to be the same type 
+        //#[cfg(feature = "gfx-backend-vulkan")]
+        //Vulkan(VulkanGpu),
         Metal(MetalGpu),
     }
 
@@ -166,7 +167,8 @@ pub mod dyn_hal_gpu_proxy {
     #[cfg(windows)]
     #[derive(Clone)]
     pub enum WindowsDynHalGpu {
-        Vulkan(VulkanGpu),
+        // TODO: The futures need to be the same type
+        //Vulkan(VulkanGpu),
         DX12(DX12Gpu),
     }
 
@@ -439,6 +441,7 @@ pub mod hal {
                 .dealloc(StorageBuffer::from_buffer_id(id));
             Ok(())
         }
+        // TODO: With multiple backends, the futures are not of the same type
         pub(super) fn read_buffer<T: Pod>(
             &self,
             id: BufferId,
@@ -497,6 +500,7 @@ pub mod hal {
                 });
             Ok(())
         }
+        // TODO: With multiple backends, the futures are not of the same type
         pub(super) fn synchronize(&self) -> Result<impl Future<Output = Result<()>>> {
             let completion =
                 smol::block_on(self.context.lock()).submit(&self.device, &self.fence)?;
