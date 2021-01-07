@@ -4,10 +4,7 @@ use smol::future::Future;
 use std::borrow::Cow;
 use std::fmt::{self, Debug};
 
-#[cfg(any(
-    not(any(target_os = "ios", target_os = "macos")),
-    feature = "gfx-backend-vulkan"
-))]
+#[cfg(all(unix, not(any(target_os = "ios", target_os = "macos"))))]
 use gfx_backend_vulkan::Backend as Vulkan;
 
 #[cfg(any(target_os = "ios", target_os = "macos"))]
@@ -28,10 +25,7 @@ impl Gpu {
         #[allow(unused_mut)]
         let mut num_adapters = 0;
 
-        #[cfg(any(
-            not(any(target_os = "ios", target_os = "macos")),
-            feature = "gfx-backend-vulkan"
-        ))]
+        #[cfg(all(unix, not(any(target_os = "ios", target_os = "macos"))))]
         match HalGpu::<Vulkan>::new(index - num_adapters) {
             Ok(hal) => {
                 dyn_hal_gpu.replace(hal.unwrap().into());
@@ -118,10 +112,7 @@ impl Debug for Gpu {
     }
 }
 
-#[cfg(any(
-    not(any(target_os = "ios", target_os = "macos")),
-    feature = "gfx-backend-vulkan"
-))]
+#[cfg(all(unix, not(any(target_os = "ios", target_os = "macos"))))]
 type VulkanGpu = HalGpu<Vulkan>;
 
 #[cfg(any(target_os = "ios", target_os = "macos"))]

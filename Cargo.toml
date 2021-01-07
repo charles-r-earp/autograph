@@ -37,11 +37,11 @@ derive_more = "0.99.11"
 gfx-backend-vulkan = "0.6.5"
 
 [target."cfg(any(target_os = \"ios\", target_os = \"macos\"))".dependencies]
-gfx-backend-vulkan = { version = "0.6.5", optional = true }
+#gfx-backend-vulkan = { version = "0.6.5", optional = true }
 gfx-backend-metal = "0.6"
 
 [target."cfg(windows)".dependencies]
-gfx-backend-vulkan = "0.6.5"
+#gfx-backend-vulkan = "0.6.5"
 gfx-backend-dx12 = "0.6"
 
 [dev-dependencies]
