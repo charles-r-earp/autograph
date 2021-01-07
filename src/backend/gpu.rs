@@ -155,7 +155,7 @@ pub mod dyn_hal_gpu_proxy {
     #[cfg(any(target_os = "ios", target_os = "macos"))]
     #[derive(Clone)]
     pub enum AppleDynHalGpu {
-        // TODO: The futures need to be the same type 
+        // TODO: The futures need to be the same type
         //#[cfg(feature = "gfx-backend-vulkan")]
         //Vulkan(VulkanGpu),
         Metal(MetalGpu),
