@@ -1,7 +1,7 @@
 use crate::backend::{Buffer, BufferSlice, BufferSliceMut, Device};
 pub use crate::backend::{Num, Scalar};
-use crate::error::ShapeError;
 use crate::Result;
+use anyhow::ensure;
 use ndarray::{Array, ArrayBase, CowArray, RawArrayView};
 pub use ndarray::{
     Dimension, IntoDimension, Ix, Ix0, Ix1, Ix2, Ix3, Ix4, Ix5, Ix6, IxDyn, ShapeBuilder,
@@ -221,17 +221,14 @@ impl<T: Scalar, S: DataOwned<Elem = T>, D: Dimension> TensorBase<S, D> {
         let (dim, strides) = dim_strides_from_shape(shape);
         let cow = cow.into();
         let len = cow.len();
-        if dim.size() == len {
-            let data = S::from_buffer(Buffer::from_cow(device, cow)?);
-            Ok(Self {
-                device: device.clone(),
-                dim,
-                strides,
-                data,
-            })
-        } else {
-            Err(ShapeError::IncompatibleShape.into())
-        }
+        ensure!(dim.size() == len);
+        let data = S::from_buffer(Buffer::from_cow(device, cow)?);
+        Ok(Self {
+            device: device.clone(),
+            dim,
+            strides,
+            data,
+        })
     }
     pub fn from_elem<Sh>(device: &Device, shape: Sh, elem: T) -> Result<Self>
     where
@@ -314,16 +311,12 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     }
     pub fn to_vec(&self) -> Result<impl Future<Output = Result<Vec<T>>> + '_> {
         // TODO: Convert to contiguous layout here instead of erroring
-        if self.strides != self.dim.default_strides() {
-            return Err(ShapeError::IncompatibleLayout.into());
-        }
+        ensure!(self.strides == self.dim.default_strides());
         self.data.as_buffer_slice().to_vec()
     }
     pub fn to_array(&self) -> Result<impl Future<Output = Result<Array<T, D>>> + '_> {
         // TODO: Convert to contiguous layout here instead of erroring
-        if self.strides().iter().any(|s| *s <= 0) {
-            return Err(ShapeError::IncompatibleLayout.into());
-        }
+        ensure!(self.strides().iter().all(|s| *s > 0));
         let vec_future = self.data.as_buffer_slice().to_vec()?;
         let dim = self.dim.clone();
         let strides = self.strides.clone();
@@ -390,9 +383,7 @@ impl<T: Num, S1: Data<Elem = T>, S2: Data<Elem = T>> Dot<TensorBase<S2, Ix2>>
     fn dot(&self, rhs: &TensorBase<S2, Ix2>) -> Result<Tensor2<T>> {
         let (m, k) = self.dim();
         let (k2, n) = rhs.dim();
-        if k != k2 {
-            return Err(ShapeError::IncompatibleShape.into());
-        }
+        ensure!(k == k2);
         let mut output = Tensor::zeros(self.device(), [m, n])?;
         linalg::gemm(
             T::one(),

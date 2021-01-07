@@ -1,7 +1,7 @@
 use super::{Num, Scalar, TensorView1, TensorView2, TensorViewMut2};
-use crate::error::ShapeError;
 use crate::util::{size_eq, type_eq};
 use crate::Result;
+use anyhow::ensure;
 use bytemuck::{Pod, Zeroable};
 use half::bf16;
 use std::convert::TryInto;
@@ -114,9 +114,7 @@ fn gemm_impl<T: Num>(
     let (k2, n) = b.dim();
     let (m2, n2) = c.dim();
 
-    if m != m2 || k != k2 || n != n2 {
-        return Err(ShapeError::IncompatibleShape.into());
-    }
+    ensure!(m == m2 && k == k2 && n == n2);
 
     let m = m as u32;
     let k = k as u32;
@@ -136,10 +134,9 @@ fn gemm_impl<T: Num>(
         .buffer_slice(a.as_buffer_slice())?
         .buffer_slice(b.as_buffer_slice())?
         .option_buffer_slice(bias.as_ref().map(|bias| bias.as_buffer_slice()))?
-        .buffer_slice_mut(c.as_buffer_slice_mut())?
-        .global_size([m, n, 1]);
+        .buffer_slice_mut(c.as_buffer_slice_mut())?;
 
-    if size_eq::<T, u64>() {
+    let builder = if size_eq::<T, u64>() {
         let push_consts = GemmPushConsts {
             alpha: alpha.to_bits_u64().unwrap(),
             beta: beta.to_bits_u64().unwrap(),
@@ -154,7 +151,7 @@ fn gemm_impl<T: Num>(
             rsc,
             csc,
         };
-        builder.push_constants(push_consts)?.enqueue()
+        builder.push_constants(bytemuck::cast_slice(&[push_consts]))?
     } else {
         let (alpha, beta, a0) = if type_eq::<T, bf16>() {
             (
@@ -183,6 +180,8 @@ fn gemm_impl<T: Num>(
             rsc,
             csc,
         };
-        builder.push_constants(push_consts)?.enqueue()
-    }
+        builder.push_constants(bytemuck::cast_slice(&[push_consts]))?
+    };
+
+    builder.global_size([m, n, 1]).enqueue()
 }

@@ -27,7 +27,10 @@ fn compute_pass() -> Result<()> {
         device
             .compute_pass(spirv.as_ref(), "main")?
             .buffer_slice_mut(y.as_buffer_slice_mut())?
-            .push_constants(FillPushConstsU32 { x: 1, n: n as u32 })?
+            .push_constants(bytemuck::cast_slice(&[FillPushConstsU32 {
+                x: 1,
+                n: n as u32,
+            }]))?
             .global_size([n as u32, 1, 1])
             .enqueue()?;
         let y = smol::block_on(y.to_vec()?)?;

@@ -1,6 +1,6 @@
 use super::{BufferDescriptor, EntryDescriptor, PushConstantDescriptor, PushConstantRange};
-use crate::error::ShaderModuleError::InvalidSpirv;
 use crate::Result;
+use anyhow::{anyhow, bail, ensure};
 use rspirv::binary::Parser;
 use rspirv::dr::{Loader, Operand};
 use rspirv::spirv::{Decoration, ExecutionMode, ExecutionModel, Op, StorageClass, Word};
@@ -25,12 +25,12 @@ pub(super) fn entry_descriptors_from_spirv(spirv: &[u8]) -> Result<Vec<EntryDesc
     let mut loader = Loader::new();
     Parser::new(&spirv, &mut loader)
         .parse()
-        .or(Err(InvalidSpirv))?;
+        .map_err(|e| anyhow!("{:?}", e))?;
     let module = loader.module();
 
     let mut entry_points = HashMap::<Word, EntryPoint>::new();
 
-    for inst in module.entry_points.iter() {
+    for (i, inst) in module.entry_points.iter().enumerate() {
         if inst.class.opcode == Op::EntryPoint {
             match inst.operands.get(0) {
                 Some(Operand::ExecutionModel(ExecutionModel::GLCompute)) => (),
@@ -38,15 +38,19 @@ pub(super) fn entry_descriptors_from_spirv(spirv: &[u8]) -> Result<Vec<EntryDesc
             };
             let fn_id = match inst.operands.get(1) {
                 Some(&Operand::IdRef(fn_id)) => fn_id,
-                _ => {
-                    return Err(InvalidSpirv.into());
-                }
+                _ => bail!(
+                    "entry_points[{}] operands[1] invalid entry id:\n{:#?}",
+                    i,
+                    &inst
+                ),
             };
             let name = match inst.operands.get(2) {
                 Some(Operand::LiteralString(name)) => name.to_string(),
-                _ => {
-                    return Err(InvalidSpirv.into());
-                }
+                _ => bail!(
+                    "entry_points[{}] operands[1] invalid entry name:\n{:#?}",
+                    i,
+                    &inst
+                ),
             };
             entry_points.insert(
                 fn_id,
@@ -58,7 +62,7 @@ pub(super) fn entry_descriptors_from_spirv(spirv: &[u8]) -> Result<Vec<EntryDesc
         }
     }
 
-    for inst in module.execution_modes.iter() {
+    for (i, inst) in module.execution_modes.iter().enumerate() {
         if inst.class.opcode == Op::ExecutionMode {
             match inst.operands.get(1) {
                 Some(Operand::ExecutionMode(ExecutionMode::LocalSize)) => (),
@@ -66,17 +70,21 @@ pub(super) fn entry_descriptors_from_spirv(spirv: &[u8]) -> Result<Vec<EntryDesc
             }
             let fn_id = match inst.operands.get(0) {
                 Some(&Operand::IdRef(fn_id)) => fn_id,
-                _ => {
-                    return Err(InvalidSpirv.into());
-                }
+                _ => bail!(
+                    "execution_modes[{}] operands[0] invalid entry id:\n{:#?}",
+                    i,
+                    &inst
+                ),
             };
             let local_size = match inst.operands.get(2..=4) {
                 Some(
                     &[Operand::LiteralInt32(x), Operand::LiteralInt32(y), Operand::LiteralInt32(z)],
                 ) => [x, y, z],
-                _ => {
-                    return Err(InvalidSpirv.into());
-                }
+                _ => bail!(
+                    "execution_modes[{}] operands[2] invalid local_size:\n{:#?}",
+                    i,
+                    &inst
+                ),
             };
             if let Some(entry_point) = entry_points.get_mut(&fn_id) {
                 entry_point.local_size = local_size;
@@ -89,16 +97,24 @@ pub(super) fn entry_descriptors_from_spirv(spirv: &[u8]) -> Result<Vec<EntryDesc
     let mut nonwritable = HashSet::<Word>::new();
     let mut field_offsets = HashMap::<(Word, u32), u32>::new();
 
-    for inst in module.annotations.iter() {
+    for (i, inst) in module.annotations.iter().enumerate() {
         match inst.class.opcode {
             Op::Decorate => {
                 let id = match inst.operands.get(0) {
                     Some(&Operand::IdRef(id)) => Ok(id),
-                    _ => Err(InvalidSpirv),
+                    _ => Err(anyhow!(
+                        "annotations[{}] operands[0] invalid id:\n{:#?}",
+                        i,
+                        &inst
+                    )),
                 };
                 let x = match inst.operands.get(2) {
                     Some(&Operand::LiteralInt32(x)) => Ok(x),
-                    _ => Err(InvalidSpirv),
+                    _ => Err(anyhow!(
+                        "annotations[{}] operands[2] invalid set / binding:\n{:#?}",
+                        i,
+                        &inst
+                    )),
                 };
                 if let Some(&Operand::Decoration(decoration)) = inst.operands.get(1) {
                     match decoration {
@@ -115,21 +131,29 @@ pub(super) fn entry_descriptors_from_spirv(spirv: &[u8]) -> Result<Vec<EntryDesc
             Op::MemberDecorate => {
                 let id = match inst.operands.get(0) {
                     Some(&Operand::IdRef(id)) => Ok(id),
-                    _ => Err(InvalidSpirv),
+                    _ => Err(anyhow!(
+                        "annotations[{}] operands[0] invalid id:\n{:#?}",
+                        i,
+                        &inst
+                    )),
                 };
                 match inst.operands.get(2) {
                     Some(&Operand::Decoration(Decoration::Offset)) => {
                         let index = match inst.operands.get(1) {
                             Some(&Operand::LiteralInt32(index)) => index,
-                            _ => {
-                                return Err(InvalidSpirv.into());
-                            }
+                            _ => bail!(
+                                "annotations[{}] operands[1] invalid field offset index:\n{:#?}",
+                                i,
+                                &inst
+                            ),
                         };
                         let offset = match inst.operands.get(3) {
-                            Some(&Operand::LiteralInt32(index)) => index,
-                            _ => {
-                                return Err(InvalidSpirv.into());
-                            }
+                            Some(&Operand::LiteralInt32(offset)) => offset,
+                            _ => bail!(
+                                "annotations[{}] operands[3] invalid field offset:\n{:#?}",
+                                i,
+                                &inst
+                            ),
                         };
                         field_offsets.insert((id?, index), offset);
                     }
@@ -147,49 +171,60 @@ pub(super) fn entry_descriptors_from_spirv(spirv: &[u8]) -> Result<Vec<EntryDesc
     let mut pointers = HashMap::<Word, (StorageClass, Word)>::new();
     let mut variables = HashMap::<Word, (StorageClass, Word)>::new();
 
-    for inst in module.types_global_values.iter() {
+    for (i, inst) in module.types_global_values.iter().enumerate() {
+        let result_id = inst.result_id.ok_or_else(|| {
+            anyhow!(
+                "types_global_values[{}].result_id found None:\n{:#?}",
+                i,
+                &inst
+            )
+        })?;
         match inst.class.opcode {
             Op::TypeBool => {
-                let result_id = inst.result_id.ok_or(InvalidSpirv)?;
                 let layout = Layout::new::<bool>();
                 layouts.insert(result_id, layout);
             }
             Op::TypeInt | Op::TypeFloat => {
-                let result_id = inst.result_id.ok_or(InvalidSpirv)?;
                 let layout = match inst.operands.get(0) {
                     Some(&Operand::LiteralInt32(bits)) => match bits {
                         8 => Layout::new::<u8>(),
                         16 => Layout::new::<u16>(),
                         32 => Layout::new::<u32>(),
                         64 => Layout::new::<u64>(),
-                        _ => {
-                            return Err(InvalidSpirv.into());
-                        }
+                        _ => bail!("types_global_values[{}] operands[0] unsupported Int / Float width:\n{:#?}\n\nSupported widths are 8, 16, 32, 64.", i, &inst),
                     },
-                    _ => {
-                        return Err(InvalidSpirv.into());
-                    }
+                    _ => bail!("types_global_values[{}] operands[0] invalid Int / Float width:\n{:#?}", i, &inst),
                 };
                 layouts.insert(result_id, layout);
             }
             Op::TypeStruct => {
-                let result_id = inst.result_id.ok_or(InvalidSpirv)?;
                 let mut layout = Some(Layout::from_size_align(0, 1).unwrap());
                 for (o, operand) in inst.operands.iter().enumerate() {
                     if let Operand::IdRef(field) = *operand {
                         if let Some(&field_layout) = layouts.get(&field) {
                             let (next_layout, offset) =
-                                layout.unwrap().extend(field_layout).or(Err(InvalidSpirv))?;
-                            if field_offsets.get(&(result_id, o as u32)) != Some(&(offset as u32)) {
-                                return Err(InvalidSpirv.into());
-                            }
+                                layout.unwrap().extend(field_layout).map_err(|_| {
+                                    anyhow!(
+                                        "types_global_values[{}] unable to get layout for struct:\n{:#?}\nlayout = {:?}\nfield_layout[{}] = {:?}",
+                                        i, &inst, &layout, field, &field_layout
+                                    )
+                                })?;
+                            ensure!(
+                                field_offsets.get(&(result_id, o as u32)) == Some(&(offset as u32)),
+                                "types_global_values[{}] operands[{}] field offsets do not match:\n{:#?}", i, o, &inst
+                            );
                             layout.replace(next_layout);
                         } else {
                             layout.take();
                             break;
                         }
                     } else {
-                        return Err(InvalidSpirv.into());
+                        bail!(
+                            "types_global_values[{}] operands[{}] invalid struct field:\n{:#?}",
+                            i,
+                            o,
+                            &inst
+                        );
                     }
                 }
                 if let Some(layout) = layout {
@@ -197,23 +232,31 @@ pub(super) fn entry_descriptors_from_spirv(spirv: &[u8]) -> Result<Vec<EntryDesc
                 }
             }
             Op::TypeVector => {
-                let result_id = inst.result_id.ok_or(InvalidSpirv)?;
                 let elem = match inst.operands.get(0) {
                     Some(&Operand::IdRef(elem)) => elem,
-                    _ => {
-                        return Err(InvalidSpirv.into());
-                    }
+                    _ => bail!(
+                        "types_global_values[{}] operands[0] invalid vector elem:\n{:#?}",
+                        i,
+                        &inst
+                    ),
                 };
                 let n = match inst.operands.get(1) {
                     Some(&Operand::LiteralInt32(n)) => n,
-                    _ => {
-                        return Err(InvalidSpirv.into());
-                    }
+                    _ => bail!(
+                        "types_global_values[{}] operands[0] invalid vector len:\n{:#?}",
+                        i,
+                        &inst
+                    ),
                 };
                 if let Some(&elem_layout) = layouts.get(&elem) {
                     let mut layout = Layout::from_size_align(0, 1).unwrap();
                     for _ in 0..n {
-                        let (next_layout, _) = layout.extend(elem_layout).or(Err(InvalidSpirv))?;
+                        let (next_layout, _) = layout.extend(elem_layout).map_err(|_| {
+                            anyhow!(
+                                "types_global_values[{}] unable to get layout for vector:\n{:#?}\nlayout = {:?}\nelem_layout = {:?}",
+                                i, &inst, &layout, &elem_layout
+                            )
+                        })?;
                         layout = next_layout;
                     }
                     layouts.insert(result_id, layout);
@@ -235,11 +278,12 @@ pub(super) fn entry_descriptors_from_spirv(spirv: &[u8]) -> Result<Vec<EntryDesc
                 };
                 let pointee = match inst.operands.get(1) {
                     Some(&Operand::IdRef(pointee)) => pointee,
-                    _ => {
-                        return Err(InvalidSpirv.into());
-                    }
+                    _ => bail!(
+                        "types_global_values[{}] operands[1] invalid pointee:\n{:#?}",
+                        i,
+                        &inst
+                    ),
                 };
-                let result_id = inst.result_id.ok_or(InvalidSpirv)?;
                 pointers.insert(result_id, (storage_class, pointee));
             }
             Op::Variable => {
@@ -256,8 +300,13 @@ pub(super) fn entry_descriptors_from_spirv(spirv: &[u8]) -> Result<Vec<EntryDesc
                     }
                     _ => continue,
                 };
-                let result_type = inst.result_type.ok_or(InvalidSpirv)?;
-                let result_id = inst.result_id.ok_or(InvalidSpirv)?;
+                let result_type = inst.result_type.ok_or_else(|| {
+                    anyhow!(
+                        "types_global_values[{}].result_type found None:\n{:#?}",
+                        i,
+                        &inst
+                    )
+                })?;
                 variables.insert(result_id, (storage_class, result_type));
             }
             _ => (),
@@ -269,16 +318,35 @@ pub(super) fn entry_descriptors_from_spirv(spirv: &[u8]) -> Result<Vec<EntryDesc
     let mut push_constant_offset = 0;
 
     for (&variable, &(storage_class, pointer)) in variables.iter() {
-        let &(storage_class2, pointee) = pointers.get(&pointer).ok_or(InvalidSpirv)?;
+        let &(storage_class2, pointee) = pointers.get(&pointer).ok_or_else(|| {
+            anyhow!(
+                "(internal error) pointer not found {}:\npointers = {:?}",
+                pointer,
+                &pointers
+            )
+        })?;
 
-        if storage_class != storage_class2 {
-            return Err(InvalidSpirv.into());
-        }
-
+        ensure!(
+            storage_class == storage_class2,
+            "invalid spirv: variable {} storage classs {:?} does not match pointer {} storage class {:?}",
+            variable, storage_class, pointer, storage_class2
+        );
         match storage_class {
             StorageClass::StorageBuffer | StorageClass::Uniform => {
-                let &descriptor_set = descriptor_sets.get(&variable).ok_or(InvalidSpirv)?;
-                let &binding = bindings.get(&variable).ok_or(InvalidSpirv)?;
+                let &descriptor_set = descriptor_sets.get(&variable)
+                    .ok_or_else(|| {
+                    anyhow!(
+                        "(internal error) descriptor set not found for variable {}:\ndescriptor_sets = {:?}",
+                        variable, &descriptor_sets
+                    )
+                })?;
+                let &binding = bindings.get(&variable).ok_or_else(|| {
+                    anyhow!(
+                        "(internal error) binding not found for variable {}:\nbindings = {:?}",
+                        variable,
+                        &bindings
+                    )
+                })?;
                 let mutable = !nonwritable.contains(&pointee);
                 buffer_bindings.insert(
                     variable,
@@ -290,7 +358,12 @@ pub(super) fn entry_descriptors_from_spirv(spirv: &[u8]) -> Result<Vec<EntryDesc
                 );
             }
             StorageClass::PushConstant => {
-                let layout = layouts.get(&pointee).ok_or(InvalidSpirv)?;
+                let layout = layouts.get(&pointee).ok_or_else(|| {
+                    anyhow!(
+                        "(internal error) layout not found for push constant:\npointee = {}\nlayouts = {:#?}",
+                        pointee, &layouts,
+                    )
+                })?;
                 let range = PushConstantRange {
                     start: push_constant_offset as u32,
                     end: (push_constant_offset + layout.size()) as u32,
@@ -304,16 +377,22 @@ pub(super) fn entry_descriptors_from_spirv(spirv: &[u8]) -> Result<Vec<EntryDesc
 
     let mut entry_descriptors = Vec::<EntryDescriptor>::new();
 
-    for function in module.functions.iter() {
+    for (f, function) in module.functions.iter().enumerate() {
         let fn_id = if let Some(def) = function.def.as_ref() {
-            def.result_id.ok_or(InvalidSpirv)?
+            def.result_id.ok_or_else(|| {
+                anyhow!(
+                    "functions[{}].def.result_id found None:\n{:#?}",
+                    f,
+                    &function
+                )
+            })?
         } else {
             continue;
         };
         if let Some(entry_point) = entry_points.get(&fn_id) {
             let mut parameters = HashSet::<Word>::new();
-            for block in function.blocks.iter() {
-                for inst in block.instructions.iter() {
+            for (b, block) in function.blocks.iter().enumerate() {
+                for (i, inst) in block.instructions.iter().enumerate() {
                     match inst.class.opcode {
                         Op::Load
                         | Op::Store
@@ -322,9 +401,7 @@ pub(super) fn entry_descriptors_from_spirv(spirv: &[u8]) -> Result<Vec<EntryDesc
                         | Op::PtrAccessChain => {
                             let variable = match inst.operands.get(0) {
                                 Some(&Operand::IdRef(variable)) => variable,
-                                _ => {
-                                    return Err(InvalidSpirv.into());
-                                }
+                                _ => bail!("entry_point: {} functions[{}].blocks[{}].instructions[{}].operands[0] invalid variable:\n{:#?}", &entry_point.name, f, b, i, &function),
                             };
                             parameters.insert(variable);
                         }
@@ -336,16 +413,20 @@ pub(super) fn entry_descriptors_from_spirv(spirv: &[u8]) -> Result<Vec<EntryDesc
             let mut push_constant_descriptor: Option<PushConstantDescriptor> = None;
             for &variable in parameters.iter() {
                 if let Some(&buffer) = buffer_bindings.get(&variable) {
-                    if buffer.descriptor_set != 0 {
-                        return Err(InvalidSpirv.into());
-                    }
+                    ensure!(
+                        buffer.descriptor_set == 0,
+                        "entry_point: {} functions[{}] descriptor set must be 0\n{:#?}",
+                        &entry_point.name,
+                        f,
+                        &function,
+                    );
                     buffer_descriptors.push(BufferDescriptor {
                         binding: buffer.binding,
                         mutable: buffer.mutable,
                     });
                 } else if let Some(&push_constant) = push_constants.get(&variable) {
                     if push_constant_descriptor.is_some() {
-                        return Err(InvalidSpirv.into());
+                        bail!("entry_point: {} functions[{}] only 1 push constant block is allowed:\n{:#?}", &entry_point.name, f, &function);
                     }
                     push_constant_descriptor.replace(push_constant);
                 }

@@ -6,7 +6,7 @@ use std::any::type_name;
 use std::fmt::Debug;
 use std::time::Instant;
 
-const BATCH_SIZE: usize = 400;
+// Note: 16 and 64 bit types are not fully supported, so are commented out
 
 #[allow(unused)]
 #[derive(Clone, Copy, Debug)]
@@ -26,7 +26,7 @@ fn gemm_benches<X: Num>(device: &Device, c: &mut Criterion) {
         b_t: Transpose,
     ) {
         let name = format!(
-            "{:?} Tensor {} GEMM m: {} k: {} n: {} a_t: {:?} b_t: {:?}",
+            "{:?} tensor_gemm_{}_m{}_k{}_n{}_{:?}_{:?}",
             device,
             type_name::<T>(),
             m,
@@ -52,7 +52,6 @@ fn gemm_benches<X: Num>(device: &Device, c: &mut Criterion) {
             let x2 = Tensor::ones(&device, x2_dim).unwrap();
             let mut y = Tensor::ones(&device, y_dim).unwrap();
             b.iter_custom(move |n| {
-                let n = n as usize;
                 let x1 = match a_t {
                     Transpose::N => x1.view(),
                     Transpose::T => x1.t(),
@@ -62,14 +61,13 @@ fn gemm_benches<X: Num>(device: &Device, c: &mut Criterion) {
                     Transpose::T => x2.t(),
                 };
                 let mut y = y.view_mut();
-                smol::block_on(device.synchronize().unwrap()).unwrap();
                 let start = Instant::now();
-                for i in (0..n).into_iter().step_by(BATCH_SIZE) {
-                    for _ in 0..std::cmp::min(n - i, BATCH_SIZE) {
+                smol::block_on(async {
+                    for _ in 0..n as usize {
                         gemm(alpha, &x1, &x2, beta, &mut y).unwrap();
                     }
-                    smol::block_on(device.synchronize().unwrap()).unwrap();
-                }
+                    device.synchronize().unwrap().await.unwrap();
+                });
                 start.elapsed()
             });
         });
@@ -88,13 +86,13 @@ fn num_bench<T: Num>(device: &Device, c: &mut Criterion) {
 
 pub fn run_num_benches(c: &mut Criterion) {
     for device in Device::list() {
-        num_bench::<bf16>(&device, c);
+        //num_bench::<bf16>(&device, c);
         num_bench::<u32>(&device, c);
         num_bench::<i32>(&device, c);
         num_bench::<f32>(&device, c);
-        num_bench::<u64>(&device, c);
-        num_bench::<i64>(&device, c);
-        num_bench::<f64>(&device, c);
+        //num_bench::<u64>(&device, c);
+        //num_bench::<i64>(&device, c);
+        //num_bench::<f64>(&device, c);
     }
 }
 

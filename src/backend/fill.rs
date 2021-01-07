@@ -38,22 +38,19 @@ where
 
     let n = slice.len as u32;
 
-    let builder = device
-        .compute_pass(src, "main")?
-        .buffer_slice_mut(slice)?
-        .global_size([n, 1, 1]);
+    let builder = device.compute_pass(src, "main")?.buffer_slice_mut(slice)?;
 
-    if size_eq::<T, u64>() {
-        let push_consts = FillPushConsts {
+    let builder = if size_eq::<T, u64>() {
+        builder.push_constants(bytemuck::cast_slice(&[FillPushConsts {
             x: x.to_bits_u64().unwrap(),
             n,
-        };
-        builder.push_constants(push_consts)?.enqueue()
+        }]))?
     } else {
-        let push_consts = FillPushConsts {
+        builder.push_constants(bytemuck::cast_slice(&[FillPushConsts {
             x: x.to_bits_u32().unwrap(),
             n,
-        };
-        builder.push_constants(push_consts)?.enqueue()
-    }
+        }]))?
+    };
+
+    builder.global_size([n, 1, 1]).enqueue()
 }
