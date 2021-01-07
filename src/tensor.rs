@@ -230,9 +230,24 @@ impl<T: Scalar, S: DataOwned<Elem = T>, D: Dimension> TensorBase<S, D> {
             data,
         })
     }
+    /// Creates a new Tensor with the given shape\
+    ///
+    /// # Safety
+    ///
+    /// The Tensor is uninitialized.
+    pub unsafe fn uninitialized<Sh>(device: &Device, shape: Sh) -> Result<Self>
+    where Sh: ShapeBuilder<Dim = D> {
+        let (dim, strides) = dim_strides_from_shape(shape.into_shape());
+        let data = S::from_buffer(Buffer::uninitialized(device, dim.size())?);
+        Ok(Self {
+            device: device.clone(),
+            dim,
+            strides,
+            data,
+        })
+    } 
     pub fn from_elem<Sh>(device: &Device, shape: Sh, elem: T) -> Result<Self>
     where
-        T: Scalar,
         Sh: ShapeBuilder<Dim = D>,
     {
         let (dim, strides) = dim_strides_from_shape(shape.into_shape());
@@ -248,25 +263,15 @@ impl<T: Scalar, S: DataOwned<Elem = T>, D: Dimension> TensorBase<S, D> {
     where
         Sh: ShapeBuilder<Dim = D>,
     {
-        let (dim, strides) = dim_strides_from_shape(shape.into_shape());
-        let data = S::from_buffer(Buffer::zeros(device, dim.size())?);
-        Ok(Self {
-            device: device.clone(),
-            dim,
-            strides,
-            data,
-        })
+        Self::from_elem(device, shape, T::zero())
     }
     pub fn ones<Sh>(device: &Device, shape: Sh) -> Result<Self>
     where
-        T: Scalar,
         Sh: ShapeBuilder<Dim = D>,
     {
         Self::from_elem(device, shape, T::one())
     }
     pub fn from_array<'a>(device: &Device, array: impl Into<CowArray<'a, T, D>>) -> Result<Self>
-    where
-        T: Scalar,
     {
         let array = array.into();
         let dim = array.raw_dim();
@@ -384,7 +389,9 @@ impl<T: Num, S1: Data<Elem = T>, S2: Data<Elem = T>> Dot<TensorBase<S2, Ix2>>
         let (m, k) = self.dim();
         let (k2, n) = rhs.dim();
         ensure!(k == k2);
-        let mut output = Tensor::zeros(self.device(), [m, n])?;
+        let mut output = unsafe { 
+            Tensor::uninitialized(self.device(), [m, n])?
+        };
         linalg::gemm(
             T::one(),
             &self.view(),
