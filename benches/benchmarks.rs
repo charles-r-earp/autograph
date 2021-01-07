@@ -1,7 +1,7 @@
 use autograph::backend::Device;
 use autograph::tensor::{linalg::gemm, Num, Tensor};
 use criterion::{criterion_group, criterion_main, Criterion};
-use half::bf16;
+//use half::bf16;
 use std::any::type_name;
 use std::fmt::Debug;
 use std::time::Instant;
@@ -73,8 +73,8 @@ fn gemm_benches<X: Num>(device: &Device, c: &mut Criterion) {
         });
     }
     use Transpose::*;
-    for n in [32, 64, 100, 256, 1024].iter().copied() {
-        for (a_t, b_t) in [(N, N), (N, T), (T, N), (N, N)].iter().copied() {
+    for n in [32, 64, 100, 256].iter().copied() {
+        for (a_t, b_t) in [(N, N), (T, N), (N, T), (T, T)].iter().copied() {
             bench_gemm::<X>(device, c, n, n, n, a_t, b_t);
         }
     }

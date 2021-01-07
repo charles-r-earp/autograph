@@ -152,26 +152,26 @@ test_dot!(
 test_dot!(
     ignore u64;
     tensor_dot_u64_m21_k31_n41_N_N => (21, 31, 41, N, N),
-    tensor_dot_u64_m1021_k1031_n1041_N_N => (121, 131, 141, N, N),
-    tensor_dot_u64_m1021_k1031_n1041_T_N => (121, 131, 141, T, N),
-    tensor_dot_u64_m1021_k1031_n1041_N_T => (121, 131, 141, N, T),
-    tensor_dot_u64_m1021_k1031_n1041_T_T => (121, 131, 141, T, T),
+    tensor_dot_u64_m121_k131_n141_N_N => (121, 131, 141, N, N),
+    tensor_dot_u64_m121_k131_n141_T_N => (121, 131, 141, T, N),
+    tensor_dot_u64_m121_k131_n141_N_T => (121, 131, 141, N, T),
+    tensor_dot_u64_m121_k131_n141_T_T => (121, 131, 141, T, T),
 );
 
 test_dot!(
     ignore i64;
     tensor_dot_i64_m21_k31_n41_N_N => (21, 31, 41, N, N),
-    tensor_dot_i64_m1021_k1031_n1041_N_N => (121, 131, 141, N, N),
-    tensor_dot_i64_m1021_k1031_n1041_T_N => (121, 131, 141, T, N),
-    tensor_dot_i64_m1021_k1031_n1041_N_T => (121, 131, 141, N, T),
-    tensor_dot_i64_m1021_k1031_n1041_T_T => (121, 131, 141, T, T),
+    tensor_dot_i64_m121_k131_n141_N_N => (121, 131, 141, N, N),
+    tensor_dot_i64_m121_k131_n141_T_N => (121, 131, 141, T, N),
+    tensor_dot_i64_m121_k131_n141_N_T => (121, 131, 141, N, T),
+    tensor_dot_i64_m121_k131_n141_T_T => (121, 131, 141, T, T),
 );
 
 test_dot!(
     ignore u64;
     tensor_dot_f64_m21_k31_n41_N_N => (21, 31, 41, N, N),
-    tensor_dot_f64_m1021_k1031_n1041_N_N => (121, 131, 141, N, N),
-    tensor_dot_f64_m1021_k1031_n1041_T_N => (121, 131, 141, T, N),
-    tensor_dot_f64_m1021_k1031_n1041_N_T => (121, 131, 141, N, T),
-    tensor_dot_f64_m1021_k1031_n1041_T_T => (121, 131, 141, T, T),
+    tensor_dot_f64_m121_k131_n141_N_N => (121, 131, 141, N, N),
+    tensor_dot_f64_m121_k131_n141_T_N => (121, 131, 141, T, N),
+    tensor_dot_f64_m121_k131_n141_N_T => (121, 131, 141, N, T),
+    tensor_dot_f64_m121_k131_n141_T_T => (121, 131, 141, T, T),
 );

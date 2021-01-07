@@ -85,7 +85,8 @@ impl Gpu {
             .copy_buffer_to_buffer(src, src_offset, dst, dst_offset, len)
     }
     pub(super) fn drop_buffer(&self, id: BufferId) -> Result<()> {
-        self.hal.drop_buffer(id)
+        self.hal.drop_buffer(id);
+        Ok(())
     }
     pub(super) fn read_buffer<T: Pod>(
         &self,
@@ -93,7 +94,7 @@ impl Gpu {
         offset: usize,
         len: usize,
     ) -> Result<impl Future<Output = Result<Vec<T>>>> {
-        self.hal.read_buffer(id, offset, len)
+        Ok(self.hal.read_buffer(id, offset, len))
     }
     pub(super) fn compile_shader_module(&self, id: ModuleId, module: &ShaderModule) -> Result<()> {
         self.hal.compile_shader_module(id, module)
@@ -183,14 +184,14 @@ pub mod dyn_hal_gpu_proxy {
         ) -> Result<()> {
         }
         #[implement]
-        pub(super) fn drop_buffer(&self, id: BufferId) -> Result<()> {}
+        pub(super) fn drop_buffer(&self, id: BufferId) {}
         #[implement]
         pub(super) fn read_buffer<T: Pod>(
             &self,
             id: BufferId,
             offset: usize,
             len: usize,
-        ) -> Result<impl Future<Output = Result<Vec<T>>>> {
+        ) -> impl Future<Output = Result<Vec<T>>> {
         }
         #[implement]
         pub(super) fn compile_shader_module(
@@ -426,11 +427,10 @@ pub mod hal {
         ) -> Result<()> {
             todo!()
         }
-        pub(super) fn drop_buffer(&self, id: BufferId) -> Result<()> {
+        pub(super) fn drop_buffer(&self, id: BufferId) {
             smol::block_on(self.context.lock())
                 .storage
                 .dealloc(StorageBuffer::from_buffer_id(id));
-            Ok(())
         }
         // TODO: With multiple backends, the futures are not of the same type
         pub(super) fn read_buffer<T: Pod>(
@@ -438,7 +438,7 @@ pub mod hal {
             id: BufferId,
             offset: usize,
             len: usize,
-        ) -> Result<impl Future<Output = Result<Vec<T>>>> {
+        ) -> impl Future<Output = Result<Vec<T>>> {
             let size = len * size_of::<T>();
             let (sender, receiver) = channel();
             smol::block_on(self.context.lock())
@@ -450,7 +450,7 @@ pub mod hal {
                     size,
                 });
             let gpu = self.clone();
-            Ok(async move {
+            async move {
                 let mut receiver = receiver;
                 match receiver.try_recv() {
                     Ok(Some(result)) => result,
@@ -463,7 +463,7 @@ pub mod hal {
                     }
                     Err(e) => todo!("{:?}", e),
                 }
-            })
+            }
         }
         pub(super) fn compile_shader_module(
             &self,
@@ -763,36 +763,22 @@ pub mod hal {
                         let write_buffer = write_buffer.unwrap();
                         let storage_buffer = self.storage.get(dst);
                         let range = storage_buffer.slice(*dst_offset..*dst_offset + data.len());
-                        access_flags
-                            .entry(dst.to_buffer_id())
-                            .and_modify(|access| {
-                                let stage = match *access {
-                                    Access::TRANSFER_READ | Access::TRANSFER_WRITE => {
-                                        PipelineStage::TRANSFER
-                                    }
-                                    Access::SHADER_READ | Access::SHADER_WRITE => {
-                                        PipelineStage::COMPUTE_SHADER
-                                    }
-                                    _ => unreachable!(),
-                                };
-                                unsafe {
-                                    command_buffer.pipeline_barrier(
-                                        stage..PipelineStage::TRANSFER,
-                                        Dependencies::empty(),
-                                        once(Barrier::Buffer {
-                                            states: *access..Access::TRANSFER_WRITE,
-                                            target: &*storage_buffer,
-                                            range: SubRange {
-                                                offset: range.start as u64,
-                                                size: Some(range.len() as u64),
-                                            },
-                                            families: None,
-                                        }),
-                                    );
-                                }
-                                *access = Access::TRANSFER_WRITE;
-                            })
-                            .or_insert(Access::TRANSFER_WRITE);
+                        unsafe {
+                            command_buffer.pipeline_barrier(
+                                PipelineStage::BOTTOM_OF_PIPE..PipelineStage::TRANSFER,
+                                Dependencies::empty(),
+                                once(Barrier::Buffer {
+                                    states: Access::all()..Access::TRANSFER_WRITE,
+                                    target: &*storage_buffer,
+                                    range: SubRange {
+                                        offset: range.start as u64,
+                                        size: Some(range.len() as u64),
+                                    },
+                                    families: None,
+                                }),
+                            );
+                        }
+                        access_flags.insert(dst.to_buffer_id(), Access::TRANSFER_WRITE);
                         unsafe {
                             command_buffer.copy_buffer(
                                 &write_buffer,

@@ -235,9 +235,9 @@ pub struct PushConstantRange {
     end: u32,
 }
 
-impl Into<std::ops::Range<u32>> for PushConstantRange {
-    fn into(self) -> std::ops::Range<u32> {
-        self.start..self.end
+impl From<PushConstantRange> for std::ops::Range<u32> {
+    fn from(from: PushConstantRange) -> Self {
+        from.start..from.end
     }
 }
 
