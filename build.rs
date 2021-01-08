@@ -10,11 +10,18 @@ mod shaders {
 
     fn compile_glsl() -> Result<()> {
         let glsl_shaders_path = PathBuf::from(env::var("CARGO_MANIFEST_DIR")?).join("glsl-shaders");
-
-        for path in [glsl_shaders_path.join("build.rs")].iter() {
+        println!(
+            "cargo:rerun-if-changed={}",
+            glsl_shaders_path.join("build.rs").to_str().unwrap()
+        );
+        for shader in ["test_shader", "fill", "gemm"].iter() {
+            let path = glsl_shaders_path
+                .join("src")
+                .join("glsl")
+                .join(shader)
+                .with_extension("spv");
             println!("cargo:rerun-if-changed={}", path.to_str().unwrap());
         }
-
         let status = Command::new("cargo")
             .arg("build")
             .current_dir(glsl_shaders_path)

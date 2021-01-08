@@ -41,6 +41,26 @@ fn compute_pass() -> Result<()> {
 }
 
 #[test]
+fn test_shader() -> Result<()> {
+    let device = Device::new_gpu(0).unwrap()?;
+    let a = Tensor::<u32, _>::from_elem(&device, 1, 10)?;
+    //let b = Tensor::<u32, _>::zeros(&device, 1)?;
+    let mut c = Tensor::<u32, _>::from_elem(&device, 1, 4)?;
+    smol::block_on(device.synchronize()?)?;
+    let src = include_spirv!("../src/shaders/glsl/test_shader.spv");
+    device
+        .compute_pass(src, "main")?
+        //.buffer_slice(a.as_buffer_slice())?
+        //.buffer_slice(b.as_buffer_slice())?
+        .buffer_slice_mut(c.as_buffer_slice_mut())?
+        .enqueue()?;
+    smol::block_on(device.synchronize()?)?;
+    let y = smol::block_on(c.to_vec()?)?;
+    assert_eq!(y[0], 1);
+    Ok(())
+}
+
+#[test]
 fn tensor_zeros() -> Result<()> {
     for device in Device::list() {
         Tensor::<f32, _>::zeros(&device, [64, 1, 28, 28])?;

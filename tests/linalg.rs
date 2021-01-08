@@ -49,7 +49,11 @@ macro_rules! tensor_dot {
             Transpose::T => (a2.t(), t2.t()),
         };
         let a_true = a1.dot(&a2);
-        let a_out = smol::block_on(t1.dot(&t2)?.to_array()?)?;
+        smol::block_on(device.synchronize()?)?;
+        //let a_out = smol::block_on(t1.dot(&t2)?.to_array()?)?;
+        let t_out = t1.dot(&t2)?;
+        smol::block_on(device.synchronize()?)?;
+        let a_out = smol::block_on(t_out.to_array()?)?;
         (a_true, a_out)
     }};
 }
@@ -115,6 +119,7 @@ use Transpose::*;
 
 test_dot!(
     u32;
+    tensor_dot_u32_test => (2, 2, 2, N, N),
     tensor_dot_u32_m21_k31_n41_N_N => (21, 31, 41, N, N),
     tensor_dot_u32_m121_k131_n141_N_N => (121, 131, 141, N, N),
     tensor_dot_u32_m121_k131_n141_T_N => (121, 131, 141, T, N),

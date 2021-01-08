@@ -354,6 +354,7 @@ pub mod hal {
             Ok(Self::with_adapter(index, adapter))
         }
         fn with_adapter(index: usize, adapter: &Adapter<B>) -> Result<Self> {
+            dbg!(&adapter);
             let queue_family = adapter
                 .queue_families
                 .iter()
@@ -384,6 +385,7 @@ pub mod hal {
                 )?
             };
             let memory_properties = adapter.physical_device.memory_properties();
+            dbg!(&memory_properties);
             let limits = adapter.physical_device.limits();
             let fence = device.create_fence(true)?;
             let context = Context::new(command_queue, command_pool, &memory_properties, &limits);
@@ -934,6 +936,7 @@ pub mod hal {
             let (sender, receiver) = channel();
             self.completion.replace(sender);
             swap(&mut self.queued, &mut self.pending);
+            dbg!(&self.pending);
             Ok(receiver)
         }
         fn on_completion(&mut self, device: &B::Device) -> Result<()> {
@@ -1242,34 +1245,33 @@ pub mod hal {
     }
 
     pub trait MappingMode {
-        const PROPERTIES: Properties;
         const USAGE: BufferUsage;
+        fn properties() -> Vec<Properties>;
     }
 
     #[derive(Debug)]
     pub enum MappingRead {}
 
     impl MappingMode for MappingRead {
-        const PROPERTIES: Properties = unsafe {
-            Properties::from_bits_unchecked(
-                Properties::CPU_VISIBLE.bits()
-                    | Properties::COHERENT.bits()
-                    | Properties::CPU_CACHED.bits(),
-            )
-        };
         const USAGE: BufferUsage = BufferUsage::TRANSFER_DST;
+        fn properties() -> Vec<Properties> {
+            use Properties as P;
+            vec![
+                P::CPU_VISIBLE | P::COHERENT | P::CPU_CACHED,
+                P::CPU_VISIBLE | P::COHERENT,
+            ]
+        }
     }
 
     #[derive(Debug)]
     pub enum MappingWrite {}
 
     impl MappingMode for MappingWrite {
-        const PROPERTIES: Properties = unsafe {
-            Properties::from_bits_unchecked(
-                Properties::DEVICE_LOCAL.bits() | Properties::CPU_VISIBLE.bits(),
-            )
-        };
         const USAGE: BufferUsage = BufferUsage::TRANSFER_SRC;
+        fn properties() -> Vec<Properties> {
+            use Properties as P;
+            vec![P::DEVICE_LOCAL | P::CPU_VISIBLE, P::CPU_VISIBLE]
+        }
     }
 
     #[derive(Debug)]
@@ -1287,11 +1289,16 @@ pub mod hal {
 
     impl<B: Backend, M: MappingMode> MappingAllocator<B, M> {
         fn new(memory_properties: &MemoryProperties, limits: &Limits) -> Self {
-            let memory_type_id = memory_properties
-                .memory_types
-                .iter()
-                .position(|x| x.properties.contains(M::PROPERTIES))
-                .map(MemoryTypeId)
+            let memory_type_id = M::properties()
+                .into_iter()
+                .filter_map(|properties| {
+                    memory_properties
+                        .memory_types
+                        .iter()
+                        .position(|x| x.properties.contains(properties))
+                        .map(MemoryTypeId)
+                })
+                .next()
                 .unwrap();
             let max_capacity = limits.max_storage_buffer_range as usize;
             Self {

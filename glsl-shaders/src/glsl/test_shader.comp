@@ -1,0 +1,23 @@
+#version 450
+
+//layout(local_size_x=16, local_size_y=16) in;
+
+/*readonly buffer A {
+    uint a[];
+};
+
+readonly buffer B {
+    uint b[];
+};*/
+
+restrict buffer C {
+    uint c[];
+};
+
+//shared uint a_tile[16][16];
+//shared uint b_tile[16][16];
+
+void main() {
+    //uint x = a[0] * b[0];
+    c[0] = 1;
+}

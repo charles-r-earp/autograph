@@ -485,7 +485,7 @@ impl<'a, B> ComputePassBuilder<'a, B> {
             {
                 ensure!(
                     !buffer_descriptor.mutable,
-                    "Buffer {} for entry {} declared as mutable!",
+                    "Buffer {} for entry {:?} declared as mutable!",
                     self.compute_pass.buffer_bindings.len(),
                     &self.entry_descriptor.name,
                 );
@@ -543,7 +543,7 @@ impl<'a, B> ComputePassBuilder<'a, B> {
             {
                 ensure!(
                     buffer_descriptor.mutable,
-                    "Buffer {} for entry {} declared as immutable!",
+                    "Buffer {} for entry {:?} declared as immutable!",
                     self.compute_pass.buffer_bindings.len(),
                     &self.entry_descriptor.name,
                 );
@@ -562,7 +562,7 @@ impl<'a, B> ComputePassBuilder<'a, B> {
                 })
             } else {
                 bail!(
-                    "Buffer index out of range! Entry {} declares {}.\n\nNote: Only variables used in the entry will be declared.",
+                    "Buffer index out of range! Entry {:?} declares {}.\n\nNote: Only variables used in the entry will be declared.",
                     &self.entry_descriptor.name, self.compute_pass.buffer_bindings.len(),
                 );
             }
@@ -623,7 +623,7 @@ impl<'a, B> ComputePassBuilder<'a, B> {
     /// Enqueues the compute pass\
     ///
     /// The backend may wait for additional work before executing.\
-    /// Use Device::synchronize()?.await to force completion.  
+    /// Use Device::synchronize()?.await to force completion.
     ///
     /// Err: Errors if not all buffers or push_constants are provided
     pub fn enqueue(self) -> Result<()> {
