@@ -217,6 +217,8 @@ pub mod dyn_hal_gpu_proxy {
 use dyn_hal_gpu_proxy::DynHalGpu;
 
 pub mod hal {
+    #[cfg(any(target_os = "ios", target_os = "macos"))]
+    use super::Metal;
     #[cfg(windows)]
     use super::DX12;
     use crate::{
@@ -329,6 +331,7 @@ pub mod hal {
 
     pub struct Gpu<B: Backend> {
         index: usize,
+        name: String,
         device: B::Device,
         fence: ManuallyDrop<B::Fence>,
         context: ManuallyDrop<Mutex<Context<B>>>,
@@ -354,11 +357,16 @@ pub mod hal {
             let app = "autograph";
             let version = 0;
             let instance = B::Instance::create(&app, version).map_err(|_| 0usize)?;
-            let adapters = instance.enumerate_adapters();
+            use gfx_hal::adapter::DeviceType::*;
+            let adapters: Vec<_> = instance.enumerate_adapters()
+                .into_iter()
+                .filter(|x| matches!(x.info.device_type, IntegratedGpu | DiscreteGpu))
+                .collect();
             let adapter = adapters.get(index).ok_or(adapters.len())?;
             Ok(Self::with_adapter(index, adapter))
         }
         fn with_adapter(index: usize, adapter: &Adapter<B>) -> Result<Self> {
+            let name = adapter.info.name.clone();
             let queue_family = adapter
                 .queue_families
                 .iter()
@@ -394,6 +402,7 @@ pub mod hal {
             let context = Context::new(command_queue, command_pool, &memory_properties, &limits);
             Ok(Self(Arc::new(Gpu {
                 index,
+                name,
                 device,
                 fence: ManuallyDrop::new(fence),
                 context: ManuallyDrop::new(Mutex::new(context)),
@@ -532,7 +541,20 @@ pub mod hal {
 
     impl<B: Backend> Debug for ArcGpu<B> {
         fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-            f.debug_struct("Gpu").field("index", &self.index).finish()
+            let mut backend = "vulkan";
+            #[cfg(any(target_os = "ios", target_os = "macos"))]
+            if type_eq::<B, Metal>() {
+                backend = "metal";
+            }
+            #[cfg(windows)]
+            if type_eq::<B, DX12>() {
+                backend = "dx12";
+            };
+            f.debug_struct("Gpu")
+                .field("index", &self.index)
+                .field("name", &self.name)
+                .field("backend", &backend)
+                .finish()
         }
     }
 

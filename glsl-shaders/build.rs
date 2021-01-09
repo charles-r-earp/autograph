@@ -83,12 +83,6 @@ fn compile_glsl(
     Ok(())
 }
 
-fn glsl_test(compiler: &mut Compiler) -> Result<()> {
-    let src = include_str!("src/glsl/test_shader.comp");
-    compile_glsl(compiler, src, "test_shader", Some(&glsl_options()))?;
-    Ok(())
-}
-
 fn glsl_fill(compiler: &mut Compiler) -> Result<()> {
     let src = include_str!("src/glsl/fill.comp");
     // Note that these can be used for types of the same size, ie u32 and f32
@@ -190,10 +184,7 @@ fn glsl_gemm(compiler: &mut Compiler) -> Result<()> {
 
 pub fn main() -> Result<()> {
     let mut compiler = Compiler::new().unwrap();
-
-    glsl_test(&mut compiler)?;
     glsl_fill(&mut compiler)?;
     glsl_gemm(&mut compiler)?;
-
     Ok(())
 }
