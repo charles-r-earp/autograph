@@ -221,11 +221,9 @@ pub mod hal {
     use super::Metal;
     #[cfg(windows)]
     use super::DX12;
-    use crate::{
-        backend::{
-            BufferBinding, BufferId, ComputePass, DeviceError as GpuError, EntryDescriptor,
-            EntryId, ModuleId, ShaderModule, MAX_BUFFERS_PER_COMPUTE_PASS,
-        }
+    use crate::backend::{
+        BufferBinding, BufferId, ComputePass, DeviceError as GpuError, EntryDescriptor, EntryId,
+        ModuleId, ShaderModule, MAX_BUFFERS_PER_COMPUTE_PASS,
     };
     #[cfg(any(target_os = "ios", target_os = "macos", windows))]
     use crate::util::type_eq;
