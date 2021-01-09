@@ -223,8 +223,8 @@ pub mod hal {
     use super::DX12;
     use crate::{
         backend::{
-            BufferBinding, BufferId, ComputePass, DeviceError as GpuError, EntryDescriptor, EntryId,
-            ModuleId, ShaderModule, MAX_BUFFERS_PER_COMPUTE_PASS,
+            BufferBinding, BufferId, ComputePass, DeviceError as GpuError, EntryDescriptor,
+            EntryId, ModuleId, ShaderModule, MAX_BUFFERS_PER_COMPUTE_PASS,
         },
         util::type_eq,
     };
@@ -358,7 +358,8 @@ pub mod hal {
             let version = 0;
             let instance = B::Instance::create(&app, version).map_err(|_| 0usize)?;
             use gfx_hal::adapter::DeviceType::*;
-            let adapters: Vec<_> = instance.enumerate_adapters()
+            let adapters: Vec<_> = instance
+                .enumerate_adapters()
                 .into_iter()
                 .filter(|x| matches!(x.info.device_type, IntegratedGpu | DiscreteGpu))
                 .collect();
@@ -1009,7 +1010,7 @@ pub mod hal {
         fn from_range_usize(range: &Range<usize>) -> Self {
             Self {
                 offset: range.start as u64,
-                size: Some(range.end as u64)
+                size: Some(range.end as u64),
             }
         }
         fn corrected<B: Backend>(self) -> Self {
@@ -1017,7 +1018,7 @@ pub mod hal {
             if type_eq::<B, DX12>() {
                 return Self {
                     offset: self.offset / 4,
-                    size: self.size
+                    size: self.size,
                 };
             }
             self
