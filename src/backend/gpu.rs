@@ -225,9 +225,10 @@ pub mod hal {
         backend::{
             BufferBinding, BufferId, ComputePass, DeviceError as GpuError, EntryDescriptor,
             EntryId, ModuleId, ShaderModule, MAX_BUFFERS_PER_COMPUTE_PASS,
-        },
-        util::type_eq,
+        }
     };
+    #[cfg(any(target_os = "ios", target_os = "macos", windows))]
+    use crate::util::type_eq;
     use bytemuck::Pod;
     use futures::{
         channel::oneshot::{channel, Receiver, Sender},
@@ -542,6 +543,7 @@ pub mod hal {
 
     impl<B: Backend> Debug for ArcGpu<B> {
         fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            #[allow(unused_mut)]
             let mut backend = "vulkan";
             #[cfg(any(target_os = "ios", target_os = "macos"))]
             if type_eq::<B, Metal>() {
