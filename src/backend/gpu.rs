@@ -217,9 +217,14 @@ pub mod dyn_hal_gpu_proxy {
 use dyn_hal_gpu_proxy::DynHalGpu;
 
 pub mod hal {
-    use crate::backend::{
-        BufferBinding, BufferId, ComputePass, DeviceError as GpuError, EntryDescriptor, EntryId,
-        ModuleId, ShaderModule, MAX_BUFFERS_PER_COMPUTE_PASS,
+    #[cfg(windows)]
+    use super::DX12;
+    use crate::{
+        backend::{
+            BufferBinding, BufferId, ComputePass, DeviceError as GpuError, EntryDescriptor, EntryId,
+            ModuleId, ShaderModule, MAX_BUFFERS_PER_COMPUTE_PASS,
+        },
+        util::type_eq,
     };
     use bytemuck::Pod;
     use futures::{
@@ -348,13 +353,12 @@ pub mod hal {
         pub(super) fn new(index: usize) -> Result<Result<Self>, usize> {
             let app = "autograph";
             let version = 0;
-            let instance = B::Instance::create(app, version).map_err(|_| 0usize)?;
+            let instance = B::Instance::create(&app, version).map_err(|_| 0usize)?;
             let adapters = instance.enumerate_adapters();
             let adapter = adapters.get(index).ok_or(adapters.len())?;
             Ok(Self::with_adapter(index, adapter))
         }
         fn with_adapter(index: usize, adapter: &Adapter<B>) -> Result<Self> {
-            dbg!(&adapter);
             let queue_family = adapter
                 .queue_families
                 .iter()
@@ -385,7 +389,6 @@ pub mod hal {
                 )?
             };
             let memory_properties = adapter.physical_device.memory_properties();
-            dbg!(&memory_properties);
             let limits = adapter.physical_device.limits();
             let fence = device.create_fence(true)?;
             let context = Context::new(command_queue, command_pool, &memory_properties, &limits);
@@ -717,10 +720,7 @@ pub mod hal {
                                     binding.offset as usize
                                         ..(binding.offset + binding.len) as usize,
                                 );
-                                let sub_range = SubRange {
-                                    offset: range.start as u64,
-                                    size: Some(range.len() as u64),
-                                };
+                                let sub_range = SubRange::from_range_usize(&range).corrected::<B>();
                                 unsafe {
                                     device.write_descriptor_sets(once(DescriptorSetWrite {
                                         set: &descriptor_set,
@@ -765,6 +765,7 @@ pub mod hal {
                         let write_buffer = write_buffer.unwrap();
                         let storage_buffer = self.storage.get(dst);
                         let range = storage_buffer.slice(*dst_offset..*dst_offset + data.len());
+                        let sub_range = SubRange::from_range_usize(&range).corrected::<B>();
                         unsafe {
                             command_buffer.pipeline_barrier(
                                 PipelineStage::BOTTOM_OF_PIPE..PipelineStage::TRANSFER,
@@ -772,10 +773,7 @@ pub mod hal {
                                 once(Barrier::Buffer {
                                     states: Access::all()..Access::TRANSFER_WRITE,
                                     target: &*storage_buffer,
-                                    range: SubRange {
-                                        offset: range.start as u64,
-                                        size: Some(range.len() as u64),
-                                    },
+                                    range: sub_range,
                                     families: None,
                                 }),
                             );
@@ -803,6 +801,7 @@ pub mod hal {
                         let storage_buffer = self.storage.get(src);
                         let read_buffer = read_buffer.unwrap();
                         let range = storage_buffer.slice(*src_offset..*src_offset + *size);
+                        let sub_range = SubRange::from_range_usize(&range).corrected::<B>();
                         access_flags
                             .entry(src.to_buffer_id())
                             .and_modify(|access| {
@@ -822,10 +821,7 @@ pub mod hal {
                                         once(Barrier::Buffer {
                                             states: *access..Access::TRANSFER_READ,
                                             target: &*storage_buffer,
-                                            range: SubRange {
-                                                offset: range.start as u64,
-                                                size: Some(range.len() as u64),
-                                            },
+                                            range: sub_range,
                                             families: None,
                                         }),
                                     );
@@ -869,6 +865,7 @@ pub mod hal {
                                 buffer_binding.offset as usize
                                     ..buffer_binding.offset as usize + buffer_binding.len as usize,
                             );
+                            let sub_range = SubRange::from_range_usize(&range).corrected::<B>();
                             let buffer_access = if buffer_binding.mutable {
                                 Access::SHADER_WRITE
                             } else {
@@ -893,10 +890,7 @@ pub mod hal {
                                             once(Barrier::Buffer {
                                                 states: *access..buffer_access,
                                                 target: buffer.deref(),
-                                                range: SubRange {
-                                                    offset: range.start as u64,
-                                                    size: Some(range.len() as u64),
-                                                },
+                                                range: sub_range,
                                                 families: None,
                                             }),
                                         );
@@ -936,7 +930,6 @@ pub mod hal {
             let (sender, receiver) = channel();
             self.completion.replace(sender);
             swap(&mut self.queued, &mut self.pending);
-            dbg!(&self.pending);
             Ok(receiver)
         }
         fn on_completion(&mut self, device: &B::Device) -> Result<()> {
@@ -981,6 +974,31 @@ pub mod hal {
                 device.destroy_descriptor_pool(descriptor_pool);
             }
             device.destroy_command_pool(self.command_pool);
+        }
+    }
+
+    // DX12 expects words not bytes
+    trait SubRangeExt: Sized {
+        fn from_range_usize(range: &Range<usize>) -> Self;
+        fn corrected<B: Backend>(self) -> Self;
+    }
+
+    impl SubRangeExt for SubRange {
+        fn from_range_usize(range: &Range<usize>) -> Self {
+            Self {
+                offset: range.start as u64,
+                size: Some(range.end as u64)
+            }
+        }
+        fn corrected<B: Backend>(self) -> Self {
+            #[cfg(windows)]
+            if type_eq::<B, DX12>() {
+                return Self {
+                    offset: self.offset / 4,
+                    size: self.size
+                };
+            }
+            self
         }
     }
 
@@ -1114,7 +1132,7 @@ pub mod hal {
             } else {
                 size / self.block_size + 1
             };
-            'outer: for start in 0..(self.blocks_per_chunk - num_blocks) as u32 {
+            'outer: for start in 0..=(self.blocks_per_chunk - num_blocks) as u32 {
                 let end = start + num_blocks as u32;
                 for block in start..end {
                     if self.blocks.contains(block) {

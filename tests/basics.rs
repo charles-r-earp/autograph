@@ -43,9 +43,10 @@ fn compute_pass() -> Result<()> {
 #[test]
 fn test_shader() -> Result<()> {
     let device = Device::new_gpu(0).unwrap()?;
-    let a = Tensor::<u32, _>::from_elem(&device, 1, 10)?;
+    let a = unsafe { Tensor::<u32, _>::uninitialized(&device, 1)? };
     //let b = Tensor::<u32, _>::zeros(&device, 1)?;
     let mut c = Tensor::<u32, _>::from_elem(&device, 1, 4)?;
+    std::mem::drop(a);
     smol::block_on(device.synchronize()?)?;
     let src = include_spirv!("../src/shaders/glsl/test_shader.spv");
     device
