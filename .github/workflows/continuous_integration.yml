@@ -30,7 +30,7 @@ jobs:
     - name: Test
       run: cargo test --no-fail-fast -- --test-threads 1
     - name: Test Benchmarks
-      run: cargo test --benches -- --test-threads 1
+      run: cargo test --benches
   lint:
     name: Lint
     runs-on: ubuntu-latest
