@@ -16,15 +16,12 @@ Machine Learning Library for Rust
 
 # Features
   - Portable accelerated compute
-  - Run SPIR-V shaders on GPU's via Vulkan / Metal / DX12
+  - Run SPIR-V shaders on GPU's that support Vulkan / Metal / DX12
   - Interop with ndarray, Tensor emulates Array
-  - Lightweight Async / Non Blocking API
+  - Lightweight Async / Non Blocking API 
 
-Currently using GLSL as a shader language. When rust-gpu gains enough compute shader support, it will be possible to write portable GPU code in Rust!
+Currently using GLSL as a shader language. When rust-gpu gains enough compute shader support, it will be possible to write portable GPU code in Rust! 
 
-# CPU Backend
-Unfortunately, CPU support has been dropped because there is no current platform that consumes SPIR-V or equivalent and executes on the host. 
-  
 # Platforms
 
 ## Linux / Unix 
