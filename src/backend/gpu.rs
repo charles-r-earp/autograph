@@ -1005,7 +1005,7 @@ pub mod hal {
             if type_eq::<B, DX12>() {
                 return Self {
                     offset: self.offset / 4,
-                    size: self.size,
+                    size: self.size.map(|x| x + (x % 4)),
                 };
             }
             self

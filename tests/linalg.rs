@@ -139,6 +139,8 @@ test_dot!(
     tensor_dot_bf16_m121_k131_n141_T_T => (121, 131, 141, T, T),
 );
 
+// 64 Bit types not yet supported on DX12
+#[cfg(not(windows))]
 test_dot!(
     f64;
     tensor_dot_f64_m21_k31_n41_N_N => (21, 31, 41, N, N),
