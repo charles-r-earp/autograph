@@ -1,0 +1,21 @@
+
+
+#ifdef T
+    #define T_BUFFER T
+    #define BUFFER_LOAD(x, i) x[i]
+    #define BUFFER_STORE(y, i, x) y[i] = x
+#else
+    #ifdef BF16
+        #define T float
+        #define T_BUFFER uint
+        #define BUFFER_LOAD(x, i) (((i) % 2 == 0)\
+            ? uintBitsToFloat(x[(i)/2] << 16)\
+            : uintBitsToFloat(x[(i)/2] & 0xFFFF0000))
+        #define BUFFER_STORE(y, i, x) ((i) % 2 == 0)\
+            ? y[(i)/2] |= (floatBitsToUint(x) >> 16)\
+            : y[(i)/2] |= (floatBitsToUint(x) & 0xFFFF0000)
+        #define BUFFER_ATOMIC_STORE(y, i, x) ((i) % 2 == 0)\
+            ? atomicOr(y[(i)/2], (floatBitsToUint(x) >> 16))\
+            : atomicOr(y[(i)/2], (floatBitsToUint(x) & 0xFFFF0000))
+    #endif
+#endif

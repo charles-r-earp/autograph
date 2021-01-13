@@ -1,10 +1,6 @@
-#version 450 
+#version 450
 
-// T, Ts
-
-#ifndef Ts
-    #define Ts uint
-#endif
+// T
 
 layout(local_size_x=1024) in;
 
@@ -13,7 +9,7 @@ buffer Y {
 };
 
 layout(push_constant) uniform PushConsts {
-    Ts x;
+    T x;
     uint n;
 };
 
@@ -23,4 +19,3 @@ void main() {
         y[gid] = T(x);
     }
 }
-

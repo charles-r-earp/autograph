@@ -1,14 +1,19 @@
 use autograph::backend::Device;
 use autograph::tensor::{linalg::gemm, Num, Tensor};
 use criterion::{criterion_group, criterion_main, Criterion};
-//use half::bf16;
-use std::any::type_name;
+use half::bf16;
 use std::fmt::Debug;
 use std::time::Instant;
 
-// Note: 16 and 64 bit types are not fully supported, so are commented out
+fn type_name<T: 'static>() -> &'static str {
+    use std::any::TypeId;
+    if TypeId::of::<T>() == TypeId::of::<bf16>() {
+        "bf16"
+    } else {
+        std::any::type_name::<T>()
+    }
+}
 
-#[allow(unused)]
 #[derive(Clone, Copy, Debug)]
 enum Transpose {
     N,
@@ -16,6 +21,7 @@ enum Transpose {
 }
 
 fn gemm_benches<X: Num>(device: &Device, c: &mut Criterion) {
+    #[allow(clippy::many_single_char_names)]
     fn bench_gemm<T: Num>(
         device: &Device,
         c: &mut Criterion,
@@ -86,13 +92,11 @@ fn num_bench<T: Num>(device: &Device, c: &mut Criterion) {
 
 pub fn run_num_benches(c: &mut Criterion) {
     for device in Device::list() {
-        //num_bench::<bf16>(&device, c);
+        num_bench::<bf16>(&device, c);
         num_bench::<u32>(&device, c);
         num_bench::<i32>(&device, c);
         num_bench::<f32>(&device, c);
-        //num_bench::<u64>(&device, c);
-        //num_bench::<i64>(&device, c);
-        //num_bench::<f64>(&device, c);
+        num_bench::<f64>(&device, c);
     }
 }
 

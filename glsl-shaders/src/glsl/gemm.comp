@@ -1,12 +1,6 @@
 #version 450
 
-// T, LOAD(x), STORE(x), BF16_AS_F32, BIAS, RELU
-
-#ifdef BF16_AS_F32
-    #define Ts float
-#else
-    #define Ts T
-#endif
+#include "buffer_macros.comp"
 
 // Saw about a 2x speedup reducing from 32 to 16
 // Tuning these per device in order to maximize occupancy
@@ -19,27 +13,27 @@
 layout(local_size_x = M_TILE, local_size_y = N_TILE) in;
 
 readonly buffer A {
-    T[] a;
+    T_BUFFER a[];
 };
 
 readonly buffer B {
-    T[] b;
+    T_BUFFER b[];
 };
 
 #ifdef BIAS
 readonly buffer Bias {
-    T[] bias;
+    T_BUFFER bias[];
 };
 #endif
 
 restrict buffer C {
-    T[] c;
+    T_BUFFER c[];
 };
 
 layout(push_constant) uniform PushConsts {
-    Ts alpha;
-    Ts beta;
-    Ts a0; // ie relu negative slope
+    T alpha;
+    T beta;
+    T a0; // ie relu negative slope
     uint m;
     uint k;
     uint n;
@@ -51,8 +45,8 @@ layout(push_constant) uniform PushConsts {
     int csc;
 };
 
-shared Ts a_tile[K_TILE][M_TILE];
-shared Ts b_tile[K_TILE][N_TILE];
+shared T a_tile[K_TILE][M_TILE];
+shared T b_tile[K_TILE][N_TILE];
 
 void main() {
     uint global_x = gl_GlobalInvocationID.x;
@@ -62,7 +56,7 @@ void main() {
 
     bool valid = global_x < m && global_y < n;
 
-    Ts acc = 0;
+    T acc = 0;
 
     uint tile_k;
     for(uint z = 0; z < k; ++z) {
@@ -71,11 +65,11 @@ void main() {
             memoryBarrierShared();
 
             if (global_x < m) {
-                a_tile[local_y][local_x] = LOAD(a[global_x * rsa + (z + local_y) * csa]);
+                a_tile[local_y][local_x] = BUFFER_LOAD(a, global_x * rsa + (z + local_y) * csa);
             }
 
             if (global_y < n) {
-                b_tile[local_x][local_y] = LOAD(b[(z + local_x) * rsb + global_y * csb]);
+                b_tile[local_x][local_y] = BUFFER_LOAD(b, (z + local_x) * rsb + global_y * csb);
             }
 
             barrier();
@@ -92,14 +86,14 @@ void main() {
 
     if (valid) {
         uint i = global_x * rsc + global_y * csc;
-        Ts y = alpha * acc;
+        T y = alpha * acc;
 
         if (beta != 0) {
-            y += beta * LOAD(c[i]);
+            y += beta * BUFFER_LOAD(c, i);
         }
 
         #ifdef BIAS
-        y += LOAD(bias[global_y]);
+            y += BUFFER_LOAD(bias, global_y);
         #endif
 
         #ifdef RELU
@@ -108,6 +102,10 @@ void main() {
         }
         #endif
 
-        c[i] = STORE(y);
+        #ifdef BF16
+            BUFFER_ATOMIC_STORE(c, i, y);
+        #else
+            BUFFER_STORE(c, i, y);
+        #endif
     }
 }

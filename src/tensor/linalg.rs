@@ -14,7 +14,7 @@ enum PostOp {
 
 #[derive(Copy)]
 #[repr(C, packed)]
-struct GemmPushConsts<T: Num> {
+struct GemmPushConsts<T> {
     alpha: T,
     beta: T,
     a0: T, // ie relu negative slope
@@ -29,15 +29,15 @@ struct GemmPushConsts<T: Num> {
     csc: i32,
 }
 
-impl<T: Num> Clone for GemmPushConsts<T> {
+impl<T: Copy> Clone for GemmPushConsts<T> {
     fn clone(&self) -> Self {
         *self
     }
 }
 
-unsafe impl<T: Num> Zeroable for GemmPushConsts<T> {}
+unsafe impl<T: Zeroable> Zeroable for GemmPushConsts<T> {}
 
-unsafe impl<T: Num> Pod for GemmPushConsts<T> {}
+unsafe impl<T: Pod> Pod for GemmPushConsts<T> {}
 
 pub fn gemm<T: Num>(
     alpha: T,
@@ -62,20 +62,26 @@ fn gemm_impl<T: Num>(
 ) -> Result<()> {
     let device = a.device();
 
+    // Patch for custom 16 bit ops
+    // If 16 bit is supported then this is unnecessary
+    if type_eq::<T, bf16>() && beta == T::zero() {
+        c.fill(T::zero())?;
+    }
+
     let src = if type_eq::<T, bf16>() {
         match post_op {
             PostOp::Identity => {
                 if bias.is_some() {
-                    include_shader!("glsl/gemm_bias_bf16_as_f32.spv")
+                    include_shader!("glsl/gemm_bias_bf16.spv")
                 } else {
-                    include_shader!("glsl/gemm_bf16_as_f32.spv")
+                    include_shader!("glsl/gemm_bf16.spv")
                 }
             }
             PostOp::Relu => {
                 if bias.is_some() {
-                    include_shader!("glsl/gemm_bias_relu_bf16_as_f32.spv")
+                    include_shader!("glsl/gemm_bias_relu_bf16.spv")
                 } else {
-                    include_shader!("glsl/gemm_relu_bf16_as_f32.spv")
+                    include_shader!("glsl/gemm_relu_bf16.spv")
                 }
             }
         }
@@ -100,10 +106,6 @@ fn gemm_impl<T: Num>(
         include_shader!("glsl/gemm_u32.spv")
     } else if type_eq::<T, i32>() {
         include_shader!("glsl/gemm_i32.spv")
-    } else if type_eq::<T, u64>() {
-        include_shader!("glsl/gemm_u64.spv")
-    } else if type_eq::<T, i64>() {
-        include_shader!("glsl/gemm_i64.spv")
     } else if type_eq::<T, f64>() {
         include_shader!("glsl/gemm_f64.spv")
     } else {

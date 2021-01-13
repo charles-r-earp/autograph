@@ -1,5 +1,4 @@
-use super::{BufferId, ComputePass, DeviceResult as Result, ModuleId, ShaderModule};
-use bytemuck::Pod;
+use super::{BufferId, ComputePass, DeviceResult as Result, ModuleId, Scalar, ShaderModule};
 use smol::future::Future;
 use std::borrow::Cow;
 use std::fmt::{self, Debug};
@@ -70,7 +69,7 @@ impl Gpu {
     pub(super) fn create_buffer(&self, size: usize) -> Result<BufferId> {
         self.hal.create_buffer(size)
     }
-    pub(super) fn create_buffer_init<T: Pod>(&self, data: Cow<[T]>) -> Result<BufferId> {
+    pub(super) fn create_buffer_init<T: Scalar>(&self, data: Cow<[T]>) -> Result<BufferId> {
         self.hal.create_buffer_init(data)
     }
     pub(super) fn copy_buffer_to_buffer(
@@ -88,7 +87,7 @@ impl Gpu {
         self.hal.drop_buffer(id);
         Ok(())
     }
-    pub(super) fn read_buffer<T: Pod>(
+    pub(super) fn read_buffer<T: Scalar>(
         &self,
         id: BufferId,
         offset: usize,
@@ -172,7 +171,7 @@ pub mod dyn_hal_gpu_proxy {
         #[implement]
         pub(super) fn create_buffer(&self, size: usize) -> Result<BufferId> {}
         #[implement]
-        pub(super) fn create_buffer_init<T: Pod>(&self, data: Cow<[T]>) -> Result<BufferId> {}
+        pub(super) fn create_buffer_init<T: Scalar>(&self, data: Cow<[T]>) -> Result<BufferId> {}
         #[implement]
         pub(super) fn copy_buffer_to_buffer(
             &self,
@@ -186,7 +185,7 @@ pub mod dyn_hal_gpu_proxy {
         #[implement]
         pub(super) fn drop_buffer(&self, id: BufferId) {}
         #[implement]
-        pub(super) fn read_buffer<T: Pod>(
+        pub(super) fn read_buffer<T: Scalar>(
             &self,
             id: BufferId,
             offset: usize,
@@ -223,11 +222,10 @@ pub mod hal {
     use super::DX12;
     use crate::backend::{
         BufferBinding, BufferId, ComputePass, DeviceError as GpuError, EntryDescriptor, EntryId,
-        ModuleId, ShaderModule, MAX_BUFFERS_PER_COMPUTE_PASS,
+        ModuleId, Scalar, ShaderModule, MAX_BUFFERS_PER_COMPUTE_PASS,
     };
     #[cfg(any(target_os = "ios", target_os = "macos", windows))]
     use crate::util::type_eq;
-    use bytemuck::Pod;
     use futures::{
         channel::oneshot::{channel, Receiver, Sender},
         future::Future,
@@ -418,7 +416,7 @@ pub mod hal {
                 .alloc(&self.device, size)
                 .map(|buffer| buffer.to_buffer_id())
         }
-        pub(super) fn create_buffer_init<T: Pod>(&self, data: Cow<[T]>) -> Result<BufferId> {
+        pub(super) fn create_buffer_init<T: Scalar>(&self, data: Cow<[T]>) -> Result<BufferId> {
             let mut context = smol::block_on(self.context.lock());
             let size = data.len() * size_of::<T>();
             let buffer = context.storage.alloc(&self.device, size)?;
@@ -447,7 +445,7 @@ pub mod hal {
                 .dealloc(StorageBuffer::from_buffer_id(id));
         }
         // TODO: With multiple backends, the futures are not of the same type
-        pub(super) fn read_buffer<T: Pod>(
+        pub(super) fn read_buffer<T: Scalar>(
             &self,
             id: BufferId,
             offset: usize,
@@ -541,20 +539,9 @@ pub mod hal {
 
     impl<B: Backend> Debug for ArcGpu<B> {
         fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-            #[allow(unused_mut)]
-            let mut backend = "vulkan";
-            #[cfg(any(target_os = "ios", target_os = "macos"))]
-            if type_eq::<B, Metal>() {
-                backend = "metal";
-            }
-            #[cfg(windows)]
-            if type_eq::<B, DX12>() {
-                backend = "dx12";
-            };
             f.debug_struct("Gpu")
                 .field("index", &self.index)
                 .field("name", &self.name)
-                .field("backend", &backend)
                 .finish()
         }
     }
@@ -1475,7 +1462,7 @@ pub mod hal {
     }
 
     impl ReadBufferSender {
-        unsafe fn new<T: Pod>(sender: Sender<Result<Vec<T>>>) -> Self {
+        unsafe fn new<T: Scalar>(sender: Sender<Result<Vec<T>>>) -> Self {
             Self {
                 sender: transmute(sender),
                 size_of_t: size_of::<T>(),
@@ -1509,8 +1496,7 @@ pub mod hal {
     }
 
     impl WriteBufferData {
-        // TODO: T should be Scalar
-        unsafe fn new<T: Pod>(data: Vec<T>) -> Self {
+        unsafe fn new<T: Scalar>(data: Vec<T>) -> Self {
             Self {
                 data: ManuallyDrop::new(transmute(data)),
                 size_of_t: size_of::<T>(),

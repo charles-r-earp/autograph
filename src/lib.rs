@@ -26,7 +26,6 @@ mod macros {
 }
 
 pub mod backend;
-pub mod neural_network;
 pub mod tensor;
 mod util;
 

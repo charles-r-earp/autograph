@@ -14,7 +14,7 @@ mod shaders {
             "cargo:rerun-if-changed={}",
             glsl_shaders_path.join("build.rs").to_str().unwrap()
         );
-        for shader in ["fill", "gemm"].iter() {
+        for shader in ["buffer_macros", "fill", "gemm"].iter() {
             let path = glsl_shaders_path
                 .join("src")
                 .join("glsl")

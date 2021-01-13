@@ -1,10 +1,7 @@
-use crate::util::type_eq;
 use crate::Result;
 use anyhow::{anyhow, bail, ensure};
-use bytemuck::Pod;
 use derive_more::Display;
 use half::{bf16, f16};
-use num_traits::{FromPrimitive, ToPrimitive};
 use serde::{Deserialize, Serialize};
 use smol::future::Future;
 use smol::lock::Mutex;
@@ -56,77 +53,144 @@ macro_rules! impl_sealed {
 impl_sealed!(u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64,);
 
 /// Base trait for all shader types
-pub trait Scalar: Sealed + Debug + Default + ToPrimitive + FromPrimitive + Pod + PartialEq {
+pub trait Scalar: Sealed + Copy + Send + Sync + Debug + Default + PartialEq + 'static {
     fn zero() -> Self {
         Self::default()
     }
-    fn one() -> Self {
-        Self::from_u32(1).unwrap()
+    fn one() -> Self;
+    fn to_bits_u8(&self) -> Option<u8> {
+        None
     }
     fn to_bits_u16(&self) -> Option<u16> {
-        if type_eq::<Self, u8>() || type_eq::<Self, u16>() {
-            Some(self.to_u16().unwrap())
-        } else if type_eq::<Self, i8>() || type_eq::<Self, i16>() {
-            Some(u16::from_ne_bytes(self.to_i16().unwrap().to_ne_bytes()))
-        } else {
-            None
-        }
+        None
     }
     fn to_bits_u32(&self) -> Option<u32> {
-        if type_eq::<Self, u32>() {
-            Some(self.to_u32().unwrap())
-        } else if type_eq::<Self, i32>() {
-            Some(u32::from_ne_bytes(self.to_i32().unwrap().to_ne_bytes()))
-        } else if type_eq::<Self, f32>() {
-            Some(f32::to_bits(self.to_f32().unwrap()))
-        } else {
-            self.to_bits_u16().map(|x| x as u32)
-        }
+        None
     }
     fn to_bits_u64(&self) -> Option<u64> {
-        if type_eq::<Self, u64>() {
-            Some(self.to_u64().unwrap())
-        } else if type_eq::<Self, i64>() {
-            Some(u64::from_ne_bytes(self.to_i64().unwrap().to_ne_bytes()))
-        } else if type_eq::<Self, f64>() {
-            Some(self.to_f64().unwrap().to_bits())
-        } else {
-            self.to_bits_u32().map(|x| x as u64)
-        }
+        None
+    }
+    fn to_f32(&self) -> Option<f32> {
+        None
     }
 }
 
-impl Scalar for u8 {}
+impl Scalar for u8 {
+    fn one() -> Self {
+        1
+    }
+    fn to_bits_u8(&self) -> Option<u8> {
+        Some(*self)
+    }
+}
 
-impl Scalar for i8 {}
+impl Scalar for i8 {
+    fn one() -> Self {
+        1
+    }
+    fn to_bits_u8(&self) -> Option<u8> {
+        Some(self.to_ne_bytes()[0])
+    }
+}
 
-impl Scalar for u16 {}
+impl Scalar for u16 {
+    fn one() -> Self {
+        1
+    }
+    fn to_bits_u16(&self) -> Option<u16> {
+        Some(*self)
+    }
+}
 
-impl Scalar for i16 {}
+impl Scalar for i16 {
+    fn one() -> Self {
+        1
+    }
+    fn to_bits_u16(&self) -> Option<u16> {
+        Some(u16::from_ne_bytes(self.to_ne_bytes()))
+    }
+}
 
 impl Scalar for f16 {
+    fn one() -> Self {
+        Self::ONE
+    }
     fn to_bits_u16(&self) -> Option<u16> {
         Some(self.to_bits())
+    }
+    fn to_f32(&self) -> Option<f32> {
+        Some(Self::to_f32(*self))
     }
 }
 
 impl Scalar for bf16 {
+    fn one() -> Self {
+        Self::ONE
+    }
     fn to_bits_u16(&self) -> Option<u16> {
         Some(self.to_bits())
     }
+    fn to_f32(&self) -> Option<f32> {
+        Some(Self::to_f32(*self))
+    }
 }
 
-impl Scalar for u32 {}
+impl Scalar for u32 {
+    fn one() -> Self {
+        1
+    }
+    fn to_bits_u32(&self) -> Option<u32> {
+        Some(*self)
+    }
+}
 
-impl Scalar for i32 {}
+impl Scalar for i32 {
+    fn one() -> Self {
+        1
+    }
+    fn to_bits_u32(&self) -> Option<u32> {
+        Some(u32::from_ne_bytes(self.to_ne_bytes()))
+    }
+}
 
-impl Scalar for f32 {}
+impl Scalar for f32 {
+    fn one() -> Self {
+        1.
+    }
+    fn to_bits_u32(&self) -> Option<u32> {
+        Some(u32::from_ne_bytes(self.to_ne_bytes()))
+    }
+    fn to_f32(&self) -> Option<f32> {
+        Some(*self)
+    }
+}
 
-impl Scalar for u64 {}
+impl Scalar for u64 {
+    fn one() -> Self {
+        1
+    }
+    fn to_bits_u64(&self) -> Option<u64> {
+        Some(*self)
+    }
+}
 
-impl Scalar for i64 {}
+impl Scalar for i64 {
+    fn one() -> Self {
+        1
+    }
+    fn to_bits_u64(&self) -> Option<u64> {
+        Some(u64::from_ne_bytes(self.to_ne_bytes()))
+    }
+}
 
-impl Scalar for f64 {}
+impl Scalar for f64 {
+    fn one() -> Self {
+        1.
+    }
+    fn to_bits_u64(&self) -> Option<u64> {
+        Some(u64::from_ne_bytes(self.to_ne_bytes()))
+    }
+}
 
 /// Marker trait for arithmetic types
 pub trait Num: Scalar {}
@@ -138,10 +202,6 @@ impl Num for u32 {}
 impl Num for i32 {}
 
 impl Num for f32 {}
-
-impl Num for u64 {}
-
-impl Num for i64 {}
 
 impl Num for f64 {}
 
@@ -160,7 +220,7 @@ pub mod dyn_device_proxy {
         #[implement]
         pub(super) fn create_buffer(&self, size: usize) -> Result<BufferId> {}
         #[implement]
-        pub(super) fn create_buffer_init<T: Pod>(&self, data: Cow<[T]>) -> Result<BufferId> {}
+        pub(super) fn create_buffer_init<T: Scalar>(&self, data: Cow<[T]>) -> Result<BufferId> {}
         #[implement]
         pub(super) fn copy_buffer_to_buffer(
             &self,
@@ -174,7 +234,7 @@ pub mod dyn_device_proxy {
         #[implement]
         pub(super) fn drop_buffer(&self, id: BufferId) -> Result<()> {}
         #[implement]
-        pub(super) fn read_buffer<T: Pod>(
+        pub(super) fn read_buffer<T: Scalar>(
             &self,
             id: BufferId,
             offset: usize,
@@ -384,7 +444,7 @@ impl Device {
     fn create_buffer(&self, size: usize) -> Result<BufferId> {
         Ok(self.dyn_device.create_buffer(size)?)
     }
-    fn create_buffer_init<T: Pod>(&self, data: Cow<[T]>) -> Result<BufferId> {
+    fn create_buffer_init<T: Scalar>(&self, data: Cow<[T]>) -> Result<BufferId> {
         Ok(self.dyn_device.create_buffer_init(data)?)
     }
     #[allow(unused)]
@@ -403,7 +463,7 @@ impl Device {
     pub(super) fn drop_buffer(&self, id: BufferId) -> Result<()> {
         Ok(self.dyn_device.drop_buffer(id)?)
     }
-    pub(super) fn read_buffer<T: Pod>(
+    pub(super) fn read_buffer<T: Scalar>(
         &self,
         id: BufferId,
         offset: usize,
@@ -711,7 +771,7 @@ pub type BufferSliceMut<'a, T> = BufferBase<BufferSliceRepr<&'a mut T>>;
 impl<T> Buffer<T> {
     /// Constructs the Buffer from a Cow\
     ///
-    /// Note both Vec<T> and [T] impl Into<Cow<[T]>>.\
+    /// Note both Vec<T> and \[T] impl Into<Cow<\[T]>>.\
     ///
     /// Err: Errors if the backend cannot perform the operation, potentially due to a disconnect or running out of memory.
     pub fn from_cow(device: &Device, cow: Cow<[T]>) -> Result<Self>
