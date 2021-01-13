@@ -10,27 +10,41 @@
 
 
 # autograph
-Deep Neural Network Library for Rust
+Machine Learning Library for Rust
 
 ***undergoing maintenance***
 
-# Future changes from v0.0.3
-  - Pure Rust
-  - Build on wgpu, consuming spirv as gpu source
-  - Async / Non-blocking API
-  - Local Node of 1 or more gpus
-  - Parallel execution and training 
-  - Run custom ops (ie shaders), probably limited to precompiled sources
-  - Target all backends supported by wgpu, including mobile and macos 
-  
-The emergence of both wgpu and rust-gpu, async, as well as my experience building backends for cpu, CUDA, ROCm, OpenCL, and wgpu, motivate moving to a single backend. That is, consume SPIR-V and target gpus with wgpu. Potentially there will be some way to run shaders on cpu as well. This means that the backend can be very lean and well optimized, and development will be be much faster and better optimized. 
-  
-The general approach to layers and autograd will remain the same.
+# Features
+  - Portable accelerated compute
+  - Run SPIR-V shaders on GPU's via Vulkan / Metal / DX12
+  - Interop with ndarray, Tensor emulates Array
+  - Lightweight Async / Non Blocking API
 
-# Long term goal
-  - Remote Node of 1 or more gpus
-  - Parallel execution and training of multiple nodes 
-  - Execution on a cpu node / device
-  - autograph may add additional functionality for applications other than neural networks, but this may be left to contribution  
-    * (the backend will not know anything about autograd so it will support arbitrary computation)
+Currently using GLSL as a shader language. When rust-gpu gains enough compute shader support, it will be possible to write portable GPU code in Rust!
+
+# CPU Backend
+Unfortunately, CPU support has been dropped because there is no current platform that consumes SPIR-V or equivalent and executes on the host. 
+  
+# Platforms
+
+## Linux / Unix 
+Supports GPU's with Vulkan. Tested on Ubuntu 18.04 AMD RX 580 / NV GTX 1060
+
+## MacOs / iOS
+Supports GPU's with Metal. Planned support for Vulkan. GPU execution untested. 
+
+## Windows 
+Supports GPU's with DX12. Planned support for Vulkan. Tested on Windows 10, AMD RX 580. 
+
+Note: Run the windows tests with `cargo test -- --num-threads 1` to avoid creating too many instances of the gpu on too many threads. Shared access across threads is safe, but creating a Device for each of several processes may fail. 
+
+# KMeans
+Coming soon!
+
+# Neural Networks
+Coming soon!
+
+# Datasets 
+Coming sonn!
+
   
