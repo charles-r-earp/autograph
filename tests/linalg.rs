@@ -62,11 +62,7 @@ macro_rules! check_arrays {
     };
     (bf16 => ($a:expr, $b:expr)) => {
         let b = $b.map(|x| x.to_f32());
-        dbg!(&b);
-        for (a, b) in $a.iter().zip(b.iter()) {
-            assert_relative_eq!(a, b, max_relative = 0.5);
-        }
-        //assert_relative_eq!($a, b, epsilon = 0.5, max_relative = 0.5);
+        assert_relative_eq!($a, b, epsilon = 0.5, max_relative = 0.5);
     };
     ($t:tt => ($a:expr, $b:expr)) => {
         assert_eq!($a, $b);
@@ -131,19 +127,9 @@ test_dot!(
 
 test_dot!(
     bf16;
-    tensor_dot_bf16_m5_k5_n5_N_N => (5, 5, 5, N, N),
     tensor_dot_bf16_m21_k31_n41_N_N => (21, 31, 41, N, N),
     tensor_dot_bf16_m121_k131_n141_N_N => (121, 131, 141, N, N),
     tensor_dot_bf16_m121_k131_n141_T_N => (121, 131, 141, T, N),
     tensor_dot_bf16_m121_k131_n141_N_T => (121, 131, 141, N, T),
     tensor_dot_bf16_m121_k131_n141_T_T => (121, 131, 141, T, T),
-);
-
-test_dot!(
-    f64;
-    tensor_dot_f64_m21_k31_n41_N_N => (21, 31, 41, N, N),
-    tensor_dot_f64_m121_k131_n141_N_N => (121, 131, 141, N, N),
-    tensor_dot_f64_m121_k131_n141_T_N => (121, 131, 141, T, N),
-    tensor_dot_f64_m121_k131_n141_N_T => (121, 131, 141, N, T),
-    tensor_dot_f64_m121_k131_n141_T_T => (121, 131, 141, T, T),
 );

@@ -9,10 +9,9 @@ static NUM_TYPES: &[(&'static str, &'static str)] = &[
     ("u32", "uint"),
     ("i32", "int"),
     ("f32", "float"),
-    ("f64", "double"),
 ];
 
-static NN_TYPES: &[(&'static str, &'static str)] = &[
+static FLOAT_TYPES: &[(&'static str, &'static str)] = &[
     ("bf16", "uint"),
     ("f32", "float"),
 ];
@@ -112,14 +111,12 @@ fn glsl_gemm(compiler: &mut Compiler) -> Result<()> {
         let mut options = glsl_options();
         if rust_ty == "bf16" {
             options.add_macro_definition("BF16", None);
-        } else if rust_ty == "f64" {
-            options.add_macro_definition("F64", None);
         } else {
             options.add_macro_definition("T", Some(c_ty));
         }
         compile_glsl(compiler, src, &format!("gemm_{}", rust_ty), Some(&options))?;
     }
-    for &(rust_ty, c_ty) in NN_TYPES.iter() {
+    for &(rust_ty, c_ty) in FLOAT_TYPES.iter() {
         {
             // Relu
             let mut options = glsl_options();

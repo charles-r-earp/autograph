@@ -178,11 +178,6 @@ fn test_from_elem_bf16() -> Result<()> {
 }
 
 #[test]
-fn test_from_elem_f32() -> Result<()> {
-    tensor_from_elem::<f32>(&[1., -33., 0.1, 1000.])
-}
-
-#[test]
 fn test_from_elem_u32() -> Result<()> {
     tensor_from_elem::<u32>(&[1, 33, 1000])
 }
@@ -193,8 +188,8 @@ fn test_from_elem_i32() -> Result<()> {
 }
 
 #[test]
-fn test_from_elem_f64() -> Result<()> {
-    tensor_from_elem::<f64>(&[1., -33., 0.1, 1000.])
+fn test_from_elem_f32() -> Result<()> {
+    tensor_from_elem::<f32>(&[1., -33., 0.1, 1000.])
 }
 
 #[test]
@@ -205,4 +200,9 @@ fn test_from_elem_u64() -> Result<()> {
 #[test]
 fn test_from_elem_i64() -> Result<()> {
     tensor_from_elem::<i64>(&[1, -33, 1000])
+}
+
+#[test]
+fn test_from_elem_f64() -> Result<()> {
+    tensor_from_elem::<f64>(&[1., -33., 0.1, 1000.])
 }

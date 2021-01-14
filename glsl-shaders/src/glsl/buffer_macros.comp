@@ -18,10 +18,4 @@
             ? atomicOr(y[(i)/2], (floatBitsToUint(x) >> 16))\
             : atomicOr(y[(i)/2], (floatBitsToUint(x) & 0xFFFF0000))
     #endif
-    #ifdef F64
-        #define T double
-        #define T_BUFFER uint
-        #define BUFFER_LOAD(x, i) packDouble2x32(uvec2(x[(i)*2], x[(i)*2+1]))
-    #define BUFFER_STORE(_y, i, _x) { uvec2 v = unpackDouble2x32(_x); _y[(i)*2] = v.x; _y[(i)*2+1] = v.y; }
-    #endif
 #endif

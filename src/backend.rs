@@ -203,8 +203,6 @@ impl Num for i32 {}
 
 impl Num for f32 {}
 
-impl Num for f64 {}
-
 #[doc(hidden)]
 #[proxy_enum::proxy(DynDevice)]
 pub mod dyn_device_proxy {

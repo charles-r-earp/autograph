@@ -1,5 +1,5 @@
 use super::{Num, Scalar, TensorView1, TensorView2, TensorViewMut2};
-use crate::util::{size_eq, type_eq};
+use crate::util::type_eq;
 use crate::Result;
 use anyhow::ensure;
 use bytemuck::{Pod, Zeroable};
@@ -106,8 +106,6 @@ fn gemm_impl<T: Num>(
         include_shader!("glsl/gemm_u32.spv")
     } else if type_eq::<T, i32>() {
         include_shader!("glsl/gemm_i32.spv")
-    } else if type_eq::<T, f64>() {
-        include_shader!("glsl/gemm_f64.spv")
     } else {
         unreachable!()
     };
@@ -131,59 +129,42 @@ fn gemm_impl<T: Num>(
     let [rsc, csc]: [isize; 2] = c.strides().try_into().unwrap();
     let [rsc, csc] = [rsc as i32, csc as i32];
 
-    let builder = device
+    let (alpha, beta, a0) = if type_eq::<T, bf16>() {
+        (
+            alpha.to_f32().unwrap().to_bits_u32().unwrap(),
+            beta.to_f32().unwrap().to_bits_u32().unwrap(),
+            a0.to_f32().unwrap().to_bits_u32().unwrap(),
+        )
+    } else {
+        (
+            alpha.to_bits_u32().unwrap(),
+            beta.to_bits_u32().unwrap(),
+            a0.to_bits_u32().unwrap(),
+        )
+    };
+
+    let push_consts = GemmPushConsts {
+        alpha,
+        beta,
+        a0,
+        m,
+        k,
+        n,
+        rsa,
+        csa,
+        rsb,
+        csb,
+        rsc,
+        csc,
+    };
+
+    device
         .compute_pass(src, "main")?
         .buffer_slice(a.as_buffer_slice())?
         .buffer_slice(b.as_buffer_slice())?
         .option_buffer_slice(bias.as_ref().map(|bias| bias.as_buffer_slice()))?
-        .buffer_slice_mut(c.as_buffer_slice_mut())?;
-
-    let builder = if size_eq::<T, u64>() {
-        let push_consts = GemmPushConsts {
-            alpha: alpha.to_bits_u64().unwrap(),
-            beta: beta.to_bits_u64().unwrap(),
-            a0: a0.to_bits_u64().unwrap(),
-            m,
-            k,
-            n,
-            rsa,
-            csa,
-            rsb,
-            csb,
-            rsc,
-            csc,
-        };
-        builder.push_constants(bytemuck::cast_slice(&[push_consts]))?
-    } else {
-        let (alpha, beta, a0) = if type_eq::<T, bf16>() {
-            (
-                alpha.to_f32().unwrap().to_bits_u32().unwrap(),
-                beta.to_f32().unwrap().to_bits_u32().unwrap(),
-                a0.to_f32().unwrap().to_bits_u32().unwrap(),
-            )
-        } else {
-            (
-                alpha.to_bits_u32().unwrap(),
-                beta.to_bits_u32().unwrap(),
-                a0.to_bits_u32().unwrap(),
-            )
-        };
-        let push_consts = GemmPushConsts {
-            alpha,
-            beta,
-            a0,
-            m,
-            k,
-            n,
-            rsa,
-            csa,
-            rsb,
-            csb,
-            rsc,
-            csc,
-        };
-        builder.push_constants(bytemuck::cast_slice(&[push_consts]))?
-    };
-
-    builder.global_size([m, n, 1]).enqueue()
+        .buffer_slice_mut(c.as_buffer_slice_mut())?
+        .push_constants(bytemuck::cast_slice(&[push_consts]))?
+        .global_size([m, n, 1])
+        .enqueue()
 }
