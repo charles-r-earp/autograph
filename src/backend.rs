@@ -445,7 +445,6 @@ impl Device {
     fn create_buffer_init<T: Scalar>(&self, data: Cow<[T]>) -> Result<BufferId> {
         Ok(self.dyn_device.create_buffer_init(data)?)
     }
-    #[allow(unused)]
     fn copy_buffer_to_buffer(
         &self,
         src: BufferId,
@@ -892,6 +891,20 @@ impl<T, S: DataMut<Elem = T>> BufferBase<S> {
             len: self.len,
             _m: PhantomData::default(),
         }
+    }
+    /// Copies from a BufferSlice
+    ///
+    /// Panics: Asserts that the lengths of the slices are equal\
+    /// Err: Errors if the backend cannot perform the operation, potentially due to a disconnect or running out of memory.
+    pub fn copy_from_buffer_slice(&mut self, slice: BufferSlice<T>) -> Result<()> {
+        assert_eq!(self.len, slice.len);
+        self.device.copy_buffer_to_buffer(
+            slice.id,
+            slice.offset,
+            self.id,
+            self.offset,
+            self.len * size_of::<T>(),
+        )
     }
     /// Fills the buffer with x.
     ///

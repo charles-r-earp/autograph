@@ -428,7 +428,6 @@ pub mod hal {
             });
             Ok(buffer.to_buffer_id())
         }
-        #[allow(unused)]
         pub(super) fn copy_buffer_to_buffer(
             &self,
             src: BufferId,
@@ -437,7 +436,18 @@ pub mod hal {
             dst_offset: usize,
             len: usize,
         ) -> Result<()> {
-            todo!()
+            let src = StorageBuffer::from_buffer_id(src);
+            let dst = StorageBuffer::from_buffer_id(dst);
+            smol::block_on(self.context.lock())
+                .queued
+                .push(Op::CopyBuffer {
+                    src,
+                    src_offset,
+                    dst,
+                    dst_offset,
+                    size: len,
+                });
+            Ok(())
         }
         pub(super) fn drop_buffer(&self, id: BufferId) {
             smol::block_on(self.context.lock())
@@ -626,6 +636,7 @@ pub mod hal {
             self.descriptor_sets.clear();
             for op in self.queued.iter() {
                 match op {
+                    Op::CopyBuffer { .. } => (),
                     Op::ReadBuffer { size, .. } => {
                         self.read_size += size;
                     }
@@ -760,13 +771,88 @@ pub mod hal {
             // TODO: Implement complete barriers
             for op in self.queued.iter() {
                 match op {
-                    /*Op::CopyBuffer {
-                        src: StorageBuffer,
-                        src_offset: usize,
-                        dst: StorageBuffer,
-                        dst_offset: usize,
-                        size: usize
-                    },*/
+                    Op::CopyBuffer {
+                        src,
+                        src_offset,
+                        dst,
+                        dst_offset,
+                        size,
+                    } => {
+                        dbg!(op);
+                        let src_buffer = self.storage.get(src);
+                        let src_range = src_buffer.slice(*src_offset..*src_offset + *size);
+                        let dst_buffer = self.storage.get(dst);
+                        let dst_range = dst_buffer.slice(*dst_offset..*dst_offset + *size);
+                        access_flags
+                            .entry(src.to_buffer_id())
+                            .and_modify(|access| {
+                                let sub_range =
+                                    SubRange::from_range_usize(&src_range).corrected::<B>();
+                                let stage = match *access {
+                                    Access::TRANSFER_READ | Access::TRANSFER_WRITE => {
+                                        PipelineStage::TRANSFER
+                                    }
+                                    Access::SHADER_READ | Access::SHADER_WRITE => {
+                                        PipelineStage::COMPUTE_SHADER
+                                    }
+                                    _ => unreachable!(),
+                                };
+                                unsafe {
+                                    command_buffer.pipeline_barrier(
+                                        stage..PipelineStage::TRANSFER,
+                                        Dependencies::empty(),
+                                        once(Barrier::Buffer {
+                                            states: *access..Access::TRANSFER_READ,
+                                            target: src_buffer.deref(),
+                                            range: sub_range,
+                                            families: None,
+                                        }),
+                                    );
+                                }
+                                *access = Access::TRANSFER_READ;
+                            })
+                            .or_insert(Access::TRANSFER_READ);
+                        access_flags
+                            .entry(dst.to_buffer_id())
+                            .and_modify(|access| {
+                                let sub_range =
+                                    SubRange::from_range_usize(&dst_range).corrected::<B>();
+                                let stage = match *access {
+                                    Access::TRANSFER_READ | Access::TRANSFER_WRITE => {
+                                        PipelineStage::TRANSFER
+                                    }
+                                    Access::SHADER_READ | Access::SHADER_WRITE => {
+                                        PipelineStage::COMPUTE_SHADER
+                                    }
+                                    _ => unreachable!(),
+                                };
+                                unsafe {
+                                    command_buffer.pipeline_barrier(
+                                        stage..PipelineStage::TRANSFER,
+                                        Dependencies::empty(),
+                                        once(Barrier::Buffer {
+                                            states: *access..Access::TRANSFER_WRITE,
+                                            target: dst_buffer.deref(),
+                                            range: sub_range,
+                                            families: None,
+                                        }),
+                                    );
+                                }
+                                *access = Access::TRANSFER_WRITE;
+                            })
+                            .or_insert(Access::TRANSFER_WRITE);
+                        unsafe {
+                            command_buffer.copy_buffer(
+                                &src_buffer,
+                                &dst_buffer,
+                                once(dbg!(BufferCopy {
+                                    src: src_range.start as u64,
+                                    dst: dst_range.start as u64,
+                                    size: min(src_range.len(), dst_range.len()) as u64,
+                                })),
+                            );
+                        }
+                    }
                     Op::WriteBuffer {
                         data,
                         dst,
@@ -1014,13 +1100,13 @@ pub mod hal {
 
     #[derive(Debug)]
     enum Op {
-        /*CopyBuffer {
+        CopyBuffer {
             src: StorageBuffer,
             src_offset: usize,
             dst: StorageBuffer,
             dst_offset: usize,
-            size: usize
-        },*/
+            size: usize,
+        },
         WriteBuffer {
             data: WriteBufferData,
             dst: StorageBuffer,

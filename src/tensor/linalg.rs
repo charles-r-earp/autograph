@@ -160,10 +160,10 @@ fn gemm_impl<T: Num>(
 
     device
         .compute_pass(src, "main")?
-        .buffer_slice(a.as_buffer_slice())?
-        .buffer_slice(b.as_buffer_slice())?
-        .option_buffer_slice(bias.as_ref().map(|bias| bias.as_buffer_slice()))?
-        .buffer_slice_mut(c.as_buffer_slice_mut())?
+        .buffer_slice(a.as_unordered_buffer_slice())?
+        .buffer_slice(b.as_unordered_buffer_slice())?
+        .option_buffer_slice(bias.as_ref().map(|bias| bias.as_buffer_slice().unwrap()))?
+        .buffer_slice_mut(c.as_unordered_buffer_slice_mut())?
         .push_constants(bytemuck::cast_slice(&[push_consts]))?
         .global_size([m, n, 1])
         .enqueue()

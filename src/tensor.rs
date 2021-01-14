@@ -194,7 +194,7 @@ pub type TensorViewMut5<'a, T> = TensorViewMut<'a, T, Ix5>;
 pub type TensorViewMut6<'a, T> = TensorViewMut<'a, T, Ix6>;
 pub type TensorViewMutD<'a, T> = TensorViewMut<'a, T, IxDyn>;
 
-impl<S: Data, D: Dimension> TensorBase<S, D> {
+impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     pub fn device(&self) -> &Device {
         &self.device
     }
@@ -206,6 +206,22 @@ impl<S: Data, D: Dimension> TensorBase<S, D> {
     }
     pub fn strides(&self) -> &[isize] {
         bytemuck::cast_slice(self.strides.slice())
+    }
+    pub fn into_tensor(self) -> Result<Tensor<T, D>> {
+        Ok(TensorBase {
+            device: self.device,
+            dim: self.dim,
+            strides: self.strides,
+            data: OwnedRepr(self.data.into_buffer()?),
+        })
+    }
+    pub fn into_arc_tensor(self) -> Result<ArcTensor<T, D>> {
+        Ok(TensorBase {
+            device: self.device,
+            dim: self.dim,
+            strides: self.strides,
+            data: ArcRepr(self.data.into_arc_buffer()?),
+        })
     }
 }
 
@@ -312,8 +328,37 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     pub fn t(&self) -> TensorView<T, D> {
         self.view().reversed_axes()
     }
-    pub fn as_buffer_slice(&self) -> BufferSlice<T> {
+    /// Borrows the tensor as a BufferSlice if standard layout\
+    ///
+    /// Some: If the data is default strided, ie standard layout (C or RowMajor)
+    pub fn as_buffer_slice(&self) -> Option<BufferSlice<T>> {
+        if self.strides == self.dim.default_strides() {
+            Some(self.data.as_buffer_slice())
+        } else {
+            None
+        }
+    }
+    /// Borrows the tensor as a BufferSlice
+    pub fn as_unordered_buffer_slice(&self) -> BufferSlice<T> {
         self.data.as_buffer_slice()
+    }
+    /// Copies self into a new Tensor
+    pub fn to_tensor(&self) -> Result<Tensor<T, D>> {
+        Ok(TensorBase {
+            device: self.device.clone(),
+            dim: self.dim.clone(),
+            strides: self.strides.clone(),
+            data: OwnedRepr(self.data.as_buffer_slice().to_buffer()?),
+        })
+    }
+    /// Copies self into a new Tensor
+    pub fn to_arc_tensor(&self) -> Result<ArcTensor<T, D>> {
+        Ok(TensorBase {
+            device: self.device.clone(),
+            dim: self.dim.clone(),
+            strides: self.strides.clone(),
+            data: ArcRepr::from_buffer(self.data.as_buffer_slice().to_buffer()?),
+        })
     }
     pub fn to_vec(&self) -> Result<impl Future<Output = Result<Vec<T>>> + '_> {
         // TODO: Convert to contiguous layout here instead of erroring
@@ -342,7 +387,15 @@ impl<T: Scalar, S: DataMut<Elem = T>, D: Dimension> TensorBase<S, D> {
             data: ViewMutRepr(self.data.as_buffer_slice_mut()),
         }
     }
-    pub fn as_buffer_slice_mut(&mut self) -> BufferSliceMut<T> {
+    pub fn as_buffer_slice_mut(&mut self) -> Option<BufferSliceMut<T>> {
+        if self.strides == self.dim.default_strides() {
+            Some(self.data.as_buffer_slice_mut())
+        } else {
+            None
+        }
+    }
+    /// Borrows the tensor mutably as a BufferSliceMut
+    pub fn as_unordered_buffer_slice_mut(&mut self) -> BufferSliceMut<T> {
         self.data.as_buffer_slice_mut()
     }
     pub fn fill(&mut self, x: T) -> Result<()>

@@ -1,6 +1,9 @@
-use autograph::backend::{Buffer, Device, Scalar};
-use autograph::tensor::{Dimension, Tensor};
-use autograph::{include_spirv, Result};
+use autograph::{
+    backend::{Buffer, Device, Scalar},
+    include_spirv,
+    tensor::{ArcTensor, Dimension, Tensor},
+    Result,
+};
 use bytemuck::{Pod, Zeroable};
 use half::{bf16, f16};
 use ndarray::Array;
@@ -144,32 +147,32 @@ fn tensor_from_elem<T: Scalar>(xs: &[T]) -> Result<()> {
 }
 
 #[test]
-fn test_from_elem_u8() -> Result<()> {
+fn tensor_from_elem_u8() -> Result<()> {
     tensor_from_elem::<u8>(&[1, 33, 255])
 }
 
 #[test]
-fn test_from_elem_i8() -> Result<()> {
+fn tensor_from_elem_i8() -> Result<()> {
     tensor_from_elem::<i8>(&[1, -33, 127])
 }
 
 #[test]
-fn test_from_elem_u16() -> Result<()> {
+fn tensor_from_elem_u16() -> Result<()> {
     tensor_from_elem::<u16>(&[1, 33, 1000])
 }
 
 #[test]
-fn test_from_elem_i16() -> Result<()> {
+fn tensor_from_elem_i16() -> Result<()> {
     tensor_from_elem::<i16>(&[1, -33, 1000])
 }
 
 #[test]
-fn test_from_elem_f16() -> Result<()> {
+fn tensor_from_elem_f16() -> Result<()> {
     tensor_from_elem::<f16>(&[f16::from_f32(1.), f16::from_f32(-33.), f16::from_f32(1000.)])
 }
 
 #[test]
-fn test_from_elem_bf16() -> Result<()> {
+fn tensor_from_elem_bf16() -> Result<()> {
     tensor_from_elem::<bf16>(&[
         bf16::from_f32(1.),
         bf16::from_f32(-33.),
@@ -178,31 +181,67 @@ fn test_from_elem_bf16() -> Result<()> {
 }
 
 #[test]
-fn test_from_elem_u32() -> Result<()> {
+fn tensor_from_elem_u32() -> Result<()> {
     tensor_from_elem::<u32>(&[1, 33, 1000])
 }
 
 #[test]
-fn test_from_elem_i32() -> Result<()> {
+fn tensor_from_elem_i32() -> Result<()> {
     tensor_from_elem::<i32>(&[1, -33, 1000])
 }
 
 #[test]
-fn test_from_elem_f32() -> Result<()> {
+fn tensor_from_elem_f32() -> Result<()> {
     tensor_from_elem::<f32>(&[1., -33., 0.1, 1000.])
 }
 
 #[test]
-fn test_from_elem_u64() -> Result<()> {
+fn tensor_from_elem_u64() -> Result<()> {
     tensor_from_elem::<u64>(&[1, 33, 1000])
 }
 
 #[test]
-fn test_from_elem_i64() -> Result<()> {
+fn tensor_from_elem_i64() -> Result<()> {
     tensor_from_elem::<i64>(&[1, -33, 1000])
 }
 
 #[test]
-fn test_from_elem_f64() -> Result<()> {
+fn tensor_from_elem_f64() -> Result<()> {
     tensor_from_elem::<f64>(&[1., -33., 0.1, 1000.])
+}
+
+#[test]
+fn tensor_copy_from_buffer_slice() -> Result<()> {
+    for device in Device::list() {
+        let x = Tensor::from_shape_cow(&device, 4, vec![1, 2, 3, 4])?;
+        let mut y = Tensor::zeros(&device, 4)?;
+        y.as_buffer_slice_mut()
+            .unwrap()
+            .copy_from_buffer_slice(x.as_buffer_slice().unwrap())?;
+        let y = smol::block_on(y.to_vec()?)?;
+        assert_eq!(y, vec![1, 2, 3, 4]);
+    }
+    Ok(())
+}
+
+#[test]
+fn tensor_view_to_tensor() -> Result<()> {
+    for device in Device::list() {
+        let x = Tensor::from_shape_cow(&device, 4, vec![1, 2, 3, 4])?;
+        let y = x.view().to_tensor()?;
+        let y = smol::block_on(y.to_vec()?)?;
+        assert_eq!(y, vec![1, 2, 3, 4]);
+    }
+    Ok(())
+}
+
+#[test]
+fn arc_tensor_into_arc_tensor() -> Result<()> {
+    for device in Device::list() {
+        let x = ArcTensor::from_shape_cow(&device, 4, vec![1, 2, 3, 4])?;
+        let y = x.into_arc_tensor()?;
+        let y = smol::block_on(y.to_vec()?)?;
+        assert_eq!(y, vec![1, 2, 3, 4]);
+    }
+    Ok(())
 }
