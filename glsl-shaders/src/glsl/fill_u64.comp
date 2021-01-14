@@ -1,21 +1,21 @@
 #version 450
 
-// T
-
 layout(local_size_x=1024) in;
 
 buffer Y {
-    T y[];
+    uint y[];
 };
 
 layout(push_constant) uniform PushConsts {
-    T x;
+    uint x1;
+    uint x2;
     uint n;
 };
 
 void main() {
     uint gid = gl_GlobalInvocationID.x;
     if (gid < n) {
-        y[gid] = T(x);
+        y[gid*2] = x1;
+        y[gid*2+1] = x2;
     }
 }

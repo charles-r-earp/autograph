@@ -96,8 +96,6 @@ pub fn run_num_benches(c: &mut Criterion) {
         num_bench::<u32>(&device, c);
         num_bench::<i32>(&device, c);
         num_bench::<f32>(&device, c);
-        // 64 Bit types not yet supported on DX12
-        #[cfg(not(windows))]
         num_bench::<f64>(&device, c);
     }
 }

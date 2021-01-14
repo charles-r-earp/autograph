@@ -94,12 +94,14 @@ fn compile_glsl(
 }
 
 fn glsl_fill(compiler: &mut Compiler) -> Result<()> {
-    let src = include_str!("src/glsl/fill.comp");
-    // Note that these can be used for types of the same size, ie u32 and f32
-    for &(rust_ty, c_ty) in [("u32", "uint"), ("u64", "double")].iter() {
-        let mut options = glsl_options();
-        options.add_macro_definition("T", Some(c_ty));
-        compile_glsl(compiler, src, &format!("fill_{}", rust_ty), Some(&options))?;
+    let options = glsl_options();
+    {
+        let src = include_str!("src/glsl/fill_u32.comp");
+        compile_glsl(compiler, src, "fill_u32", Some(&options))?;
+    }
+    {
+        let src = include_str!("src/glsl/fill_u64.comp");
+        compile_glsl(compiler, src, "fill_u64", Some(&options))?;
     }
     Ok(())
 }
@@ -110,6 +112,8 @@ fn glsl_gemm(compiler: &mut Compiler) -> Result<()> {
         let mut options = glsl_options();
         if rust_ty == "bf16" {
             options.add_macro_definition("BF16", None);
+        } else if rust_ty == "f64" {
+            options.add_macro_definition("F64", None);
         } else {
             options.add_macro_definition("T", Some(c_ty));
         }

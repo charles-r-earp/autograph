@@ -192,20 +192,16 @@ fn test_from_elem_i32() -> Result<()> {
     tensor_from_elem::<i32>(&[1, -33, 1000])
 }
 
-// 64 Bit types not yet supported on DX12
-#[cfg(not(windows))]
 #[test]
 fn test_from_elem_f64() -> Result<()> {
     tensor_from_elem::<f64>(&[1., -33., 0.1, 1000.])
 }
 
-#[cfg(not(windows))]
 #[test]
 fn test_from_elem_u64() -> Result<()> {
     tensor_from_elem::<u64>(&[1, 33, 1000])
 }
 
-#[cfg(not(windows))]
 #[test]
 fn test_from_elem_i64() -> Result<()> {
     tensor_from_elem::<i64>(&[1, -33, 1000])
