@@ -12,7 +12,10 @@ use plotters::prelude::*;
 #[cfg(feature = "plotters")]
 fn plot(x: &ArrayView2<f32>, y: &ArrayView1<u32>, y_pred: &ArrayView1<u32>) -> Result<()> {
     let (width, height) = (1024, 760);
-    let root = BitMapBackend::new("plot.png", (width, height))
+    let fpath = std::path::PathBuf::from(".")
+        .canonicalize()?
+        .join("plot.png");
+    let root = BitMapBackend::new(&fpath, (width, height))
         .into_drawing_area();
     root.fill(&WHITE)?;
     let root = root.titled("Sepal Length x Petal Length x Petal Width",  ("sans-serif", 50).into_font())?;
@@ -50,7 +53,7 @@ fn plot(x: &ArrayView2<f32>, y: &ArrayView1<u32>, y_pred: &ArrayView1<u32>) -> R
             })
     )?;
     root.present()?;
-    println!("plot saved to {}", "plot.png");
+    println!("plot saved to {:?}", fpath);
     Ok(())
 }
 

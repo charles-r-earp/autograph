@@ -20,4 +20,5 @@ glsl-shaders/Cargo.lock
 /target
 /glsl-shaders/target
 /examples/cluster/kmeans/iris/target
+/examples/cluster/kmeans/iris/plot.png
 #**/*.rs.bk
