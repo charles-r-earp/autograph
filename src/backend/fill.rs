@@ -31,6 +31,9 @@ where
     };
 
     let n = slice.len as u32;
+    if n == 0 {
+        return Ok(());
+    }
 
     let builder = device.compute_pass(src, "main")?.buffer_slice_mut(slice)?;
 

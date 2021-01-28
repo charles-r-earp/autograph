@@ -1,0 +1,100 @@
+#version 450
+
+#include "buffer_macros.comp"
+
+// https://docs.microsoft.com/en-us/cpp/cpp/integer-limits
+#ifdef FLOAT
+    #define T_MAX 3.402823466e+38F
+    #define T_MIN -T_MAX
+#elif defined UINT
+    #define T_MAX 0xffffffff
+    #define T_MIN 0
+#elif defined INT
+    #define T_MAX 2147483647
+    #define T_MIN -2147483648
+#endif
+
+#ifdef ARGMIN
+    #define INITIAL_VALUE T_MAX
+#elif defined ARGMAX
+    #define INITIAL_VALUE T_MIN
+#else
+    #define INITIAL_VALUE 0
+#endif
+
+#if defined ARGMIN || defined ARGMAX
+    #define T_OUTPUT uint
+    #define ARG
+#else
+    #define T_OUTPUT T_BUFFER
+#endif
+
+
+layout(local_size_x=64) in;
+
+readonly buffer X {
+    T_BUFFER x[];
+};
+
+restrict buffer Y {
+    T_OUTPUT y[];
+};
+
+layout(push_constant) uniform PushConsts {
+    uint batch_size;
+    uint stride_x;
+    uint n;
+    uint stride_y;
+    uint accumulate;
+};
+
+void main() {
+    uint global_x = gl_GlobalInvocationID.x;
+    T value = INITIAL_VALUE;
+    #ifdef ARG
+        uint value_index = 0;
+    #elif defined MEAN
+        T scale = T(1/n);
+    #endif
+    T item;
+    if (global_x < batch_size) {
+        for(int i = 0; i < n; ++i) {
+            item = BUFFER_LOAD(x, global_x * stride_x + i * stride_y);
+            #ifdef SUM
+                value += item;
+            #elif defined MEAN
+                value += item * scale;
+            #elif defined MIN
+                if (item < value) {
+                    value = item;
+                }
+            #elif defined MAX
+                if (item > value) {
+                    value = item;
+                }
+            #elif defined ARGMIN
+                if (item < value) {
+                    value = item;
+                    value_index = i;
+                }
+            #elif defined ARGMAX
+                if (item > value) {
+                    value = item;
+                    value_index = i;
+                }
+            #endif
+        }
+        #ifdef ARG
+            y[global_x] = value_index;
+        #else
+            if (accumulate != 0) {
+                value += BUFFER_LOAD(y, global_x);
+            }
+            #ifdef BF16
+                BUFFER_ATOMIC_STORE(y, global_x, value);
+            #else
+                BUFFER_STORE(y, global_x, value);
+            #endif
+        #endif
+    }
+}

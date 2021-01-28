@@ -62,7 +62,7 @@ macro_rules! check_arrays {
     };
     (bf16 => ($a:expr, $b:expr)) => {
         let b = $b.map(|x| x.to_f32());
-        assert_relative_eq!($a, b, epsilon = 0.5, max_relative = 0.5);
+        assert_relative_eq!($a, b, epsilon = 0.01, max_relative = 0.01);
     };
     ($t:tt => ($a:expr, $b:expr)) => {
         assert_eq!($a, $b);

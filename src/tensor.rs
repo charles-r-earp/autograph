@@ -1,18 +1,21 @@
 use crate::backend::{Buffer, BufferSlice, BufferSliceMut, Device};
-pub use crate::backend::{Num, Scalar};
+pub use crate::backend::{Float, Num, Scalar};
 use crate::Result;
-use anyhow::ensure;
+use anyhow::{anyhow, ensure};
 use ndarray::{Array, ArrayBase, CowArray, RawArrayView};
 pub use ndarray::{
-    Dimension, IntoDimension, Ix, Ix0, Ix1, Ix2, Ix3, Ix4, Ix5, Ix6, IxDyn, ShapeBuilder,
-    StrideShape,
+    Axis, Dimension, IntoDimension, Ix, Ix0, Ix1, Ix2, Ix3, Ix4, Ix5, Ix6, IxDyn, RemoveAxis,
+    ShapeBuilder, StrideShape,
 };
 use smol::future::Future;
 use std::borrow::Cow;
 use std::fmt::{self, Debug};
 use std::sync::Arc;
 
+mod binary;
+mod index_select;
 pub mod linalg;
+mod reduce;
 
 mod sealed {
     pub trait Sealed {}
@@ -204,8 +207,20 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     pub fn raw_dim(&self) -> D {
         self.dim.clone()
     }
+    pub fn shape(&self) -> &[usize] {
+        self.dim.slice()
+    }
     pub fn strides(&self) -> &[isize] {
         bytemuck::cast_slice(self.strides.slice())
+    }
+    pub fn len(&self) -> usize {
+        self.dim.size()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.shape().iter().any(|x| *x == 0)
+    }
+    pub fn ndim(&self) -> usize {
+        self.dim.ndim()
     }
     pub fn into_tensor(self) -> Result<Tensor<T, D>> {
         Ok(TensorBase {
@@ -222,6 +237,22 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
             strides: self.strides,
             data: ArcRepr(self.data.into_arc_buffer()?),
         })
+    }
+    pub fn into_dimensionality<D2>(self) -> Result<TensorBase<S, D2>>
+    where
+        D2: Dimension,
+    {
+        if let Some(dim) = D2::from_dimension(&self.dim) {
+            if let Some(strides) = D2::from_dimension(&self.strides) {
+                return Ok(TensorBase {
+                    device: self.device,
+                    dim,
+                    strides,
+                    data: self.data,
+                });
+            }
+        }
+        Err(anyhow!("Incompatible Shapes!"))
     }
 }
 

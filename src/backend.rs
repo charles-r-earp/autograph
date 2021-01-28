@@ -3,7 +3,6 @@ use anyhow::{anyhow, bail, ensure};
 use derive_more::Display;
 use half::{bf16, f16};
 use serde::{Deserialize, Serialize};
-use smol::future::Future;
 use smol::lock::Mutex;
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -11,7 +10,7 @@ use std::fmt::{self, Debug};
 use std::hash::Hash;
 use std::marker::PhantomData;
 use std::mem::size_of;
-use std::sync::Arc;
+use std::{future::Future, sync::Arc};
 
 mod fill;
 mod shader_util;
@@ -202,6 +201,12 @@ impl Num for u32 {}
 impl Num for i32 {}
 
 impl Num for f32 {}
+
+pub trait Float: Num {}
+
+impl Float for bf16 {}
+
+impl Float for f32 {}
 
 #[doc(hidden)]
 #[proxy_enum::proxy(DynDevice)]
@@ -496,6 +501,14 @@ impl Debug for Device {
     }
 }
 
+impl PartialEq for Device {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.modules, &other.modules)
+    }
+}
+
+impl Eq for Device {}
+
 #[doc(hidden)]
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, Eq, PartialEq, Hash)]
 pub struct BufferBinding {
@@ -540,6 +553,7 @@ impl<'a, B> ComputePassBuilder<'a, B> {
                 .buffer_descriptors
                 .get(self.compute_pass.buffer_bindings.len())
             {
+                ensure!(self.device == &slice.device);
                 ensure!(
                     !buffer_descriptor.mutable,
                     "Buffer {} for entry {:?} declared as mutable!",
@@ -598,6 +612,7 @@ impl<'a, B> ComputePassBuilder<'a, B> {
                 .buffer_descriptors
                 .get(self.compute_pass.buffer_bindings.len())
             {
+                ensure!(self.device == &slice.device);
                 ensure!(
                     buffer_descriptor.mutable,
                     "Buffer {} for entry {:?} declared as immutable!",

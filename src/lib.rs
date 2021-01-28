@@ -9,6 +9,7 @@ mod macros {
                 pub bytes: Bytes,
             }
 
+            #[allow(unused)]
             static ALIGNED: &AlignedAs<u32, [u8]> = &AlignedAs {
                 _align: [],
                 bytes: *include_bytes!($file),
@@ -26,7 +27,10 @@ mod macros {
 }
 
 pub mod backend;
+pub mod dataset;
 pub mod tensor;
+//pub mod fit;
+pub mod cluster;
 mod util;
 
 pub use anyhow::Result;

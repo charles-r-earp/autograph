@@ -54,7 +54,7 @@ fn tensor_zeros() -> Result<()> {
 #[test]
 fn tensor_from_shape_cow() -> Result<()> {
     for device in Device::list() {
-        Tensor::<f32, _>::from_shape_cow(&device, [64, 1, 28, 28], vec![1.; 64 * 1 * 28 * 28])?;
+        Tensor::<f32, _>::from_shape_cow(&device, [64, 1, 28, 28], vec![1.; 64 * 28 * 28])?;
         let x = vec![1., 2., 3., 4.];
         let y = Tensor::<f32, _>::from_shape_cow(&device, x.len(), x.as_slice())?;
         smol::block_on(device.synchronize()?)?;

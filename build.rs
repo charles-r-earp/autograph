@@ -4,6 +4,19 @@ type Result<T, E = Box<dyn std::error::Error>> = std::result::Result<T, E>;
 mod shaders {
     use super::Result;
 
+    static GLSL_SHADERS: &[&'static str] = &[
+        "binary",
+        "buffer_macros",
+        "fill_u32",
+        "fill_u64",
+        "gemm",
+        "index_select",
+        "kmeans_distance",
+        "kmeans_accumulate_next_centroids",
+        "kmeans_update_centroids",
+        "reduce_final",
+    ];
+
     use std::env;
     use std::path::PathBuf;
     use std::process::Command;
@@ -14,7 +27,7 @@ mod shaders {
             "cargo:rerun-if-changed={}",
             glsl_shaders_path.join("build.rs").to_str().unwrap()
         );
-        for shader in ["buffer_macros", "fill_u32", "fill_u64", "gemm"].iter() {
+        for shader in GLSL_SHADERS {
             let path = glsl_shaders_path
                 .join("src")
                 .join("glsl")
@@ -33,7 +46,6 @@ mod shaders {
             Err("Compiling glsl-shaders failed!".into())
         }
     }
-
     pub fn compile_shaders() -> Result<()> {
         compile_glsl()?;
         Ok(())

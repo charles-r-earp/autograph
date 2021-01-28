@@ -1,7 +1,9 @@
 use super::{BufferId, ComputePass, DeviceResult as Result, ModuleId, Scalar, ShaderModule};
-use smol::future::Future;
-use std::borrow::Cow;
-use std::fmt::{self, Debug};
+use std::{
+    borrow::Cow,
+    fmt::{self, Debug},
+    future::Future,
+};
 
 #[cfg(all(unix, not(any(target_os = "ios", target_os = "macos"))))]
 use gfx_backend_vulkan::Backend as Vulkan;
@@ -226,10 +228,7 @@ pub mod hal {
     };
     #[cfg(any(target_os = "ios", target_os = "macos", windows))]
     use crate::util::type_eq;
-    use futures::{
-        channel::oneshot::{channel, Receiver, Sender},
-        future::Future,
-    };
+    use futures_channel::oneshot::{channel, Receiver, Sender};
     use gfx_hal::{
         adapter::{Adapter, MemoryProperties, PhysicalDevice},
         buffer::{Access, CreationError as BufferCreationError, SubRange, Usage as BufferUsage},
@@ -256,6 +255,7 @@ pub mod hal {
         cmp::min,
         collections::hash_map::HashMap,
         fmt::{self, Debug},
+        future::Future,
         iter::once,
         marker::PhantomData,
         mem::{size_of, swap, take, transmute, ManuallyDrop},
@@ -778,7 +778,6 @@ pub mod hal {
                         dst_offset,
                         size,
                     } => {
-                        dbg!(op);
                         let src_buffer = self.storage.get(src);
                         let src_range = src_buffer.slice(*src_offset..*src_offset + *size);
                         let dst_buffer = self.storage.get(dst);
@@ -845,11 +844,11 @@ pub mod hal {
                             command_buffer.copy_buffer(
                                 &src_buffer,
                                 &dst_buffer,
-                                once(dbg!(BufferCopy {
+                                once(BufferCopy {
                                     src: src_range.start as u64,
                                     dst: dst_range.start as u64,
                                     size: min(src_range.len(), dst_range.len()) as u64,
-                                })),
+                                }),
                             );
                         }
                     }

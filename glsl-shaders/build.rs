@@ -170,9 +170,113 @@ fn glsl_gemm(compiler: &mut Compiler) -> Result<()> {
     Ok(())
 }
 
-pub fn main() -> Result<()> {
+fn glsl_binary(compiler: &mut Compiler) -> Result<()> {
+    let src = include_str!("src/glsl/binary.comp");
+    for op in ["add", "scaled_add"].iter() {
+        for &(rust_ty, c_ty) in NUM_TYPES.iter() {
+            let mut options = glsl_options();
+            if rust_ty == "bf16" {
+                options.add_macro_definition("BF16", None);
+            } else {
+                options.add_macro_definition("T", Some(c_ty));
+            }
+            if op.contains("add") {
+                options.add_macro_definition("OP", Some("+"));
+            }
+            if op.contains("scaled") {
+                options.add_macro_definition("ASSIGN", None);
+            }
+            compile_glsl(compiler, src, &format!("{}_{}", op, rust_ty), Some(&options))?;
+        }
+    }
+    Ok(())
+}
+
+fn glsl_reduce(compiler: &mut Compiler) -> Result<()> {
+    let src = include_str!("src/glsl/reduce_final.comp");
+    for op in ["sum", "mean", "min", "max", "argmin", "argmax"].iter() {
+        for &(rust_ty, c_ty) in NUM_TYPES.iter() {
+            let mut options = glsl_options();
+            if rust_ty == "bf16" {
+                options.add_macro_definition("BF16", None);
+            } else {
+                options.add_macro_definition("T", Some(c_ty));
+            }
+            if rust_ty == "bf16" || rust_ty == "f32" {
+                options.add_macro_definition("FLOAT", None);
+            } else if rust_ty == "u32" {
+                options.add_macro_definition("UINT", None);
+            } else if rust_ty == "i32" {
+                options.add_macro_definition("INT", None);
+            }
+            options.add_macro_definition(&op.to_uppercase(), None);
+            compile_glsl(compiler, src, &format!("reduce_{}_final_{}", op, rust_ty), Some(&options))?;
+        }
+    }
+    Ok(())
+}
+
+fn glsl_index_select(compiler: &mut Compiler) -> Result<()> {
+    let src = include_str!("src/glsl/index_select.comp");
+    for &(rust_ty, c_ty) in NUM_TYPES.iter() {
+        let mut options = glsl_options();
+        if rust_ty == "bf16" {
+            options.add_macro_definition("BF16", None);
+        } else {
+            options.add_macro_definition("T", Some(c_ty));
+        }
+        compile_glsl(compiler, src, &format!("index_select_{}", rust_ty), Some(&options))?;
+    }
+    Ok(())
+}
+
+fn glsl_kmeans(compiler: &mut Compiler) -> Result<()> {
+    {
+        let src = include_str!("src/glsl/kmeans_distance.comp");
+        for &(rust_ty, c_ty) in FLOAT_TYPES.iter() {
+            let mut options = glsl_options();
+            if rust_ty == "bf16" {
+                options.add_macro_definition("BF16", None);
+            } else {
+                options.add_macro_definition("T", Some(c_ty));
+            }
+            compile_glsl(compiler, src, &format!("kmeans_distance_{}", rust_ty), Some(&options))?;
+        }
+    }
+    {
+        let src = include_str!("src/glsl/kmeans_accumulate_next_centroids.comp");
+        for &(rust_ty, c_ty) in FLOAT_TYPES.iter() {
+            let mut options = glsl_options();
+            if rust_ty == "bf16" {
+                options.add_macro_definition("BF16", None);
+            } else {
+                options.add_macro_definition("T", Some(c_ty));
+            }
+            compile_glsl(compiler, src, &format!("kmeans_accumulate_next_centroids_{}", rust_ty), Some(&options))?;
+        }
+    }
+    {
+        let src = include_str!("src/glsl/kmeans_update_centroids.comp");
+        for &(rust_ty, c_ty) in FLOAT_TYPES.iter() {
+            let mut options = glsl_options();
+            if rust_ty == "bf16" {
+                options.add_macro_definition("BF16", None);
+            } else {
+                options.add_macro_definition("T", Some(c_ty));
+            }
+            compile_glsl(compiler, src, &format!("kmeans_update_centroids_{}", rust_ty), Some(&options))?;
+        }
+    }
+    Ok(())
+}
+
+fn main() -> Result<()> {
     let mut compiler = Compiler::new().unwrap();
     glsl_fill(&mut compiler)?;
     glsl_gemm(&mut compiler)?;
+    glsl_binary(&mut compiler)?;
+    glsl_reduce(&mut compiler)?;
+    glsl_index_select(&mut compiler)?;
+    glsl_kmeans(&mut compiler)?;
     Ok(())
 }
