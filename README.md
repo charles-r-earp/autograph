@@ -35,13 +35,13 @@ Supports GPU's with DX12. Planned support for Vulkan. Tested on Windows 10, AMD 
 
 Note: Run the windows tests with `cargo test -- --num-threads 1` to avoid creating too many instances of the gpu on too many threads. Shared access across threads is safe, but creating a Device for each of several processes may fail. 
 
+# Datasets
+  - Iris https://gist.github.com/curran/a08a1080b88344b0c8a7
+
 # KMeans
-Coming soon!
+See [example](https://github.com/charles-r-earp/autograph/tree/main/examples/cluster/kmeans/iris).
 
 # Neural Networks
 Coming soon!
-
-# Datasets 
-Coming sonn!
 
   
