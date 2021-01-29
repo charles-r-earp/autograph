@@ -163,11 +163,12 @@ impl<T: Float> KMeans<T> {
             num_samples += x.dim().0;
         }
         self.update_centroids(&next_centroids.view(), &counts.view())?;
-        let mut loss = smol::block_on(loss.to_vec()?)?[0].to_f32().unwrap();
-        if num_samples > 0 {
-            loss /= num_samples as f32;
-        }
-        let loss = Tensor::from_shape_cow(&device, (), vec![loss])?;
+        let alpha = if num_samples > 0 {
+            1. / num_samples as f32
+        } else {
+            0.
+        };
+        let loss = loss.scale_into(alpha)?;
         Ok(loss)
     }
     /// Computes the average loss of the model for the test data\
@@ -190,11 +191,12 @@ impl<T: Float> KMeans<T> {
                 .sum_with(Axis(0), &mut loss.view_mut())?;
             num_samples += x.dim().0;
         }
-        let mut loss = smol::block_on(loss.to_vec()?)?[0].to_f32().unwrap();
-        if num_samples > 0 {
-            loss /= num_samples as f32;
-        }
-        let loss = Tensor::from_shape_cow(&device, (), vec![loss])?;
+        let alpha = if num_samples > 0 {
+            1. / num_samples as f32
+        } else {
+            0.
+        };
+        let loss = loss.scale_into(alpha)?;
         Ok(loss)
     }
     pub fn centroids(&self) -> &Tensor2<T> {

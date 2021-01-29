@@ -6,6 +6,7 @@ mod shaders {
 
     static GLSL_SHADERS: &[&'static str] = &[
         "binary",
+        "cast",
         "buffer_macros",
         "fill_u32",
         "fill_u64",

@@ -1,6 +1,7 @@
 use shaderc::{CompileOptions, Compiler, ShaderKind, SourceLanguage, IncludeType, ResolvedInclude, IncludeCallbackResult};
 use std::path::PathBuf;
 use std::{env, fs};
+use std::iter::once;
 
 type Result<T, E = Box<dyn std::error::Error>> = std::result::Result<T, E>;
 
@@ -192,6 +193,40 @@ fn glsl_binary(compiler: &mut Compiler) -> Result<()> {
     Ok(())
 }
 
+fn glsl_cast(compiler: &mut Compiler) -> Result<()> {
+    let src = include_str!("src/glsl/cast.comp");
+    // TODO: impl for Scalar
+    for &(rust_ty_1, c_ty_1) in NUM_TYPES.iter().chain(once(&("u8", "uint"))) {
+        for &(rust_ty_2, c_ty_2) in NUM_TYPES.iter() {
+            let mut options = glsl_options();
+            if rust_ty_1 == "u8" {
+                options.add_macro_definition("U8", None);
+            } else if rust_ty_1 == "bf16" {
+                options.add_macro_definition("BF16", None);
+            } else {
+                options.add_macro_definition("T", Some(c_ty_1));
+            }
+            if rust_ty_2 == "bf16" {
+                options.add_macro_definition("T2_BF16", None);
+            } else {
+                options.add_macro_definition("T2", Some(c_ty_2));
+            }
+            compile_glsl(compiler, src, &format!("scaled_cast_{}_{}", rust_ty_1, rust_ty_2), Some(&options))?;
+        }
+    }
+    for &(rust_ty_2, c_ty_2) in NUM_TYPES.iter() {
+        let mut options = glsl_options();
+        if rust_ty_2 == "bf16" {
+            options.add_macro_definition("T2_BF16", None);
+        } else {
+            options.add_macro_definition("T2", Some(c_ty_2));
+        }
+        options.add_macro_definition("INPLACE", None);
+        compile_glsl(compiler, src, &format!("scale_mut_{}", rust_ty_2), Some(&options))?;
+    }
+    Ok(())
+}
+
 fn glsl_reduce(compiler: &mut Compiler) -> Result<()> {
     let src = include_str!("src/glsl/reduce_final.comp");
     for op in ["sum", "mean", "min", "max", "argmin", "argmax"].iter() {
@@ -275,6 +310,7 @@ fn main() -> Result<()> {
     glsl_fill(&mut compiler)?;
     glsl_gemm(&mut compiler)?;
     glsl_binary(&mut compiler)?;
+    glsl_cast(&mut compiler)?;
     glsl_reduce(&mut compiler)?;
     glsl_index_select(&mut compiler)?;
     glsl_kmeans(&mut compiler)?;

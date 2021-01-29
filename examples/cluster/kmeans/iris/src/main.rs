@@ -19,7 +19,6 @@ fn plot(x: &ArrayView2<f32>, y: &ArrayView1<u32>, y_pred: &ArrayView1<u32>) -> R
         .into_drawing_area();
     root.fill(&WHITE)?;
     let root = root.titled("Sepal Length x Petal Length x Petal Width",  ("sans-serif", 50).into_font())?;
-
     let (left, right) = root.split_horizontally(width / 2);
     let mut data_chart = ChartBuilder::on(&left)
         .caption("Data", ("sans-serif", 50).into_font())
@@ -59,10 +58,8 @@ fn plot(x: &ArrayView2<f32>, y: &ArrayView1<u32>, y_pred: &ArrayView1<u32>) -> R
 
 fn main() -> Result<()> {
     smol::block_on(async {
-
         let ref xy_dataset = Iris::new()?;
         let ref x_dataset = xy_dataset.clone().unsupervised();
-
         let num_samples = 150;
         let (x_array, y_array) = xy_dataset.sample(0..num_samples).unwrap().await?;
         let y_array = y_array.map(|x| *x as u32);
@@ -81,6 +78,9 @@ fn main() -> Result<()> {
         ];
         for (x, (y, y_pred)) in x_array.outer_iter().zip(y_array.iter().zip(y_pred.iter())) {
             println!("dimensions: {:?} class: {} model: {}", x.as_slice().unwrap(), classes[*y as usize], y_pred);
+        }
+        if !cfg!(feature = "plotters") {
+            println!("Feature plotters not enabled, plot not generated. Try running with:\n\tcargo run --features plotters");
         }
         #[cfg(feature = "plotters")]
         plot(&x_array.view(), &y_array.view(), &y_pred.view())?;

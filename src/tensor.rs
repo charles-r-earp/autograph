@@ -13,6 +13,7 @@ use std::fmt::{self, Debug};
 use std::sync::Arc;
 
 mod binary;
+mod convert;
 mod index_select;
 pub mod linalg;
 mod reduce;
