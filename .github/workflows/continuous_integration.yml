@@ -27,6 +27,8 @@ jobs:
       run: cargo fetch --target ${{ matrix.target }}
     - name: Check
       run: cargo check --tests --lib --benches
+    - name: Check Examples
+      run: (cd examples/cluster/kmeans/iris; cargo check && cargo --check features plotters)
     - name: Test
       run: cargo test --no-fail-fast -- --test-threads 1
     - name: Test Ignored
@@ -34,7 +36,8 @@ jobs:
     - name: Test Benchmarks
       run: cargo test --benches
     - name: Test Examples
-      run: (cd examples/cluster/kmeans/iris; cargo run) 
+      if: ${{ matrix.os == windows-latest }}
+      run: (cd examples/cluster/kmeans/iris; cargo run && cargo run --features plotters)
   lint:
     name: Lint
     runs-on: ubuntu-latest

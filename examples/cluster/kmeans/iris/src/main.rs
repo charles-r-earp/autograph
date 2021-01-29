@@ -63,7 +63,8 @@ fn main() -> Result<()> {
         let num_samples = 150;
         let (x_array, y_array) = xy_dataset.sample(0..num_samples).unwrap().await?;
         let y_array = y_array.map(|x| *x as u32);
-        let device = Device::new_gpu(0).unwrap()?;
+        let device = Device::new_gpu(0)
+            .expect("No gpu!")?;
         let mut model = KMeans::new(&device, 3)?;
         model.init_random(x_dataset)?;
         let x = Tensor::from_array(&device, x_array.view())?;
