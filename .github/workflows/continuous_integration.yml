@@ -36,7 +36,7 @@ jobs:
     - name: Test Benchmarks
       run: cargo test --benches
     - name: Test Examples
-      if: ${{ matrix.os == windows-latest }}
+      if: ${{ matrix.os == 'windows-latest' }}
       run: (cd examples/cluster/kmeans/iris; cargo run && cargo run --features plotters)
   lint:
     name: Lint
