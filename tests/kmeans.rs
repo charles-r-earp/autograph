@@ -1,9 +1,4 @@
-use autograph::{
-    backend::Device,
-    cluster::kmeans::KMeans,
-    dataset::SimpleDataset,
-    Result,
-};
+use autograph::{backend::Device, cluster::kmeans::KMeans, dataset::SimpleDataset, Result};
 use ndarray::Array;
 
 #[test]

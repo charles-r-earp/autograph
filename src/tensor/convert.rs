@@ -1,19 +1,15 @@
-use super::{
-    Result, Data, TensorBase, Tensor, TensorView, TensorViewMut, Dimension, Scalar, Num
-};
+use super::{Data, Dimension, Num, Result, Scalar, Tensor, TensorBase, TensorView, TensorViewMut};
 use crate::util::type_eq;
 use anyhow::ensure;
 
-impl<T: Scalar, S: Data<Elem=T>, D: Dimension> TensorBase<S, D> {
+impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     /// Scales the tensor to a new Tensor\
     ///
     /// Performs the operations y = alpha * (x as T2)\
     /// Err: Does not currently support non standard layout. Errors if the operation cannot be executed.
     pub fn scale_into<T2: Num>(self, alpha: T2) -> Result<Tensor<T2, D>> {
         ensure!(self.strides == self.dim.default_strides());
-        let mut output = unsafe {
-            Tensor::uninitialized(self.device(), self.raw_dim())?
-        };
+        let mut output = unsafe { Tensor::uninitialized(self.device(), self.raw_dim())? };
         scaled_cast(&self.view(), &mut output.view_mut(), alpha)?;
         Ok(output)
     }
@@ -26,8 +22,16 @@ impl<T: Scalar, S: Data<Elem=T>, D: Dimension> TensorBase<S, D> {
     }
 }
 
-fn scaled_cast<T1, T2, D>(input: &TensorView<T1, D>, output: &mut TensorViewMut<T2, D>, alpha: T2) -> Result<()>
-    where T1: Scalar, T2: Num, D: Dimension {
+fn scaled_cast<T1, T2, D>(
+    input: &TensorView<T1, D>,
+    output: &mut TensorViewMut<T2, D>,
+    alpha: T2,
+) -> Result<()>
+where
+    T1: Scalar,
+    T2: Num,
+    D: Dimension,
+{
     debug_assert!(input.len() == output.len());
     let device = input.device();
     let src = if type_eq::<T1, u8>() {
@@ -47,7 +51,8 @@ fn scaled_cast<T1, T2, D>(input: &TensorView<T1, D>, output: &mut TensorViewMut<
     };
     let n = input.len() as u32;
     let alpha = alpha.to_bits_u32().unwrap();
-    device.compute_pass(src, "main")?
+    device
+        .compute_pass(src, "main")?
         .buffer_slice(input.as_buffer_slice().unwrap())?
         .buffer_slice_mut(output.as_buffer_slice_mut().unwrap())?
         .push_constants(bytemuck::cast_slice(&[n, alpha]))?
