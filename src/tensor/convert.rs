@@ -1,6 +1,5 @@
 use super::{Data, Dimension, Num, Result, Scalar, Tensor, TensorBase, TensorView, TensorViewMut};
 use crate::util::type_eq;
-use anyhow::ensure;
 
 impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     /// Scales the tensor to a new Tensor\
@@ -8,8 +7,8 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     /// Performs the operations y = alpha * (x as T2)\
     /// Err: Does not currently support non standard layout. Errors if the operation cannot be executed.
     pub fn scale_into<T2: Num>(self, alpha: T2) -> Result<Tensor<T2, D>> {
-        ensure!(self.strides == self.dim.default_strides());
         let mut output = unsafe { Tensor::uninitialized(self.device(), self.raw_dim())? };
+        output.strides = self.strides.clone();
         scaled_cast(&self.view(), &mut output.view_mut(), alpha)?;
         Ok(output)
     }
@@ -53,8 +52,8 @@ where
     let alpha = alpha.to_bits_u32().unwrap();
     device
         .compute_pass(src, "main")?
-        .buffer_slice(input.as_buffer_slice().unwrap())?
-        .buffer_slice_mut(output.as_buffer_slice_mut().unwrap())?
+        .buffer_slice(input.as_unordered_buffer_slice())?
+        .buffer_slice_mut(output.as_unordered_buffer_slice_mut())?
         .push_constants(bytemuck::cast_slice(&[n, alpha]))?
         .global_size([n, 1, 1])
         .enqueue()

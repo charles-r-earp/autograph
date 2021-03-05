@@ -131,6 +131,42 @@ impl<T: Scalar> DataMut for ViewMutRepr<'_, T> {
     }
 }
 
+pub enum CowRepr<'a, T> {
+    Owned(OwnedRepr<T>),
+    Borrowed(ViewRepr<'a, T>),
+}
+
+impl<T: Scalar> From<OwnedRepr<T>> for CowRepr<'_, T> {
+    fn from(from: OwnedRepr<T>) -> Self {
+        Self::Owned(from)
+    }
+}
+
+impl<'a, T: Scalar> From<ViewRepr<'a, T>> for CowRepr<'a, T> {
+    fn from(from: ViewRepr<'a, T>) -> Self {
+        Self::Borrowed(from)
+    }
+}
+
+impl<T: Scalar> Sealed for CowRepr<'_, T> {}
+
+impl<T: Scalar> Data for CowRepr<'_, T> {
+    type Elem = T;
+    fn into_buffer(self) -> Result<Buffer<Self::Elem>> {
+        match self {
+            Self::Owned(owned) => owned.into_buffer(),
+            Self::Borrowed(borrowed) => borrowed.into_buffer(),
+        }
+    }
+    fn as_buffer_slice(&self) -> BufferSlice<Self::Elem> {
+        match self {
+            Self::Owned(owned) => owned.as_buffer_slice(),
+            Self::Borrowed(borrowed) => borrowed.as_buffer_slice()
+        }
+    }
+}
+
+
 fn strides_from_array<S, D>(array: &ArrayBase<S, D>) -> D
 where
     S: ndarray::RawData,
@@ -197,6 +233,16 @@ pub type TensorViewMut4<'a, T> = TensorViewMut<'a, T, Ix4>;
 pub type TensorViewMut5<'a, T> = TensorViewMut<'a, T, Ix5>;
 pub type TensorViewMut6<'a, T> = TensorViewMut<'a, T, Ix6>;
 pub type TensorViewMutD<'a, T> = TensorViewMut<'a, T, IxDyn>;
+
+pub type CowTensor<'a, T, D> = TensorBase<CowRepr<'a, T>, D>;
+pub type CowTensor0<'a, T> = CowTensor<'a, T, Ix0>;
+pub type CowTensor1<'a, T> = CowTensor<'a, T, Ix1>;
+pub type CowTensor2<'a, T> = CowTensor<'a, T, Ix2>;
+pub type CowTensor3<'a, T> = CowTensor<'a, T, Ix3>;
+pub type CowTensor4<'a, T> = CowTensor<'a, T, Ix4>;
+pub type CowTensor5<'a, T> = CowTensor<'a, T, Ix5>;
+pub type CowTensor6<'a, T> = CowTensor<'a, T, Ix6>;
+pub type CowTensorD<'a, T> = CowTensor<'a, T, IxDyn>;
 
 impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     pub fn device(&self) -> &Device {
@@ -324,8 +370,8 @@ impl<T: Scalar, S: DataOwned<Elem = T>, D: Dimension> TensorBase<S, D> {
     pub fn from_array<'a>(device: &Device, array: impl Into<CowArray<'a, T, D>>) -> Result<Self> {
         let array = array.into();
         let dim = array.raw_dim();
-        let strides = strides_from_array(&array);
-        let buffer = if let Some(slice) = array.as_slice_memory_order() {
+        let strides = dim.default_strides();
+        let buffer = if let Some(slice) = array.as_slice() {
             Buffer::from_cow(device, slice.into())?
         } else {
             Buffer::from_cow(
@@ -439,12 +485,34 @@ impl<T: Scalar, S: DataMut<Elem = T>, D: Dimension> TensorBase<S, D> {
 }
 
 impl<T: Scalar, D: Dimension> From<Tensor<T, D>> for ArcTensor<T, D> {
-    fn from(tensor: Tensor<T, D>) -> ArcTensor<T, D> {
-        TensorBase {
+    fn from(tensor: Tensor<T, D>) -> Self {
+        Self {
             device: tensor.device,
             dim: tensor.dim,
             strides: tensor.strides,
             data: ArcRepr::from_buffer(tensor.data.0),
+        }
+    }
+}
+
+impl<T: Scalar, D: Dimension> From<Tensor<T, D>> for CowTensor<'_, T, D> {
+    fn from(tensor: Tensor<T, D>) -> Self {
+        Self {
+            device: tensor.device,
+            dim: tensor.dim,
+            strides: tensor.strides,
+            data: tensor.data.into(),
+        }
+    }
+}
+
+impl<'a, T: Scalar, D: Dimension> From<TensorView<'a, T, D>> for CowTensor<'a, T, D> {
+    fn from(tensor: TensorView<'a, T, D>) -> Self {
+        Self {
+            device: tensor.device,
+            dim: tensor.dim,
+            strides: tensor.strides,
+            data: tensor.data.into(),
         }
     }
 }

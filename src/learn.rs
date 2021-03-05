@@ -1,6 +1,184 @@
-use crate::Result;
-use std::future::Future;
+use crate::{
+    Result,
+    backend::Device,
+    tensor::{Tensor0, Tensor1, Tensor2},
+    dataset::{Dataset, train_test_split},
+};
+use std::time::Duration;
 
+pub struct FitOptions {
+    test_ratio: f32,
+    train_batch_size: usize,
+    test_batch_size: usize,
+    shuffle: bool,
+}
+
+impl Default for FitOptions {
+    fn default() -> Self {
+        Self {
+            test_ratio: 0.,
+            train_batch_size: 64,
+            test_batch_size: 1024,
+            shuffle: true,
+        }
+    }
+}
+
+impl FitOptions {
+    pub fn test_ratio(mut self, test_ratio: f32) -> Self {
+        self.test_ratio = test_ratio;
+        self
+    }
+    pub fn get_test_ratio(&self) -> f32 {
+        self.test_ratio
+    }
+    pub fn train_batch_size(mut self, train_batch_size: usize) -> Self {
+        self.train_batch_size = train_batch_size;
+        self
+    }
+    pub fn get_train_batch_size(&self) -> usize {
+        self.train_batch_size
+    }
+    pub fn test_batch_size(mut self, test_batch_size: usize) -> Self {
+        self.test_batch_size = test_batch_size;
+        self
+    }
+    pub fn get_test_batch_size(&self) -> usize {
+        self.test_batch_size
+    }
+    pub fn shuffle(mut self, shuffle: bool) -> Self {
+        self.shuffle = shuffle;
+        self
+    }
+    pub fn get_shuffle(&self) -> bool {
+        self.shuffle
+    }
+ }
+
+#[derive(Clone, Copy, Debug)]
+pub struct FitStats {
+    epoch: usize, // epoch starts at 1 not 0
+    duration: Duration,
+    train_loss: f32,
+    train_count: usize,
+    train_correct: Option<usize>,
+    test_loss: f32,
+    test_count: usize,
+    test_correct: Option<usize>,
+    best_epoch: Option<usize>,
+}
+
+impl Default for FitStats {
+     fn default() -> Self {
+         Self {
+             epoch: 1,
+             duration: Duration::default(),
+             train_loss: 0.,
+             train_count: 0,
+             train_correct: None,
+             test_loss: 0.,
+             test_count: 0,
+             test_correct: None,
+             best_epoch: None,
+         }
+     }
+}
+
+impl FitStats {
+    pub(crate) fn next_epoch(&mut self) {
+        self.epoch += 1;
+        self.train_loss = 0.;
+        self.train_count = 0;
+        self.train_correct = None;
+        self.test_loss = 0.;
+        self.test_count = 0;
+        self.test_correct = None;
+    }
+}
+
+pub trait Fit<X> {
+    #[allow(unused_variables)]
+    fn initialize_from_dataset<A>(&mut self, dataset: &A, options: &FitOptions) -> Result<FitStats>
+        where A: Dataset<Item=X> {
+        Ok(FitStats::default())
+    }
+    fn train_epoch<I>(&mut self, train_iter: I) -> Result<(Tensor0<f32>, Option<Tensor0<u32>>)>
+        where I: Iterator<Item=Result<X>>;
+    fn test_epoch<I>(&self, test_iter: I) -> Result<(Tensor0<f32>, Option<Tensor0<u32>>)>
+        where I: Iterator<Item=Result<X>>;
+    fn fit<A, F>(&mut self, device: &Device, dataset: &A, options: FitOptions, mut callback: F) -> Result<FitStats>
+        where A: Dataset<Item=X>, F: FnMut(&mut Self, &FitStats) -> Result<bool> {
+        smol::block_on(async {
+            let (train_set, test_set) = train_test_split(dataset, options.test_ratio);
+            let mut stats = self.initialize_from_dataset(&train_set, &options)?;
+            loop {
+                let mut train_iter = train_set.batches(device, options.train_batch_size, options.shuffle)
+                    .peekable();
+                let train_iter = std::iter::from_fn(move || {
+                    train_iter.peek();
+                    Some(smol::block_on(train_iter.next()?))
+                });
+                let (train_loss, train_correct) = self.train_epoch(train_iter)?;
+                let train_loss = train_loss.to_vec()?;
+                let train_correct = train_correct.as_ref();
+                let train_correct = if let Some(train_correct)  = train_correct {
+                    Some(train_correct.to_vec()?)
+                } else {
+                    None
+                };
+                if test_set.sample_count() > 0 {
+                    let mut test_iter = test_set.batches(device, options.test_batch_size, false)
+                        .peekable();
+                    let test_iter = std::iter::from_fn(move || {
+                        test_iter.peek();
+                        Some(smol::block_on(test_iter.next()?))
+                    });
+                    let (test_loss, test_correct) = self.test_epoch(test_iter)?;
+                    let test_loss = test_loss.to_vec()?;
+                    let test_correct = test_correct.as_ref();
+                    let test_correct = if let Some(test_correct) = test_correct {
+                        Some(test_correct.to_vec()?)
+                    } else {
+                        None
+                    };
+                    stats.test_count = test_set.sample_count();
+                    stats.test_loss = *test_loss.await?.first().unwrap();
+                    stats.test_correct = if let Some(test_correct) = test_correct {
+                        Some(*test_correct.await?.first().unwrap() as usize)
+                    } else {
+                        None
+                    };
+                }
+                stats.train_count = train_set.sample_count();
+                stats.train_loss = *train_loss.await?.first().unwrap();
+                stats.train_correct = if let Some(train_correct) = train_correct {
+                    Some(*train_correct.await?.first().unwrap() as usize)
+                } else {
+                    None
+                };
+                if !callback(self, &stats)? {
+                    return Ok(stats);
+                }
+                stats.next_epoch();
+            }
+        })
+    }
+}
+
+pub trait Infer<X> {
+    type Output;
+    fn infer(&self, input: X) -> Result<Self::Output>;
+}
+
+pub trait Classify<X> {
+    fn classify(&self, input: X) -> Result<Tensor2<f32>>;
+}
+
+pub trait Predict<X> {
+    fn predict(&self, input: X) -> Result<Tensor1<u32>>;
+}
+
+/*
 pub struct FitStats {
     train_loss: Option<f32>,
     train_correct: Option<usize>,
@@ -10,11 +188,13 @@ pub struct FitStats {
     completed: bool,
 }
 
+
+
 pub trait Fit<X> {
     fn fit<F1, F2>(&mut self, train_iter: impl Iterator<Item=F1>, test_iter: impl Iterator<Item=F2>) -> Result<FitStats>
         where F1: Future<Output=Result<X>>, F2: Future<Output=Result<X>>;
 }
-
+*/
 /*
 #[derive(Default, Clone, Copy, Debug)]
 pub struct FitStats {

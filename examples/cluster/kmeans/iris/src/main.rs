@@ -2,13 +2,16 @@ use autograph::{
     Result,
     backend::Device,
     tensor::Tensor,
-    dataset::{Iris, Dataset},
+    learn::{Fit, FitOptions, Predict},
+    dataset::{Dataset, iris},
     cluster::kmeans::KMeans,
-    ndarray::{ArrayView1, ArrayView2},
 };
+#[cfg(feature = "plotters")]
+use ndarray::{ArrayView1, ArrayView2};
 #[cfg(feature = "plotters")]
 use plotters::prelude::*;
 
+// Utility function used for rendering a scatter plot.
 #[cfg(feature = "plotters")]
 fn plot(x: &ArrayView2<f32>, y: &ArrayView1<u32>, y_pred: &ArrayView1<u32>) -> Result<()> {
     let (width, height) = (1024, 760);
@@ -56,35 +59,40 @@ fn plot(x: &ArrayView2<f32>, y: &ArrayView1<u32>, y_pred: &ArrayView1<u32>) -> R
     Ok(())
 }
 
+// Returning a Result from main allows using the ? operator
 fn main() -> Result<()> {
-    smol::block_on(async {
-        let ref xy_dataset = Iris::new()?;
-        let ref x_dataset = xy_dataset.clone().unsupervised();
-        let num_samples = 150;
-        let (x_array, y_array) = xy_dataset.sample(0..num_samples).unwrap().await?;
-        let y_array = y_array.map(|x| *x as u32);
-        let device = Device::new_gpu(0)
-            .expect("No gpu!")?;
-        let mut model = KMeans::new(&device, 3)?;
-        model.init_random(x_dataset)?;
-        let x = Tensor::from_array(&device, x_array.view())?;
-        model.train_epoch(std::iter::once(Ok(x.view())))?;
-        let y_pred = model.classify(&x.view())?
-            .to_array()?
-            .await?;
-        let classes = [
-            "setosa",
-            "versicolor",
-            "virginica"
-        ];
-        for (x, (y, y_pred)) in x_array.outer_iter().zip(y_array.iter().zip(y_pred.iter())) {
-            println!("dimensions: {:?} class: {} model: {}", x.as_slice().unwrap(), classes[*y as usize], y_pred);
-        }
-        if !cfg!(feature = "plotters") {
-            println!("Feature plotters not enabled, plot not generated. Try running with:\n\tcargo run --features plotters");
-        }
-        #[cfg(feature = "plotters")]
-        plot(&x_array.view(), &y_array.view(), &y_pred.view())?;
-        Ok(())
-    })
+    // Create a device for the first Gpu
+    let device = Device::new_gpu(0)
+        .expect("No gpu!")?;
+    // The iris function is imported from autograph::dataset, and loads the data as a pair of
+    // arrays.
+    let (x_array, y_array) = iris()?;
+    // Create the kmeans model with k = 3.
+    let mut model = KMeans::new(&device, 3)?;
+    // Fit the model to the dataset. Note that &Array implements Dataset which loads the data
+    // into Tensors. In this case since the dataset is small only one batch of 150 samples is
+    // used.
+    // The last argument to fit is a callback which takes a reference to the model and the
+    // stats for each epoch and returns whether to continue training. Returning false ends
+    // training after 1 iteration.
+    model.fit(&device, &x_array, FitOptions::default().train_batch_size(x_array.sample_count()), |_model, _stats| Ok(false))?;
+    // Get the predicted classes from the model. Note that since training is unsupervised,
+    // the model will predict classes in random order, ie it might treat setosa as 1 or 2
+    // instead of index 0.
+    let y_pred = smol::block_on(model.predict(Tensor::from_array(&device, x_array.view())?)?
+        .to_array()?)?;
+    let classes = [
+        "setosa",
+        "versicolor",
+        "virginica"
+    ];
+    for (x, (y, y_pred)) in x_array.outer_iter().zip(y_array.iter().zip(y_pred.iter())) {
+        println!("dimensions: {:?} class: {} model: {}", x.as_slice().unwrap(), classes[*y as usize], y_pred);
+    }
+    if !cfg!(feature = "plotters") {
+        println!("Feature plotters not enabled, plot not generated. Try running with:\n\tcargo run --features plotters");
+    }
+    #[cfg(feature = "plotters")]
+    plot(&x_array.view(), &y_array.view(), &y_pred.view())?;
+    Ok(())
 }

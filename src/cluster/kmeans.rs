@@ -1,11 +1,12 @@
 #![allow(unused)]
 use crate::{
     backend::{Device, Float},
-    dataset::Dataset,
+    dataset::{Dataset, train_test_split},
     tensor::{
         Axis, Data, Ix2, Tensor, Tensor0, Tensor1, Tensor2, TensorBase, TensorView1, TensorView2,
         TensorViewMut1, TensorViewMut2,
     },
+    learn::{FitStats, FitOptions, Fit, Predict},
     util::type_eq,
     Result,
 };
@@ -27,28 +28,35 @@ impl<T: Float> KMeans<T> {
     pub fn new(device: &Device, k: usize) -> Result<Self> {
         Ok(Self::from_centroids(Tensor2::zeros(device, [k, 0])?))
     }
-    pub fn init_random<S>(&mut self, dataset: impl Dataset<Item = ArrayBase<S, Ix2>>) -> Result<()>
+    pub async fn init_random<X, S, A>(&mut self, dataset: &A) -> Result<()>
     where
-        S: ndarray::Data<Elem = T>,
+        X: Float, S: Data<Elem = X>, A: Dataset<Item=TensorBase<S, Ix2>>
     {
-        smol::block_on(async {
-            let uniform = Uniform::new(0, dataset.sample_count());
-            let k = self.centroids.dim().0;
-            let n = dataset.sample(0..1).unwrap().await?.dim().1;
-            let mut centroids = Array::from_elem([k, n], T::zero());
-            for (i, c) in uniform
-                .sample_iter(&mut rand::thread_rng())
-                .zip(centroids.outer_iter_mut())
-            {
-                let x = dataset.sample(i..i + 1).unwrap().await?;
-                c.into_shape([1, n]).unwrap().assign(&x);
-            }
-            self.centroids = Tensor::from_array(self.centroids.device(), centroids)?;
-            Ok(())
-        })
+        /// TODO: implement without copy back to host
+        let uniform = Uniform::new(0, dataset.sample_count());
+        let k = self.centroids.dim().0;
+        let device = self.centroids.device();
+        let n = dataset.sample(device, 0, 1).unwrap().await?.dim().1;
+        let mut centroids = Array::from_elem([k, n], T::zero());
+        for (i, c) in uniform
+            .sample_iter(&mut rand::thread_rng())
+            .zip(centroids.outer_iter_mut())
+        {
+            let x = dataset.sample(device, i, 1).unwrap().await?;
+            dbg!(&x.strides());
+            let x = x.cast_into()?;
+            dbg!(&x.strides());
+            c.into_shape([1, n]).unwrap().assign(&x.to_array()?.await?);
+        }
+        self.centroids = Tensor::from_array(device, centroids)?;
+        Ok(())
     }
+    /*pub async fn init_plus_plus<X, S, A>(&mut self, dataset: &A) -> Result<()>
+        where X: Float, S: Data<Elem=X>, A: Dataset<Item=TensorBase<S, Ix2>> {
+        todo!()
+    }*/
     /// Computes the distance between the input batch and each centroid
-    pub fn compute_distances(&self, input: &TensorView2<T>) -> Result<Tensor2<T>> {
+    fn compute_distances(&self, input: &TensorView2<T>) -> Result<Tensor2<T>> {
         if let Some((x_slice, c_slice)) = input
             .as_buffer_slice()
             .zip(self.centroids.as_buffer_slice())
@@ -137,18 +145,27 @@ impl<T: Float> KMeans<T> {
     /// Trains the model with the train data, returns the average loss\
     ///
     /// Loss is the sum of the squared distances between the input and the closest centroid
-    pub fn train_epoch<S, I>(&mut self, train_iter: I) -> Result<Tensor0<f32>>
-    where
-        S: Data<Elem = T>,
-        I: Iterator<Item = Result<TensorBase<S, Ix2>>>,
-    {
+    pub fn centroids(&self) -> &Tensor2<T> {
+        &self.centroids
+    }
+}
+
+impl<T: Float, X: Float, S: Data<Elem=X>> Fit<TensorBase<S, Ix2>> for KMeans<T> {
+    fn initialize_from_dataset<A>(&mut self, dataset: &A, options: &FitOptions) -> Result<FitStats>
+        where A: Dataset<Item=TensorBase<S, Ix2>> {
+        // TODO: Replace with init_plus_plus
+        smol::block_on(self.init_random(dataset))?;
+        Ok(FitStats::default())
+    }
+    fn train_epoch<I>(&mut self, train_iter: I) -> Result<(Tensor0<f32>, Option<Tensor0<u32>>)>
+        where I: Iterator<Item=Result<TensorBase<S, Ix2>>> {
         let device = self.centroids.device().clone();
         let mut loss = Tensor::zeros(&device, ())?;
         let mut next_centroids = Tensor::zeros(&device, self.centroids.raw_dim())?;
         let mut counts = Tensor::zeros(&device, self.centroids.dim().0)?;
         let mut num_samples = 0;
         for x in train_iter {
-            let x = x?;
+            let x = x?.cast_into()?;
             let distances = self.compute_distances(&x.view())?;
             let classes = distances.argmin(Axis(1))?;
             Self::accumulate_next_centroids(
@@ -169,21 +186,15 @@ impl<T: Float> KMeans<T> {
             0.
         };
         let loss = loss.scale_into(alpha)?;
-        Ok(loss)
+        Ok((loss, None))
     }
-    /// Computes the average loss of the model for the test data\
-    ///
-    /// Loss is the sum of the squared distances between the input and the closest centroid
-    pub fn test_epoch<S, I>(&self, test_iter: I) -> Result<Tensor0<f32>>
-    where
-        S: Data<Elem = T>,
-        I: Iterator<Item = Result<TensorBase<S, Ix2>>>,
-    {
+    fn test_epoch<I>(&self, test_iter: I) -> Result<(Tensor0<f32>, Option<Tensor0<u32>>)>
+        where I: Iterator<Item=Result<TensorBase<S, Ix2>>> {
         let device = self.centroids.device();
         let mut loss = Tensor::zeros(device, ())?;
         let mut num_samples = 0;
         for x in test_iter {
-            let x = x?;
+            let x = x?.cast_into()?;
             let distances = self.compute_distances(&x.view())?;
             let classes = distances.argmin(Axis(1))?;
             distances
@@ -197,13 +208,13 @@ impl<T: Float> KMeans<T> {
             0.
         };
         let loss = loss.scale_into(alpha)?;
-        Ok(loss)
+        Ok((loss, None))
     }
-    pub fn centroids(&self) -> &Tensor2<T> {
-        &self.centroids
-    }
-    pub fn classify(&self, input: &TensorView2<T>) -> Result<Tensor1<u32>> {
-        self.compute_distances(input)?.argmin(Axis(1))
+}
+
+impl<T: Float, S: Data<Elem=T>> Predict<TensorBase<S, Ix2>> for KMeans<T> {
+    fn predict(&self, input: TensorBase<S, Ix2>) -> Result<Tensor1<u32>> {
+        self.compute_distances(&input.view())?.argmin(Axis(1))
     }
 }
 
@@ -285,12 +296,12 @@ mod tests {
             .collect();
         let data = Array::from_shape_vec([num_samples, n], data)?;
         for device in Device::list() {
-            let mut kmeans = KMeans::from_centroids(Tensor::ones(&device, [k, n])?);
+            let mut kmeans = KMeans::<f32>::from_centroids(Tensor::ones(&device, [k, n])?);
             let data_iter = data
                 .axis_chunks_iter(Axis(0), 13)
                 .into_iter()
                 .map(|x| Tensor::from_array(&device, x));
-            let loss = kmeans.train_epoch(data_iter)?;
+            let (loss, _) = kmeans.train_epoch(data_iter)?;
             let loss = smol::block_on(loss.to_array()?)?;
         }
         Ok(())
@@ -309,12 +320,12 @@ mod tests {
             .collect();
         let data = Array::from_shape_vec([num_samples, n], data)?;
         for device in Device::list() {
-            let kmeans = KMeans::from_centroids(Tensor::ones(&device, [k, n])?);
+            let kmeans = KMeans::<f32>::from_centroids(Tensor::ones(&device, [k, n])?);
             let data_iter = data
                 .axis_chunks_iter(Axis(0), 13)
                 .into_iter()
                 .map(|x| Tensor::from_array(&device, x));
-            let loss = kmeans.test_epoch(data_iter)?;
+            let (loss, _) = kmeans.test_epoch(data_iter)?;
             let loss = smol::block_on(loss.to_array()?)?;
         }
         Ok(())

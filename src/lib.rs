@@ -29,7 +29,7 @@ mod macros {
 pub mod backend;
 pub mod dataset;
 pub mod tensor;
-//pub mod fit;
+pub mod learn;
 pub mod cluster;
 mod util;
 
