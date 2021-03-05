@@ -1,12 +1,12 @@
 #![allow(unused)]
 use crate::{
     backend::{Device, Float},
-    dataset::{Dataset, train_test_split},
+    dataset::{train_test_split, Dataset},
+    learn::{Fit, FitOptions, FitStats, Predict},
     tensor::{
         Axis, Data, Ix2, Tensor, Tensor0, Tensor1, Tensor2, TensorBase, TensorView1, TensorView2,
         TensorViewMut1, TensorViewMut2,
     },
-    learn::{FitStats, FitOptions, Fit, Predict},
     util::type_eq,
     Result,
 };
@@ -30,7 +30,9 @@ impl<T: Float> KMeans<T> {
     }
     pub async fn init_random<X, S, A>(&mut self, dataset: &A) -> Result<()>
     where
-        X: Float, S: Data<Elem = X>, A: Dataset<Item=TensorBase<S, Ix2>>
+        X: Float,
+        S: Data<Elem = X>,
+        A: Dataset<Item = TensorBase<S, Ix2>>,
     {
         /// TODO: implement without copy back to host
         let uniform = Uniform::new(0, dataset.sample_count());
@@ -150,15 +152,19 @@ impl<T: Float> KMeans<T> {
     }
 }
 
-impl<T: Float, X: Float, S: Data<Elem=X>> Fit<TensorBase<S, Ix2>> for KMeans<T> {
+impl<T: Float, X: Float, S: Data<Elem = X>> Fit<TensorBase<S, Ix2>> for KMeans<T> {
     fn initialize_from_dataset<A>(&mut self, dataset: &A, options: &FitOptions) -> Result<FitStats>
-        where A: Dataset<Item=TensorBase<S, Ix2>> {
+    where
+        A: Dataset<Item = TensorBase<S, Ix2>>,
+    {
         // TODO: Replace with init_plus_plus
         smol::block_on(self.init_random(dataset))?;
         Ok(FitStats::default())
     }
     fn train_epoch<I>(&mut self, train_iter: I) -> Result<(Tensor0<f32>, Option<Tensor0<u32>>)>
-        where I: Iterator<Item=Result<TensorBase<S, Ix2>>> {
+    where
+        I: Iterator<Item = Result<TensorBase<S, Ix2>>>,
+    {
         let device = self.centroids.device().clone();
         let mut loss = Tensor::zeros(&device, ())?;
         let mut next_centroids = Tensor::zeros(&device, self.centroids.raw_dim())?;
@@ -189,7 +195,9 @@ impl<T: Float, X: Float, S: Data<Elem=X>> Fit<TensorBase<S, Ix2>> for KMeans<T> 
         Ok((loss, None))
     }
     fn test_epoch<I>(&self, test_iter: I) -> Result<(Tensor0<f32>, Option<Tensor0<u32>>)>
-        where I: Iterator<Item=Result<TensorBase<S, Ix2>>> {
+    where
+        I: Iterator<Item = Result<TensorBase<S, Ix2>>>,
+    {
         let device = self.centroids.device();
         let mut loss = Tensor::zeros(device, ())?;
         let mut num_samples = 0;
@@ -212,7 +220,7 @@ impl<T: Float, X: Float, S: Data<Elem=X>> Fit<TensorBase<S, Ix2>> for KMeans<T> 
     }
 }
 
-impl<T: Float, S: Data<Elem=T>> Predict<TensorBase<S, Ix2>> for KMeans<T> {
+impl<T: Float, S: Data<Elem = T>> Predict<TensorBase<S, Ix2>> for KMeans<T> {
     fn predict(&self, input: TensorBase<S, Ix2>) -> Result<Tensor1<u32>> {
         self.compute_distances(&input.view())?.argmin(Axis(1))
     }

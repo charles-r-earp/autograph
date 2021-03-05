@@ -1,8 +1,8 @@
 use crate::{
-    Result,
     backend::Device,
+    dataset::{train_test_split, Dataset},
     tensor::{Tensor0, Tensor1, Tensor2},
-    dataset::{Dataset, train_test_split},
+    Result,
 };
 use std::time::Duration;
 
@@ -53,7 +53,7 @@ impl FitOptions {
     pub fn get_shuffle(&self) -> bool {
         self.shuffle
     }
- }
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct FitStats {
@@ -69,19 +69,19 @@ pub struct FitStats {
 }
 
 impl Default for FitStats {
-     fn default() -> Self {
-         Self {
-             epoch: 1,
-             duration: Duration::default(),
-             train_loss: 0.,
-             train_count: 0,
-             train_correct: None,
-             test_loss: 0.,
-             test_count: 0,
-             test_correct: None,
-             best_epoch: None,
-         }
-     }
+    fn default() -> Self {
+        Self {
+            epoch: 1,
+            duration: Duration::default(),
+            train_loss: 0.,
+            train_count: 0,
+            train_correct: None,
+            test_loss: 0.,
+            test_count: 0,
+            test_correct: None,
+            best_epoch: None,
+        }
+    }
 }
 
 impl FitStats {
@@ -99,20 +99,34 @@ impl FitStats {
 pub trait Fit<X> {
     #[allow(unused_variables)]
     fn initialize_from_dataset<A>(&mut self, dataset: &A, options: &FitOptions) -> Result<FitStats>
-        where A: Dataset<Item=X> {
+    where
+        A: Dataset<Item = X>,
+    {
         Ok(FitStats::default())
     }
     fn train_epoch<I>(&mut self, train_iter: I) -> Result<(Tensor0<f32>, Option<Tensor0<u32>>)>
-        where I: Iterator<Item=Result<X>>;
+    where
+        I: Iterator<Item = Result<X>>;
     fn test_epoch<I>(&self, test_iter: I) -> Result<(Tensor0<f32>, Option<Tensor0<u32>>)>
-        where I: Iterator<Item=Result<X>>;
-    fn fit<A, F>(&mut self, device: &Device, dataset: &A, options: FitOptions, mut callback: F) -> Result<FitStats>
-        where A: Dataset<Item=X>, F: FnMut(&mut Self, &FitStats) -> Result<bool> {
+    where
+        I: Iterator<Item = Result<X>>;
+    fn fit<A, F>(
+        &mut self,
+        device: &Device,
+        dataset: &A,
+        options: FitOptions,
+        mut callback: F,
+    ) -> Result<FitStats>
+    where
+        A: Dataset<Item = X>,
+        F: FnMut(&mut Self, &FitStats) -> Result<bool>,
+    {
         smol::block_on(async {
             let (train_set, test_set) = train_test_split(dataset, options.test_ratio);
             let mut stats = self.initialize_from_dataset(&train_set, &options)?;
             loop {
-                let mut train_iter = train_set.batches(device, options.train_batch_size, options.shuffle)
+                let mut train_iter = train_set
+                    .batches(device, options.train_batch_size, options.shuffle)
                     .peekable();
                 let train_iter = std::iter::from_fn(move || {
                     train_iter.peek();
@@ -121,13 +135,14 @@ pub trait Fit<X> {
                 let (train_loss, train_correct) = self.train_epoch(train_iter)?;
                 let train_loss = train_loss.to_vec()?;
                 let train_correct = train_correct.as_ref();
-                let train_correct = if let Some(train_correct)  = train_correct {
+                let train_correct = if let Some(train_correct) = train_correct {
                     Some(train_correct.to_vec()?)
                 } else {
                     None
                 };
                 if test_set.sample_count() > 0 {
-                    let mut test_iter = test_set.batches(device, options.test_batch_size, false)
+                    let mut test_iter = test_set
+                        .batches(device, options.test_batch_size, false)
                         .peekable();
                     let test_iter = std::iter::from_fn(move || {
                         test_iter.peek();

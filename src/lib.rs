@@ -27,10 +27,10 @@ mod macros {
 }
 
 pub mod backend;
-pub mod dataset;
-pub mod tensor;
-pub mod learn;
 pub mod cluster;
+pub mod dataset;
+pub mod learn;
+pub mod tensor;
 mod util;
 
 pub use anyhow::Result;

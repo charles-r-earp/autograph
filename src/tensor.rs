@@ -161,11 +161,10 @@ impl<T: Scalar> Data for CowRepr<'_, T> {
     fn as_buffer_slice(&self) -> BufferSlice<Self::Elem> {
         match self {
             Self::Owned(owned) => owned.as_buffer_slice(),
-            Self::Borrowed(borrowed) => borrowed.as_buffer_slice()
+            Self::Borrowed(borrowed) => borrowed.as_buffer_slice(),
         }
     }
 }
-
 
 fn strides_from_array<S, D>(array: &ArrayBase<S, D>) -> D
 where

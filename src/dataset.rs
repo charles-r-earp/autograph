@@ -1,25 +1,25 @@
 use crate::{
-    Result,
     backend::Device,
-    tensor::{Tensor, Dimension, Scalar, Axis},
-    ndarray::{Array, Array1, Array2, Data as ArrayData, ArrayBase, RawArrayView},
+    ndarray::{Array, Array1, Array2, ArrayBase, Data as ArrayData, RawArrayView},
+    tensor::{Axis, Dimension, Scalar, Tensor},
+    Result,
 };
+use anyhow::{anyhow, bail, ensure};
+use downloader::{Download, Downloader};
+use futures_util::future::{try_join, TryJoin};
+use http::StatusCode;
+use rand::prelude::SliceRandom;
+use smol::future::{ready, Ready};
 use std::{
     future::Future,
-    ops::{Range, RangeBounds, Bound},
+    ops::{Bound, Range, RangeBounds},
     str::FromStr,
     vec::IntoIter as VecIntoIter,
 };
-use http::StatusCode;
-use smol::future::{ready, Ready};
-use rand::prelude::SliceRandom;
-use anyhow::{anyhow, bail, ensure};
-use downloader::{Download, Downloader};
-use futures_util::future::{TryJoin, try_join};
 
 pub trait Dataset {
     type Item;
-    type Future: Future<Output=Result<Self::Item>>;
+    type Future: Future<Output = Result<Self::Item>>;
     fn sample_count(&self) -> usize;
     fn sample(&self, device: &Device, index: usize, batch_size: usize) -> Option<Self::Future>;
     fn slice(&self, bounds: impl RangeBounds<usize>) -> Slice<'_, Self> {
@@ -35,15 +35,12 @@ pub trait Dataset {
         };
         Slice {
             dataset: self,
-            range: start..end
+            range: start..end,
         }
     }
     fn batches(&self, device: &Device, batch_size: usize, shuffle: bool) -> Batches<'_, Self> {
         let sample_count = self.sample_count();
-        let mut indices: Vec<usize> = (0..sample_count)
-            .into_iter()
-            .step_by(batch_size)
-            .collect();
+        let mut indices: Vec<usize> = (0..sample_count).into_iter().step_by(batch_size).collect();
         if shuffle {
             indices.shuffle(&mut rand::thread_rng());
         }
@@ -58,9 +55,12 @@ pub trait Dataset {
 }
 
 pub fn train_test_split<A>(dataset: &A, test_ratio: f32) -> (Slice<'_, A>, Slice<'_, A>)
-    where A: Dataset {
+where
+    A: Dataset,
+{
     let sample_count = dataset.sample_count();
-    let test_offset = sample_count - ((test_ratio * sample_count as f32).round() as usize).min(sample_count);
+    let test_offset =
+        sample_count - ((test_ratio * sample_count as f32).round() as usize).min(sample_count);
     let train = dataset.slice(..test_offset);
     let test = dataset.slice(test_offset..);
     (train, test)
@@ -79,7 +79,8 @@ impl<A: Dataset> Dataset for Slice<'_, A> {
     }
     fn sample(&self, device: &Device, index: usize, batch_size: usize) -> Option<Self::Future> {
         if index < self.range.len() && index + batch_size <= self.range.len() {
-            self.dataset.sample(device, self.range.start + index, batch_size)
+            self.dataset
+                .sample(device, self.range.start + index, batch_size)
         } else {
             None
         }
@@ -109,8 +110,7 @@ impl<A: Dataset> Iterator for Batches<'_, A> {
 
 impl<A: Dataset> ExactSizeIterator for Batches<'_, A> {}
 
-
-impl<T: Scalar, S: ArrayData<Elem=T>, D: Dimension> Dataset for ArrayBase<S, D> {
+impl<T: Scalar, S: ArrayData<Elem = T>, D: Dimension> Dataset for ArrayBase<S, D> {
     type Item = Tensor<T, D>;
     type Future = Ready<Result<Self::Item>>;
     fn sample_count(&self) -> usize {
@@ -121,8 +121,7 @@ impl<T: Scalar, S: ArrayData<Elem=T>, D: Dimension> Dataset for ArrayBase<S, D> 
         if index < sample_count && index + batch_size <= sample_count {
             if let Some(slice) = self.as_slice() {
                 let mut array = unsafe {
-                    RawArrayView::from_shape_ptr(self.raw_dim(), slice.as_ptr())
-                        .deref_into_view()
+                    RawArrayView::from_shape_ptr(self.raw_dim(), slice.as_ptr()).deref_into_view()
                 };
                 array.slice_axis_inplace(Axis(0), (index..index + batch_size).into());
                 Some(ready(Tensor::from_array(device, array)))
@@ -139,11 +138,11 @@ impl<A: Dataset, B: Dataset> Dataset for (A, B) {
     type Item = (A::Item, B::Item);
     type Future = TryJoin<A::Future, B::Future>;
     fn sample_count(&self) -> usize {
-        self.0.sample_count()
-            .min(self.1.sample_count())
+        self.0.sample_count().min(self.1.sample_count())
     }
     fn sample(&self, device: &Device, index: usize, batch_size: usize) -> Option<Self::Future> {
-        self.0.sample(device, index, batch_size)
+        self.0
+            .sample(device, index, batch_size)
             .zip(self.1.sample(device, index, batch_size))
             .map(|(a, b)| try_join(a, b))
     }
@@ -198,7 +197,6 @@ pub fn iris() -> Result<(Array2<f32>, Array1<u32>)> {
     let labels = Array::from_shape_vec(150, labels)?;
     Ok((data, labels))
 }
-
 
 #[cfg(test)]
 mod tests {
