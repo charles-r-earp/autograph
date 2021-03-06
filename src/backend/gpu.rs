@@ -74,6 +74,7 @@ impl Gpu {
     pub(super) fn create_buffer_init<T: Scalar>(&self, data: Cow<[T]>) -> Result<BufferId> {
         self.hal.create_buffer_init(data)
     }
+    #[allow(clippy::unnecessary_wraps)]
     pub(super) fn copy_buffer_to_buffer(
         &self,
         src: BufferId,
@@ -88,6 +89,7 @@ impl Gpu {
     pub(super) fn drop_buffer(&self, id: BufferId) {
         self.hal.drop_buffer(id);
     }
+    #[allow(clippy::unnecessary_wraps)]
     pub(super) fn read_buffer<T: Scalar>(
         &self,
         id: BufferId,
@@ -96,6 +98,7 @@ impl Gpu {
     ) -> Result<impl Future<Output = Result<Vec<T>>>> {
         Ok(self.hal.read_buffer(id, offset, len))
     }
+    #[allow(clippy::unnecessary_wraps)]
     pub(super) fn compile_shader_module(&self, id: ModuleId, module: &ShaderModule) -> Result<()> {
         self.hal.compile_shader_module(id, module)
     }
@@ -427,6 +430,7 @@ pub mod hal {
             });
             Ok(buffer.to_buffer_id())
         }
+        #[allow(clippy::unnecessary_wraps)]
         pub(super) fn copy_buffer_to_buffer(
             &self,
             src: BufferId,
@@ -486,6 +490,7 @@ pub mod hal {
                 }
             }
         }
+        #[allow(clippy::unnecessary_wraps)]
         pub(super) fn compile_shader_module(
             &self,
             id: ModuleId,
@@ -500,6 +505,7 @@ pub mod hal {
                 .insert(id, shaders);
             Ok(())
         }
+        #[allow(clippy::unnecessary_wraps)]
         pub(super) fn enqueue_compute_pass(&self, compute_pass: ComputePass) -> Result<()> {
             smol::block_on(self.context.lock())
                 .queued
