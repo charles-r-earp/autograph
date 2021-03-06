@@ -7,7 +7,7 @@ use autograph::{
     cluster::kmeans::KMeans,
 };
 #[cfg(feature = "plotters")]
-use ndarray::{ArrayView1, ArrayView2};
+use autograph::ndarray::{ArrayView1, ArrayView2};
 #[cfg(feature = "plotters")]
 use plotters::prelude::*;
 
