@@ -53,6 +53,7 @@ mod shaders {
     }
 }
 
+#[allow(clippy::unnecessary_wraps)]
 fn main() -> Result<()> {
     #[cfg(feature = "compile-shaders")]
     shaders::compile_shaders()?;

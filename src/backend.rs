@@ -235,7 +235,7 @@ pub mod dyn_device_proxy {
         ) -> Result<()> {
         }
         #[implement]
-        pub(super) fn drop_buffer(&self, id: BufferId) -> Result<()> {}
+        pub(super) fn drop_buffer(&self, id: BufferId) {}
         #[implement]
         pub(super) fn read_buffer<T: Scalar>(
             &self,
@@ -462,8 +462,8 @@ impl Device {
             .dyn_device
             .copy_buffer_to_buffer(src, src_offset, dst, dst_offset, len)?)
     }
-    pub(super) fn drop_buffer(&self, id: BufferId) -> Result<()> {
-        Ok(self.dyn_device.drop_buffer(id)?)
+    pub(super) fn drop_buffer(&self, id: BufferId) {
+        self.dyn_device.drop_buffer(id);
     }
     pub(super) fn read_buffer<T: Scalar>(
         &self,
@@ -935,12 +935,7 @@ impl<T, S: DataMut<Elem = T>> BufferBase<S> {
 impl<S: Data> Drop for BufferBase<S> {
     fn drop(&mut self) {
         if S::needs_drop() {
-            // We might as well not panic here since there's no way to return a result from drop
-            // The primary failure mode would be another error or a disconnect
-            #[allow(unused)]
-            let result = self.device.drop_buffer(self.id);
-            #[cfg(debug_assertions)]
-            result.unwrap();
+            self.device.drop_buffer(self.id);
         }
     }
 }

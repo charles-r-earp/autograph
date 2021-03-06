@@ -85,9 +85,8 @@ impl Gpu {
         self.hal
             .copy_buffer_to_buffer(src, src_offset, dst, dst_offset, len)
     }
-    pub(super) fn drop_buffer(&self, id: BufferId) -> Result<()> {
+    pub(super) fn drop_buffer(&self, id: BufferId) {
         self.hal.drop_buffer(id);
-        Ok(())
     }
     pub(super) fn read_buffer<T: Scalar>(
         &self,
