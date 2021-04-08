@@ -30,6 +30,7 @@ pub mod backend;
 pub mod cluster;
 pub mod dataset;
 pub mod learn;
+pub mod neural_network;
 pub mod tensor;
 mod util;
 

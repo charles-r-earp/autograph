@@ -14,6 +14,7 @@ use std::sync::Arc;
 
 mod binary;
 mod convert;
+pub mod float_tensor;
 mod index_select;
 pub mod linalg;
 mod reduce;
@@ -23,7 +24,9 @@ mod sealed {
 }
 use sealed::Sealed;
 
-pub trait Data: Sealed + Sized {
+pub trait DataBase: Sealed {}
+
+pub trait Data: DataBase + Sized {
     type Elem: Scalar;
     #[doc(hidden)]
     fn into_buffer(self) -> Result<Buffer<Self::Elem>>;
@@ -49,6 +52,8 @@ pub struct OwnedRepr<T>(Buffer<T>);
 
 impl<T> Sealed for OwnedRepr<T> {}
 
+impl<T> DataBase for OwnedRepr<T> {}
+
 impl<T: Scalar> Data for OwnedRepr<T> {
     type Elem = T;
     fn into_buffer(self) -> Result<Buffer<T>> {
@@ -71,9 +76,12 @@ impl<T: Scalar> DataOwned for OwnedRepr<T> {
     }
 }
 
+#[derive(Clone)]
 pub struct ArcRepr<T>(Arc<Buffer<T>>);
 
 impl<T> Sealed for ArcRepr<T> {}
+
+impl<T> DataBase for ArcRepr<T> {}
 
 impl<T: Scalar> Data for ArcRepr<T> {
     type Elem = T;
@@ -101,6 +109,8 @@ pub struct ViewRepr<'a, T>(BufferSlice<'a, T>);
 
 impl<T> Sealed for ViewRepr<'_, T> {}
 
+impl<T> DataBase for ViewRepr<'_, T> {}
+
 impl<T: Scalar> Data for ViewRepr<'_, T> {
     type Elem = T;
     fn into_buffer(self) -> Result<Buffer<T>> {
@@ -114,6 +124,8 @@ impl<T: Scalar> Data for ViewRepr<'_, T> {
 pub struct ViewMutRepr<'a, T>(BufferSliceMut<'a, T>);
 
 impl<T> Sealed for ViewMutRepr<'_, T> {}
+
+impl<T> DataBase for ViewMutRepr<'_, T> {}
 
 impl<T: Scalar> Data for ViewMutRepr<'_, T> {
     type Elem = T;
@@ -149,6 +161,8 @@ impl<'a, T: Scalar> From<ViewRepr<'a, T>> for CowRepr<'a, T> {
 }
 
 impl<T: Scalar> Sealed for CowRepr<'_, T> {}
+
+impl<T: Scalar> DataBase for CowRepr<'_, T> {}
 
 impl<T: Scalar> Data for CowRepr<'_, T> {
     type Elem = T;
@@ -186,7 +200,7 @@ fn dim_strides_from_shape<D: Dimension>(shape: impl Into<StrideShape<D>>) -> (D,
     (dim, strides)
 }
 
-pub struct TensorBase<S: Data, D: Dimension> {
+pub struct TensorBase<S: DataBase, D: Dimension> {
     device: Device,
     dim: D,
     strides: D,
@@ -243,7 +257,7 @@ pub type CowTensor5<'a, T> = CowTensor<'a, T, Ix5>;
 pub type CowTensor6<'a, T> = CowTensor<'a, T, Ix6>;
 pub type CowTensorD<'a, T> = CowTensor<'a, T, IxDyn>;
 
-impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
+impl<S: DataBase, D: Dimension> TensorBase<S, D> {
     pub fn device(&self) -> &Device {
         &self.device
     }
@@ -268,22 +282,6 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     pub fn ndim(&self) -> usize {
         self.dim.ndim()
     }
-    pub fn into_tensor(self) -> Result<Tensor<T, D>> {
-        Ok(TensorBase {
-            device: self.device,
-            dim: self.dim,
-            strides: self.strides,
-            data: OwnedRepr(self.data.into_buffer()?),
-        })
-    }
-    pub fn into_arc_tensor(self) -> Result<ArcTensor<T, D>> {
-        Ok(TensorBase {
-            device: self.device,
-            dim: self.dim,
-            strides: self.strides,
-            data: ArcRepr(self.data.into_arc_buffer()?),
-        })
-    }
     pub fn into_dimensionality<D2>(self) -> Result<TensorBase<S, D2>>
     where
         D2: Dimension,
@@ -299,6 +297,44 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
             }
         }
         Err(anyhow!("Incompatible Shapes!"))
+    }
+    pub fn into_dyn(self) -> TensorBase<S, IxDyn> {
+        TensorBase {
+            device: self.device,
+            dim: self.dim.into_dyn(),
+            strides: self.strides.into_dyn(),
+            data: self.data,
+        }
+    }
+    pub(crate) fn into_raw_parts(self) -> (Device, D, D, S) {
+        (self.device, self.dim, self.strides, self.data)
+    }
+    pub(crate) unsafe fn from_raw_parts(device: Device, dim: D, strides: D, data: S) -> Self {
+        Self {
+            device,
+            dim,
+            strides,
+            data,
+        }
+    }
+}
+
+impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
+    pub fn into_tensor(self) -> Result<Tensor<T, D>> {
+        Ok(TensorBase {
+            device: self.device,
+            dim: self.dim,
+            strides: self.strides,
+            data: OwnedRepr(self.data.into_buffer()?),
+        })
+    }
+    pub fn into_arc_tensor(self) -> Result<ArcTensor<T, D>> {
+        Ok(TensorBase {
+            device: self.device,
+            dim: self.dim,
+            strides: self.strides,
+            data: ArcRepr(self.data.into_arc_buffer()?),
+        })
     }
 }
 
@@ -483,6 +519,12 @@ impl<T: Scalar, S: DataMut<Elem = T>, D: Dimension> TensorBase<S, D> {
     }
 }
 
+impl<T: Scalar, D: Dimension> ArcTensor<T, D> {
+    pub(crate) fn as_key(&self) -> usize {
+        Arc::as_ptr(&self.data.0) as usize
+    }
+}
+
 impl<T: Scalar, D: Dimension> From<Tensor<T, D>> for ArcTensor<T, D> {
     fn from(tensor: Tensor<T, D>) -> Self {
         Self {
@@ -516,7 +558,18 @@ impl<'a, T: Scalar, D: Dimension> From<TensorView<'a, T, D>> for CowTensor<'a, T
     }
 }
 
-impl<S: Data, D: Dimension> Debug for TensorBase<S, D> {
+impl<S: DataBase + Clone, D: Dimension> Clone for TensorBase<S, D> {
+    fn clone(&self) -> Self {
+        Self {
+            device: self.device.clone(),
+            dim: self.dim.clone(),
+            strides: self.strides.clone(),
+            data: self.data.clone(),
+        }
+    }
+}
+
+impl<S: DataBase, D: Dimension> Debug for TensorBase<S, D> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let mut builder = f.debug_struct("TensorBase");
         builder
