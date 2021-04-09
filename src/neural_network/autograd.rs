@@ -1,11 +1,12 @@
-use super::{Forward, Network, Optimizer};
+use super::{Forward, Optimizer};
 use crate::{
+    backend::Device,
     tensor::{
         float_tensor::{
             FloatArcTensor, FloatTensor, FloatTensorD, FloatTensorView, FloatTensorViewD,
-            FloatTensorViewMutD, FloatWeakBuffer, FloatWeakTensor, FloatWeakTensorD,
+            FloatTensorViewMutD, FloatType, FloatWeakTensor, FloatWeakTensorD,
         },
-        Dimension, IxDyn, TensorBase,
+        Dimension, IxDyn,
     },
     Result,
 };
@@ -22,6 +23,15 @@ use std::{
 pub struct Vertex(FloatWeakTensorD);
 
 impl Vertex {
+    fn device(&self) -> &Device {
+        &self.0.device()
+    }
+    fn raw_dim(&self) -> IxDyn {
+        self.0.raw_dim()
+    }
+    fn float_type(&self) -> FloatType {
+        self.0.float_type()
+    }
     fn as_key(&self) -> usize {
         self.0.vertex_key()
     }
@@ -72,7 +82,12 @@ impl Graph {
         let base = &mut *base;
         if let Some(edge) = base.variable_edges.last() {
             if let Some(ref mut output_grad) = base.variable_grads.get_mut(&edge.output) {
-                output_grad.replace(FloatTensorD::float_ones_like_weak(&edge.output.0)?);
+                let output = &edge.output;
+                output_grad.replace(FloatTensorD::float_ones(
+                    output.device(),
+                    output.float_type(),
+                    output.raw_dim(),
+                )?);
             }
         }
         // TODO: backwards order ensures correctness, but especially when device transfers are
@@ -87,9 +102,14 @@ impl Graph {
                     unsafe { transmute(input_grad) };
                 let input_grad = unsafe { &mut *input_grad.get() };
                 if input_grad.is_none() {
-                    input_grad.replace(FloatTensorD::float_zeros_like_weak(&edge.input.0)?);
+                    let input = &edge.input;
+                    input_grad.replace(FloatTensorD::float_zeros(
+                        input.device(),
+                        input.float_type(),
+                        input.raw_dim(),
+                    )?);
                 }
-                let mut input_grad = input_grad.as_mut().unwrap();
+                let input_grad = input_grad.as_mut().unwrap();
                 (edge.op)(input_grad.float_view_mut(), output_grad.float_view())?;
             }
         }
@@ -99,9 +119,14 @@ impl Graph {
             let output_grad = base.variable_grads.get(&edge.output);
             if let Some((parameter_grad, Some(output_grad))) = parameter_grad.zip(output_grad) {
                 if parameter_grad.is_none() {
-                    parameter_grad.replace(FloatTensorD::float_zeros_like_weak(&edge.input.0)?);
+                    let input = &edge.input;
+                    parameter_grad.replace(FloatTensorD::float_zeros(
+                        input.device(),
+                        input.float_type(),
+                        input.raw_dim(),
+                    )?);
                 }
-                let mut parameter_grad = parameter_grad.as_mut().unwrap();
+                let parameter_grad = parameter_grad.as_mut().unwrap();
                 (edge.op)(parameter_grad.float_view_mut(), output_grad.float_view())?;
             }
         }
@@ -203,9 +228,9 @@ impl<D: Dimension> Variable<D> {
     fn vertex(&self) -> Vertex {
         Vertex(FloatWeakTensor::from(&self.value).into_dyn())
     }
-    /// Convenience method for Network::forward
-    pub fn forward<N: Network>(self, network: &N) -> Result<VariableD> {
-        network.forward(self.into_dyn())
+    /// Convenience method for Forward::forward
+    pub fn forward<F: Forward>(self, f: F) -> Result<VariableD> {
+        f.forward(self.into_dyn())
     }
     /// Returns a VariableBuilder computed via the provided closure.\
     ///
@@ -247,9 +272,6 @@ pub struct VariableBuilder<D: Dimension> {
 }
 
 impl<D: Dimension> VariableBuilder<D> {
-    fn vertex(&self) -> Vertex {
-        Vertex(FloatWeakTensor::from(&self.value).into_dyn())
-    }
     pub fn backward_op<F>(&mut self, op: F)
     where
         F: Fn(FloatTensorViewMutD, FloatTensorViewD) -> Result<()> + 'static,

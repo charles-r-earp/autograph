@@ -826,6 +826,15 @@ impl<T> Buffer<T> {
     {
         Self::from_elem(device, T::zero(), len)
     }
+    /// Construct a buffer filled with ones\
+    ///
+    /// Err: Errors if the backend cannot perform the operation, potentially due to a disconnect or running out of memory.
+    pub fn ones(device: &Device, len: usize) -> Result<Self>
+    where
+        T: Scalar,
+    {
+        Self::from_elem(device, T::one(), len)
+    }
     /// Construct a buffer filled with elem\
     ///
     /// Err: Errors if the backend cannot perform the operation, potentially due to a disconnect or running out of memory.

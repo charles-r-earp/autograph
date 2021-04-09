@@ -38,7 +38,7 @@ pub trait Data: DataBase + Sized {
     fn as_buffer_slice(&self) -> BufferSlice<Self::Elem>;
 }
 
-pub trait DataOwned: Data {
+pub trait DataOwned: Data + Sized {
     #[doc(hidden)]
     fn from_buffer(buffer: Buffer<Self::Elem>) -> Self;
 }
@@ -306,17 +306,6 @@ impl<S: DataBase, D: Dimension> TensorBase<S, D> {
             data: self.data,
         }
     }
-    pub(crate) fn into_raw_parts(self) -> (Device, D, D, S) {
-        (self.device, self.dim, self.strides, self.data)
-    }
-    pub(crate) unsafe fn from_raw_parts(device: Device, dim: D, strides: D, data: S) -> Self {
-        Self {
-            device,
-            dim,
-            strides,
-            data,
-        }
-    }
 }
 
 impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
@@ -516,12 +505,6 @@ impl<T: Scalar, S: DataMut<Elem = T>, D: Dimension> TensorBase<S, D> {
         T: Scalar,
     {
         self.data.as_buffer_slice_mut().fill(x)
-    }
-}
-
-impl<T: Scalar, D: Dimension> ArcTensor<T, D> {
-    pub(crate) fn as_key(&self) -> usize {
-        Arc::as_ptr(&self.data.0) as usize
     }
 }
 

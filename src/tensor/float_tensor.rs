@@ -1,35 +1,43 @@
-use super::{DataBase, Dimension, IxDyn, Sealed, TensorBase};
+use super::{DataBase, Dimension, IxDyn, Sealed, ShapeBuilder, TensorBase};
 use crate::{
-    backend::{Buffer, BufferSlice, BufferSliceMut},
+    backend::{Buffer, BufferSlice, BufferSliceMut, Device},
     Result,
 };
 use half::bf16;
 use std::sync::{Arc, Weak};
 
+#[doc(hidden)]
+#[allow(clippy::upper_case_acronyms)]
+pub enum FloatType {
+    BF16,
+    F32,
+}
+
+#[allow(clippy::upper_case_acronyms)]
 pub enum FloatBuffer {
     BF16(Buffer<bf16>),
     F32(Buffer<f32>),
 }
 
 impl FloatBuffer {
-    fn zeros_like(buffer: &FloatBufferSlice) -> Result<Self> {
-        todo!()
+    fn zeros(device: &Device, float_type: FloatType, len: usize) -> Result<Self> {
+        match float_type {
+            FloatType::BF16 => Ok(Self::BF16(Buffer::zeros(device, len)?)),
+            FloatType::F32 => Ok(Self::F32(Buffer::zeros(device, len)?)),
+        }
     }
-    fn ones_like(buffer: &FloatBufferSlice) -> Result<Self> {
-        todo!()
+    fn ones(device: &Device, float_type: FloatType, len: usize) -> Result<Self> {
+        match float_type {
+            FloatType::BF16 => Ok(Self::BF16(Buffer::ones(device, len)?)),
+            FloatType::F32 => Ok(Self::F32(Buffer::ones(device, len)?)),
+        }
     }
-    fn zeros_like_weak(buffer: &FloatWeakBuffer) -> Result<Self> {
-        todo!()
-    }
-    fn ones_like_weak(buffer: &FloatWeakBuffer) -> Result<Self> {
-        todo!()
-    }
-    fn to_buffer(&self) -> Result<FloatBuffer> {
+    /*fn to_buffer(&self) -> Result<FloatBuffer> {
         match self {
             Self::BF16(x) => Ok(FloatBuffer::BF16(x.to_buffer()?)),
             Self::F32(x) => Ok(FloatBuffer::F32(x.to_buffer()?)),
         }
-    }
+    }*/
     fn as_float_buffer_slice(&self) -> FloatBufferSlice {
         match self {
             Self::BF16(x) => FloatBufferSlice::BF16(x.as_buffer_slice()),
@@ -42,8 +50,15 @@ impl FloatBuffer {
             Self::F32(x) => FloatBufferSliceMut::F32(x.as_buffer_slice_mut()),
         }
     }
+    fn float_type(&self) -> FloatType {
+        match self {
+            Self::BF16(_) => FloatType::BF16,
+            Self::F32(_) => FloatType::F32,
+        }
+    }
 }
 
+#[allow(clippy::upper_case_acronyms)]
 #[derive(Clone)]
 pub enum FloatArcBuffer {
     BF16(Arc<Buffer<bf16>>),
@@ -63,6 +78,12 @@ impl FloatArcBuffer {
             Self::F32(x) => FloatBufferSlice::F32(x.as_buffer_slice()),
         }
     }
+    fn float_type(&self) -> FloatType {
+        match self {
+            Self::BF16(_) => FloatType::BF16,
+            Self::F32(_) => FloatType::F32,
+        }
+    }
 }
 
 impl From<FloatBuffer> for FloatArcBuffer {
@@ -74,10 +95,20 @@ impl From<FloatBuffer> for FloatArcBuffer {
     }
 }
 
+#[allow(clippy::upper_case_acronyms)]
 #[derive(Clone)]
 pub enum FloatWeakBuffer {
     BF16(Weak<Buffer<bf16>>),
     F32(Weak<Buffer<f32>>),
+}
+
+impl FloatWeakBuffer {
+    fn float_type(&self) -> FloatType {
+        match self {
+            Self::BF16(_) => FloatType::BF16,
+            Self::F32(_) => FloatType::F32,
+        }
+    }
 }
 
 impl From<&FloatArcBuffer> for FloatWeakBuffer {
@@ -89,12 +120,19 @@ impl From<&FloatArcBuffer> for FloatWeakBuffer {
     }
 }
 
+#[allow(clippy::upper_case_acronyms)]
 pub enum FloatBufferSlice<'a> {
     BF16(BufferSlice<'a, bf16>),
     F32(BufferSlice<'a, f32>),
 }
 
 impl FloatBufferSlice<'_> {
+    fn float_type(&self) -> FloatType {
+        match self {
+            Self::BF16(_) => FloatType::BF16,
+            Self::F32(_) => FloatType::F32,
+        }
+    }
     fn to_buffer(&self) -> Result<FloatBuffer> {
         match self {
             Self::BF16(x) => Ok(FloatBuffer::BF16(x.to_buffer()?)),
@@ -109,12 +147,19 @@ impl FloatBufferSlice<'_> {
     }
 }
 
+#[allow(clippy::upper_case_acronyms)]
 pub enum FloatBufferSliceMut<'a> {
     BF16(BufferSliceMut<'a, bf16>),
     F32(BufferSliceMut<'a, f32>),
 }
 
 impl FloatBufferSliceMut<'_> {
+    fn float_type(&self) -> FloatType {
+        match self {
+            Self::BF16(_) => FloatType::BF16,
+            Self::F32(_) => FloatType::F32,
+        }
+    }
     fn to_buffer(&self) -> Result<FloatBuffer> {
         match self {
             Self::BF16(x) => Ok(FloatBuffer::BF16(x.to_buffer()?)),
@@ -135,7 +180,12 @@ impl FloatBufferSliceMut<'_> {
     }
 }
 
-pub trait FloatData: DataBase + Sized {
+pub trait FloatDataBase: DataBase {
+    #[doc(hidden)]
+    fn float_type(&self) -> FloatType;
+}
+
+pub trait FloatData: FloatDataBase + Sized {
     #[doc(hidden)]
     fn into_float_buffer(self) -> Result<FloatBuffer>;
     #[doc(hidden)]
@@ -164,6 +214,12 @@ pub type FloatTensorD = FloatTensor<IxDyn>;
 impl Sealed for FloatOwnedRepr {}
 
 impl DataBase for FloatOwnedRepr {}
+
+impl FloatDataBase for FloatOwnedRepr {
+    fn float_type(&self) -> FloatType {
+        self.0.float_type()
+    }
+}
 
 impl FloatData for FloatOwnedRepr {
     fn into_float_buffer(self) -> Result<FloatBuffer> {
@@ -199,9 +255,15 @@ impl Sealed for FloatArcRepr {}
 
 impl DataBase for FloatArcRepr {}
 
+impl FloatDataBase for FloatArcRepr {
+    fn float_type(&self) -> FloatType {
+        self.0.float_type()
+    }
+}
+
 impl FloatData for FloatArcRepr {
     fn into_float_buffer(self) -> Result<FloatBuffer> {
-        Ok(self.0.to_buffer()?)
+        self.0.to_buffer()
     }
     fn into_float_arc_buffer(self) -> Result<FloatArcBuffer> {
         Ok(self.0)
@@ -218,6 +280,12 @@ impl Sealed for FloatWeakRepr {}
 
 impl DataBase for FloatWeakRepr {}
 
+impl FloatDataBase for FloatWeakRepr {
+    fn float_type(&self) -> FloatType {
+        self.0.float_type()
+    }
+}
+
 pub type FloatWeakTensor<D> = TensorBase<FloatWeakRepr, D>;
 pub type FloatWeakTensorD = FloatWeakTensor<IxDyn>;
 
@@ -230,9 +298,15 @@ impl Sealed for FloatViewRepr<'_> {}
 
 impl DataBase for FloatViewRepr<'_> {}
 
+impl FloatDataBase for FloatViewRepr<'_> {
+    fn float_type(&self) -> FloatType {
+        self.0.float_type()
+    }
+}
+
 impl FloatData for FloatViewRepr<'_> {
     fn into_float_buffer(self) -> Result<FloatBuffer> {
-        Ok(self.0.to_buffer()?)
+        self.0.to_buffer()
     }
     fn as_float_buffer_slice(&self) -> FloatBufferSlice {
         self.0.as_float_buffer_slice()
@@ -248,9 +322,15 @@ impl Sealed for FloatViewMutRepr<'_> {}
 
 impl DataBase for FloatViewMutRepr<'_> {}
 
+impl FloatDataBase for FloatViewMutRepr<'_> {
+    fn float_type(&self) -> FloatType {
+        self.0.float_type()
+    }
+}
+
 impl FloatData for FloatViewMutRepr<'_> {
     fn into_float_buffer(self) -> Result<FloatBuffer> {
-        Ok(self.0.to_buffer()?)
+        self.0.to_buffer()
     }
     fn as_float_buffer_slice(&self) -> FloatBufferSlice {
         self.0.as_float_buffer_slice()
@@ -260,6 +340,12 @@ impl FloatData for FloatViewMutRepr<'_> {
 impl FloatDataMut for FloatViewMutRepr<'_> {
     fn as_float_buffer_slice_mut(&mut self) -> FloatBufferSliceMut {
         self.0.as_float_buffer_slice_mut()
+    }
+}
+
+impl<S: FloatDataBase, D: Dimension> TensorBase<S, D> {
+    pub(crate) fn float_type(&self) -> FloatType {
+        self.data.float_type()
     }
 }
 
@@ -291,38 +377,30 @@ impl<S: FloatData, D: Dimension> TensorBase<S, D> {
 }
 
 impl<S: FloatDataOwned, D: Dimension> TensorBase<S, D> {
-    pub(crate) fn float_zeros_like<S2: FloatData>(tensor: &TensorBase<S, D>) -> Result<Self> {
-        let view = tensor.float_view();
+    pub(crate) fn float_zeros<Sh>(device: &Device, float_type: FloatType, shape: Sh) -> Result<Self>
+    where
+        Sh: ShapeBuilder<Dim = D>,
+    {
+        let (dim, strides) = super::dim_strides_from_shape(shape.into_shape());
+        let data = S::from_float_buffer(FloatBuffer::zeros(device, float_type, dim.size())?);
         Ok(Self {
-            device: view.device,
-            dim: view.dim,
-            strides: view.strides,
-            data: S::from_float_buffer(FloatBuffer::zeros_like(&view.data.0)?),
+            device: device.clone(),
+            dim,
+            strides,
+            data,
         })
     }
-    pub(crate) fn float_ones_like<S2: FloatData>(tensor: &TensorBase<S, D>) -> Result<Self> {
-        let view = tensor.float_view();
+    pub(crate) fn float_ones<Sh>(device: &Device, float_type: FloatType, shape: Sh) -> Result<Self>
+    where
+        Sh: ShapeBuilder<Dim = D>,
+    {
+        let (dim, strides) = super::dim_strides_from_shape(shape.into_shape());
+        let data = S::from_float_buffer(FloatBuffer::ones(device, float_type, dim.size())?);
         Ok(Self {
-            device: view.device,
-            dim: view.dim,
-            strides: view.strides,
-            data: S::from_float_buffer(FloatBuffer::ones_like(&view.data.0)?),
-        })
-    }
-    pub(crate) fn float_zeros_like_weak(tensor: &FloatWeakTensor<D>) -> Result<Self> {
-        Ok(Self {
-            device: tensor.device.clone(),
-            dim: tensor.dim.clone(),
-            strides: tensor.strides.clone(),
-            data: S::from_float_buffer(FloatBuffer::zeros_like_weak(&tensor.data.0)?),
-        })
-    }
-    pub(crate) fn float_ones_like_weak(tensor: &FloatWeakTensor<D>) -> Result<Self> {
-        Ok(Self {
-            device: tensor.device.clone(),
-            dim: tensor.dim.clone(),
-            strides: tensor.strides.clone(),
-            data: S::from_float_buffer(FloatBuffer::ones_like_weak(&tensor.data.0)?),
+            device: device.clone(),
+            dim,
+            strides,
+            data,
         })
     }
 }
