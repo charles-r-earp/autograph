@@ -15,7 +15,6 @@ use std::{
     cell::UnsafeCell,
     collections::HashMap,
     hash::{Hash, Hasher},
-    mem::transmute,
     sync::{Arc, Weak},
 };
 
@@ -98,8 +97,9 @@ impl Graph {
             if let Some((input_grad, Some(output_grad))) = input_grad.zip(output_grad) {
                 // input and output vertices are prevented from being equal because the output arc
                 // is created internally
-                let input_grad: &UnsafeCell<Option<FloatTensorD>> =
-                    unsafe { transmute(input_grad) };
+                let input_grad = unsafe {
+                    &*(input_grad as *const _ as *const UnsafeCell<Option<FloatTensorD>>)
+                };
                 let input_grad = unsafe { &mut *input_grad.get() };
                 if input_grad.is_none() {
                     let input = &edge.input;
