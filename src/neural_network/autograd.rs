@@ -3,10 +3,10 @@ use crate::{
     backend::Device,
     tensor::{
         float_tensor::{
-            FloatArcTensor, FloatTensor, FloatTensorD, FloatTensorView, FloatTensorViewD,
-            FloatTensorViewMutD, FloatType, FloatWeakTensor, FloatWeakTensorD,
+            FloatArcTensor, FloatTensor, FloatTensorD, FloatTensorViewD, FloatTensorViewMutD,
+            FloatType, FloatWeakTensor, FloatWeakTensorD,
         },
-        Dimension, IxDyn,
+        ArcTensor, Dimension, Float, Ix0, Ix1, Ix2, IxDyn, Tensor, TensorView, TensorViewMut,
     },
     Result,
 };
@@ -14,6 +14,7 @@ use smol::lock::{Mutex, MutexGuardArc};
 use std::{
     cell::UnsafeCell,
     collections::HashMap,
+    convert::TryInto,
     hash::{Hash, Hasher},
     sync::{Arc, Weak},
 };
@@ -162,6 +163,14 @@ impl WeakGraph {
     }
 }
 
+impl From<&Graph> for WeakGraph {
+    fn from(graph: &Graph) -> Self {
+        WeakGraph {
+            base: Arc::downgrade(&graph.base),
+        }
+    }
+}
+
 #[doc(hidden)]
 pub struct GraphGuard {
     base: MutexGuardArc<GraphBase>,
@@ -180,6 +189,8 @@ pub struct Variable<D: Dimension> {
     training: bool,
 }
 
+pub type Variable0 = Variable<Ix0>;
+pub type Variable2 = Variable<Ix2>;
 pub type VariableD = Variable<IxDyn>;
 
 impl<D: Dimension> From<FloatTensor<D>> for Variable<D> {
@@ -225,8 +236,11 @@ impl<D: Dimension> Variable<D> {
             training: self.training,
         }
     }
-    fn vertex(&self) -> Vertex {
-        Vertex(FloatWeakTensor::from(&self.value).into_dyn())
+    pub fn value(&self) -> &FloatArcTensor<D> {
+        &self.value
+    }
+    pub fn into_value(self) -> FloatArcTensor<D> {
+        self.value
     }
     /// Convenience method for Forward::forward
     pub fn forward<F: Forward>(self, f: F) -> Result<VariableD> {
@@ -236,68 +250,92 @@ impl<D: Dimension> Variable<D> {
     ///
     /// The builder inherits the graph and training of the input variable can be used to apply\
     /// backward ops.
-    pub fn forward_op<D2, F>(&self, f: F) -> Result<VariableBuilder<D2>>
+    pub fn forward_op<T, T2, D2, F>(&self, f: F) -> Result<VariableBuilder<T, D, T2, D2>>
     where
+        T: Float,
+        T2: Float,
         D2: Dimension,
-        F: Fn(FloatTensorView<D>) -> Result<FloatTensor<D2>>,
+        F: Fn(TensorView<T, D>) -> Result<Tensor<T2, D2>>,
     {
-        let output = f(self.value.float_view())?;
+        let input_value: ArcTensor<T, D> = self.value.clone().try_into()?;
+        let output = f(input_value.view())?;
         Ok(VariableBuilder {
             graph: self.graph.upgrade(),
-            input_vertex: self.vertex(),
+            input_value,
             value: output.into(),
+            training: self.training,
+        })
+    }
+    pub fn into_dimensionality<D2>(self) -> Result<Variable<D2>>
+    where
+        D2: Dimension,
+    {
+        Ok(Variable {
+            graph: self.graph,
+            value: self.value.into_dimensionality()?,
             training: self.training,
         })
     }
 }
 
-impl<D: Dimension> From<VariableBuilder<D>> for Variable<D> {
-    fn from(builder: VariableBuilder<D>) -> Self {
+impl<T0: Float, D0: Dimension, T: Float, D: Dimension> From<VariableBuilder<T0, D0, T, D>>
+    for Variable<D>
+{
+    fn from(builder: VariableBuilder<T0, D0, T, D>) -> Self {
         Self {
             graph: builder
                 .graph
                 .as_ref()
                 .map_or(WeakGraph::default(), |g| g.downgrade()),
-            value: builder.value,
+            value: builder.value.into(),
             training: builder.training,
         }
     }
 }
 
-pub struct VariableBuilder<D: Dimension> {
+pub struct VariableBuilder<T0: Float, D0: Dimension, T: Float, D: Dimension> {
     graph: Option<GraphGuard>,
-    input_vertex: Vertex,
-    value: FloatArcTensor<D>,
+    input_value: ArcTensor<T0, D0>,
+    value: ArcTensor<T, D>,
     training: bool,
 }
 
-impl<D: Dimension> VariableBuilder<D> {
+impl<T0: Float, D0: Dimension, T: Float, D: Dimension> VariableBuilder<T0, D0, T, D> {
     pub fn backward_op<F>(&mut self, op: F)
     where
-        F: Fn(FloatTensorViewMutD, FloatTensorViewD) -> Result<()> + 'static,
+        F: Fn(TensorViewMut<T0, D0>, TensorView<T, D>) -> Result<()> + 'static,
     {
         if let Some(graph) = self.graph.as_mut() {
-            if graph.base.variable_grads.contains_key(&self.input_vertex) {
-                let vertex = Vertex(FloatWeakTensor::from(&self.value).into_dyn());
+            let input_vertex =
+                Vertex(FloatWeakTensor::from(&self.input_value.clone().into()).into_dyn());
+            if graph.base.variable_grads.contains_key(&input_vertex) {
+                let vertex = Vertex(FloatWeakTensor::from(&self.value.clone().into()).into_dyn());
                 // if input requires grad and backward_op is called, then the output requires grad
                 // note that vertex may already exist in the map
                 graph.base.variable_grads.insert(vertex.clone(), None);
+                let op = Box::new(move |dx: FloatTensorViewMutD, dy: FloatTensorViewD| {
+                    let dx = dx.into_dimensionality::<D0>()?.try_into()?;
+                    let dy = dy.into_dimensionality::<D>()?.try_into()?;
+                    op(dx, dy)
+                });
                 graph.base.variable_edges.push(Edge {
-                    input: self.input_vertex.clone(),
+                    input: input_vertex,
                     output: vertex,
-                    op: Box::new(op),
+                    op,
                 });
             } // no op if input does not have a gradient
         } // no op if no graph
     }
-    pub fn backward_parameter_op<D2, F>(&mut self, parameter: &Parameter<D2>, op: F)
+
+    pub fn backward_parameter_op<T2, D2, F>(&mut self, parameter: &Parameter<D2>, op: F)
     where
+        T2: Float,
         D2: Dimension,
-        F: Fn(FloatTensorViewMutD, FloatTensorViewD) -> Result<()> + 'static,
+        F: Fn(TensorViewMut<T2, D2>, TensorView<T, D>) -> Result<()> + 'static,
     {
         if self.training {
             if let Some(graph) = self.graph.as_mut() {
-                let vertex = Vertex(FloatWeakTensor::from(&self.value).into_dyn());
+                let vertex = Vertex(FloatWeakTensor::from(&self.value.clone().into()).into_dyn());
                 // if training and backward_op is called, then the output requires grad
                 // note that vertex may already exist in the map
                 graph.base.variable_grads.insert(vertex.clone(), None);
@@ -307,24 +345,52 @@ impl<D: Dimension> VariableBuilder<D> {
                     .base
                     .parameter_grads
                     .insert(parameter_vertex.clone(), None);
+                let op = Box::new(move |dx: FloatTensorViewMutD, dy: FloatTensorViewD| {
+                    let dx = dx.into_dimensionality::<D2>()?.try_into()?;
+                    let dy = dy.into_dimensionality()?.try_into()?;
+                    op(dx, dy)
+                });
                 graph.base.parameter_edges.push(Edge {
                     input: parameter_vertex,
                     output: vertex,
-                    op: Box::new(op),
+                    op,
                 });
             } // no op if no graph
         } // no op if not training
     }
 }
 
+#[derive(Clone)]
 pub struct Parameter<D: Dimension> {
     value: FloatArcTensor<D>,
 }
 
+pub type Parameter1 = Parameter<Ix1>;
+pub type Parameter2 = Parameter<Ix2>;
+pub type ParameterD = Parameter<IxDyn>;
+
 impl<D: Dimension> Parameter<D> {
+    pub fn value(&self) -> &FloatArcTensor<D> {
+        &self.value
+    }
+    pub fn value_mut(&mut self) -> &mut FloatArcTensor<D> {
+        &mut self.value
+    }
     pub fn vertex(&self) -> Vertex {
         Vertex(FloatWeakTensor::from(&self.value).into_dyn())
     }
+    pub fn into_dimensionality<D2>(self) -> Result<Parameter<D2>>
+    where
+        D2: Dimension,
+    {
+        Ok(Parameter {
+            value: self.value.into_dimensionality()?,
+        })
+    }
 }
 
-pub type ParameterD = Parameter<IxDyn>;
+impl<D: Dimension> From<FloatArcTensor<D>> for Parameter<D> {
+    fn from(tensor: FloatArcTensor<D>) -> Self {
+        Self { value: tensor }
+    }
+}

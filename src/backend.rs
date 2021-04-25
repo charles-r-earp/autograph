@@ -191,6 +191,14 @@ impl Scalar for f64 {
     }
 }
 
+pub trait Unsigned: Scalar {}
+
+impl Unsigned for u8 {}
+
+impl Unsigned for u16 {}
+
+impl Unsigned for u32 {}
+
 /// Marker trait for arithmetic types
 pub trait Num: Scalar {}
 

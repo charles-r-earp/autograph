@@ -1,4 +1,4 @@
-use super::{Num, Scalar, TensorView1, TensorView2, TensorViewMut2};
+use super::{Float, Num, Scalar, TensorView1, TensorView2, TensorViewMut2};
 use crate::util::type_eq;
 use crate::Result;
 use anyhow::ensure;
@@ -49,12 +49,23 @@ pub fn gemm<T: Num>(
     gemm_impl(alpha, a, b, None, PostOp::Identity, T::zero(), beta, c)
 }
 
+pub fn gemm_bias<T: Float>(
+    alpha: T,
+    a: &TensorView2<T>,
+    b: &TensorView2<T>,
+    beta: T,
+    bias: Option<&TensorView1<T>>,
+    c: &mut TensorViewMut2<T>,
+) -> Result<()> {
+    gemm_impl(alpha, a, b, bias, PostOp::Identity, T::zero(), beta, c)
+}
+
 #[allow(clippy::too_many_arguments, clippy::many_single_char_names)]
 fn gemm_impl<T: Num>(
     alpha: T,
     a: &TensorView2<T>,
     b: &TensorView2<T>,
-    bias: Option<TensorView1<T>>,
+    bias: Option<&TensorView1<T>>,
     post_op: PostOp,
     a0: T,
     beta: T,

@@ -1,4 +1,7 @@
-use super::{Data, Dimension, Num, Result, Scalar, Tensor, TensorBase, TensorView, TensorViewMut};
+use super::{
+    Data, Dimension, Ix1, Num, Result, Scalar, Tensor, Tensor2, TensorBase, TensorView,
+    TensorViewMut, Unsigned,
+};
 use crate::util::type_eq;
 
 impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
@@ -57,4 +60,11 @@ where
         .push_constants(bytemuck::cast_slice(&[n, alpha]))?
         .global_size([n, 1, 1])
         .enqueue()
+}
+
+impl<T: Unsigned, S: Data<Elem = T>> TensorBase<S, Ix1> {
+    #[allow(unused_variables)]
+    pub fn to_one_hot<T2: Num>(&self, nclasses: usize) -> Result<Tensor2<T2>> {
+        todo!()
+    }
 }

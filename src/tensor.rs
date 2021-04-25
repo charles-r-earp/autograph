@@ -1,6 +1,8 @@
-use crate::backend::{Buffer, BufferSlice, BufferSliceMut, Device};
-pub use crate::backend::{Float, Num, Scalar};
-use crate::Result;
+pub use crate::backend::{Float, Num, Scalar, Unsigned};
+use crate::{
+    backend::{Buffer, BufferSlice, BufferSliceMut, Device},
+    Result,
+};
 use anyhow::{anyhow, ensure};
 use ndarray::{Array, ArrayBase, CowArray, RawArrayView};
 pub use ndarray::{
@@ -8,9 +10,11 @@ pub use ndarray::{
     ShapeBuilder, StrideShape,
 };
 use smol::future::Future;
-use std::borrow::Cow;
-use std::fmt::{self, Debug};
-use std::sync::Arc;
+use std::{
+    borrow::Cow,
+    fmt::{self, Debug},
+    sync::Arc,
+};
 
 mod binary;
 mod convert;

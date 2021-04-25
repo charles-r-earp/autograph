@@ -1,10 +1,19 @@
-use super::{DataBase, Dimension, IxDyn, Sealed, ShapeBuilder, TensorBase};
+use super::{
+    ArcTensor, Axis, DataBase, Dimension, IxDyn, RemoveAxis, Sealed, ShapeBuilder, Tensor,
+    TensorBase, TensorView, TensorViewMut,
+};
 use crate::{
-    backend::{Buffer, BufferSlice, BufferSliceMut, Device},
+    backend::{Buffer, BufferSlice, BufferSliceMut, Device, Float, Num},
+    util::type_eq,
     Result,
 };
+use anyhow::bail;
 use half::bf16;
-use std::sync::{Arc, Weak};
+use std::{
+    convert::{TryFrom, TryInto},
+    mem::transmute,
+    sync::{Arc, Weak},
+};
 
 #[doc(hidden)]
 #[allow(clippy::upper_case_acronyms)]
@@ -58,6 +67,18 @@ impl FloatBuffer {
     }
 }
 
+impl<T: Float> From<Buffer<T>> for FloatBuffer {
+    fn from(buffer: Buffer<T>) -> Self {
+        if type_eq::<T, bf16>() {
+            Self::BF16(unsafe { transmute(buffer) })
+        } else if type_eq::<T, f32>() {
+            Self::F32(unsafe { transmute(buffer) })
+        } else {
+            unreachable!()
+        }
+    }
+}
+
 #[allow(clippy::upper_case_acronyms)]
 #[derive(Clone)]
 pub enum FloatArcBuffer {
@@ -91,6 +112,18 @@ impl From<FloatBuffer> for FloatArcBuffer {
         match buffer {
             FloatBuffer::BF16(x) => Self::BF16(Arc::new(x)),
             FloatBuffer::F32(x) => Self::F32(Arc::new(x)),
+        }
+    }
+}
+
+impl<T: Float> From<Arc<Buffer<T>>> for FloatArcBuffer {
+    fn from(buffer: Arc<Buffer<T>>) -> Self {
+        if type_eq::<T, bf16>() {
+            Self::BF16(unsafe { transmute(buffer) })
+        } else if type_eq::<T, f32>() {
+            Self::F32(unsafe { transmute(buffer) })
+        } else {
+            unreachable!()
         }
     }
 }
@@ -376,6 +409,12 @@ impl<S: FloatData, D: Dimension> TensorBase<S, D> {
     }
 }
 
+impl<D: Dimension> FloatArcTensor<D> {
+    pub fn float_make_mut(&mut self) -> Result<FloatTensorViewMut<D>> {
+        todo!()
+    }
+}
+
 impl<S: FloatDataOwned, D: Dimension> TensorBase<S, D> {
     pub(crate) fn float_zeros<Sh>(device: &Device, float_type: FloatType, shape: Sh) -> Result<Self>
     where
@@ -443,6 +482,196 @@ impl<D: Dimension> From<&FloatArcTensor<D>> for FloatWeakTensor<D> {
             dim: tensor.dim.clone(),
             strides: tensor.strides.clone(),
             data: FloatWeakRepr((&tensor.data.0).into()),
+        }
+    }
+}
+
+impl<T: Float, D: Dimension> From<Tensor<T, D>> for FloatTensor<D> {
+    fn from(tensor: Tensor<T, D>) -> Self {
+        Self {
+            device: tensor.device,
+            dim: tensor.dim,
+            strides: tensor.strides,
+            data: FloatOwnedRepr(tensor.data.0.into()),
+        }
+    }
+}
+
+impl<T: Float, D: Dimension> From<ArcTensor<T, D>> for FloatArcTensor<D> {
+    fn from(tensor: ArcTensor<T, D>) -> Self {
+        Self {
+            device: tensor.device,
+            dim: tensor.dim,
+            strides: tensor.strides,
+            data: FloatArcRepr(tensor.data.0.into()),
+        }
+    }
+}
+
+impl<T: Float, D: Dimension> TryFrom<FloatTensor<D>> for Tensor<T, D> {
+    type Error = anyhow::Error;
+    fn try_from(tensor: FloatTensor<D>) -> Result<Self> {
+        // The ugly transmute is required in order to have a bound on T: Float
+        let data = if type_eq::<T, bf16>() {
+            match tensor.data.0 {
+                FloatBuffer::BF16(x) => unsafe { transmute(super::OwnedRepr(x)) },
+                FloatBuffer::F32(_) => {
+                    bail!("Expected bf16 found f32!");
+                }
+            }
+        } else if type_eq::<T, f32>() {
+            match tensor.data.0 {
+                FloatBuffer::BF16(_) => {
+                    bail!("Expected f32 found bf16!");
+                }
+                FloatBuffer::F32(x) => unsafe { transmute(super::OwnedRepr(x)) },
+            }
+        } else {
+            unreachable!()
+        };
+        Ok(Self {
+            device: tensor.device,
+            dim: tensor.dim,
+            strides: tensor.strides,
+            data,
+        })
+    }
+}
+
+impl<'a, T: Float, D: Dimension> TryFrom<FloatTensorView<'a, D>> for TensorView<'a, T, D> {
+    type Error = anyhow::Error;
+    fn try_from(tensor: FloatTensorView<'a, D>) -> Result<Self> {
+        // The ugly transmute is required in order to have a bound on T: Float
+        let data = if type_eq::<T, bf16>() {
+            match tensor.data.0 {
+                FloatBufferSlice::BF16(x) => unsafe { transmute(super::ViewRepr(x)) },
+                FloatBufferSlice::F32(_) => {
+                    bail!("Expected bf16 found f32!");
+                }
+            }
+        } else if type_eq::<T, f32>() {
+            match tensor.data.0 {
+                FloatBufferSlice::BF16(_) => {
+                    bail!("Expected f32 found bf16!");
+                }
+                FloatBufferSlice::F32(x) => unsafe { transmute(super::ViewRepr(x)) },
+            }
+        } else {
+            unreachable!()
+        };
+        Ok(Self {
+            device: tensor.device,
+            dim: tensor.dim,
+            strides: tensor.strides,
+            data,
+        })
+    }
+}
+
+impl<'a, T: Float, D: Dimension> TryFrom<FloatTensorViewMut<'a, D>> for TensorViewMut<'a, T, D> {
+    type Error = anyhow::Error;
+    fn try_from(tensor: FloatTensorViewMut<'a, D>) -> Result<Self> {
+        // The ugly transmute is required in order to have a bound on T: Float
+        let data = if type_eq::<T, bf16>() {
+            match tensor.data.0 {
+                FloatBufferSliceMut::BF16(x) => unsafe { transmute(super::ViewMutRepr(x)) },
+                FloatBufferSliceMut::F32(_) => {
+                    bail!("Expected bf16 found f32!");
+                }
+            }
+        } else if type_eq::<T, f32>() {
+            match tensor.data.0 {
+                FloatBufferSliceMut::BF16(_) => {
+                    bail!("Expected f32 found bf16!");
+                }
+                FloatBufferSliceMut::F32(x) => unsafe { transmute(super::ViewMutRepr(x)) },
+            }
+        } else {
+            unreachable!()
+        };
+        Ok(Self {
+            device: tensor.device,
+            dim: tensor.dim,
+            strides: tensor.strides,
+            data,
+        })
+    }
+}
+
+impl<T: Float, D: Dimension> TryFrom<FloatArcTensor<D>> for ArcTensor<T, D> {
+    type Error = anyhow::Error;
+    fn try_from(tensor: FloatArcTensor<D>) -> Result<Self> {
+        // The ugly transmute is required in order to have a bound on T: Float
+        let data = if type_eq::<T, bf16>() {
+            match tensor.data.0 {
+                FloatArcBuffer::BF16(x) => unsafe { transmute(super::ArcRepr(x)) },
+                FloatArcBuffer::F32(_) => {
+                    bail!("Expected bf16 found f32!");
+                }
+            }
+        } else if type_eq::<T, f32>() {
+            match tensor.data.0 {
+                FloatArcBuffer::BF16(_) => {
+                    bail!("Expected f32 found bf16!");
+                }
+                FloatArcBuffer::F32(x) => unsafe { transmute(super::ArcRepr(x)) },
+            }
+        } else {
+            unreachable!()
+        };
+        Ok(Self {
+            device: tensor.device,
+            dim: tensor.dim,
+            strides: tensor.strides,
+            data,
+        })
+    }
+}
+
+pub trait FloatTensorExt: Sized {
+    type Dim: Dimension;
+    fn scale_into<T2: Num>(self, alpha: T2) -> Result<Tensor<T2, Self::Dim>>;
+    fn cast_into<T2: Num>(self) -> Result<Tensor<T2, Self::Dim>> {
+        self.scale_into(T2::one())
+    }
+    fn argmax(&self, axis: Axis) -> Result<Tensor<u32, <Self::Dim as Dimension>::Smaller>>
+    where
+        Self::Dim: RemoveAxis;
+}
+
+impl<S: FloatData, D: Dimension> FloatTensorExt for TensorBase<S, D> {
+    type Dim = D;
+    fn scale_into<T2: Num>(self, alpha: T2) -> Result<Tensor<T2, D>> {
+        match self.data.into_float_buffer()? {
+            FloatBuffer::BF16(buffer) => TensorBase {
+                device: self.device,
+                dim: self.dim,
+                strides: self.strides,
+                data: super::OwnedRepr(buffer),
+            }
+            .scale_into(alpha),
+            FloatBuffer::F32(buffer) => TensorBase {
+                device: self.device,
+                dim: self.dim,
+                strides: self.strides,
+                data: super::OwnedRepr(buffer),
+            }
+            .scale_into(alpha),
+        }
+    }
+    fn argmax(&self, axis: Axis) -> Result<Tensor<u32, <Self::Dim as Dimension>::Smaller>>
+    where
+        Self::Dim: RemoveAxis,
+    {
+        match self.float_type() {
+            FloatType::BF16 => {
+                let input: TensorView<bf16, Self::Dim> = self.float_view().try_into()?;
+                input.argmax(axis)
+            }
+            FloatType::F32 => {
+                let input: TensorView<f32, Self::Dim> = self.float_view().try_into()?;
+                input.argmax(axis)
+            }
         }
     }
 }
