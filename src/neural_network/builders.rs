@@ -1,10 +1,7 @@
 use super::{autograd::Parameter, Dense, Identity, Sgd};
 use crate::{
-    backend::{Device, FloatType},
-    tensor::{
-        float_tensor::{FloatTensor, FloatTensor2},
-        Tensor,
-    },
+    backend::Device,
+    tensor::{float_tensor::FloatTensor, Tensor},
     Result,
 };
 use anyhow::bail;

@@ -4,9 +4,8 @@ use crate::{
     tensor::{
         float_tensor::{
             FloatArcRepr, FloatArcTensor, FloatData, FloatDataMut, FloatTensor, FloatTensorD,
-            FloatTensorExt, FloatTensorView, FloatTensorViewD, FloatTensorViewMut,
-            FloatTensorViewMutD, FloatType, FloatViewMutRepr, FloatViewRepr, FloatWeakTensor,
-            FloatWeakTensorD,
+            FloatTensorView, FloatTensorViewD, FloatTensorViewMut, FloatTensorViewMutD, FloatType,
+            FloatViewMutRepr, FloatViewRepr,
         },
         ArcTensor, Data, Dimension, Float, Ix0, Ix1, Ix2, IxDyn, Tensor, TensorBase, TensorView,
         TensorViewMut,
@@ -15,11 +14,11 @@ use crate::{
 };
 use smol::lock::{Mutex, MutexGuardArc};
 use std::{
-    cell::UnsafeCell,
     collections::HashMap,
     convert::TryInto,
     fmt::{self, Debug},
     hash::{Hash, Hasher},
+    marker::PhantomData,
     sync::{Arc, Weak},
 };
 
@@ -159,7 +158,7 @@ impl GraphBase {
         for (input_index, (vertex, edges)) in self.variable_edges.into_iter().enumerate().rev() {
             let offset = input_index + 1;
             let (input_grads, output_grads) = variable_grads.split_at_mut(offset);
-            let mut input_grad = &mut input_grads[input_index];
+            let input_grad = &mut input_grads[input_index];
             if input_grad.is_none() {
                 let grad = FloatTensor::float_zeros(
                     vertex.device(),
@@ -168,7 +167,7 @@ impl GraphBase {
                 )?;
                 input_grad.replace(grad);
             }
-            let mut input_grad = input_grad.as_mut().unwrap();
+            let input_grad = input_grad.as_mut().unwrap();
             for edge in edges {
                 let output_grad = output_grads[edge.output - offset].as_ref().unwrap();
                 (edge.op)(input_grad.float_view_mut(), output_grad.float_view())?;
@@ -315,14 +314,13 @@ impl<D: Dimension> Variable<D> {
         D2: Dimension,
         F: Fn(TensorView<T, D>) -> Result<Tensor<T2, D2>>,
     {
-        let input_value: ArcTensor<T, D> = self.value.clone().try_into()?;
-        let output_value = f(input_value.view())?;
+        let output_value = f(self.value.float_view().try_into()?)?;
         Ok(VariableBuilder {
             input: self,
-            input_value,
             output_value: output_value.into(),
             variable_op: None,
             parameter_ops: Vec::new(),
+            _m: PhantomData::default(),
         })
     }
     pub fn into_dimensionality<D2>(self) -> Result<Variable<D2>>
@@ -340,10 +338,10 @@ impl<D: Dimension> Variable<D> {
 
 pub struct VariableBuilder<'a, T0: Float, D0: Dimension, T: Float, D: Dimension> {
     input: &'a Variable<D0>,
-    input_value: ArcTensor<T0, D0>,
     output_value: ArcTensor<T, D>,
     variable_op: Option<BackwardOp>,
     parameter_ops: Vec<(Vertex, BackwardOp)>,
+    _m: PhantomData<T0>,
 }
 
 impl<T0: Float, D0: Dimension, T: Float, D: Dimension> VariableBuilder<'_, T0, D0, T, D> {

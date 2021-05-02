@@ -1,7 +1,7 @@
 use crate::{
     learn::{Fit, Predict},
     tensor::{
-        float_tensor::{FloatTensor, FloatTensorD, FloatTensorExt, FloatTensorViewD, FloatType},
+        float_tensor::{FloatTensor, FloatTensorD, FloatTensorExt, FloatType},
         linalg::{gemm, gemm_bias},
         ArcTensor2, Axis, Data, Dimension, Float, Ix1, Ix2, Tensor, Tensor0, Tensor1, Tensor2,
         TensorBase, TensorView0, TensorView2, TensorViewD, TensorViewMut1, TensorViewMut2,
@@ -16,8 +16,8 @@ use std::{collections::HashMap, convert::TryInto};
 
 pub mod autograd;
 use autograd::{
-    Graph, Parameter, Parameter1, Parameter2, ParameterD, ParameterView1, ParameterView2,
-    ParameterViewMutD, Variable, Variable0, Variable2, VariableD, Vertex,
+    Graph, Parameter1, Parameter2, ParameterViewMutD, Variable, Variable0, Variable2, VariableD,
+    Vertex,
 };
 
 pub mod builders;
@@ -47,9 +47,6 @@ impl Default for Sgd {
 impl Sgd {
     pub fn builder() -> SgdBuilder {
         SgdBuilder::default()
-    }
-    fn init_velocities(&mut self, parameters: &[ParameterViewMutD]) {
-        todo!()
     }
 }
 
@@ -400,7 +397,7 @@ impl<
         for xt in train_iter {
             let (x, t) = xt?;
             num_samples += x.shape()[0];
-            let mut graph = Graph::default();
+            let graph = Graph::default();
             let x = Variable::from(FloatTensor::from(x.into_tensor()?).into_dyn())
                 .with_graph(&graph)
                 .with_training(true);

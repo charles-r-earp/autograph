@@ -13,7 +13,7 @@ use half::bf16;
 use std::{
     convert::{TryFrom, TryInto},
     mem::transmute,
-    sync::{Arc, Weak},
+    sync::Arc,
 };
 
 #[allow(clippy::upper_case_acronyms)]
@@ -129,31 +129,6 @@ impl<T: Float> From<Arc<Buffer<T>>> for FloatArcBuffer {
 }
 
 #[allow(clippy::upper_case_acronyms)]
-#[derive(Clone)]
-pub enum FloatWeakBuffer {
-    BF16(Weak<Buffer<bf16>>),
-    F32(Weak<Buffer<f32>>),
-}
-
-impl FloatWeakBuffer {
-    fn float_type(&self) -> FloatType {
-        match self {
-            Self::BF16(_) => FloatType::BF16,
-            Self::F32(_) => FloatType::F32,
-        }
-    }
-}
-
-impl From<&FloatArcBuffer> for FloatWeakBuffer {
-    fn from(buffer: &FloatArcBuffer) -> Self {
-        match buffer {
-            FloatArcBuffer::BF16(x) => Self::BF16(Arc::downgrade(x)),
-            FloatArcBuffer::F32(x) => Self::F32(Arc::downgrade(x)),
-        }
-    }
-}
-
-#[allow(clippy::upper_case_acronyms)]
 pub enum FloatBufferSlice<'a> {
     BF16(BufferSlice<'a, bf16>),
     F32(BufferSlice<'a, f32>),
@@ -225,12 +200,9 @@ impl<'a, T: Float> From<BufferSliceMut<'a, T>> for FloatBufferSliceMut<'a> {
     }
 }
 
-pub trait FloatDataBase: DataBase {
+pub trait FloatData: DataBase + Sized {
     #[doc(hidden)]
     fn float_type(&self) -> FloatType;
-}
-
-pub trait FloatData: FloatDataBase + Sized {
     #[doc(hidden)]
     fn into_float_buffer(self) -> Result<FloatBuffer>;
     #[doc(hidden)]
@@ -261,13 +233,10 @@ impl Sealed for FloatOwnedRepr {}
 
 impl DataBase for FloatOwnedRepr {}
 
-impl FloatDataBase for FloatOwnedRepr {
+impl FloatData for FloatOwnedRepr {
     fn float_type(&self) -> FloatType {
         self.0.float_type()
     }
-}
-
-impl FloatData for FloatOwnedRepr {
     fn into_float_buffer(self) -> Result<FloatBuffer> {
         Ok(self.0)
     }
@@ -301,13 +270,10 @@ impl Sealed for FloatArcRepr {}
 
 impl DataBase for FloatArcRepr {}
 
-impl FloatDataBase for FloatArcRepr {
+impl FloatData for FloatArcRepr {
     fn float_type(&self) -> FloatType {
         self.0.float_type()
     }
-}
-
-impl FloatData for FloatArcRepr {
     fn into_float_buffer(self) -> Result<FloatBuffer> {
         self.0.to_buffer()
     }
@@ -319,22 +285,6 @@ impl FloatData for FloatArcRepr {
     }
 }
 
-#[derive(Clone)]
-pub struct FloatWeakRepr(FloatWeakBuffer);
-
-impl Sealed for FloatWeakRepr {}
-
-impl DataBase for FloatWeakRepr {}
-
-impl FloatDataBase for FloatWeakRepr {
-    fn float_type(&self) -> FloatType {
-        self.0.float_type()
-    }
-}
-
-pub type FloatWeakTensor<D> = TensorBase<FloatWeakRepr, D>;
-pub type FloatWeakTensorD = FloatWeakTensor<IxDyn>;
-
 pub struct FloatViewRepr<'a>(FloatBufferSlice<'a>);
 
 pub type FloatTensorView<'a, D> = TensorBase<FloatViewRepr<'a>, D>;
@@ -344,13 +294,10 @@ impl Sealed for FloatViewRepr<'_> {}
 
 impl DataBase for FloatViewRepr<'_> {}
 
-impl FloatDataBase for FloatViewRepr<'_> {
+impl FloatData for FloatViewRepr<'_> {
     fn float_type(&self) -> FloatType {
         self.0.float_type()
     }
-}
-
-impl FloatData for FloatViewRepr<'_> {
     fn into_float_buffer(self) -> Result<FloatBuffer> {
         self.0.to_buffer()
     }
@@ -368,13 +315,10 @@ impl Sealed for FloatViewMutRepr<'_> {}
 
 impl DataBase for FloatViewMutRepr<'_> {}
 
-impl FloatDataBase for FloatViewMutRepr<'_> {
+impl FloatData for FloatViewMutRepr<'_> {
     fn float_type(&self) -> FloatType {
         self.0.float_type()
     }
-}
-
-impl FloatData for FloatViewMutRepr<'_> {
     fn into_float_buffer(self) -> Result<FloatBuffer> {
         self.0.to_buffer()
     }
@@ -389,13 +333,10 @@ impl FloatDataMut for FloatViewMutRepr<'_> {
     }
 }
 
-impl<S: FloatDataBase, D: Dimension> TensorBase<S, D> {
-    pub(crate) fn float_type(&self) -> FloatType {
+impl<S: FloatData, D: Dimension> TensorBase<S, D> {
+    pub fn float_type(&self) -> FloatType {
         self.data.float_type()
     }
-}
-
-impl<S: FloatData, D: Dimension> TensorBase<S, D> {
     pub fn into_float_tensor(self) -> Result<FloatTensor<D>> {
         Ok(TensorBase {
             device: self.device.clone(),
@@ -473,15 +414,6 @@ impl<S: FloatDataMut, D: Dimension> TensorBase<S, D> {
     }
 }
 
-impl<D: Dimension> FloatWeakTensor<D> {
-    pub(crate) fn vertex_key(&self) -> usize {
-        match &self.data.0 {
-            FloatWeakBuffer::BF16(x) => Weak::as_ptr(x) as usize,
-            FloatWeakBuffer::F32(x) => Weak::as_ptr(x) as usize,
-        }
-    }
-}
-
 impl<D: Dimension> From<FloatTensor<D>> for FloatArcTensor<D> {
     fn from(tensor: FloatTensor<D>) -> Self {
         Self {
@@ -489,17 +421,6 @@ impl<D: Dimension> From<FloatTensor<D>> for FloatArcTensor<D> {
             dim: tensor.dim,
             strides: tensor.strides,
             data: FloatArcRepr(tensor.data.0.into()),
-        }
-    }
-}
-
-impl<D: Dimension> From<&FloatArcTensor<D>> for FloatWeakTensor<D> {
-    fn from(tensor: &FloatArcTensor<D>) -> Self {
-        Self {
-            device: tensor.device.clone(),
-            dim: tensor.dim.clone(),
-            strides: tensor.strides.clone(),
-            data: FloatWeakRepr((&tensor.data.0).into()),
         }
     }
 }

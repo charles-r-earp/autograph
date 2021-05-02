@@ -10,7 +10,7 @@ use downloader::{progress::Reporter, Download, Downloader};
 use flate2::read::GzDecoder;
 use futures_util::future::{try_join, TryJoin};
 use http::StatusCode;
-use indicatif::{MultiProgress, ProgressBar};
+use indicatif::ProgressBar;
 use rand::prelude::SliceRandom;
 use smol::future::{ready, Ready};
 use std::{
@@ -18,10 +18,7 @@ use std::{
     future::Future,
     ops::{Bound, Range, RangeBounds},
     str::FromStr,
-    sync::{
-        atomic::{AtomicUsize, Ordering},
-        Arc,
-    },
+    sync::atomic::{AtomicUsize, Ordering},
     vec::IntoIter as VecIntoIter,
 };
 
@@ -162,7 +159,7 @@ struct ProgressBarWrapper {
 }
 
 impl Reporter for ProgressBarWrapper {
-    fn setup(&self, max_progess: Option<u64>, message: &str) {
+    fn setup(&self, max_progess: Option<u64>, _message: &str) {
         if let Some(max_progess) = max_progess {
             self.max_progress
                 .store(max_progess as usize, Ordering::SeqCst);
@@ -299,7 +296,7 @@ pub fn mnist() -> Result<(Array4<u8>, Array1<u8>)> {
             let magic = if image { 2_051 } else { 2_049 };
             let n = if train { 60_000 } else { 10_000 };
             let data_path = mnist_path.join(name).with_extension("data");
-            if let Some(data) = std::fs::read(&data_path).ok() {
+            if let Ok(data) = fs::read(&data_path) {
                 if image {
                     ensure!(data.len() == n * 28 * 28);
                     images.extend(data);
@@ -325,7 +322,7 @@ pub fn mnist() -> Result<(Array4<u8>, Array1<u8>)> {
                     ensure!(data.len() == n);
                     labels.extend(&data);
                 }
-                std::fs::write(data_path, data)?;
+                fs::write(data_path, data)?;
             }
         }
     }

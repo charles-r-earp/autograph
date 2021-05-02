@@ -313,16 +313,15 @@ impl<S: DataBase, D: Dimension> TensorBase<S, D> {
         E: IntoDimension,
     {
         let dim = shape.into_dimension();
-        if self.dim.size() == dim.size() {
-            if self.strides == self.dim.default_strides() {
-                let strides = dim.default_strides();
-                return Ok(TensorBase {
-                    device: self.device,
-                    dim,
-                    strides,
-                    data: self.data,
-                });
-            } // TODO potentially handle Fotran layout
+        // TODO potentially handle Fotran layout
+        if self.dim.size() == dim.size() && self.strides == self.dim.default_strides() {
+            let strides = dim.default_strides();
+            return Ok(TensorBase {
+                device: self.device,
+                dim,
+                strides,
+                data: self.data,
+            });
         }
         Err(anyhow!("Incompatible Shapes!"))
     }

@@ -1,11 +1,8 @@
-#[cfg(feature = "plotters")]
-use autograph::ndarray::{ArrayView1, ArrayView2};
 use autograph::{
     backend::Device,
     dataset::{mnist, Dataset},
     learn::{Fit, FitOptions, Predict},
     neural_network::{ClassificationTrainer, Dense, Sgd},
-    tensor::{Axis, Tensor},
     Result,
 };
 
