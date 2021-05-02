@@ -1,6 +1,10 @@
 
-#if defined U8
+#ifdef U8
     #define BUFFER_LOAD_U8(x, i) ((x[(i)/4] >> (8 * ((i)% 4))) & 0xF)
+#endif
+
+#ifdef U16
+    #define BUFFER_LOAD_U16(x, i) ((x[(i)/2] >> (16 * ((i)% 2))) & 0xFF)
 #endif
 
 #if defined BF16 || defined T2_BF16
@@ -24,6 +28,10 @@
         #define T uint
         #define T_BUFFER uint
         #define BUFFER_LOAD(x, i) BUFFER_LOAD_U8(x, i)
+    #elif defined U16
+        #define T uint
+        #define T_BUFFER uint
+        #define BUFFER_LOAD(x, i) BUFFER_LOAD_U16(x, i)
     #elif defined BF16
         #define T float
         #define T_BUFFER uint

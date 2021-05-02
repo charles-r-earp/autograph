@@ -3,6 +3,7 @@ use super::{
     TensorViewMut, Unsigned,
 };
 use crate::util::type_eq;
+use half::bf16;
 
 impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     /// Scales the tensor to a new Tensor\
@@ -63,8 +64,56 @@ where
 }
 
 impl<T: Unsigned, S: Data<Elem = T>> TensorBase<S, Ix1> {
-    #[allow(unused_variables)]
     pub fn to_one_hot<T2: Num>(&self, nclasses: usize) -> Result<Tensor2<T2>> {
-        todo!()
+        let device = self.device();
+        let src = if type_eq::<T, u8>() {
+            if type_eq::<T2, bf16>() {
+                include_shader!("glsl/one_hot_u8_bf16.spv")
+            } else if type_eq::<T2, u32>() {
+                include_shader!("glsl/one_hot_u8_u32.spv")
+            } else if type_eq::<T2, i32>() {
+                include_shader!("glsl/one_hot_u8_i32.spv")
+            } else if type_eq::<T2, f32>() {
+                include_shader!("glsl/one_hot_u8_f32.spv")
+            } else {
+                unreachable!()
+            }
+        } else if type_eq::<T, u16>() {
+            if type_eq::<T2, bf16>() {
+                include_shader!("glsl/one_hot_u16_bf16.spv")
+            } else if type_eq::<T2, u32>() {
+                include_shader!("glsl/one_hot_u16_u32.spv")
+            } else if type_eq::<T2, i32>() {
+                include_shader!("glsl/one_hot_u16_i32.spv")
+            } else if type_eq::<T2, f32>() {
+                include_shader!("glsl/one_hot_u16_f32.spv")
+            } else {
+                unreachable!()
+            }
+        } else if type_eq::<T, u32>() {
+            if type_eq::<T2, bf16>() {
+                include_shader!("glsl/one_hot_u32_bf16.spv")
+            } else if type_eq::<T2, u32>() {
+                include_shader!("glsl/one_hot_u32_u32.spv")
+            } else if type_eq::<T2, i32>() {
+                include_shader!("glsl/one_hot_u32_i32.spv")
+            } else if type_eq::<T2, f32>() {
+                include_shader!("glsl/one_hot_u32_f32.spv")
+            } else {
+                unreachable!()
+            }
+        } else {
+            unreachable!()
+        };
+        let n = self.dim();
+        let mut output = unsafe { Tensor::uninitialized(device, [n, nclasses])? };
+        device
+            .compute_pass(src, "main")?
+            .buffer_slice(self.as_unordered_buffer_slice())?
+            .buffer_slice_mut(output.as_unordered_buffer_slice_mut())?
+            .push_constants(bytemuck::cast_slice(&[n as u32, nclasses as u32]))?
+            .global_size([n as u32, 1, 1])
+            .enqueue()?;
+        Ok(output)
     }
 }

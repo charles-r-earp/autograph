@@ -1,7 +1,8 @@
 use super::{
-    ArcTensor, Axis, DataBase, Dimension, IxDyn, RemoveAxis, Sealed, ShapeBuilder, Tensor,
+    ArcTensor, Axis, DataBase, Dimension, Ix2, IxDyn, RemoveAxis, Sealed, ShapeBuilder, Tensor,
     TensorBase, TensorView, TensorViewMut,
 };
+pub use crate::backend::FloatType;
 use crate::{
     backend::{Buffer, BufferSlice, BufferSliceMut, Device, Float, Num},
     util::type_eq,
@@ -14,13 +15,6 @@ use std::{
     mem::transmute,
     sync::{Arc, Weak},
 };
-
-#[doc(hidden)]
-#[allow(clippy::upper_case_acronyms)]
-pub enum FloatType {
-    BF16,
-    F32,
-}
 
 #[allow(clippy::upper_case_acronyms)]
 pub enum FloatBuffer {
@@ -103,6 +97,12 @@ impl FloatArcBuffer {
         match self {
             Self::BF16(_) => FloatType::BF16,
             Self::F32(_) => FloatType::F32,
+        }
+    }
+    fn make_mut(&mut self) -> Result<FloatBufferSliceMut> {
+        match self {
+            Self::BF16(buffer) => Ok(Buffer::make_mut(buffer)?.into()),
+            Self::F32(buffer) => Ok(Buffer::make_mut(buffer)?.into()),
         }
     }
 }
@@ -213,6 +213,18 @@ impl FloatBufferSliceMut<'_> {
     }
 }
 
+impl<'a, T: Float> From<BufferSliceMut<'a, T>> for FloatBufferSliceMut<'a> {
+    fn from(buffer: BufferSliceMut<'a, T>) -> Self {
+        if type_eq::<T, bf16>() {
+            Self::BF16(unsafe { transmute(buffer) })
+        } else if type_eq::<T, f32>() {
+            Self::F32(unsafe { transmute(buffer) })
+        } else {
+            unreachable!()
+        }
+    }
+}
+
 pub trait FloatDataBase: DataBase {
     #[doc(hidden)]
     fn float_type(&self) -> FloatType;
@@ -242,6 +254,7 @@ pub trait FloatDataMut: FloatData {
 pub struct FloatOwnedRepr(FloatBuffer);
 
 pub type FloatTensor<D> = TensorBase<FloatOwnedRepr, D>;
+pub type FloatTensor2 = TensorBase<FloatOwnedRepr, Ix2>;
 pub type FloatTensorD = FloatTensor<IxDyn>;
 
 impl Sealed for FloatOwnedRepr {}
@@ -411,7 +424,12 @@ impl<S: FloatData, D: Dimension> TensorBase<S, D> {
 
 impl<D: Dimension> FloatArcTensor<D> {
     pub fn float_make_mut(&mut self) -> Result<FloatTensorViewMut<D>> {
-        todo!()
+        Ok(TensorBase {
+            device: self.device.clone(),
+            dim: self.dim.clone(),
+            strides: self.strides.clone(),
+            data: FloatViewMutRepr(self.data.0.make_mut()?),
+        })
     }
 }
 

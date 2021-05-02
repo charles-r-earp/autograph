@@ -12,6 +12,12 @@ static NUM_TYPES: &[(&'static str, &'static str)] = &[
     ("f32", "float"),
 ];
 
+static UNSIGNED_TYPES: &[(&'static str, &'static str)] = &[
+    ("u8", "uint"),
+    ("u16", "uint"),
+    ("u32", "uint"),
+];
+
 static FLOAT_TYPES: &[(&'static str, &'static str)] = &[
     ("bf16", "uint"),
     ("f32", "float"),
@@ -81,6 +87,9 @@ fn compile_glsl(
     name: &str,
     options: Option<&CompileOptions>,
 ) -> Result<()> {
+    // This is so that the preprocessed source will get dumped on failure.
+    let src_artifact = compiler.preprocess(src, name, "main", options)?;
+    eprintln!("{}", src_artifact.as_text());
     let artifact = compiler.compile_into_spirv(src, ShaderKind::Compute, name, "main", options)?;
     let glsl_path = PathBuf::from(env::var("AUTOGRAPH_DIR")?)
         .join("src")
@@ -90,6 +99,20 @@ fn compile_glsl(
     fs::create_dir_all(&glsl_path)?;
     let fpath = glsl_path.join(&name).with_extension("spv");
     fs::write(&fpath, artifact.as_binary_u8())?;
+    Ok(())
+}
+
+fn glsl_bias_backward(compiler: &mut Compiler) -> Result<()> {
+    let src = include_str!("src/glsl/bias_backward.comp");
+    for &(rust_ty, c_ty) in FLOAT_TYPES.iter() {
+        let mut options = glsl_options();
+        if rust_ty == "bf16" {
+            options.add_macro_definition("BF16", None);
+        } else {
+            options.add_macro_definition("T", Some(c_ty));
+        }
+        compile_glsl(compiler, src, &format!("bias_backward_{}", rust_ty), Some(&options))?;
+    }
     Ok(())
 }
 
@@ -227,6 +250,60 @@ fn glsl_cast(compiler: &mut Compiler) -> Result<()> {
     Ok(())
 }
 
+fn glsl_cross_entropy_loss(compiler: &mut Compiler) -> Result<()> {
+    let src = include_str!("src/glsl/cross_entropy_loss.comp");
+    for &(rust_ty, c_ty) in FLOAT_TYPES.iter() {
+        for &c in [64, 256, 1024].iter() {
+            let mut options = glsl_options();
+            if rust_ty == "bf16" {
+                options.add_macro_definition("BF16", None);
+            } else {
+                options.add_macro_definition("T", Some(c_ty));
+            }
+            options.add_macro_definition("C", Some(&c.to_string()));
+            compile_glsl(compiler, src, &format!("cross_entropy_loss_{}_{}", rust_ty, c), Some(&options))?;
+        }
+    }
+    Ok(())
+}
+
+fn glsl_cross_entropy_loss_backward(compiler: &mut Compiler) -> Result<()> {
+    let src = include_str!("src/glsl/cross_entropy_loss_backward.comp");
+    for &(rust_ty, c_ty) in FLOAT_TYPES.iter() {
+        let mut options = glsl_options();
+        if rust_ty == "bf16" {
+            options.add_macro_definition("BF16", None);
+        } else {
+            options.add_macro_definition("T", Some(c_ty));
+        }
+        compile_glsl(compiler, src, &format!("cross_entropy_loss_backward_{}", rust_ty), Some(&options))?;
+    }
+    Ok(())
+}
+
+fn glsl_one_hot(compiler: &mut Compiler) -> Result<()> {
+    let src = include_str!("src/glsl/one_hot.comp");
+    for &(rust_ty_1, c_ty_1) in UNSIGNED_TYPES.iter() {
+        for &(rust_ty_2, c_ty_2) in NUM_TYPES.iter() {
+            let mut options = glsl_options();
+            if rust_ty_1 == "u8" {
+                options.add_macro_definition("U8", None);
+            } else if rust_ty_1 == "u16" {
+                options.add_macro_definition("U16", None);
+            } else {
+                options.add_macro_definition("T", Some(c_ty_1));
+            }
+            if rust_ty_2 == "bf16" {
+                options.add_macro_definition("T2_BF16", None);
+            } else {
+                options.add_macro_definition("T2", Some(c_ty_2));
+            }
+            compile_glsl(compiler, src, &format!("one_hot_{}_{}", rust_ty_1, rust_ty_2), Some(&options))?;
+        }
+    }
+    Ok(())
+}
+
 fn glsl_reduce(compiler: &mut Compiler) -> Result<()> {
     let src = include_str!("src/glsl/reduce_final.comp");
     for op in ["sum", "mean", "min", "max", "argmin", "argmax"].iter() {
@@ -305,12 +382,18 @@ fn glsl_kmeans(compiler: &mut Compiler) -> Result<()> {
     Ok(())
 }
 
+
+
 fn main() -> Result<()> {
     let mut compiler = Compiler::new().unwrap();
+    glsl_bias_backward(&mut compiler)?;
     glsl_fill(&mut compiler)?;
     glsl_gemm(&mut compiler)?;
     glsl_binary(&mut compiler)?;
     glsl_cast(&mut compiler)?;
+    glsl_cross_entropy_loss(&mut compiler)?;
+    glsl_cross_entropy_loss_backward(&mut compiler)?;
+    glsl_one_hot(&mut compiler)?;
     glsl_reduce(&mut compiler)?;
     glsl_index_select(&mut compiler)?;
     glsl_kmeans(&mut compiler)?;

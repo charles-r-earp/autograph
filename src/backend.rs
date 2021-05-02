@@ -210,11 +210,28 @@ impl Num for i32 {}
 
 impl Num for f32 {}
 
-pub trait Float: Num {}
+pub trait Float: Num {
+    fn float_type() -> FloatType;
+}
 
-impl Float for bf16 {}
+impl Float for bf16 {
+    fn float_type() -> FloatType {
+        FloatType::BF16
+    }
+}
 
-impl Float for f32 {}
+impl Float for f32 {
+    fn float_type() -> FloatType {
+        FloatType::F32
+    }
+}
+
+#[allow(clippy::upper_case_acronyms)]
+#[derive(Clone, Copy, Debug)]
+pub enum FloatType {
+    BF16,
+    F32,
+}
 
 #[doc(hidden)]
 #[proxy_enum::proxy(DynDevice)]
@@ -788,16 +805,13 @@ pub type Buffer<T> = BufferBase<BufferRepr<T>>;
 pub type BufferSlice<'a, T> = BufferBase<BufferSliceRepr<&'a T>>;
 pub type BufferSliceMut<'a, T> = BufferBase<BufferSliceRepr<&'a mut T>>;
 
-impl<T> Buffer<T> {
+impl<T: Scalar> Buffer<T> {
     /// Constructs the Buffer from a Cow\
     ///
     /// Note both Vec<T> and \[T] impl Into<Cow<\[T]>>.\
     ///
     /// Err: Errors if the backend cannot perform the operation, potentially due to a disconnect or running out of memory.
-    pub fn from_cow(device: &Device, cow: Cow<[T]>) -> Result<Self>
-    where
-        T: Scalar,
-    {
+    pub fn from_cow(device: &Device, cow: Cow<[T]>) -> Result<Self> {
         let len = cow.len();
         let id = device.create_buffer_init(cow)?;
         Ok(Self {
@@ -828,31 +842,30 @@ impl<T> Buffer<T> {
     /// Construct a buffer filled with zeros\
     ///
     /// Err: Errors if the backend cannot perform the operation, potentially due to a disconnect or running out of memory.
-    pub fn zeros(device: &Device, len: usize) -> Result<Self>
-    where
-        T: Scalar,
-    {
+    pub fn zeros(device: &Device, len: usize) -> Result<Self> {
         Self::from_elem(device, T::zero(), len)
     }
     /// Construct a buffer filled with ones\
     ///
     /// Err: Errors if the backend cannot perform the operation, potentially due to a disconnect or running out of memory.
-    pub fn ones(device: &Device, len: usize) -> Result<Self>
-    where
-        T: Scalar,
-    {
+    pub fn ones(device: &Device, len: usize) -> Result<Self> {
         Self::from_elem(device, T::one(), len)
     }
     /// Construct a buffer filled with elem\
     ///
     /// Err: Errors if the backend cannot perform the operation, potentially due to a disconnect or running out of memory.
-    pub fn from_elem(device: &Device, elem: T, len: usize) -> Result<Self>
-    where
-        T: Scalar,
-    {
+    pub fn from_elem(device: &Device, elem: T, len: usize) -> Result<Self> {
         let mut buffer = unsafe { Self::uninitialized(device, len)? };
         buffer.fill(elem)?;
         Ok(buffer)
+    }
+    pub fn make_mut(buffer: &mut Arc<Self>) -> Result<BufferSliceMut<T>> {
+        // TODO: eliminate extra call to get_mut
+        // this is needed otherwise the borrow checker complains
+        if Arc::get_mut(buffer).is_none() {
+            *buffer = Arc::new(buffer.to_buffer()?);
+        }
+        Ok(Arc::get_mut(buffer).unwrap().as_buffer_slice_mut())
     }
 }
 

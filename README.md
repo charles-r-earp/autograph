@@ -18,30 +18,38 @@ Machine Learning Library for Rust
   - Portable accelerated compute
   - Run SPIR-V shaders on GPU's that support Vulkan / Metal / DX12
   - Interop with ndarray, Tensor emulates Array
-  - Lightweight Async / Non Blocking API 
+  - Lightweight Async / Non Blocking API
 
-Currently using GLSL as a shader language. When rust-gpu gains enough compute shader support, it will be possible to write portable GPU code in Rust! 
+Currently using GLSL as a shader language. When rust-gpu gains enough compute shader support, it will be possible to write portable GPU code in Rust!
 
 # Platforms
 
-## Linux / Unix 
+## Linux / Unix
 Supports GPU's with Vulkan. Tested on Ubuntu 18.04 AMD RX 580 / NV GTX 1060
 
 ## MacOs / iOS
-Supports GPU's with Metal. Planned support for Vulkan. GPU execution untested. 
+Supports GPU's with Metal. Planned support for Vulkan. GPU execution untested.
 
-## Windows 
-Supports GPU's with DX12. Planned support for Vulkan. Tested on Windows 10, AMD RX 580. 
+## Windows
+Supports GPU's with DX12. Planned support for Vulkan. Tested on Windows 10, AMD RX 580.
 
-Note: Run the windows tests with `cargo test -- --num-threads 1` to avoid creating too many instances of the gpu on too many threads. Shared access across threads is safe, but creating a Device for each of several processes may fail. 
+Note: Run the windows tests with `cargo test -- --num-threads 1` to avoid creating too many instances of the gpu on too many threads. Shared access across threads is safe, but creating a Device for each of several processes may fail.
 
 # Datasets
   - Iris https://gist.github.com/curran/a08a1080b88344b0c8a7
+  - MNIST http://yann.lecun.com/exdb/mnist/
 
 # KMeans
 See [example](https://github.com/charles-r-earp/autograph/tree/main/examples/cluster/kmeans/iris).
 
 # Neural Networks
-Coming soon!
+See [example](https://github.com/charles-r-earp/autograph/tree/main/examples/neural_network/mnist).
 
-  
+## Optimizers
+    - Sgd
+
+## Layers
+    - Dense
+
+## Loss Functions
+    - cross_entropy_loss

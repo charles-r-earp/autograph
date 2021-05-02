@@ -125,7 +125,9 @@ fn gemm_impl<T: Num>(
     let (k2, n) = b.dim();
     let (m2, n2) = c.dim();
 
-    ensure!(m == m2 && k == k2 && n == n2);
+    ensure!(m == m2, "a_rows != c_rows, {} != {}", m, m2);
+    ensure!(k == k2, "a_cols != b_rows, {} != {}", k, k2);
+    ensure!(n == n2, "b_cols != c_rows, {} != {}", n, n2);
 
     let m = m as u32;
     let k = k as u32;

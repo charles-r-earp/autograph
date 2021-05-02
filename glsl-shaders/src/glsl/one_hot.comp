@@ -1,0 +1,30 @@
+#version 450
+
+#include "buffer_macros.comp"
+
+layout(local_size_x=64) in;
+
+readonly buffer X {
+    T_BUFFER x[];
+};
+
+restrict buffer Y {
+    T2_BUFFER y[];
+};
+
+layout(push_constant) uniform PushConsts {
+    uint n;
+    uint nclasses;
+};
+
+void main() {
+    uint global_x = gl_GlobalInvocationID.x;
+    uint index;
+    if (global_x < n) {
+        index = BUFFER_LOAD(x, global_x);
+        // TODO: unroll?
+        for (uint i = 0; i < nclasses; ++i) {
+            BUFFER_2_STORE(y, global_x * nclasses + i, T2(i == index));
+        }
+    }
+}

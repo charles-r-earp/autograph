@@ -5,9 +5,12 @@ mod shaders {
     use super::Result;
 
     static GLSL_SHADERS: &[&'static str] = &[
+        "bias_backward",
         "binary",
-        "cast",
         "buffer_macros",
+        "cast",
+        "cross_entropy_loss",
+        "cross_entropy_loss_backward",
         "fill_u32",
         "fill_u64",
         "gemm",
@@ -15,6 +18,7 @@ mod shaders {
         "kmeans_distance",
         "kmeans_accumulate_next_centroids",
         "kmeans_update_centroids",
+        "one_hot",
         "reduce_final",
     ];
 
@@ -57,6 +61,5 @@ mod shaders {
 fn main() -> Result<()> {
     #[cfg(feature = "compile-shaders")]
     shaders::compile_shaders()?;
-
     Ok(())
 }

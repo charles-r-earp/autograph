@@ -4,7 +4,7 @@ use crate::{
     tensor::{Tensor0, Tensor1, Tensor2},
     Result,
 };
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub struct FitOptions {
     test_ratio: f32,
@@ -58,7 +58,8 @@ impl FitOptions {
 #[derive(Clone, Copy, Debug)]
 pub struct FitStats {
     epoch: usize, // epoch starts at 1 not 0
-    duration: Duration,
+    start: Instant,
+    elapsed: Duration,
     train_loss: f32,
     train_count: usize,
     train_correct: Option<usize>,
@@ -72,7 +73,8 @@ impl Default for FitStats {
     fn default() -> Self {
         Self {
             epoch: 1,
-            duration: Duration::default(),
+            start: Instant::now(),
+            elapsed: Duration::default(),
             train_loss: 0.,
             train_count: 0,
             train_correct: None,
@@ -93,6 +95,15 @@ impl FitStats {
         self.test_loss = 0.;
         self.test_count = 0;
         self.test_correct = None;
+    }
+    pub fn get_epoch(&self) -> usize {
+        self.epoch
+    }
+    pub fn get_elapsed(&self) -> Duration {
+        self.elapsed + self.start.elapsed()
+    }
+    pub fn get_train_loss(&self) -> f32 {
+        self.train_loss
     }
 }
 

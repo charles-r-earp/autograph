@@ -1,19 +1,27 @@
 use crate::{
     backend::Device,
-    ndarray::{Array, Array1, Array2, ArrayBase, Data as ArrayData, RawArrayView},
+    ndarray::{Array, Array1, Array2, Array4, ArrayBase, Data as ArrayData, RawArrayView},
     tensor::{Axis, Dimension, Scalar, Tensor},
     Result,
 };
 use anyhow::{anyhow, bail, ensure};
-use downloader::{Download, Downloader};
+use byteorder::{BigEndian, ReadBytesExt};
+use downloader::{progress::Reporter, Download, Downloader};
+use flate2::read::GzDecoder;
 use futures_util::future::{try_join, TryJoin};
 use http::StatusCode;
+use indicatif::{MultiProgress, ProgressBar};
 use rand::prelude::SliceRandom;
 use smol::future::{ready, Ready};
 use std::{
+    fs::{self, File},
     future::Future,
     ops::{Bound, Range, RangeBounds},
     str::FromStr,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
     vec::IntoIter as VecIntoIter,
 };
 
@@ -148,6 +156,34 @@ impl<A: Dataset, B: Dataset> Dataset for (A, B) {
     }
 }
 
+struct ProgressBarWrapper {
+    bar: ProgressBar,
+    max_progress: AtomicUsize,
+}
+
+impl Reporter for ProgressBarWrapper {
+    fn setup(&self, max_progess: Option<u64>, message: &str) {
+        if let Some(max_progess) = max_progess {
+            self.max_progress
+                .store(max_progess as usize, Ordering::SeqCst);
+        }
+    }
+
+    fn progress(&self, current: u64) {
+        let max_progess = self.max_progress.load(Ordering::SeqCst) as u64;
+        if max_progess > 0 {
+            let pos = current * self.bar.length() / max_progess;
+            self.bar.set_position(pos);
+        }
+    }
+
+    fn set_message(&self, _: &str) {}
+
+    fn done(&self) {
+        self.bar.finish()
+    }
+}
+
 pub fn iris() -> Result<(Array2<f32>, Array1<u32>)> {
     let dir_path = dirs::download_dir().unwrap_or_else(std::env::temp_dir);
     let data_path = dir_path.join("iris").with_extension("data");
@@ -198,6 +234,106 @@ pub fn iris() -> Result<(Array2<f32>, Array1<u32>)> {
     Ok((data, labels))
 }
 
+pub fn mnist() -> Result<(Array4<u8>, Array1<u8>)> {
+    // TODO: Need to show progress to user because downloading will take awhile
+    // though it does put it in downloads so you can just look at that, or download manually.
+    use std::io::Read;
+    let dir_path = dirs::download_dir().unwrap_or_else(std::env::temp_dir);
+    let mnist_path = dir_path.join("mnist");
+    if !mnist_path.exists() {
+        std::fs::create_dir(&mnist_path)?;
+    }
+    let names = &[
+        "train-images-idx3-ubyte",
+        "train-labels-idx1-ubyte",
+        "t10k-images-idx3-ubyte",
+        "t10k-labels-idx1-ubyte",
+    ];
+    {
+        // download
+        let names: Vec<_> = names
+            .iter()
+            .filter(|name| !mnist_path.join(name).with_extension("gz").exists())
+            .collect();
+        if !names.is_empty() {
+            let downloads: Vec<_> = names
+                .iter()
+                .map(|name| {
+                    let path = mnist_path.join(name).with_extension("gz");
+                    let url = format!("http://yann.lecun.com/exdb/mnist/{}.gz", name);
+                    Download::new(&url).file_name(&path)
+                })
+                .collect();
+            let mut downloader = Downloader::builder()
+                .download_folder(&mnist_path)
+                .retries(10)
+                .build()?;
+            let summaries = downloader.download(&downloads)?;
+            for summary in summaries {
+                match summary {
+                    Ok(_) => (),
+                    Err(downloader::Error::Download(summary)) => {
+                        if let Some((_, status)) = summary.status.last() {
+                            StatusCode::from_u16(*status)?;
+                        }
+                    }
+                    _ => {
+                        summary?;
+                    }
+                }
+            }
+        }
+    }
+    let mut images = Vec::new();
+    let mut labels = Vec::new();
+    {
+        // unzip
+        for &name in names.iter() {
+            let (train, image) = match name {
+                "train-images-idx3-ubyte" => (true, true),
+                "train-labels-idx1-ubyte" => (true, false),
+                "t10k-images-idx3-ubyte" => (false, true),
+                "t10k-labels-idx1-ubyte" => (false, false),
+                _ => unreachable!(),
+            };
+            let magic = if image { 2_051 } else { 2_049 };
+            let n = if train { 60_000 } else { 10_000 };
+            let data_path = mnist_path.join(name).with_extension("data");
+            if let Some(data) = std::fs::read(&data_path).ok() {
+                if image {
+                    ensure!(data.len() == n * 28 * 28);
+                    images.extend(data);
+                } else {
+                    ensure!(data.len() == n);
+                    labels.extend(data);
+                }
+            } else {
+                let gz_path = mnist_path.join(name).with_extension("gz");
+                let mut data = Vec::new();
+                let mut decoder = GzDecoder::new(File::open(&gz_path)?);
+                ensure!(decoder.read_i32::<BigEndian>().unwrap() == magic);
+                ensure!(decoder.read_i32::<BigEndian>().unwrap() == n as i32);
+                if image {
+                    ensure!(decoder.read_i32::<BigEndian>().unwrap() == 28);
+                    ensure!(decoder.read_i32::<BigEndian>().unwrap() == 28);
+                }
+                decoder.read_to_end(&mut data)?;
+                if image {
+                    ensure!(data.len() == n * 28 * 28);
+                    images.extend(&data);
+                } else {
+                    ensure!(data.len() == n);
+                    labels.extend(&data);
+                }
+                std::fs::write(data_path, data)?;
+            }
+        }
+    }
+    let images = Array::from_shape_vec([70_000, 1, 28, 28], images)?;
+    let labels = Array::from_shape_vec([70_000], labels)?;
+    Ok((images, labels))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -244,5 +380,12 @@ mod tests {
             }
             Ok(())
         })
+    }
+
+    #[ignore]
+    #[test]
+    fn mnist() -> Result<()> {
+        super::mnist()?;
+        Ok(())
     }
 }

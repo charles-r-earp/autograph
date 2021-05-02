@@ -1,0 +1,36 @@
+#version 450
+
+#include "buffer_macros.comp"
+
+layout(local_size_x=64) in;
+
+buffer DX {
+    T_BUFFER[] dx;
+};
+
+readonly buffer DY {
+    T_BUFFER[] dy;
+};
+
+layout(push_constant) uniform PushConsts {
+    uint n;
+    uint c;
+};
+
+void main() {
+    uint tid = gl_GlobalInvocationID.x;
+    T acc;
+    if (tid < c) {
+        acc = BUFFER_LOAD(dx, tid);
+
+        for(int i = 0; i < n; ++i) {
+            acc += BUFFER_LOAD(dy, i * c + tid);
+        }
+
+        #ifdef BF16
+            BUFFER_ATOMIC_STORE(dx, tid, acc);
+        #else
+            BUFFER_STORE(dx, tid, acc);
+        #endif
+    }
+}

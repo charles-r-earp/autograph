@@ -300,6 +300,30 @@ impl<S: DataBase, D: Dimension> TensorBase<S, D> {
                 });
             }
         }
+        Err(anyhow!(
+            "Incompatible Shapes! {:?} {:?} => {:?}",
+            self.shape(),
+            self.strides(),
+            D2::NDIM
+        ))
+    }
+    // panics if self is not contiguous
+    pub fn into_shape<E>(self, shape: E) -> Result<TensorBase<S, E::Dim>>
+    where
+        E: IntoDimension,
+    {
+        let dim = shape.into_dimension();
+        if self.dim.size() == dim.size() {
+            if self.strides == self.dim.default_strides() {
+                let strides = dim.default_strides();
+                return Ok(TensorBase {
+                    device: self.device,
+                    dim,
+                    strides,
+                    data: self.data,
+                });
+            } // TODO potentially handle Fotran layout
+        }
         Err(anyhow!("Incompatible Shapes!"))
     }
     pub fn into_dyn(self) -> TensorBase<S, IxDyn> {
@@ -351,6 +375,12 @@ impl<T: Scalar, S: DataOwned<Elem = T>, D: Dimension> TensorBase<S, D> {
             strides,
             data,
         })
+    }
+    pub fn from_shape_vec<Sh>(device: &Device, shape: Sh, vec: Vec<T>) -> Result<Self>
+    where
+        Sh: Into<StrideShape<D>>,
+    {
+        Self::from_shape_cow(device, shape, vec)
     }
     /// Creates a new Tensor with the given shape\
     ///

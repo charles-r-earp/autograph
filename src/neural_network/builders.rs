@@ -1,10 +1,14 @@
 use super::{autograd::Parameter, Dense, Identity, Sgd};
 use crate::{
-    backend::Device,
-    tensor::{float_tensor::FloatArcTensor, ArcTensor},
+    backend::{Device, FloatType},
+    tensor::{
+        float_tensor::{FloatTensor, FloatTensor2},
+        Tensor,
+    },
     Result,
 };
 use anyhow::bail;
+use rand_distr::{Distribution, Normal};
 
 pub struct SgdBuilder {
     learning_rate: f32,
@@ -89,8 +93,7 @@ impl<A> DenseBuilder<A> {
     }
     pub fn build(mut self) -> Result<Dense<A>> {
         if self.weight_data.len() != self.outputs * self.inputs {
-            // TODO: Init (probably he normal) via rand
-            self.weight_data = vec![0.; self.outputs * self.inputs];
+            self.weight_data = he_normal((self.outputs, self.inputs));
         }
         if let Some(bias_data) = self.bias_data.as_mut() {
             if bias_data.len() != self.outputs {
@@ -104,11 +107,11 @@ impl<A> DenseBuilder<A> {
             bail!("DenseBuilder requires device!");
         };
         let weight =
-            ArcTensor::from_shape_cow(&device, [self.outputs, self.inputs], self.weight_data)?;
-        let weight = Parameter::from(FloatArcTensor::from(weight.into_dyn()));
+            Tensor::from_shape_cow(&device, [self.outputs, self.inputs], self.weight_data)?;
+        let weight = Parameter::from(FloatTensor::from(weight));
         let bias = if let Some(bias_data) = self.bias_data {
-            let bias = ArcTensor::from_shape_cow(&device, self.outputs, bias_data)?;
-            Some(Parameter::from(FloatArcTensor::from(bias.into_dyn())))
+            let bias = Tensor::from_shape_cow(&device, self.outputs, bias_data)?;
+            Some(Parameter::from(FloatTensor::from(bias)))
         } else {
             None
         };
@@ -120,4 +123,13 @@ impl<A> DenseBuilder<A> {
             activation,
         })
     }
+}
+
+fn he_normal((outputs, inputs): (usize, usize)) -> Vec<f32> {
+    let std_dev = f32::sqrt(2. / inputs as f32);
+    let normal = Normal::new(0., std_dev).unwrap();
+    normal
+        .sample_iter(&mut rand::thread_rng())
+        .take(outputs * inputs)
+        .collect()
 }
