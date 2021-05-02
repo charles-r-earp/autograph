@@ -28,7 +28,9 @@ jobs:
     - name: Check
       run: cargo check --tests --lib --benches
     - name: Check Examples
-      run: (cd examples/cluster/kmeans/iris && cargo check && cargo check --features plotters) && (cd examples/neural_network/iris && cargo check && cargo check --features plotters)
+      run: |
+      (cd examples/cluster/kmeans/iris && cargo check && cargo check --features plotters)
+      (cd examples/neural_network/iris && cargo check && cargo check --features plotters)
     - name: Test
       run: cargo test --no-fail-fast -- --test-threads 1
     - name: Test Ignored
