@@ -1,10 +1,10 @@
 
 #ifdef U8
-    #define BUFFER_LOAD_U8(x, i) ((x[(i)/4] >> (8 * ((i)% 4))) & 0xF)
+    #define BUFFER_LOAD_U8(x, i) ((x[(i)/4] >> (8 * ((i)% 4))) & 0xFF)
 #endif
 
 #ifdef U16
-    #define BUFFER_LOAD_U16(x, i) ((x[(i)/2] >> (16 * ((i)% 2))) & 0xFF)
+    #define BUFFER_LOAD_U16(x, i) ((x[(i)/2] >> (16 * ((i)% 2))) & 0xFFFF)
 #endif
 
 #if defined BF16 || defined T2_BF16

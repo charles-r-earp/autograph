@@ -1,0 +1,50 @@
+#version 450
+
+#define LOCAL_SIZE 64
+
+layout(local_size_x=LOCAL_SIZE) in;
+
+#include "buffer_macros.comp"
+
+readonly buffer X {
+    uint[] x;
+};
+
+readonly buffer Target {
+    T_BUFFER[] t;
+};
+
+buffer Y {
+    uint[] y;
+};
+
+layout(push_constant) uniform PushConsts {
+    uint n;
+};
+
+shared uint[LOCAL_SIZE] sx;
+shared uint[LOCAL_SIZE] st;
+shared uint[LOCAL_SIZE] sy;
+
+void main() {
+    uint gid = gl_GlobalInvocationID.x;
+    uint lid = gl_LocalInvocationID.x;
+    sy[lid] = 0;
+    memoryBarrierShared();
+    if (gid < n) {
+        sx[lid] = x[gid];
+        st[lid] = BUFFER_LOAD(t, gid);
+        sy[lid] = uint(sx[lid] == st[lid]);
+        memoryBarrierShared();
+        #pragma unroll
+        for(uint u = 32; u >= 1; u /= 2) {
+            if (lid < u) {
+                sy[lid] += sy[lid + u];
+            }
+            memoryBarrierShared();
+        }
+        if (lid == 0) {
+            atomicAdd(y[0], sy[0]);
+        }
+    }
+}

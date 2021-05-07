@@ -1,4 +1,5 @@
 use crate::{
+    backend::Device,
     learn::{Fit, Predict},
     tensor::{
         float_tensor::{FloatTensor, FloatTensorD, FloatTensorExt, FloatType},
@@ -387,12 +388,12 @@ impl<
         O: Optimizer,
     > Fit<(TensorBase<S1, D>, TensorBase<S2, Ix1>)> for ClassificationTrainer<N, O>
 {
-    fn train_epoch<I>(&mut self, train_iter: I) -> Result<(Tensor0<f32>, Option<Tensor0<u32>>)>
+    fn train_epoch<I>(&mut self, device: &Device, train_iter: I) -> Result<(Tensor0<f32>, Option<Tensor0<u32>>)>
     where
         I: Iterator<Item = Result<(TensorBase<S1, D>, TensorBase<S2, Ix1>)>>,
     {
-        // TODO: accuracy
-        let mut total_loss: Option<Tensor0<T>> = None;
+        let mut total_loss = Tensor::zeros(device, ())?;
+        let mut correct = Tensor::zeros(device, ())?;
         let mut num_samples = 0;
         for xt in train_iter {
             let (x, t) = xt?;
@@ -403,14 +404,16 @@ impl<
                 .with_training(true);
             let y = self.network.forward(x)?.into_dimensionality::<Ix2>()?;
             let nclasses = y.value().dim().1;
-            let t = t.into_tensor()?.to_one_hot::<T>(nclasses)?;
-            let loss = y.cross_entropy_loss(t.into())?;
+            let t = t.into_tensor()?;
+            let pred = y.value()
+                .float_view()
+                .into_dimensionality::<Ix2>()?
+                .argmax(Axis(1))?;
+            pred.accuracy_mut(&t.view(), &mut correct.view_mut())?;
+            let t_hot = t.to_one_hot::<T>(nclasses)?;
+            let loss = y.cross_entropy_loss(t_hot.into())?;
             let loss_value: Tensor0<T> = loss.into_value().into_float_tensor()?.try_into()?;
-            if let Some(total_loss) = total_loss.as_mut() {
-                total_loss.add_assign(&loss_value.view())?;
-            } else {
-                total_loss.replace(loss_value);
-            }
+            total_loss.add_assign(&loss_value.view())?;
             let parameter_grads = graph.backward()?;
             self.optimizer
                 .update(&mut self.network.parameters_mut()?, &parameter_grads)?;
@@ -420,16 +423,43 @@ impl<
         } else {
             0.
         };
-        // TODO: unwrap will panic if train_iter is empty!
-        let loss = total_loss.unwrap().scale_into(alpha)?;
-        Ok((loss, None))
+        let loss = total_loss.scale_into(alpha)?;
+        Ok((loss, Some(correct)))
     }
-    #[allow(unused_variables)]
-    fn test_epoch<I>(&self, test_iter: I) -> Result<(Tensor0<f32>, Option<Tensor0<u32>>)>
+    fn test_epoch<I>(&self, device: &Device, test_iter: I) -> Result<(Tensor0<f32>, Option<Tensor0<u32>>)>
     where
         I: Iterator<Item = Result<(TensorBase<S1, D>, TensorBase<S2, Ix1>)>>,
     {
-        todo!()
+        let mut total_loss = Tensor::zeros(device, ())?;
+        let mut correct = Tensor::zeros(device, ())?;
+        let mut num_samples = 0;
+        for xt in test_iter {
+            let (x, t) = xt?;
+            num_samples += x.shape()[0];
+            let graph = Graph::default();
+            let x = Variable::from(FloatTensor::from(x.into_tensor()?).into_dyn())
+                .with_graph(&graph)
+                .with_training(false);
+            let y = self.network.forward(x)?.into_dimensionality::<Ix2>()?;
+            let nclasses = y.value().dim().1;
+            let t = t.into_tensor()?;
+            let pred = y.value()
+                .float_view()
+                .into_dimensionality::<Ix2>()?
+                .argmax(Axis(1))?;
+            pred.accuracy_mut(&t.view(), &mut correct.view_mut())?;
+            let t_hot = t.to_one_hot::<T>(nclasses)?;
+            let loss = y.cross_entropy_loss(t_hot.into())?;
+            let loss_value: Tensor0<T> = loss.into_value().into_float_tensor()?.try_into()?;
+            total_loss.add_assign(&loss_value.view())?;
+        }
+        let alpha = if num_samples > 0 {
+            1. / num_samples as f32
+        } else {
+            0.
+        };
+        let loss = total_loss.scale_into(alpha)?;
+        Ok((loss, Some(correct)))
     }
 }
 

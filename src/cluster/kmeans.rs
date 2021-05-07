@@ -45,9 +45,7 @@ impl<T: Float> KMeans<T> {
             .zip(centroids.outer_iter_mut())
         {
             let x = dataset.sample(device, i, 1).unwrap().await?;
-            dbg!(&x.strides());
             let x = x.cast_into()?;
-            dbg!(&x.strides());
             c.into_shape([1, n]).unwrap().assign(&x.to_array()?.await?);
         }
         self.centroids = Tensor::from_array(device, centroids)?;
@@ -161,7 +159,7 @@ impl<T: Float, X: Float, S: Data<Elem = X>> Fit<TensorBase<S, Ix2>> for KMeans<T
         smol::block_on(self.init_random(dataset))?;
         Ok(FitStats::default())
     }
-    fn train_epoch<I>(&mut self, train_iter: I) -> Result<(Tensor0<f32>, Option<Tensor0<u32>>)>
+    fn train_epoch<I>(&mut self, device: &Device, train_iter: I) -> Result<(Tensor0<f32>, Option<Tensor0<u32>>)>
     where
         I: Iterator<Item = Result<TensorBase<S, Ix2>>>,
     {
@@ -194,12 +192,12 @@ impl<T: Float, X: Float, S: Data<Elem = X>> Fit<TensorBase<S, Ix2>> for KMeans<T
         let loss = loss.scale_into(alpha)?;
         Ok((loss, None))
     }
-    fn test_epoch<I>(&self, test_iter: I) -> Result<(Tensor0<f32>, Option<Tensor0<u32>>)>
+    fn test_epoch<I>(&self, device: &Device, test_iter: I) -> Result<(Tensor0<f32>, Option<Tensor0<u32>>)>
     where
         I: Iterator<Item = Result<TensorBase<S, Ix2>>>,
     {
-        let device = self.centroids.device();
-        let mut loss = Tensor::zeros(device, ())?;
+        let device = self.centroids.device().clone();
+        let mut loss = Tensor::zeros(&device, ())?;
         let mut num_samples = 0;
         for x in test_iter {
             let x = x?.cast_into()?;
@@ -309,7 +307,7 @@ mod tests {
                 .axis_chunks_iter(Axis(0), 13)
                 .into_iter()
                 .map(|x| Tensor::from_array(&device, x));
-            let (loss, _) = kmeans.train_epoch(data_iter)?;
+            let (loss, _) = kmeans.train_epoch(&device, data_iter)?;
             let loss = smol::block_on(loss.to_array()?)?;
         }
         Ok(())
@@ -333,7 +331,7 @@ mod tests {
                 .axis_chunks_iter(Axis(0), 13)
                 .into_iter()
                 .map(|x| Tensor::from_array(&device, x));
-            let (loss, _) = kmeans.test_epoch(data_iter)?;
+            let (loss, _) = kmeans.test_epoch(&device, data_iter)?;
             let loss = smol::block_on(loss.to_array()?)?;
         }
         Ok(())

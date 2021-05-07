@@ -9,8 +9,10 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     /// Scales the tensor to a new Tensor\
     ///
     /// Performs the operations y = alpha * (x as T2)\
-    /// Err: Does not currently support non standard layout. Errors if the operation cannot be executed.
+    /// Err: Does not currently support non standard layout. Errors if the operation cannot be executed.\
+    /// Supports Scalar types u8, bf16, i32, u32, and f32
     pub fn scale_into<T2: Num>(self, alpha: T2) -> Result<Tensor<T2, D>> {
+        // TODO: use implace operations when possible
         let mut output = unsafe { Tensor::uninitialized(self.device(), self.raw_dim())? };
         output.strides = self.strides.clone();
         scaled_cast(&self.view(), &mut output.view_mut(), alpha)?;
@@ -19,8 +21,10 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     /// Scales the tensor to a new Tensor\
     ///
     /// Performs the operations y = x as T2
-    /// Err: Errors if the operation cannot be executed.
+    /// Err: Does not currently support non standard layout. Errors if the operation cannot be executed.\
+    /// Supports Scalar types u8, bf16, i32, u32, and f32
     pub fn cast_into<T2: Num>(self) -> Result<Tensor<T2, D>> {
+        // TODO: make T == T2 a noop for owned tensors
         self.scale_into(T2::one())
     }
 }
@@ -38,22 +42,87 @@ where
     debug_assert!(input.len() == output.len());
     let device = input.device();
     let src = if type_eq::<T1, u8>() {
-        if type_eq::<T2, f32>() {
+        if type_eq::<T2, bf16>() {
+            include_shader!("glsl/scaled_cast_u8_bf16.spv")
+        } else if type_eq::<T2, u32>() {
+            include_shader!("glsl/scaled_cast_u8_u32.spv")
+        } else if type_eq::<T2, i32>() {
+            include_shader!("glsl/scaled_cast_u8_i32.spv")
+        } else if type_eq::<T2, f32>() {
             include_shader!("glsl/scaled_cast_u8_f32.spv")
         } else {
-            todo!()
+            unreachable!()
+        }
+    } else if type_eq::<T1, u16>() {
+        if type_eq::<T2, bf16>() {
+            include_shader!("glsl/scaled_cast_u16_bf16.spv")
+        } else if type_eq::<T2, u32>() {
+            include_shader!("glsl/scaled_cast_u16_u32.spv")
+        } else if type_eq::<T2, i32>() {
+            include_shader!("glsl/scaled_cast_u16_i32.spv")
+        } else if type_eq::<T2, f32>() {
+            include_shader!("glsl/scaled_cast_u16_f32.spv")
+        } else {
+            unreachable!()
+        }
+    } else if type_eq::<T1, bf16>() {
+        if type_eq::<T2, bf16>() {
+            include_shader!("glsl/scaled_cast_bf16_bf16.spv")
+        } else if type_eq::<T2, u32>() {
+            include_shader!("glsl/scaled_cast_bf16_u32.spv")
+        } else if type_eq::<T2, i32>() {
+            include_shader!("glsl/scaled_cast_bf16_i32.spv")
+        } else if type_eq::<T2, f32>() {
+            include_shader!("glsl/scaled_cast_bf16_f32.spv")
+        } else {
+            unreachable!()
+        }
+    } else if type_eq::<T1, u32>() {
+        if type_eq::<T2, bf16>() {
+            include_shader!("glsl/scaled_cast_u32_bf16.spv")
+        } else if type_eq::<T2, u32>() {
+            include_shader!("glsl/scaled_cast_u32_u32.spv")
+        }  else if type_eq::<T2, i32>() {
+            include_shader!("glsl/scaled_cast_u32_i32.spv")
+        } else if type_eq::<T2, f32>() {
+            include_shader!("glsl/scaled_cast_u32_f32.spv")
+        } else {
+            unreachable!()
+        }
+    } else if type_eq::<T1, i32>() {
+        if type_eq::<T2, bf16>() {
+            include_shader!("glsl/scaled_cast_i32_bf16.spv")
+        } else if type_eq::<T2, u32>() {
+            include_shader!("glsl/scaled_cast_i32_u32.spv")
+        }  else if type_eq::<T2, i32>() {
+            include_shader!("glsl/scaled_cast_i32_i32.spv")
+        } else if type_eq::<T2, f32>() {
+            include_shader!("glsl/scaled_cast_i32_f32.spv")
+        } else {
+            unreachable!()
         }
     } else if type_eq::<T1, f32>() {
-        if type_eq::<T2, f32>() {
+        if type_eq::<T2, bf16>() {
+            include_shader!("glsl/scaled_cast_f32_bf16.spv")
+        } else if type_eq::<T2, u32>() {
+            include_shader!("glsl/scaled_cast_f32_u32.spv")
+        }  else if type_eq::<T2, i32>() {
+            include_shader!("glsl/scaled_cast_f32_i32.spv")
+        } else if type_eq::<T2, f32>() {
             include_shader!("glsl/scaled_cast_f32_f32.spv")
         } else {
-            todo!()
+            unreachable!()
         }
     } else {
-        todo!()
+        // i8, f16
+        unimplemented!()
     };
     let n = input.len() as u32;
-    let alpha = alpha.to_bits_u32().unwrap();
+    let alpha = if let Some(alpha) = alpha.to_f32() {
+        alpha.to_bits_u32().unwrap()
+    } else {
+        alpha.to_bits_u32().unwrap()
+    };
     device
         .compute_pass(src, "main")?
         .buffer_slice(input.as_unordered_buffer_slice())?

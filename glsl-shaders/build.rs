@@ -5,6 +5,15 @@ use std::iter::once;
 
 type Result<T, E = Box<dyn std::error::Error>> = std::result::Result<T, E>;
 
+static SCALAR_TYPES: &[(&'static str, &'static str)] = &[
+    ("u8", "uint"),
+    ("u16", "uint"),
+    ("bf16", "uint"),
+    ("u32", "uint"),
+    ("i32", "int"),
+    ("f32", "float"),
+];
+
 static NUM_TYPES: &[(&'static str, &'static str)] = &[
     ("bf16", "uint"),
     ("u32", "uint"),
@@ -99,6 +108,21 @@ fn compile_glsl(
     fs::create_dir_all(&glsl_path)?;
     let fpath = glsl_path.join(&name).with_extension("spv");
     fs::write(&fpath, artifact.as_binary_u8())?;
+    Ok(())
+}
+
+
+fn glsl_accuracy(compiler: &mut Compiler) -> Result<()> {
+    let src = include_str!("src/glsl/accuracy.comp");
+    for &(rust_ty, c_ty) in UNSIGNED_TYPES.iter() {
+        let mut options = glsl_options();
+        if rust_ty == "u8" {
+            options.add_macro_definition("U8", None);
+        } else {
+            options.add_macro_definition("T", Some(c_ty));
+        }
+        compile_glsl(compiler, src, &format!("accuracy_{}", rust_ty), Some(&options))?;
+    }
     Ok(())
 }
 
@@ -219,11 +243,13 @@ fn glsl_binary(compiler: &mut Compiler) -> Result<()> {
 fn glsl_cast(compiler: &mut Compiler) -> Result<()> {
     let src = include_str!("src/glsl/cast.comp");
     // TODO: impl for Scalar
-    for &(rust_ty_1, c_ty_1) in NUM_TYPES.iter().chain(once(&("u8", "uint"))) {
+    for &(rust_ty_1, c_ty_1) in SCALAR_TYPES.iter().chain(once(&("u8", "uint"))) {
         for &(rust_ty_2, c_ty_2) in NUM_TYPES.iter() {
             let mut options = glsl_options();
             if rust_ty_1 == "u8" {
                 options.add_macro_definition("U8", None);
+            } else if rust_ty_1 == "u16" {
+                options.add_macro_definition("U16", None);
             } else if rust_ty_1 == "bf16" {
                 options.add_macro_definition("BF16", None);
             } else {
@@ -386,6 +412,7 @@ fn glsl_kmeans(compiler: &mut Compiler) -> Result<()> {
 
 fn main() -> Result<()> {
     let mut compiler = Compiler::new().unwrap();
+    glsl_accuracy(&mut compiler)?;
     glsl_bias_backward(&mut compiler)?;
     glsl_fill(&mut compiler)?;
     glsl_gemm(&mut compiler)?;

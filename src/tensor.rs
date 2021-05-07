@@ -22,6 +22,7 @@ pub mod float_tensor;
 mod index_select;
 pub mod linalg;
 mod reduce;
+mod accuracy;
 
 mod sealed {
     pub trait Sealed {}

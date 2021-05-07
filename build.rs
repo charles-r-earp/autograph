@@ -5,6 +5,7 @@ mod shaders {
     use super::Result;
 
     static GLSL_SHADERS: &[&'static str] = &[
+        "accuracy",
         "bias_backward",
         "binary",
         "buffer_macros",

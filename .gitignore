@@ -21,7 +21,5 @@ glsl-shaders/Cargo.lock
 /glsl-shaders/target
 /examples/cluster/kmeans/iris/target
 /examples/cluster/kmeans/iris/plot.png
-/examples/neural_network/iris/target
-/examples/neural_network/iris/plot.png
 /examples/neural_network/mnist/target
 #**/*.rs.bk

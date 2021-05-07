@@ -1,7 +1,8 @@
 use autograph::{
     backend::Device,
-    dataset::{mnist, Dataset},
-    learn::{Fit, FitOptions, Predict},
+    tensor::{Tensor4},
+    dataset::{Dataset, mnist},
+    learn::{Fit, FitOptions},
     neural_network::{ClassificationTrainer, Dense, Sgd},
     Result,
 };
@@ -12,11 +13,16 @@ fn main() -> Result<()> {
     let device = Device::new_gpu(0).expect("No gpu!")?;
     // The mnist function is imported from autograph::dataset, and loads the data as a pair of
     // arrays.
+    // X is a set of 70_000 28 x 28 u8 images ie shape = (70_000, 1, 28, 28)
+    // Y is a set of 70_000 u8 labels ie shape = 70_000
     let (x_array, y_array) = mnist()?;
-    // TODO: replace this with dataset adapter?
-    let x_array = x_array
-        .map(|x| *x as f32 / 255.)
-        .into_shape([70_000, 28 * 28])?;
+    // Map the 4d u8 images into 2d floats
+    let x_data = Dataset::map(&x_array, |x: Tensor4<u8>| {
+        let batch_size = x.shape()[0];
+        x
+            .into_shape([batch_size, 28 * 28])?
+            .scale_into(1. / 255.)
+    });
     // Create dense model with weight and bias
     let model = Dense::builder()
         .device(&device)
@@ -31,36 +37,23 @@ fn main() -> Result<()> {
     // Fit the model to the dataset. Note that &(Array, Array) implements Dataset which loads the data
     // into Tensors.
     // The last argument to fit is a callback which takes a reference to &mut self (ie the trainer)
-    // and the stats for each epoch and returns whether to continue training.
+    // and the stats for each epoch and returns whether to continue training, ie like a while loop.
     trainer.fit(
         &device,
-        &(x_array.view(), y_array.view()),
+        &(x_data, y_array.view()),
         FitOptions::default().train_batch_size(64),
         |_trainer, stats| {
             println!(
-                "epoch: {} elapsed: {:?} loss: {:.5}",
+                "epoch: {} elapsed: {:.2?} loss: {:.5} accuracy: {:.2}%",
                 stats.get_epoch(),
                 stats.get_elapsed(),
-                stats.get_train_loss()
+                stats.get_train_loss(),
+                100. * stats
+                    .get_train_accuracy()
+                    .expect("train_accuracy not computed!"),
             );
             Ok(stats.get_epoch() < 10)
         },
     )?;
-    // TODO: Implement accuracy for Tensors and in Fit impl
-    let mut correct = 0;
-    let mut total = 0;
-    for xy_future in (&(x_array, y_array)).batches(&device, 64, false) {
-        let (x, y) = smol::block_on(xy_future)?;
-        let pred = trainer.predict(x)?;
-        let pred = smol::block_on(pred.to_array()?)?;
-        let y = smol::block_on(y.to_array()?)?;
-        for (x, y) in pred.iter().copied().zip(y.iter().copied()) {
-            if x == y as u32 {
-                correct += 1;
-            }
-            total += 1;
-        }
-    }
-    println!("accuracy: {:.2}%", 100. * correct as f32 / total as f32);
     Ok(())
 }

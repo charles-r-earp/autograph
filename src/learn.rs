@@ -105,6 +105,11 @@ impl FitStats {
     pub fn get_train_loss(&self) -> f32 {
         self.train_loss
     }
+    pub fn get_train_accuracy(&self) -> Option<f32> {
+        Some(
+            self.train_correct? as f32 / self.train_count as f32
+        )
+    }
 }
 
 pub trait Fit<X> {
@@ -115,10 +120,10 @@ pub trait Fit<X> {
     {
         Ok(FitStats::default())
     }
-    fn train_epoch<I>(&mut self, train_iter: I) -> Result<(Tensor0<f32>, Option<Tensor0<u32>>)>
+    fn train_epoch<I>(&mut self, device: &Device, train_iter: I) -> Result<(Tensor0<f32>, Option<Tensor0<u32>>)>
     where
         I: Iterator<Item = Result<X>>;
-    fn test_epoch<I>(&self, test_iter: I) -> Result<(Tensor0<f32>, Option<Tensor0<u32>>)>
+    fn test_epoch<I>(&self, device: &Device, test_iter: I) -> Result<(Tensor0<f32>, Option<Tensor0<u32>>)>
     where
         I: Iterator<Item = Result<X>>;
     fn fit<A, F>(
@@ -143,7 +148,7 @@ pub trait Fit<X> {
                     train_iter.peek();
                     Some(smol::block_on(train_iter.next()?))
                 });
-                let (train_loss, train_correct) = self.train_epoch(train_iter)?;
+                let (train_loss, train_correct) = self.train_epoch(device, train_iter)?;
                 let train_loss = train_loss.to_vec()?;
                 let train_correct = train_correct.as_ref();
                 let train_correct = if let Some(train_correct) = train_correct {
@@ -159,7 +164,7 @@ pub trait Fit<X> {
                         test_iter.peek();
                         Some(smol::block_on(test_iter.next()?))
                     });
-                    let (test_loss, test_correct) = self.test_epoch(test_iter)?;
+                    let (test_loss, test_correct) = self.test_epoch(device, test_iter)?;
                     let test_loss = test_loss.to_vec()?;
                     let test_correct = test_correct.as_ref();
                     let test_correct = if let Some(test_correct) = test_correct {
