@@ -58,10 +58,7 @@ pub trait Dataset {
         }
     }
     fn map<F>(&self, f: F) -> Map<'_, Self, F> {
-        Map {
-            dataset: self,
-            f,
-        }
+        Map { dataset: self, f }
     }
 }
 
@@ -123,19 +120,19 @@ impl<A: Dataset> ExactSizeIterator for Batches<'_, A> {}
 
 pub struct FutureOkMap<Fut, F> {
     fut: Fut,
-    f: F
+    f: F,
 }
 
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-impl<X, Y, Fut: Future<Output=Result<X>>, F: Clone + Fn(X) -> Result<Y>> Future for FutureOkMap<Fut, F> {
+impl<X, Y, Fut: Future<Output = Result<X>>, F: Clone + Fn(X) -> Result<Y>> Future
+    for FutureOkMap<Fut, F>
+{
     type Output = Result<Y>;
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let f = self.f.clone();
-        let fut = unsafe {
-            self.map_unchecked_mut(|x| &mut x.fut)
-        };
+        let fut = unsafe { self.map_unchecked_mut(|x| &mut x.fut) };
         Future::poll(fut, cx).map(|x| match x {
             Ok(x) => f(x),
             Err(e) => Err(e),
@@ -145,22 +142,28 @@ impl<X, Y, Fut: Future<Output=Result<X>>, F: Clone + Fn(X) -> Result<Y>> Future 
 
 pub struct Map<'a, A: ?Sized, F> {
     dataset: &'a A,
-    f: F
+    f: F,
 }
 
-impl<'a,  X, XFuture: Future<Output=Result<X>>, A: Dataset<Item=X, Future=XFuture>, Y, F: Clone + Fn(X) -> Result<Y>> Dataset for Map<'a, A, F> {
+impl<
+        'a,
+        X,
+        XFuture: Future<Output = Result<X>>,
+        A: Dataset<Item = X, Future = XFuture>,
+        Y,
+        F: Clone + Fn(X) -> Result<Y>,
+    > Dataset for Map<'a, A, F>
+{
     type Item = Y;
     type Future = FutureOkMap<XFuture, F>;
     fn sample_count(&self) -> usize {
         self.dataset.sample_count()
     }
     fn sample(&self, device: &Device, index: usize, batch_size: usize) -> Option<Self::Future> {
-        Some(
-            FutureOkMap {
-                fut: self.dataset.sample(device, index, batch_size)?,
-                f: self.f.clone(),
-            }
-        )
+        Some(FutureOkMap {
+            fut: self.dataset.sample(device, index, batch_size)?,
+            f: self.f.clone(),
+        })
     }
 }
 impl<T: Scalar, S: ArrayData<Elem = T>, D: Dimension> Dataset for ArrayBase<S, D> {

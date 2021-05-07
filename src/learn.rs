@@ -106,9 +106,7 @@ impl FitStats {
         self.train_loss
     }
     pub fn get_train_accuracy(&self) -> Option<f32> {
-        Some(
-            self.train_correct? as f32 / self.train_count as f32
-        )
+        Some(self.train_correct? as f32 / self.train_count as f32)
     }
 }
 
@@ -120,10 +118,18 @@ pub trait Fit<X> {
     {
         Ok(FitStats::default())
     }
-    fn train_epoch<I>(&mut self, device: &Device, train_iter: I) -> Result<(Tensor0<f32>, Option<Tensor0<u32>>)>
+    fn train_epoch<I>(
+        &mut self,
+        device: &Device,
+        train_iter: I,
+    ) -> Result<(Tensor0<f32>, Option<Tensor0<u32>>)>
     where
         I: Iterator<Item = Result<X>>;
-    fn test_epoch<I>(&self, device: &Device, test_iter: I) -> Result<(Tensor0<f32>, Option<Tensor0<u32>>)>
+    fn test_epoch<I>(
+        &self,
+        device: &Device,
+        test_iter: I,
+    ) -> Result<(Tensor0<f32>, Option<Tensor0<u32>>)>
     where
         I: Iterator<Item = Result<X>>;
     fn fit<A, F>(

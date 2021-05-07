@@ -159,7 +159,11 @@ impl<T: Float, X: Float, S: Data<Elem = X>> Fit<TensorBase<S, Ix2>> for KMeans<T
         smol::block_on(self.init_random(dataset))?;
         Ok(FitStats::default())
     }
-    fn train_epoch<I>(&mut self, device: &Device, train_iter: I) -> Result<(Tensor0<f32>, Option<Tensor0<u32>>)>
+    fn train_epoch<I>(
+        &mut self,
+        device: &Device,
+        train_iter: I,
+    ) -> Result<(Tensor0<f32>, Option<Tensor0<u32>>)>
     where
         I: Iterator<Item = Result<TensorBase<S, Ix2>>>,
     {
@@ -192,7 +196,11 @@ impl<T: Float, X: Float, S: Data<Elem = X>> Fit<TensorBase<S, Ix2>> for KMeans<T
         let loss = loss.scale_into(alpha)?;
         Ok((loss, None))
     }
-    fn test_epoch<I>(&self, device: &Device, test_iter: I) -> Result<(Tensor0<f32>, Option<Tensor0<u32>>)>
+    fn test_epoch<I>(
+        &self,
+        device: &Device,
+        test_iter: I,
+    ) -> Result<(Tensor0<f32>, Option<Tensor0<u32>>)>
     where
         I: Iterator<Item = Result<TensorBase<S, Ix2>>>,
     {

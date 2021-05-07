@@ -1,14 +1,20 @@
-use super::{Result, Data, Unsigned, TensorBase, TensorView1, Tensor, Tensor0, TensorViewMut0, Ix1};
+use super::{
+    Data, Ix1, Result, Tensor, Tensor0, TensorBase, TensorView1, TensorViewMut0, Unsigned,
+};
 use crate::util::type_eq;
 
-impl<S: Data<Elem=u32>> TensorBase<S, Ix1> {
+impl<S: Data<Elem = u32>> TensorBase<S, Ix1> {
     pub fn accuracy<U2: Unsigned>(&self, target: &TensorView1<U2>) -> Result<Tensor0<u32>> {
         let device = self.device();
         let mut output = Tensor::zeros(device, ())?;
         self.accuracy_mut(target, &mut output.view_mut())?;
         Ok(output)
     }
-    pub fn accuracy_mut<U2: Unsigned>(&self, target: &TensorView1<U2>, output: &mut TensorViewMut0<u32>) -> Result<()> {
+    pub fn accuracy_mut<U2: Unsigned>(
+        &self,
+        target: &TensorView1<U2>,
+        output: &mut TensorViewMut0<u32>,
+    ) -> Result<()> {
         let device = self.device();
         let src = if type_eq::<U2, u8>() {
             include_shader!("glsl/accuracy_u8.spv")

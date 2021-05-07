@@ -82,7 +82,7 @@ where
             include_shader!("glsl/scaled_cast_u32_bf16.spv")
         } else if type_eq::<T2, u32>() {
             include_shader!("glsl/scaled_cast_u32_u32.spv")
-        }  else if type_eq::<T2, i32>() {
+        } else if type_eq::<T2, i32>() {
             include_shader!("glsl/scaled_cast_u32_i32.spv")
         } else if type_eq::<T2, f32>() {
             include_shader!("glsl/scaled_cast_u32_f32.spv")
@@ -94,7 +94,7 @@ where
             include_shader!("glsl/scaled_cast_i32_bf16.spv")
         } else if type_eq::<T2, u32>() {
             include_shader!("glsl/scaled_cast_i32_u32.spv")
-        }  else if type_eq::<T2, i32>() {
+        } else if type_eq::<T2, i32>() {
             include_shader!("glsl/scaled_cast_i32_i32.spv")
         } else if type_eq::<T2, f32>() {
             include_shader!("glsl/scaled_cast_i32_f32.spv")
@@ -106,7 +106,7 @@ where
             include_shader!("glsl/scaled_cast_f32_bf16.spv")
         } else if type_eq::<T2, u32>() {
             include_shader!("glsl/scaled_cast_f32_u32.spv")
-        }  else if type_eq::<T2, i32>() {
+        } else if type_eq::<T2, i32>() {
             include_shader!("glsl/scaled_cast_f32_i32.spv")
         } else if type_eq::<T2, f32>() {
             include_shader!("glsl/scaled_cast_f32_f32.spv")

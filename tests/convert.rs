@@ -1,25 +1,23 @@
 use autograph::{
-    Result,
     backend::Device,
-    tensor::{Tensor, Scalar, Unsigned, Num},
+    tensor::{Num, Scalar, Tensor, Unsigned},
+    Result,
 };
-use ndarray::{Array, Array1, Array2};
 use half::bf16;
-use num_traits::{ToPrimitive, FromPrimitive};
+use ndarray::{Array, Array1, Array2};
+use num_traits::{FromPrimitive, ToPrimitive};
 
 fn array_scaled_cast<T1: ToPrimitive, T2: FromPrimitive>(x: &Array1<T1>, alpha: f64) -> Array1<T2> {
-    x.iter().map(|x| {
-        T2::from_f64(x.to_f64().unwrap() * alpha).unwrap()
-    }).collect()
-
+    x.iter()
+        .map(|x| T2::from_f64(x.to_f64().unwrap() * alpha).unwrap())
+        .collect()
 }
 
-fn scaled_cast<T1: Scalar + From<u8> + ToPrimitive, T2: Num + From<u8> + FromPrimitive>() -> Result<()> {
+fn scaled_cast<T1: Scalar + From<u8> + ToPrimitive, T2: Num + From<u8> + FromPrimitive>(
+) -> Result<()> {
     let n = 99;
     let alpha = 2;
-    let data: Vec<T1> = (0 .. n as u8).into_iter()
-        .map(Into::into)
-        .collect();
+    let data: Vec<T1> = (0..n as u8).into_iter().map(Into::into).collect();
     let x_array = Array::from(data);
     let y_true = array_scaled_cast(&x_array, alpha.into());
     for device in Device::list() {
@@ -142,7 +140,8 @@ fn to_one_hot<U: Copy + Into<u64>, T: Num>(x: &Array1<U>, nclasses: usize) -> Ar
 fn one_hot<U: Unsigned + Copy + Into<u64> + From<u8>, T: Num>() -> Result<()> {
     let batch_size = 7;
     let nclasses = 5;
-    let data: Vec<U> = (0 .. nclasses as u8).into_iter()
+    let data: Vec<U> = (0..nclasses as u8)
+        .into_iter()
         .cycle()
         .take(batch_size)
         .map(Into::into)

@@ -388,7 +388,11 @@ impl<
         O: Optimizer,
     > Fit<(TensorBase<S1, D>, TensorBase<S2, Ix1>)> for ClassificationTrainer<N, O>
 {
-    fn train_epoch<I>(&mut self, device: &Device, train_iter: I) -> Result<(Tensor0<f32>, Option<Tensor0<u32>>)>
+    fn train_epoch<I>(
+        &mut self,
+        device: &Device,
+        train_iter: I,
+    ) -> Result<(Tensor0<f32>, Option<Tensor0<u32>>)>
     where
         I: Iterator<Item = Result<(TensorBase<S1, D>, TensorBase<S2, Ix1>)>>,
     {
@@ -405,7 +409,8 @@ impl<
             let y = self.network.forward(x)?.into_dimensionality::<Ix2>()?;
             let nclasses = y.value().dim().1;
             let t = t.into_tensor()?;
-            let pred = y.value()
+            let pred = y
+                .value()
                 .float_view()
                 .into_dimensionality::<Ix2>()?
                 .argmax(Axis(1))?;
@@ -426,7 +431,11 @@ impl<
         let loss = total_loss.scale_into(alpha)?;
         Ok((loss, Some(correct)))
     }
-    fn test_epoch<I>(&self, device: &Device, test_iter: I) -> Result<(Tensor0<f32>, Option<Tensor0<u32>>)>
+    fn test_epoch<I>(
+        &self,
+        device: &Device,
+        test_iter: I,
+    ) -> Result<(Tensor0<f32>, Option<Tensor0<u32>>)>
     where
         I: Iterator<Item = Result<(TensorBase<S1, D>, TensorBase<S2, Ix1>)>>,
     {
@@ -443,7 +452,8 @@ impl<
             let y = self.network.forward(x)?.into_dimensionality::<Ix2>()?;
             let nclasses = y.value().dim().1;
             let t = t.into_tensor()?;
-            let pred = y.value()
+            let pred = y
+                .value()
                 .float_view()
                 .into_dimensionality::<Ix2>()?
                 .argmax(Axis(1))?;
