@@ -27,21 +27,22 @@ jobs:
       run: cargo fetch --target ${{ matrix.target }}
     - name: Check
       run: cargo check --tests --lib --benches
-    - name: Check Examples
-      run: |
-        (cd examples/cluster/kmeans/iris && cargo check && cargo check --features plotters)
-        (cd examples/neural_network/mnist && cargo check)
+    - name: Check KMeans Iris Example
+      run: cd examples/cluster/kmeans/iris && cargo check && cargo check --features plotters
+    - name: Check NeuralNetwork MNIST Example 
+      run: cd examples/neural_network/mnist && cargo check
     - name: Test
       run: cargo test --no-fail-fast -- --test-threads 1
     - name: Test Ignored
       run: cargo test --no-fail-fast -- --ignored --test-threads 1
     - name: Test Benchmarks
       run: cargo test --benches
-    - name: Test Examples
+    - name: Test KMeans Iris Example
       if: ${{ matrix.os == 'windows-latest' }}
-      run: |
-        (cd examples/cluster/kmeans/iris && cargo run && cargo run --features plotters)
-        (cd examples/neural_network/mnist && cargo run)
+      run: cd examples/cluster/kmeans/iris && cargo run && cargo run --features plotters
+    - name: Test NeuralNetwork MNIST Example
+      if: ${{ matrix.os == 'windows-latest' }}
+      run: cd examples/neural_network/mnist && cargo run
   lint:
     name: Lint
     runs-on: ubuntu-latest
