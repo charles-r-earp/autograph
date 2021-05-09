@@ -24,6 +24,9 @@ use autograd::{
 pub mod builders;
 use builders::{DenseBuilder, SgdBuilder};
 
+#[cfg(test)]
+mod tests;
+
 pub trait Optimizer {
     fn update(
         &mut self,
@@ -182,6 +185,7 @@ fn bias_backward<T: Float>(
 ) -> Result<()> {
     let device = output_grad.device();
     let (n, c) = output_grad.dim();
+    ensure!(bias_grad.dim() == c);
     let src = if type_eq::<T, bf16>() {
         include_shader!("glsl/bias_backward_bf16.spv")
     } else if type_eq::<T, f32>() {

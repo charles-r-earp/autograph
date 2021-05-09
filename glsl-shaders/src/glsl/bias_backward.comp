@@ -2,7 +2,9 @@
 
 #include "buffer_macros.comp"
 
-layout(local_size_x=64) in;
+#define LOCAL_SIZE 64
+
+layout(local_size_x=LOCAL_SIZE) in;
 
 buffer DX {
     T_BUFFER[] dx;
@@ -17,20 +19,43 @@ layout(push_constant) uniform PushConsts {
     uint c;
 };
 
-void main() {
-    uint tid = gl_GlobalInvocationID.x;
-    T acc;
-    if (tid < c) {
-        acc = BUFFER_LOAD(dx, tid);
+#ifdef BF16
+    shared T dx_shared[LOCAL_SIZE];
+#endif
 
-        for(int i = 0; i < n; ++i) {
-            acc += BUFFER_LOAD(dy, i * c + tid);
+void main() {
+    uint global_x = gl_GlobalInvocationID.x;
+    uint local_x = gl_LocalInvocationID.x;
+    #ifdef BF16
+        if (global_x < c) {
+            dx_shared[local_x] = BUFFER_LOAD(dx, global_x);
+        } else {
+            dx_shared[local_x] = 0;
+        }
+        memoryBarrierShared();
+    #endif
+    T acc;
+    if (global_x < c) {
+        #ifdef BF16
+            acc = dx_shared[local_x];
+        #else
+            acc = BUFFER_LOAD(dx, global_x);
+        #endif
+
+        for(uint i = 0; i < n; ++i) {
+            acc += BUFFER_LOAD(dy, i * c + global_x);
         }
 
         #ifdef BF16
-            BUFFER_ATOMIC_STORE(dx, tid, acc);
+            dx_shared[local_x] = acc;
+            memoryBarrierShared();
+            if (local_x % 2 == 0) {
+                uint a = floatBitsToUint(dx_shared[local_x]) >> 16;
+                uint b = floatBitsToUint(dx_shared[local_x + 1]) & 0xFFFF0000;
+                dx[global_x / 2] = a | b;
+            }
         #else
-            BUFFER_STORE(dx, tid, acc);
+            BUFFER_STORE(dx, global_x, acc);
         #endif
     }
 }
