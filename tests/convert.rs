@@ -138,8 +138,8 @@ fn to_one_hot<U: Copy + Into<u64>, T: Num>(x: &Array1<U>, nclasses: usize) -> Ar
 }
 
 fn one_hot<U: Unsigned + Copy + Into<u64> + From<u8>, T: Num>() -> Result<()> {
-    let batch_size = 7;
-    let nclasses = 5;
+    let batch_size = 67;
+    let nclasses = 9;
     let data: Vec<U> = (0..nclasses as u8)
         .into_iter()
         .cycle()
