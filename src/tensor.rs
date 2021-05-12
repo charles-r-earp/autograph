@@ -393,7 +393,7 @@ impl<T: Scalar, S: DataOwned<Elem = T>, D: Dimension> TensorBase<S, D> {
     {
         let (dim, strides) = dim_strides_from_shape(shape.into_shape());
         // TODO: Patch for some bugs failing tests. Either fix shaders or replace calls to
-        // uninitialized with zeros. 
+        // uninitialized with zeros.
         //let data = S::from_buffer(Buffer::uninitialized(device, dim.size())?);
         let data = S::from_buffer(Buffer::zeros(device, dim.size())?);
         Ok(Self {

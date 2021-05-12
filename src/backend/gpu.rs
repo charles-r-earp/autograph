@@ -1,10 +1,10 @@
 use super::{BufferId, ComputePass, DeviceResult as Result, ModuleId, Scalar, ShaderModule};
+use lazy_static::lazy_static;
 use std::{
     borrow::Cow,
     fmt::{self, Debug},
     future::Future,
 };
-use lazy_static::lazy_static;
 
 #[cfg(all(unix, not(any(target_os = "ios", target_os = "macos"))))]
 use gfx_backend_vulkan::Backend as Vulkan;
@@ -26,8 +26,7 @@ pub struct Gpu {
 
 impl Gpu {
     pub(super) fn new(index: usize) -> Option<Result<Self>> {
-        GPUS.get(index)
-            .map(|x| Ok(x.clone()))
+        GPUS.get(index).map(|x| Ok(x.clone()))
         //Gpu::new_impl(index)
     }
     #[allow(clippy::single_match)]
@@ -76,7 +75,7 @@ impl Gpu {
     }
     fn list() -> Vec<Self> {
         let mut gpus = Vec::new();
-        for i in 0 .. 8 {
+        for i in 0..8 {
             if let Some(Ok(gpu)) = Self::new_impl(i) {
                 gpus.push(gpu);
             } else {
