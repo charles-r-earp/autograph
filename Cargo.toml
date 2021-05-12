@@ -41,6 +41,7 @@ indicatif = "0.15.0"
 rand_distr = "0.4.0"
 flate2 = "1.0.20"
 byteorder = "1.4.3"
+lazy_static = "1.4.0"
 
 [target."cfg(all(unix, not(target_os = \"ios\"), not(target_os = \"macos\")))".dependencies]
 gfx-backend-vulkan = "0.6.5"

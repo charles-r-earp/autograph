@@ -4,6 +4,7 @@ use std::{
     fmt::{self, Debug},
     future::Future,
 };
+use lazy_static::lazy_static;
 
 #[cfg(all(unix, not(any(target_os = "ios", target_os = "macos"))))]
 use gfx_backend_vulkan::Backend as Vulkan;
@@ -14,14 +15,23 @@ use gfx_backend_metal::Backend as Metal;
 #[cfg(windows)]
 use gfx_backend_dx12::Backend as DX12;
 
+lazy_static! {
+    static ref GPUS: Vec<Gpu> = Gpu::list();
+}
+
 #[derive(Clone)]
 pub struct Gpu {
     hal: DynHalGpu,
 }
 
 impl Gpu {
-    #[allow(clippy::single_match)]
     pub(super) fn new(index: usize) -> Option<Result<Self>> {
+        GPUS.get(index)
+            .map(|x| Ok(x.clone()))
+        //Gpu::new_impl(index)
+    }
+    #[allow(clippy::single_match)]
+    fn new_impl(index: usize) -> Option<Result<Self>> {
         let mut dyn_hal_gpu = None;
         #[allow(unused_mut)]
         let mut num_adapters = 0;
@@ -63,6 +73,17 @@ impl Gpu {
         }
 
         dyn_hal_gpu.map(|hal| Ok(Self { hal }))
+    }
+    fn list() -> Vec<Self> {
+        let mut gpus = Vec::new();
+        for i in 0 .. 8 {
+            if let Some(Ok(gpu)) = Self::new_impl(i) {
+                gpus.push(gpu);
+            } else {
+                break;
+            }
+        }
+        gpus
     }
 }
 
@@ -1542,7 +1563,7 @@ pub mod hal {
             }
         }
     }
-
+    /*
     // This system is a bit wild. Basically Vec requires that it be created and dropped with the same layout, ie size of T. As a safer alternative to transmute, we could use enums, one for each type. Ideally the backend should only interact with u8, but because of Vec's requirement we need to keep track of T. This solution, while ugly, is simpler than creating an enum for every single type, since we only need to support a known set of sizes.
     // The vec doesn't change, but is stored as a Vec<u8> via transmute. It is transmuted back to a T with the same size when sending and dropping. Because the size doesn't change, the length and capacity does not need to be updated to match the cast to u8, since it will be dropped with the appropriate size via casting back to Vec<T>.
     #[derive(Debug)]
@@ -1577,6 +1598,48 @@ pub mod hal {
                 _ => unreachable!(),
             });
             let _result = self.sender.send(vec);
+        }
+    }
+    */
+
+    #[derive(Debug)]
+    enum ReadBufferSender {
+        U8(Sender<Result<Vec<u8>>>),
+        U16(Sender<Result<Vec<u16>>>),
+        U32(Sender<Result<Vec<u32>>>),
+        U64(Sender<Result<Vec<u64>>>),
+    }
+
+    impl ReadBufferSender {
+        unsafe fn new<T: Scalar>(sender: Sender<Result<Vec<T>>>) -> Self {
+            match size_of::<T>() {
+                1 => Self::U8(transmute(sender)),
+                2 => Self::U16(transmute(sender)),
+                4 => Self::U32(transmute(sender)),
+                8 => Self::U64(transmute(sender)),
+                _ => unreachable!(),
+            }
+        }
+        fn send(self, data: Result<&[u8]>) {
+            fn send_impl<T: bytemuck::Pod>(sender: Sender<Result<Vec<T>>>, data: Result<&[u8]>) {
+                let data = data.map(|slice| {
+                    let len = slice.len() / size_of::<T>();
+                    debug_assert_eq!(len * size_of::<T>(), slice.len());
+                    let mut vec = Vec::with_capacity(len);
+                    unsafe {
+                        vec.set_len(len);
+                    }
+                    bytemuck::cast_slice_mut(vec.as_mut_slice()).copy_from_slice(slice);
+                    vec
+                });
+                let _ = sender.send(data);
+            }
+            match self {
+                Self::U8(sender) => send_impl(sender, data),
+                Self::U16(sender) => send_impl(sender, data),
+                Self::U32(sender) => send_impl(sender, data),
+                Self::U64(sender) => send_impl(sender, data),
+            }
         }
     }
 
