@@ -219,11 +219,7 @@ impl Variable2 {
             } else {
                 None
             };
-            let bias_value_view = if let Some(bias_value) = bias_value.as_ref() {
-                Some(bias_value.view())
-            } else {
-                None
-            };
+            let bias_value_view = bias_value.as_ref().map(|bias| bias.view());
             let batch_size = input_value.dim().0;
             let outputs = weight_value.dim().0;
             let mut output = input.forward_op(|input_value: TensorView2<T>| {
