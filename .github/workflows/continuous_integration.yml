@@ -32,7 +32,7 @@ jobs:
     - name: Check NeuralNetwork MNIST Example 
       run: cd examples/neural_network/mnist && cargo check
     - name: Test
-      run: cargo test --no-fail-fast -- --test-threads 1
+      run: RUST_BACKTRACE=1 cargo test --no-fail-fast -- --test-threads 1
     - name: Test Benchmarks
       run: cargo test --benches
     - name: Test KMeans Iris Example
