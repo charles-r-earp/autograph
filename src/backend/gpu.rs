@@ -6,6 +6,8 @@ use std::{
     future::Future,
 };
 
+// TODO: Fix issues on DX12 with odd lengthed u8 slices. 
+
 #[cfg(all(unix, not(any(target_os = "ios", target_os = "macos"))))]
 use gfx_backend_vulkan::Backend as Vulkan;
 

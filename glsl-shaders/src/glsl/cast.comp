@@ -28,6 +28,10 @@ void main() {
         #else
             tmp = BUFFER_2_LOAD(y, global_x) * alpha;
         #endif
-        BUFFER_2_STORE(y, global_x, tmp);
+        #ifdef T2_BF16
+            BUFFER_2_ATOMIC_STORE(y, global_x, tmp);
+        #else
+            BUFFER_2_STORE(y, global_x, tmp);
+        #endif
     }
 }

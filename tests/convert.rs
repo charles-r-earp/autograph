@@ -15,7 +15,7 @@ fn array_scaled_cast<T1: ToPrimitive, T2: FromPrimitive>(x: &Array1<T1>, alpha: 
 
 fn scaled_cast<T1: Scalar + From<u8> + ToPrimitive, T2: Num + From<u8> + FromPrimitive>(
 ) -> Result<()> {
-    let n = 99;
+    let n = 100;
     let alpha = 2;
     let data: Vec<T1> = (0..n as u8).into_iter().map(Into::into).collect();
     let x_array = Array::from(data);
@@ -138,8 +138,8 @@ fn to_one_hot<U: Copy + Into<u64>, T: Num>(x: &Array1<U>, nclasses: usize) -> Ar
 }
 
 fn one_hot<U: Unsigned + Copy + Into<u64> + From<u8>, T: Num>() -> Result<()> {
-    let batch_size = 67;
-    let nclasses = 9;
+    let batch_size = 100;
+    let nclasses = 10;
     let data: Vec<U> = (0..nclasses as u8)
         .into_iter()
         .cycle()
@@ -150,7 +150,7 @@ fn one_hot<U: Unsigned + Copy + Into<u64> + From<u8>, T: Num>() -> Result<()> {
     let y_true = to_one_hot(&x_array, nclasses);
     for device in Device::list() {
         let x = Tensor::from_array(&device, x_array.view())?;
-        let y = x.to_one_hot::<f32>(nclasses)?;
+        let y = x.to_one_hot::<T>(nclasses)?;
         let y_array = smol::block_on(y.to_array()?)?;
         assert_eq!(y_array, y_true);
     }
