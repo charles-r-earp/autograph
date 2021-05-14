@@ -40,9 +40,6 @@ jobs:
     - name: Test KMeans Iris Example
       if: ${{ matrix.os == 'windows-latest' }}
       run: cd examples/cluster/kmeans/iris && cargo run && cargo run --features plotters
-    - name: Test NeuralNetwork MNIST Example
-      if: ${{ matrix.os == 'windows-latest' }}
-      run: cd examples/neural_network/mnist && cargo run
   lint:
     name: Lint
     runs-on: ubuntu-latest
