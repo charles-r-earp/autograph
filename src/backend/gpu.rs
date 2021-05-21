@@ -1,9 +1,9 @@
 use super::{BufferId, ComputePass, DeviceResult as Result, ModuleId, Scalar, ShaderModule};
-use lazy_static::lazy_static;
 use std::{
     borrow::Cow,
     fmt::{self, Debug},
     future::Future,
+    pin::Pin,
 };
 
 // TODO: Fix issues on DX12 with odd lengthed u8 slices.
@@ -17,20 +17,16 @@ use gfx_backend_metal::Backend as Metal;
 #[cfg(windows)]
 use gfx_backend_dx12::Backend as DX12;
 
-lazy_static! {
-    static ref GPUS: Vec<Gpu> = Gpu::list();
-}
-
 #[derive(Clone)]
 pub struct Gpu {
     hal: DynHalGpu,
 }
 
 impl Gpu {
-    pub(super) fn new(index: usize) -> Option<Result<Self>> {
-        GPUS.get(index).map(|x| Ok(x.clone()))
-        //Gpu::new_impl(index)
+    fn from_hal(hal: impl Into<DynHalGpu>) -> Self {
+        Self { hal: hal.into() }
     }
+    /*// TODO: impl in list()
     #[allow(clippy::single_match)]
     fn new_impl(index: usize) -> Option<Result<Self>> {
         let mut dyn_hal_gpu = None;
@@ -75,7 +71,8 @@ impl Gpu {
 
         dyn_hal_gpu.map(|hal| Ok(Self { hal }))
     }
-    fn list() -> Vec<Self> {
+    /*
+    pub(super) fn list() -> Vec<Self> {
         let mut gpus = Vec::new();
         for i in 0..8 {
             if let Some(Ok(gpu)) = Self::new_impl(i) {
@@ -84,6 +81,28 @@ impl Gpu {
                 break;
             }
         }
+        gpus
+    }*/*/
+    pub(super) fn list() -> Vec<Self> {
+        let mut gpus = Vec::new();
+        #[cfg(all(unix, not(any(target_os = "ios", target_os = "macos"))))]
+        gpus.extend(
+            HalGpu::<Vulkan>::list_with_index(gpus.len())
+                .into_iter()
+                .map(Self::from_hal),
+        );
+        #[cfg(any(target_os = "ios", target_os = "macos"))]
+        gpus.extend(
+            HalGpu::<Metal>::list_with_index(gpus.len())
+                .into_iter()
+                .map(Self::from_hal),
+        );
+        #[cfg(windows)]
+        gpus.extend(
+            HalGpu::<DX12>::list_with_index(gpus.len())
+                .into_iter()
+                .map(Self::from_hal),
+        );
         gpus
     }
 }
@@ -111,13 +130,13 @@ impl Gpu {
     pub(super) fn drop_buffer(&self, id: BufferId) {
         self.hal.drop_buffer(id);
     }
-    #[allow(clippy::unnecessary_wraps)]
+    #[allow(clippy::unnecessary_wraps, clippy::type_complexity)]
     pub(super) fn read_buffer<T: Scalar>(
         &self,
         id: BufferId,
         offset: usize,
         len: usize,
-    ) -> Result<impl Future<Output = Result<Vec<T>>>> {
+    ) -> Result<Pin<Box<dyn Future<Output = Result<Vec<T>>>>>> {
         Ok(self.hal.read_buffer(id, offset, len))
     }
     #[allow(clippy::unnecessary_wraps)]
@@ -127,7 +146,7 @@ impl Gpu {
     pub(super) fn enqueue_compute_pass(&self, compute_pass: ComputePass) -> Result<()> {
         self.hal.enqueue_compute_pass(compute_pass)
     }
-    pub(super) fn synchronize(&self) -> Result<impl Future<Output = Result<()>>> {
+    pub(super) fn synchronize(&self) -> Result<Pin<Box<dyn Future<Output = Result<()>>>>> {
         self.hal.synchronize()
     }
 }
@@ -216,7 +235,7 @@ pub mod dyn_hal_gpu_proxy {
             id: BufferId,
             offset: usize,
             len: usize,
-        ) -> impl Future<Output = Result<Vec<T>>> {
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<T>>>>> {
         }
         #[implement]
         pub(super) fn compile_shader_module(
@@ -228,7 +247,7 @@ pub mod dyn_hal_gpu_proxy {
         #[implement]
         pub(super) fn enqueue_compute_pass(&self, compute_pass: ComputePass) -> Result<()> {}
         #[implement]
-        pub(super) fn synchronize(&self) -> Result<impl Future<Output = Result<()>>> {}
+        pub(super) fn synchronize(&self) -> Result<Pin<Box<dyn Future<Output = Result<()>>>>> {}
     }
 
     #[external(Debug)]
@@ -284,6 +303,7 @@ pub mod hal {
         marker::PhantomData,
         mem::{size_of, swap, take, transmute, ManuallyDrop},
         ops::{Deref, Range},
+        pin::Pin,
         sync::Arc,
     };
 
@@ -374,7 +394,22 @@ pub mod hal {
     pub struct ArcGpu<B: Backend>(Arc<Gpu<B>>);
 
     impl<B: Backend> ArcGpu<B> {
-        pub(super) fn new(index: usize) -> Result<Result<Self>, usize> {
+        pub(super) fn list_with_index(index: usize) -> Vec<Self> {
+            use gfx_hal::adapter::DeviceType::*;
+            let app = "autograph";
+            let version = 0;
+            if let Ok(instance) = B::Instance::create(&app, version) {
+                instance
+                    .enumerate_adapters()
+                    .into_iter()
+                    .filter(|x| matches!(x.info.device_type, IntegratedGpu | DiscreteGpu))
+                    .filter_map(|adapter| Self::with_adapter(index, &adapter).ok())
+                    .collect()
+            } else {
+                Vec::new()
+            }
+        }
+        /*pub(super) fn new(index: usize) -> Result<Result<Self>, usize> {
             let app = "autograph";
             let version = 0;
             let instance = B::Instance::create(&app, version).map_err(|_| 0usize)?;
@@ -386,7 +421,7 @@ pub mod hal {
                 .collect();
             let adapter = adapters.get(index).ok_or(adapters.len())?;
             Ok(Self::with_adapter(index, adapter))
-        }
+        }*/
         fn with_adapter(index: usize, adapter: &Adapter<B>) -> Result<Self> {
             let name = adapter.info.name.clone();
             let queue_family = adapter
@@ -485,7 +520,7 @@ pub mod hal {
             id: BufferId,
             offset: usize,
             len: usize,
-        ) -> impl Future<Output = Result<Vec<T>>> {
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<T>>>>> {
             let size = len * size_of::<T>();
             let (sender, receiver) = channel();
             smol::block_on(self.context.lock())
@@ -497,7 +532,7 @@ pub mod hal {
                     size,
                 });
             let gpu = self.clone();
-            async move {
+            Box::pin(async move {
                 let mut receiver = receiver;
                 match receiver.try_recv() {
                     Ok(Some(result)) => result,
@@ -510,7 +545,7 @@ pub mod hal {
                     }
                     Err(e) => todo!("{:?}", e),
                 }
-            }
+            })
         }
         #[allow(clippy::unnecessary_wraps)]
         pub(super) fn compile_shader_module(
@@ -541,11 +576,11 @@ pub mod hal {
             Ok(())
         }
         // TODO: With multiple backends, the futures are not of the same type
-        pub(super) fn synchronize(&self) -> Result<impl Future<Output = Result<()>>> {
+        pub(super) fn synchronize(&self) -> Result<Pin<Box<dyn Future<Output = Result<()>>>>> {
             let completion =
                 smol::block_on(self.context.lock()).submit(&self.device, &self.fence)?;
             let gpu = self.clone();
-            Ok(async move {
+            Ok(Box::pin(async move {
                 let mut completion = completion;
                 loop {
                     let completed = completion.try_recv().ok().flatten().is_some();
@@ -563,7 +598,7 @@ pub mod hal {
                     }
                     smol::future::yield_now().await;
                 }
-            })
+            }))
         }
     }
 

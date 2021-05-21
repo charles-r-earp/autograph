@@ -400,7 +400,6 @@ mod tests {
             let xy_dataset = super::iris()?;
             let (train_set, test_set) = train_test_split(&xy_dataset, 0.2);
             if let Some(device) = Device::new_gpu(0) {
-                let device = device?;
                 for xy_future in train_set.batches(&device, 11, true) {
                     let (x, y) = xy_future.await?;
                     assert_eq!(x.dim().0, y.dim());
@@ -420,7 +419,6 @@ mod tests {
         smol::block_on(async {
             let (train_set, _) = super::iris()?;
             if let Some(device) = Device::new_gpu(0) {
-                let device = device?;
                 for x_future in train_set.batches(&device, 43, false) {
                     let x = x_future.await?;
                     assert!(x.dim().0 <= 43);

@@ -10,7 +10,7 @@ use autograph::{
 // Returning a Result from main allows using the ? operator
 fn main() -> Result<()> {
     // Create a device for the first Gpu
-    let device = Device::new_gpu(0).expect("No gpu!")?;
+    let device = Device::new_gpu(0).expect("No gpu!");
     // The mnist function is imported from autograph::dataset, and loads the data as a pair of
     // arrays.
     // X is a set of 70_000 28 x 28 u8 images ie shape = (70_000, 1, 28, 28)

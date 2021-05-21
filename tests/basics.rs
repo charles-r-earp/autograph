@@ -1,12 +1,14 @@
 use autograph::{
     backend::{Buffer, Device, Scalar},
     include_spirv,
-    tensor::{ArcTensor, Dimension, Tensor},
+    tensor::{ArcTensor, Dimension, Tensor, Tensor2},
     Result,
 };
 use bytemuck::{Pod, Zeroable};
 use half::{bf16, f16};
 use ndarray::Array;
+
+use std::iter::once;
 
 #[test]
 fn device_list() {
@@ -226,7 +228,7 @@ fn tensor_copy_from_buffer_slice() -> Result<()> {
 
 #[test]
 fn tensor_view_to_tensor() -> Result<()> {
-    for device in Device::list() {
+    for device in Device::list().into_iter().chain(once(Device::new_cpu())) {
         let x = Tensor::from_shape_cow(&device, 4, vec![1, 2, 3, 4])?;
         let y = x.view().to_tensor()?;
         let y = smol::block_on(y.to_vec()?)?;
@@ -237,11 +239,29 @@ fn tensor_view_to_tensor() -> Result<()> {
 
 #[test]
 fn arc_tensor_into_arc_tensor() -> Result<()> {
-    for device in Device::list() {
+    for device in Device::list().into_iter().chain(once(Device::new_cpu())) {
         let x = ArcTensor::from_shape_cow(&device, 4, vec![1, 2, 3, 4])?;
         let y = x.into_arc_tensor()?;
         let y = smol::block_on(y.to_vec()?)?;
         assert_eq!(y, vec![1, 2, 3, 4]);
+    }
+    Ok(())
+}
+
+#[test]
+fn tensor_serde() -> Result<()> {
+    let shape = (100, 64);
+    let vec = (0..(shape.0 * shape.1) as u32).into_iter().collect();
+    let array = Array::from_shape_vec(shape, vec)?;
+    for device in Device::list_gpus()
+        .into_iter()
+        .chain(once(Device::new_cpu()))
+    {
+        let tensor = Tensor2::<u32>::from_array(&device, array.view())?;
+        let data = bincode::serialize(&tensor)?;
+        let tensor: Tensor2<u32> = bincode::deserialize(&data)?;
+        let array_out = smol::block_on(tensor.to_array()?)?;
+        assert_eq!(array_out, array);
     }
     Ok(())
 }

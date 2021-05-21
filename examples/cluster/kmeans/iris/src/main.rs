@@ -63,7 +63,7 @@ fn plot(x: &ArrayView2<f32>, y: &ArrayView1<u32>, y_pred: &ArrayView1<u32>) -> R
 fn main() -> Result<()> {
     // Create a device for the first Gpu
     let device = Device::new_gpu(0)
-        .expect("No gpu!")?;
+        .expect("No gpu!");
     // The iris function is imported from autograph::dataset, and loads the data as a pair of
     // arrays.
     let (x_array, y_array) = iris()?;

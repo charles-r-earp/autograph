@@ -9,6 +9,7 @@ pub use ndarray::{
     Axis, Dimension, IntoDimension, Ix, Ix0, Ix1, Ix2, Ix3, Ix4, Ix5, Ix6, IxDyn, RemoveAxis,
     ShapeBuilder, StrideShape,
 };
+use serde::{Deserialize, Serialize};
 use smol::future::Future;
 use std::{
     borrow::Cow,
@@ -53,6 +54,8 @@ pub trait DataMut: Data {
     fn as_buffer_slice_mut(&mut self) -> BufferSliceMut<Self::Elem>;
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(bound = "T: Scalar")]
 pub struct OwnedRepr<T>(Buffer<T>);
 
 impl<T> Sealed for OwnedRepr<T> {}
@@ -205,7 +208,9 @@ fn dim_strides_from_shape<D: Dimension>(shape: impl Into<StrideShape<D>>) -> (D,
     (dim, strides)
 }
 
+#[derive(Serialize, Deserialize)]
 pub struct TensorBase<S: DataBase, D: Dimension> {
+    #[serde(skip, default = "Device::new_cpu")]
     device: Device,
     dim: D,
     strides: D,

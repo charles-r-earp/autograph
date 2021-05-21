@@ -1,8 +1,9 @@
 use crate::Result;
 use anyhow::{anyhow, bail, ensure};
+use bytemuck::{Pod, Zeroable};
 use derive_more::Display;
 use half::{bf16, f16};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use smol::lock::Mutex;
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -10,14 +11,28 @@ use std::fmt::{self, Debug};
 use std::hash::Hash;
 use std::marker::PhantomData;
 use std::mem::size_of;
-use std::{future::Future, sync::Arc};
+use std::{future::Future, pin::Pin, sync::Arc};
 
 mod fill;
 mod shader_util;
 
 #[doc(hidden)]
+pub mod cpu;
+use cpu::Cpu;
+
+#[doc(hidden)]
 pub mod gpu;
 use gpu::Gpu;
+
+use lazy_static::lazy_static;
+
+lazy_static! {
+    static ref CPU: Device = Device::from_dyn_device(Cpu::new());
+    static ref GPUS: Vec<Device> = Gpu::list()
+        .into_iter()
+        .map(Device::from_dyn_device)
+        .collect();
+}
 
 /// TODO: Document This?
 #[derive(Clone, Copy, Debug, Display, Eq, PartialEq, Serialize, Deserialize, thiserror::Error)]
@@ -52,7 +67,20 @@ macro_rules! impl_sealed {
 impl_sealed!(u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64,);
 
 /// Base trait for all shader types
-pub trait Scalar: Sealed + Copy + Send + Sync + Debug + Default + PartialEq + 'static {
+pub trait Scalar:
+    Sealed
+    + Copy
+    + Send
+    + Sync
+    + Debug
+    + Default
+    + PartialEq
+    + Pod
+    + Zeroable
+    + Serialize
+    + for<'de> Deserialize<'de>
+    + 'static
+{
     fn zero() -> Self {
         Self::default()
     }
@@ -241,6 +269,7 @@ pub mod dyn_device_proxy {
 
     #[derive(Clone)]
     pub enum DynDevice {
+        Cpu(Cpu),
         Gpu(Gpu),
     }
 
@@ -261,13 +290,14 @@ pub mod dyn_device_proxy {
         }
         #[implement]
         pub(super) fn drop_buffer(&self, id: BufferId) {}
+        #[allow(clippy::type_complexity)]
         #[implement]
         pub(super) fn read_buffer<T: Scalar>(
             &self,
             id: BufferId,
             offset: usize,
             len: usize,
-        ) -> Result<impl Future<Output = Result<Vec<T>>>> {
+        ) -> Result<Pin<Box<dyn Future<Output = Result<Vec<T>>>>>> {
         }
         #[implement]
         pub(super) fn compile_shader_module(
@@ -279,7 +309,7 @@ pub mod dyn_device_proxy {
         #[implement]
         pub(super) fn enqueue_compute_pass(&self, compute_pass: ComputePass) -> Result<()> {}
         #[implement]
-        pub(super) fn synchronize(&self) -> Result<impl Future<Output = Result<()>>> {}
+        pub(super) fn synchronize(&self) -> Result<Pin<Box<dyn Future<Output = Result<()>>>>> {}
     }
 
     #[external(std::fmt::Debug)]
@@ -369,19 +399,23 @@ pub struct Device {
 }
 
 impl Device {
+    fn from_dyn_device(dyn_device: impl Into<DynDevice>) -> Self {
+        Self {
+            dyn_device: dyn_device.into(),
+            modules: Arc::default(),
+        }
+    }
+    pub fn new_cpu() -> Self {
+        CPU.clone()
+    }
     /// Creates a new Gpu at index\
     ///
     /// Supported gfx_hal Backends:
     ///   - Vulkan
     ///   - Metal
     ///   - DX12
-    pub fn new_gpu(index: usize) -> Option<Result<Self>> {
-        Gpu::new(index).map(|gpu| {
-            Ok(Self {
-                dyn_device: gpu?.into(),
-                modules: Arc::default(),
-            })
-        })
+    pub fn new_gpu(index: usize) -> Option<Self> {
+        GPUS.get(index).map(Self::clone)
     }
     /// Returns all available Devices
     pub fn list() -> Vec<Self> {
@@ -389,15 +423,7 @@ impl Device {
     }
     /// Returns all available Gpus
     pub fn list_gpus() -> Vec<Self> {
-        let mut devices = Vec::new();
-        for i in 0.. {
-            if let Some(Ok(gpu)) = Self::new_gpu(i) {
-                devices.push(gpu);
-            } else {
-                break;
-            }
-        }
-        devices
+        GPUS.clone()
     }
     /// Create a compute pass\
     ///
@@ -855,6 +881,10 @@ impl<T: Scalar> Buffer<T> {
     ///
     /// Err: Errors if the backend cannot perform the operation, potentially due to a disconnect or running out of memory.
     pub fn from_elem(device: &Device, elem: T, len: usize) -> Result<Self> {
+        // specialization for Cpu since cpu doesn't support shaders
+        if let DynDevice::Cpu(_) = device.dyn_device {
+            return Self::from_cow(device, vec![elem; len].into());
+        }
         let mut buffer = unsafe { Self::uninitialized(device, len)? };
         buffer.fill(elem)?;
         Ok(buffer)
@@ -904,7 +934,7 @@ impl<T, S: Data<Elem = T>> BufferBase<S> {
     ///```
     /// # use autograph::{Result, backend::{Device, Buffer}};
     /// # fn main() -> Result<()> {
-    /// #     if let Some(Ok(device)) = Device::new_gpu(0) {
+    /// #     if let Some(device) = Device::new_gpu(0) {
     ///           let x1 = Buffer::from_elem(&device, 1f32, 1)?;
     ///           let x2 = Buffer::from_elem(&device, 2f32, 1)?;
     ///           let x1_future = x1.to_vec()?;
@@ -967,5 +997,28 @@ impl<S: Data> Drop for BufferBase<S> {
         if S::needs_drop() {
             self.device.drop_buffer(self.id);
         }
+    }
+}
+
+impl<T: Scalar> Serialize for Buffer<T> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        // This should not fail for cpu
+        smol::block_on(self.to_vec().unwrap())
+            .unwrap()
+            .serialize(serializer)
+    }
+}
+
+impl<'de, T: Scalar> Deserialize<'de> for Buffer<T> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let vec = Vec::deserialize(deserializer)?;
+        // Should not fail for cpu
+        Ok(Buffer::from_cow(&Device::new_cpu(), vec.into()).unwrap())
     }
 }
