@@ -13,7 +13,12 @@ use crate::{
 };
 use anyhow::{bail, ensure};
 use half::bf16;
-use std::{collections::HashMap, convert::TryInto};
+use serde::{Deserialize, Serialize};
+use std::{
+    collections::HashMap,
+    convert::TryInto,
+    fmt::{self, Debug},
+};
 
 pub mod autograd;
 use autograd::{
@@ -35,11 +40,11 @@ pub trait Optimizer {
     ) -> Result<()>;
 }
 
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Sgd {
     learning_rate: f32,
     momentum: f32,
-    #[allow(unused)]
-    velocities: HashMap<Vertex, FloatTensorD>,
+    // velocities
 }
 
 impl Default for Sgd {
@@ -89,10 +94,12 @@ impl Optimizer for Sgd {
     }
 }
 
+// TODO: Derive this
 pub trait Forward {
     fn forward(&self, input: VariableD) -> Result<VariableD>;
 }
 
+// TODO: Derive this
 pub trait Network: Forward {
     /// Implementation method for parameters_mut\
     ///
@@ -114,11 +121,11 @@ pub trait Network: Forward {
         self.collect_paramters_mut(&mut parameters)?;
         Ok(parameters)
     }
-    /*
     /// Returns mutable references to the layers of the network\
     fn layers_mut(&mut self) -> Vec<&mut dyn Network> {
         Vec::new()
     }
+    /*
     fn to_device_mut(&mut self, device: &Device) -> Result<()> {
         for parameter in self.parameters_mut() {
             todo!() // parameter.to_device_mut(device)?;
@@ -127,7 +134,7 @@ pub trait Network: Forward {
     */
 }
 
-#[derive(Default)]
+#[derive(Default, Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct Identity;
 
 impl Forward for Identity {
@@ -138,15 +145,28 @@ impl Forward for Identity {
 
 impl Network for Identity {}
 
-pub struct Dense<A> {
+#[derive(Serialize, Deserialize)]
+#[serde(bound(serialize = "A: Serialize", deserialize = "A: Deserialize<'de>"))]
+pub struct Dense<A = Identity> {
     weight: Parameter2,
     bias: Option<Parameter1>,
+    // #[autograph(layer)]
     activation: A,
 }
 
 impl Dense<Identity> {
     pub fn builder() -> DenseBuilder<Identity> {
         DenseBuilder::default()
+    }
+}
+
+impl<A: Debug> Debug for Dense<A> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("Dense")
+            .field("weight", &self.weight)
+            .field("bias", &self.bias)
+            .field("activation", &self.activation)
+            .finish()
     }
 }
 
@@ -367,6 +387,12 @@ impl Variable2 {
     }
 }
 
+// TODO: likely need to add fit stats here to save.
+#[derive(Serialize, Deserialize)]
+#[serde(bound(
+    serialize = "N: Network + Serialize, O: Optimizer + Serialize",
+    deserialize = "N: Network + Deserialize<'de>, O: Optimizer + Deserialize<'de>"
+))]
 pub struct ClassificationTrainer<N: Network, O: Optimizer> {
     network: N,
     optimizer: O,

@@ -12,6 +12,7 @@ use crate::{
     },
     Result,
 };
+use serde::{Deserialize, Deserializer, Serialize};
 use smol::lock::{Mutex, MutexGuardArc};
 use std::{
     collections::HashMap,
@@ -400,8 +401,11 @@ impl<T0: Float, D0: Dimension, T: Float, D: Dimension> VariableBuilder<'_, T0, D
     }
 }
 
+#[derive(Serialize)]
+#[serde(bound = "S: FloatData + Serialize, D: Dimension + Serialize")]
 pub struct ParameterBase<S: FloatData, D: Dimension> {
     value: TensorBase<S, D>,
+    #[serde(skip_serializing)]
     vertex: Vertex,
 }
 
@@ -484,5 +488,26 @@ impl<D: Dimension> From<FloatTensor<D>> for Parameter<D> {
             value: tensor.into(),
             vertex,
         }
+    }
+}
+
+impl<'de, D: Dimension + Deserialize<'de>> Deserialize<'de> for Parameter<D> {
+    fn deserialize<De>(deserializer: De) -> Result<Self, De::Error>
+    where
+        De: Deserializer<'de>,
+    {
+        let value = FloatArcTensor::deserialize(deserializer)?;
+        let vertex = Vertex::from_float_tensor(&value);
+        Ok(Self { value, vertex })
+    }
+}
+
+impl<S: FloatData, D: Dimension> Debug for ParameterBase<S, D> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("Parameter")
+            .field("device", self.value.device())
+            .field("dim", &self.value.shape())
+            .field("float_type", &self.value.float_type())
+            .finish()
     }
 }

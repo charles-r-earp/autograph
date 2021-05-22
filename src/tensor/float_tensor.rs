@@ -10,6 +10,7 @@ use crate::{
 };
 use anyhow::bail;
 use half::bf16;
+use serde::{Deserialize, Serialize};
 use std::{
     convert::{TryFrom, TryInto},
     mem::transmute,
@@ -17,6 +18,7 @@ use std::{
 };
 
 #[allow(clippy::upper_case_acronyms)]
+#[derive(Serialize, Deserialize)]
 pub enum FloatBuffer {
     BF16(Buffer<bf16>),
     F32(Buffer<f32>),
@@ -74,7 +76,7 @@ impl<T: Float> From<Buffer<T>> for FloatBuffer {
 }
 
 #[allow(clippy::upper_case_acronyms)]
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub enum FloatArcBuffer {
     BF16(Arc<Buffer<bf16>>),
     F32(Arc<Buffer<f32>>),
@@ -223,6 +225,7 @@ pub trait FloatDataMut: FloatData {
     fn as_float_buffer_slice_mut(&mut self) -> FloatBufferSliceMut;
 }
 
+#[derive(Serialize, Deserialize)]
 pub struct FloatOwnedRepr(FloatBuffer);
 
 pub type FloatTensor<D> = TensorBase<FloatOwnedRepr, D>;
@@ -260,7 +263,7 @@ impl FloatDataMut for FloatOwnedRepr {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct FloatArcRepr(FloatArcBuffer);
 
 pub type FloatArcTensor<D> = TensorBase<FloatArcRepr, D>;

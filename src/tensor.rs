@@ -84,7 +84,8 @@ impl<T: Scalar> DataOwned for OwnedRepr<T> {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(bound = "T: Scalar")]
 pub struct ArcRepr<T>(Arc<Buffer<T>>);
 
 impl<T> Sealed for ArcRepr<T> {}
@@ -151,6 +152,7 @@ impl<T: Scalar> DataMut for ViewMutRepr<'_, T> {
     }
 }
 
+// TODO: impl Serialize + Deserialize
 pub enum CowRepr<'a, T> {
     Owned(OwnedRepr<T>),
     Borrowed(ViewRepr<'a, T>),

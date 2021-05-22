@@ -5,13 +5,17 @@ use derive_more::Display;
 use half::{bf16, f16};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use smol::lock::Mutex;
-use std::borrow::Cow;
-use std::collections::HashMap;
-use std::fmt::{self, Debug};
-use std::hash::Hash;
-use std::marker::PhantomData;
-use std::mem::size_of;
-use std::{future::Future, pin::Pin, sync::Arc};
+use std::{
+    borrow::Cow,
+    collections::HashMap,
+    fmt::{self, Debug},
+    future::Future,
+    hash::Hash,
+    marker::PhantomData,
+    mem::size_of,
+    pin::Pin,
+    sync::Arc,
+};
 
 mod fill;
 mod shader_util;

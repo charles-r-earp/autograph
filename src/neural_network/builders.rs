@@ -4,7 +4,6 @@ use crate::{
     tensor::{float_tensor::FloatTensor, Tensor},
     Result,
 };
-use anyhow::bail;
 use rand_distr::{Distribution, Normal};
 
 pub struct SgdBuilder {
@@ -30,13 +29,13 @@ impl SgdBuilder {
         Sgd {
             learning_rate: self.learning_rate,
             momentum: self.momentum,
-            velocities: Default::default(),
+            //velocities: Default::default(),
         }
     }
 }
 
 pub struct DenseBuilder<A> {
-    device: Option<Device>,
+    device: Device,
     inputs: usize,
     outputs: usize,
     weight_data: Vec<f32>,
@@ -47,7 +46,7 @@ pub struct DenseBuilder<A> {
 impl Default for DenseBuilder<Identity> {
     fn default() -> Self {
         Self {
-            device: None,
+            device: Device::new_cpu(),
             inputs: 0,
             outputs: 0,
             weight_data: Vec::new(),
@@ -59,7 +58,7 @@ impl Default for DenseBuilder<Identity> {
 
 impl<A> DenseBuilder<A> {
     pub fn device(mut self, device: &Device) -> Self {
-        self.device.replace(device.clone());
+        self.device = device.clone();
         self
     }
     pub fn inputs(mut self, inputs: usize) -> Self {
@@ -97,17 +96,11 @@ impl<A> DenseBuilder<A> {
                 *bias_data = vec![0.; self.outputs]
             }
         }
-        // TODO: Want to have a Cpu device which is default constructable instead
-        let device = if let Some(device) = self.device {
-            device
-        } else {
-            bail!("DenseBuilder requires device!");
-        };
         let weight =
-            Tensor::from_shape_cow(&device, [self.outputs, self.inputs], self.weight_data)?;
+            Tensor::from_shape_cow(&self.device, [self.outputs, self.inputs], self.weight_data)?;
         let weight = Parameter::from(FloatTensor::from(weight));
         let bias = if let Some(bias_data) = self.bias_data {
-            let bias = Tensor::from_shape_cow(&device, self.outputs, bias_data)?;
+            let bias = Tensor::from_shape_cow(&self.device, self.outputs, bias_data)?;
             Some(Parameter::from(FloatTensor::from(bias)))
         } else {
             None

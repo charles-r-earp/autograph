@@ -211,7 +211,6 @@ impl StorageAllocator {
     fn alloc(&mut self, size: usize) -> Result<StorageBuffer> {
         debug_assert!(size <= CHUNK_SIZE); // TODO: error here?
         for (c, chunk) in self.chunks.iter_mut().enumerate() {
-            dbg!(c);
             if let Some(range) = chunk.alloc(size) {
                 return Ok(StorageBuffer::new(c as u16, range));
             }
