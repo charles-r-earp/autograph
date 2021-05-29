@@ -1,9 +1,18 @@
-use super::{autograd::Parameter, Dense, Identity, Sgd};
+use super::{
+    autograd::{Parameter, Parameter2},
+    Dense, Identity, Network, Sgd,
+};
 use crate::{
     backend::Device,
-    tensor::{float_tensor::FloatTensor, Tensor},
+    tensor::{
+        float_tensor::{FloatTensor, FloatType},
+        Tensor,
+    },
     Result,
 };
+use anyhow::bail;
+use half::bf16;
+use rand::Rng;
 use rand_distr::{Distribution, Normal};
 
 pub struct SgdBuilder {
@@ -87,26 +96,46 @@ impl<A> DenseBuilder<A> {
             activation,
         }
     }
-    pub fn build(mut self) -> Result<Dense<A>> {
+    pub fn build(mut self) -> Result<Dense<A>>
+    where
+        A: Network,
+    {
+        if self.outputs == 0 {
+            bail!("Outputs are required, greater than 0!")
+        }
         if self.weight_data.len() != self.outputs * self.inputs {
-            self.weight_data = he_normal((self.outputs, self.inputs));
+            self.weight_data =
+                he_normal(&mut rand::thread_rng(), (self.outputs, self.inputs)).collect();
         }
         if let Some(bias_data) = self.bias_data.as_mut() {
             if bias_data.len() != self.outputs {
                 *bias_data = vec![0.; self.outputs]
             }
         }
-        let weight =
-            Tensor::from_shape_cow(&self.device, [self.outputs, self.inputs], self.weight_data)?;
-        let weight = Parameter::from(FloatTensor::from(weight));
+        let weight = if !self.weight_data.is_empty() {
+            // TODO: impl for FloatType::BF16
+            let weight = Tensor::from_shape_vec(
+                &self.device,
+                [self.outputs, self.inputs],
+                self.weight_data,
+            )?;
+            Parameter::from(FloatTensor::from(weight))
+        } else if self.inputs == 0 {
+            Parameter::from(FloatTensor::float_zeros(
+                &self.device,
+                FloatType::F32,
+                [self.outputs, 0],
+            )?)
+        } else {
+            dense_weight(&self.device, FloatType::F32, (self.outputs, self.inputs))?
+        };
         let bias = if let Some(bias_data) = self.bias_data {
             let bias = Tensor::from_shape_cow(&self.device, self.outputs, bias_data)?;
             Some(Parameter::from(FloatTensor::from(bias)))
         } else {
             None
         };
-        let activation = self.activation;
-        // activation.to_device_mut(&device)?;
+        let activation = self.activation.into_device(&self.device)?;
         Ok(Dense {
             weight,
             bias,
@@ -115,11 +144,32 @@ impl<A> DenseBuilder<A> {
     }
 }
 
-fn he_normal((outputs, inputs): (usize, usize)) -> Vec<f32> {
+pub(super) fn dense_weight(
+    device: &Device,
+    float_type: FloatType,
+    (outputs, inputs): (usize, usize),
+) -> Result<Parameter2> {
+    let mut rng = rand::thread_rng();
+    let weight_iter = he_normal(&mut rng, (outputs, inputs));
+    let weight = match float_type {
+        FloatType::BF16 => {
+            let weight_iter = weight_iter.map(bf16::from_f32);
+            let weight = Tensor::from_shape_vec(device, [outputs, inputs], weight_iter.collect())?;
+            FloatTensor::from(weight)
+        }
+        FloatType::F32 => {
+            let weight = Tensor::from_shape_vec(device, [outputs, inputs], weight_iter.collect())?;
+            FloatTensor::from(weight)
+        }
+    };
+    Ok(weight.into())
+}
+
+fn he_normal<R: Rng>(
+    rng: &mut R,
+    (outputs, inputs): (usize, usize),
+) -> impl Iterator<Item = f32> + '_ {
     let std_dev = f32::sqrt(2. / inputs as f32);
     let normal = Normal::new(0., std_dev).unwrap();
-    normal
-        .sample_iter(&mut rand::thread_rng())
-        .take(outputs * inputs)
-        .collect()
+    normal.sample_iter(rng).take(outputs * inputs)
 }

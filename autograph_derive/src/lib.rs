@@ -7,6 +7,7 @@ use syn::{
     Attribute,
     Meta,
     NestedMeta,
+    Index,
 };
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{quote, ToTokens};
@@ -59,7 +60,8 @@ fn get_layers_struct(data_struct: &DataStruct) -> Vec<TokenStream2> {
             } else if let Some(ident) = &field.ident {
                     Some(ident.to_token_stream())
             } else {
-                Some(quote! { #i })
+                let index = Index::from(i);
+                Some(quote! { #index })
             }
         })
         .collect()
@@ -118,12 +120,21 @@ pub fn derive_network(input: TokenStream) -> TokenStream {
 }
 
 fn derive_forward_struct(input: &DeriveInput, data_struct: &DataStruct) -> TokenStream {
-    let forward_body = match get_layers_struct(data_struct).as_slice() {
+    let layers = get_layers_struct(data_struct);
+    let forward_body = match layers.as_slice() {
         &[] => quote! {
             Ok(input)
         },
         layers => quote! {
             input #(.forward(&self. #layers))?*
+        }
+    };
+    let forward_mut_body = match layers.as_slice() {
+        &[] => quote! {
+            Ok(input)
+        },
+        layers => quote! {
+            input #(.forward_mut(&mut self. #layers))?*
         }
     };
     let autograph_path = autograph_path(&input.attrs);
@@ -133,6 +144,9 @@ fn derive_forward_struct(input: &DeriveInput, data_struct: &DataStruct) -> Token
         impl Forward for #ident {
             fn forward(&self, input: #autograph_path::neural_network::autograd::VariableD) -> #autograph_path::Result<#autograph_path::neural_network::autograd::VariableD> {
                 #forward_body
+            }
+            fn forward_mut(&mut self, input: #autograph_path::neural_network::autograd::VariableD) -> #autograph_path::Result<#autograph_path::neural_network::autograd::VariableD> {
+                #forward_mut_body
             }
         }
     })

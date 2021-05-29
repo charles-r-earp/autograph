@@ -307,6 +307,10 @@ impl<D: Dimension> Variable<D> {
     pub fn forward<F: Forward>(self, f: &F) -> Result<VariableD> {
         f.forward(self.into_dyn())
     }
+    /// Convenience method for Forward::forward_mut
+    pub fn forward_mut<F: Forward>(self, f: &mut F) -> Result<VariableD> {
+        f.forward_mut(self.into_dyn())
+    }
     /// Returns a VariableBuilder computed via the provided closure.\
     ///
     /// The builder inherits the graph and training of the input variable can be used to apply\

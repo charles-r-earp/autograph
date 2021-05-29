@@ -94,17 +94,42 @@ impl Optimizer for Sgd {
     }
 }
 
-// TODO: docs for derive
+/// Forward is a trait for Neural Networks and layers, that represent a Variable function.\
+///
+/// /// # Derive
+/// Forward can be derived for a composite struct of layers:\
+///```
+/// #[derive(Forward)]
+/// struct Net { // tuple structs ie Net(Dense, Dense) also supported
+///     dense1: Dense,
+///     dense2: Dense
+/// }
+///```
 pub trait Forward {
     fn forward(&self, input: VariableD) -> Result<VariableD>;
+    fn forward_mut(&mut self, input: VariableD) -> Result<VariableD> {
+        self.forward(input)
+    }
 }
 
-// TODO: docs for Derive
+/// Network is a trait for Neural Networks and layers\
+///
+/// Implementation layers should implement collect_paramters_mut and to_device_mut if they have\
+/// parameters, and layers_mut if they have parameters.\
+/// # Derive
+/// Network (and Forward) can be derived for a composite struct of layers:\
+///```
+/// #[derive(Network, Forward)]
+/// struct Net { // tuple structs ie Net(Dense, Dense) also supported
+///     dense1: Dense,
+///     dense2: Dense
+/// }
+///```
 pub trait Network: Forward {
     /// Implementation method for parameters_mut\
     ///
     /// Mutable references to the parameters of the network (or layer) should be pushed into the\
-    /// provided vec.
+    /// provided vec. Note that this includes all parameters (including those of child layers).
     #[allow(unused_variables)]
     fn collect_paramters_mut<'a>(
         &'a mut self,
@@ -125,6 +150,11 @@ pub trait Network: Forward {
     fn layers_mut(&mut self) -> Vec<&mut dyn Network> {
         Vec::new()
     }
+    /// Moves the network's data to the device in place.\
+    ///
+    /// This method needs to be implemented when the layer has Parameters or other data that needs\
+    /// to be transfered to the new device. However, composite layers that implement layers_mut do\
+    /// not need to implement this method.
     #[allow(clippy::wrong_self_convention)]
     fn to_device_mut(&mut self, device: &Device) -> Result<()> {
         // issue is that if any transfers fail some data will be on the previous devices
@@ -133,6 +163,9 @@ pub trait Network: Forward {
         }
         Ok(())
     }
+    /// Moves the network's data to the device.\
+    ///
+    /// Generally this method should not be implemented, the implementation calls to_device_mut.
     fn into_device(mut self, device: &Device) -> Result<Self>
     where
         Self: Sized,
@@ -185,6 +218,19 @@ impl<A: Forward + 'static> Forward for Dense<A> {
         };
         self.activation.forward(output.into_dyn())
     }
+    fn forward_mut(&mut self, input: VariableD) -> Result<VariableD> {
+        let weight_value = self.weight.value();
+        let (outputs, inputs) = weight_value.dim();
+        if inputs == 0 {
+            let inputs = input.value().shape()[1..].iter().product();
+            self.weight = builders::dense_weight(
+                weight_value.device(),
+                weight_value.float_type(),
+                (outputs, inputs),
+            )?;
+        }
+        self.forward(input)
+    }
 }
 
 impl<A: Network + 'static> Network for Dense<A> {
@@ -196,6 +242,8 @@ impl<A: Network + 'static> Network for Dense<A> {
         if let Some(bias) = self.bias.as_mut() {
             parameters.push(bias.make_mut()?.into_dyn());
         }
+        // For normalization layer?
+        self.activation.collect_paramters_mut(parameters)?;
         Ok(())
     }
     fn layers_mut(&mut self) -> Vec<&mut dyn Network> {
@@ -209,6 +257,16 @@ impl<A: Network + 'static> Network for Dense<A> {
             }
             self.activation.to_device_mut(device)
         })
+    }
+}
+
+impl<A: Network + Clone> Clone for Dense<A> {
+    fn clone(&self) -> Self {
+        Self {
+            weight: self.weight.clone(),
+            bias: self.bias.clone(),
+            activation: self.activation.clone(),
+        }
     }
 }
 

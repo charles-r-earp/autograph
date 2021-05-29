@@ -876,7 +876,11 @@ impl<T: Scalar> Buffer<T> {
     ///
     /// The buffer will not be initialized.
     pub unsafe fn uninitialized(device: &Device, len: usize) -> Result<Self> {
-        let id = device.create_buffer(len * size_of::<T>())?;
+        let id = if len == 0 {
+            BufferId(0)
+        } else {
+            device.create_buffer(len * size_of::<T>())?
+        };
         Ok(Self {
             device: device.clone(),
             id,
@@ -1061,13 +1065,17 @@ impl<T, S: DataMut<Elem = T>> BufferBase<S> {
     where
         T: Scalar,
     {
-        fill::fill(&self.device.clone(), self.as_buffer_slice_mut(), x)
+        if self.len > 0 {
+            fill::fill(&self.device.clone(), self.as_buffer_slice_mut(), x)
+        } else {
+            Ok(())
+        }
     }
 }
 
 impl<S: Data> Drop for BufferBase<S> {
     fn drop(&mut self) {
-        if S::needs_drop() {
+        if S::needs_drop() && self.len > 0 {
             self.device.drop_buffer(self.id);
         }
     }

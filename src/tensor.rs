@@ -343,11 +343,16 @@ impl<S: DataBase, D: Dimension> TensorBase<S, D> {
 }
 
 impl<S: DataBase, D: Dimension> TensorBase<S, D> {
-    fn try_into_<T: Scalar>(&self) -> Result<TensorBase<<S as TryIntoData<T>>::Data, D>>
+    fn try_into_<T: Scalar>(self) -> Result<TensorBase<<S as TryIntoData<T>>::Data, D>>
     where
         S: TryIntoData<T>,
     {
-        todo!()
+        Ok(TensorBase {
+            device: self.device,
+            dim: self.dim,
+            strides: self.strides,
+            data: self.data.try_into_data()?,
+        })
     }
 }
 

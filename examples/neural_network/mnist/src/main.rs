@@ -10,6 +10,7 @@ use autograph::{
 // Returning a Result from main allows using the ? operator
 fn main() -> Result<()> {
     // Create a device for the first Gpu
+    // Cpu execution is currently unsupported.
     let device = Device::new_gpu(0).expect("No gpu!");
     // The mnist function is imported from autograph::dataset, and loads the data as a pair of
     // arrays.
@@ -25,10 +26,10 @@ fn main() -> Result<()> {
     });
     // Create dense model with weight and bias
     let model = Dense::builder()
-        .device(&device)
-        .inputs(28 * 28)
+        .device(&device) // defaults to cpu
+        .inputs(28 * 28) // defaults to 0, which will lazily initialize
         .outputs(10)
-        .bias(true)
+        .bias(true) // defaults to false
         .build()?;
     // Stochastic Gradient Descent with a learning rate (default is 0.001)
     let optim = Sgd::builder().learning_rate(0.001).build();
