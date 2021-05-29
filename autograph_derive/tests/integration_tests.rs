@@ -1,6 +1,4 @@
-use autograph::{
-    neural_network::{Network, Forward, Dense, Identity},
-};
+use autograph::neural_network::{Dense, Forward, Identity, Network};
 #[allow(unused_imports)]
 #[macro_use]
 extern crate autograph_derive;
@@ -9,7 +7,7 @@ use autograph_derive::*;
 #[derive(Network, Forward)]
 struct Net {
     dense1: Dense,
-    dense2: Dense<Identity>
+    dense2: Dense<Identity>,
 }
 /*
 #[derive(Network, Forward)]

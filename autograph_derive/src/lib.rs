@@ -1,16 +1,7 @@
 use proc_macro::TokenStream;
-use syn::{
-    DeriveInput,
-    Data,
-    DataStruct,
-    Fields,
-    Attribute,
-    Meta,
-    NestedMeta,
-    Index,
-};
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{quote, ToTokens};
+use syn::{Attribute, Data, DataStruct, DeriveInput, Fields, Index, Meta, NestedMeta};
 
 fn autograph_path(attributes: &[Attribute]) -> TokenStream2 {
     for attribute in attributes {
@@ -34,7 +25,8 @@ fn autograph_path(attributes: &[Attribute]) -> TokenStream2 {
 fn is_ignore(attributes: &[Attribute]) -> bool {
     let ignore_string = quote! {
         #[autograph(ignore)]
-    }.to_string();
+    }
+    .to_string();
     for attribute in attributes {
         if attribute.to_token_stream().to_string() == ignore_string {
             return true;
@@ -51,14 +43,14 @@ fn get_layers_struct(data_struct: &DataStruct) -> Vec<TokenStream2> {
             return Vec::new();
         }
     };
-    fields.iter()
+    fields
+        .iter()
         .enumerate()
         .filter_map(|(i, field)| {
-
             if is_ignore(&field.attrs) {
                 None
             } else if let Some(ident) = &field.ident {
-                    Some(ident.to_token_stream())
+                Some(ident.to_token_stream())
             } else {
                 let index = Index::from(i);
                 Some(quote! { #index })
@@ -115,7 +107,7 @@ pub fn derive_network(input: TokenStream) -> TokenStream {
         }),
         Data::Union(_) => TokenStream::from(quote! {
             compile_error!("Unions unsupported!")
-        })
+        }),
     }
 }
 
@@ -127,7 +119,7 @@ fn derive_forward_struct(input: &DeriveInput, data_struct: &DataStruct) -> Token
         },
         layers => quote! {
             input #(.forward(&self. #layers))?*
-        }
+        },
     };
     let forward_mut_body = match layers.as_slice() {
         &[] => quote! {
@@ -135,7 +127,7 @@ fn derive_forward_struct(input: &DeriveInput, data_struct: &DataStruct) -> Token
         },
         layers => quote! {
             input #(.forward_mut(&mut self. #layers))?*
-        }
+        },
     };
     let autograph_path = autograph_path(&input.attrs);
     let ident = &input.ident;
@@ -163,6 +155,6 @@ pub fn derive_forward(input: TokenStream) -> TokenStream {
         }),
         Data::Union(_) => TokenStream::from(quote! {
             compile_error!("Unions unsupported!")
-        })
+        }),
     }
 }
