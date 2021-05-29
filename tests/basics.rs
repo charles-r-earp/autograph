@@ -265,3 +265,24 @@ fn tensor_serde() -> Result<()> {
     }
     Ok(())
 }
+
+#[test]
+fn tensor_into_device() -> Result<()> {
+    smol::block_on(async {
+        let x_array = Array::from_shape_vec(4, vec![1, 2, 3, 4])?;
+        let mut devices = Device::list_gpus();
+        devices.push(Device::new_cpu());
+        for from in devices.iter() {
+            for to in devices.iter() {
+                if from == to {
+                    continue;
+                }
+                let x = Tensor::<u32, _>::from_array(from, x_array.view())?;
+                let y = x.into_device(to)?.await?;
+                let y_array = y.to_array()?.await?;
+                assert_eq!(&x_array, &y_array);
+            }
+        }
+        Ok(())
+    })
+}

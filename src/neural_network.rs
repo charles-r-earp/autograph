@@ -125,6 +125,7 @@ pub trait Network: Forward {
     fn layers_mut(&mut self) -> Vec<&mut dyn Network> {
         Vec::new()
     }
+    #[allow(clippy::wrong_self_convention)]
     fn to_device_mut(&mut self, device: &Device) -> Result<()> {
         // issue is that if any transfers fail some data will be on the previous devices
         for layer in self.layers_mut() {
@@ -133,7 +134,9 @@ pub trait Network: Forward {
         Ok(())
     }
     fn into_device(mut self, device: &Device) -> Result<Self>
-        where Self: Sized {
+    where
+        Self: Sized,
+    {
         self.to_device_mut(device)?;
         Ok(self)
     }
@@ -200,11 +203,9 @@ impl<A: Network + 'static> Network for Dense<A> {
     }
     fn to_device_mut(&mut self, device: &Device) -> Result<()> {
         smol::block_on(async {
-            self.weight.to_device_mut(device)?
-                .await?;
+            self.weight.to_device_mut(device)?.await?;
             if let Some(bias) = self.bias.as_mut() {
-                bias.to_device_mut(device)?
-                    .await?;
+                bias.to_device_mut(device)?.await?;
             }
             self.activation.to_device_mut(device)
         })

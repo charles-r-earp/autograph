@@ -381,6 +381,7 @@ pub struct EntryDescriptor {
 #[doc(hidden)]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ShaderModule<'a> {
+    // TODO: Replace with CowArc and impl Hash for JIT shaders
     spirv: Cow<'a, [u8]>,
     entry_descriptors: Vec<EntryDescriptor>,
 }
@@ -399,6 +400,7 @@ impl<'a> ShaderModule<'a> {
 #[derive(Clone)]
 pub struct Device {
     dyn_device: DynDevice,
+    // TODO: Make lock free? With DashMap?
     modules: Arc<Mutex<HashMap<ModuleId, ShaderModule<'static>>>>,
 }
 
@@ -779,15 +781,17 @@ pub struct ComputePass {
     work_groups: [u32; 3],
 }
 
-
 #[doc(hidden)]
 pub trait Data: Sealed + Sized {
     type Elem;
     #[doc(hidden)]
     fn needs_drop() -> bool;
     #[doc(hidden)]
+    #[allow(clippy::wrong_self_convention)]
     fn into_buffer(buffer: BufferBase<Self>) -> Result<Buffer<Self::Elem>>
-        where Self::Elem: Scalar {
+    where
+        Self::Elem: Scalar,
+    {
         buffer.to_buffer()
     }
 }
@@ -837,7 +841,7 @@ pub struct BufferBase<S: Data> {
     id: BufferId,
     offset: usize,
     len: usize,
-    _m: PhantomData<S>
+    _m: PhantomData<S>,
 }
 
 pub type Buffer<T> = BufferBase<BufferRepr<T>>;
@@ -916,15 +920,17 @@ impl<T: Scalar> Buffer<T> {
     /// Transfers to a new device, in place.\
     ///
     /// See to_device
-    pub fn to_device_mut<'a>(&'a mut self, device: &Device) -> Result<impl Future<Output = Result<()>> + 'a> {
+    #[allow(clippy::wrong_self_convention)]
+    pub fn to_device_mut<'a>(
+        &'a mut self,
+        device: &Device,
+    ) -> Result<impl Future<Output = Result<()>> + 'a> {
         let device = device.clone();
         Ok(async move {
-            if &self.device == &device {
+            if self.device == device {
                 Ok(())
             } else {
-                let buffer = self.as_buffer_slice()
-                    .into_device(&device)?
-                    .await?;
+                let buffer = self.as_buffer_slice().into_device(&device)?.await?;
                 *self = buffer;
                 Ok(())
             }
@@ -945,7 +951,7 @@ impl<T, S: Data<Elem = T>> BufferBase<S> {
     }
 }
 
-impl<T: Scalar, S: Data<Elem=T>> BufferBase<S> {
+impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
     /// Copies self into a new Buffer
     ///
     /// Err: Errors if the backend cannot perform the operation, potentially due to a disconnect or running out of memory.
@@ -1000,18 +1006,21 @@ impl<T: Scalar, S: Data<Elem=T>> BufferBase<S> {
         // TODO: impl optimized non blocking version
         let device = device.clone();
         Ok(async move {
-            if &device == &self.device {
+            if self.device == device {
                 self.into_buffer()
             } else {
                 Buffer::from_vec(&device, self.to_vec()?.await?)
             }
         })
     }
-    pub fn to_device<'a>(&'a self, device: &Device) -> Result<impl Future<Output = Result<CowBuffer<'a, T>>> + 'a> {
+    pub fn to_device<'a>(
+        &'a self,
+        device: &Device,
+    ) -> Result<impl Future<Output = Result<CowBuffer<'a, T>>> + 'a> {
         // TODO: impl optimized non blocking version
         let device = device.clone();
         Ok(async move {
-            if &device == &self.device {
+            if self.device == device {
                 Ok(self.to_cow_buffer())
             } else {
                 Ok(Buffer::from_vec(&device, self.to_vec()?.await?)?.into())

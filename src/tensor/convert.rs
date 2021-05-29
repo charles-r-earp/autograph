@@ -1,7 +1,6 @@
 use super::{
-    Data, Dimension, Ix1, Num, Result, Scalar, Tensor, Tensor2, TensorBase, TensorView, CowTensor,
-    TensorViewMut, Unsigned,
-    CowRepr, ViewRepr, OwnedRepr,
+    CowRepr, CowTensor, Data, Dimension, Ix1, Num, OwnedRepr, Result, Scalar, Tensor, Tensor2,
+    TensorBase, TensorView, TensorViewMut, Unsigned, ViewRepr,
 };
 use crate::util::type_eq;
 use half::bf16;
@@ -34,18 +33,15 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
                 data,
             } = self;
             let data: OwnedRepr<T> = OwnedRepr(data.into_buffer()?);
-            let data: OwnedRepr<T2> = unsafe {
-                transmute(data)
-            };
+            let data: OwnedRepr<T2> = unsafe { transmute(data) };
             Ok(Tensor {
-                device: device.clone(),
-                dim: dim.clone(),
-                strides: strides.clone(),
-                data
+                device,
+                dim,
+                strides,
+                data,
             })
-
         } else {
-            Ok(self.scale_into(T2::one())?.into())
+            self.scale_into(T2::one())
         }
     }
     pub fn cast_to<T2: Num>(&self) -> Result<CowTensor<T2, D>> {
@@ -57,14 +53,12 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
                 data,
             } = self;
             let data: CowRepr<T> = CowRepr::from(ViewRepr(data.as_buffer_slice()));
-            let data: CowRepr<T2> = unsafe {
-                transmute(data)
-            };
+            let data: CowRepr<T2> = unsafe { transmute(data) };
             Ok(CowTensor {
                 device: device.clone(),
                 dim: dim.clone(),
                 strides: strides.clone(),
-                data
+                data,
             })
         } else {
             Ok(self.view().scale_into(T2::one())?.into())

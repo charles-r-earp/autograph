@@ -26,12 +26,12 @@ pub mod linalg;
 mod reduce;
 
 mod sealed {
-    use super::{Result, Data, Scalar};
+    use super::{Data, Result, Scalar};
 
     pub trait Sealed {}
 
     pub trait TryIntoData<T: Scalar> {
-        type Data: Data<Elem=T>;
+        type Data: Data<Elem = T>;
         fn try_into_data(self) -> Result<Self::Data>;
     }
 }
@@ -344,7 +344,9 @@ impl<S: DataBase, D: Dimension> TensorBase<S, D> {
 
 impl<S: DataBase, D: Dimension> TensorBase<S, D> {
     fn try_into_<T: Scalar>(&self) -> Result<TensorBase<<S as TryIntoData<T>>::Data, D>>
-        where S: TryIntoData<T> {
+    where
+        S: TryIntoData<T>,
+    {
         todo!()
     }
 }
@@ -461,13 +463,15 @@ impl<T: Scalar, S: DataOwned<Elem = T>, D: Dimension> TensorBase<S, D> {
             data,
         })
     }
-    pub fn to_device_mut<'a>(&'a mut self, device: &Device) -> Result<impl Future<Output = Result<()>> + 'a> {
+    #[allow(clippy::wrong_self_convention)]
+    pub fn to_device_mut<'a>(
+        &'a mut self,
+        device: &Device,
+    ) -> Result<impl Future<Output = Result<()>> + 'a> {
         let device = device.clone();
         Ok(async move {
-            if &self.device != &device {
-                let buffer = self.data.as_buffer_slice()
-                    .into_device(&device)?
-                    .await?;
+            if self.device != device {
+                let buffer = self.data.as_buffer_slice().into_device(&device)?.await?;
                 self.device = device;
                 self.data = S::from_buffer(buffer);
             }
@@ -521,7 +525,7 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
             device: self.device.clone(),
             dim: self.dim.clone(),
             strides: self.strides.clone(),
-            data: CowRepr(self.data.as_buffer_slice().into())
+            data: CowRepr(self.data.as_buffer_slice().into()),
         })
     }
     /// Copies self into a new Tensor
@@ -549,15 +553,16 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
             Ok(unsafe { Array::from_shape_vec_unchecked(dim.strides(strides), vec) })
         })
     }
-    pub fn into_device(self, device: &Device) -> Result<impl Future<Output = Result<Tensor<T, D>>>> {
+    pub fn into_device(
+        self,
+        device: &Device,
+    ) -> Result<impl Future<Output = Result<Tensor<T, D>>>> {
         let device = device.clone();
         Ok(async move {
-            if &self.device == &device {
+            if self.device == device {
                 self.into_tensor()
             } else {
-                let buffer = self.data.as_buffer_slice()
-                    .into_device(&device)?
-                    .await?;
+                let buffer = self.data.as_buffer_slice().into_device(&device)?.await?;
                 Ok(Tensor {
                     device,
                     dim: self.dim.clone(),
@@ -567,33 +572,36 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
             }
         })
     }
-    pub fn into_device_arc(self, device: &Device) -> Result<impl Future<Output = Result<ArcTensor<T, D>>>> {
+    pub fn into_device_arc(
+        self,
+        device: &Device,
+    ) -> Result<impl Future<Output = Result<ArcTensor<T, D>>>> {
         let device = device.clone();
         Ok(async move {
-            if &self.device == &device {
+            if self.device == device {
                 self.into_arc_tensor()
             } else {
-                Ok(self.into_device(&device)?
-                    .await?
-                    .into())
+                Ok(self.into_device(&device)?.await?.into())
             }
         })
     }
-    pub fn to_device<'a>(&'a self, device: &Device) -> Result<impl Future<Output = Result<CowTensor<'a, T, D>>> + 'a> {
+    pub fn to_device<'a>(
+        &'a self,
+        device: &Device,
+    ) -> Result<impl Future<Output = Result<CowTensor<'a, T, D>>> + 'a> {
         let device = device.clone();
         Ok(async move {
-            if &self.device == &device {
+            if self.device == device {
                 self.to_cow_tensor()
             } else {
-                let buffer = self.data.as_buffer_slice()
-                    .into_device(&device)?
-                    .await?;
+                let buffer = self.data.as_buffer_slice().into_device(&device)?.await?;
                 Ok(Tensor {
                     device,
                     dim: self.dim.clone(),
                     strides: self.strides.clone(),
                     data: OwnedRepr(buffer),
-                }.into())
+                }
+                .into())
             }
         })
     }

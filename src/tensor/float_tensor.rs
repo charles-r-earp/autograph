@@ -1,6 +1,7 @@
 use super::{
-    ArcTensor, Axis, DataBase, Dimension, Ix2, IxDyn, RemoveAxis, Sealed, ShapeBuilder, Tensor,
-    TensorBase, TensorView, TensorViewMut, CowTensor, TryIntoData, ViewRepr, Scalar, ArcRepr, CowRepr, ViewMutRepr, OwnedRepr,
+    ArcRepr, ArcTensor, Axis, CowRepr, CowTensor, DataBase, Dimension, Ix2, IxDyn, OwnedRepr,
+    RemoveAxis, Scalar, Sealed, ShapeBuilder, Tensor, TensorBase, TensorView, TensorViewMut,
+    TryIntoData, ViewMutRepr, ViewRepr,
 };
 pub use crate::backend::FloatType;
 use crate::{
@@ -8,15 +9,15 @@ use crate::{
     util::type_eq,
     Result,
 };
-use anyhow::{anyhow};
+use anyhow::anyhow;
 use half::bf16;
 use serde::{Deserialize, Serialize};
 use std::{
+    any::type_name,
     convert::{TryFrom, TryInto},
+    future::Future,
     mem::transmute,
     sync::Arc,
-    future::Future,
-    any::type_name,
 };
 
 #[allow(clippy::upper_case_acronyms)]
@@ -93,7 +94,11 @@ impl<T: Scalar> TryFrom<FloatBuffer> for Buffer<T> {
                 }
             }
         }
-        Err(anyhow!("Expected {} found {:?}!", type_name::<T>(), float_type))
+        Err(anyhow!(
+            "Expected {} found {:?}!",
+            type_name::<T>(),
+            float_type
+        ))
     }
 }
 
@@ -168,7 +173,11 @@ impl<T: Scalar> TryFrom<FloatArcBuffer> for Arc<Buffer<T>> {
                 }
             }
         }
-        Err(anyhow!("Expected {} found {:?}!", type_name::<T>(), float_type))
+        Err(anyhow!(
+            "Expected {} found {:?}!",
+            type_name::<T>(),
+            float_type
+        ))
     }
 }
 
@@ -227,7 +236,11 @@ impl<'a, T: Scalar> TryFrom<FloatBufferSlice<'a>> for BufferSlice<'a, T> {
                 }
             }
         }
-        Err(anyhow!("Expected {} found {:?}!", type_name::<T>(), float_type))
+        Err(anyhow!(
+            "Expected {} found {:?}!",
+            type_name::<T>(),
+            float_type
+        ))
     }
 }
 
@@ -292,7 +305,11 @@ impl<'a, T: Scalar> TryFrom<FloatBufferSliceMut<'a>> for BufferSliceMut<'a, T> {
                 }
             }
         }
-        Err(anyhow!("Expected {} found {:?}!", type_name::<T>(), float_type))
+        Err(anyhow!(
+            "Expected {} found {:?}!",
+            type_name::<T>(),
+            float_type
+        ))
     }
 }
 
@@ -343,13 +360,9 @@ impl<'a> From<FloatBufferSlice<'a>> for FloatCowBuffer<'a> {
 impl<'a, T: Float> From<CowBuffer<'a, T>> for FloatCowBuffer<'a> {
     fn from(from: CowBuffer<'a, T>) -> Self {
         if type_eq::<T, bf16>() {
-            Self::BF16(unsafe {
-                transmute(from)
-            })
+            Self::BF16(unsafe { transmute(from) })
         } else if type_eq::<T, f32>() {
-            Self::F32(unsafe {
-                transmute(from)
-            })
+            Self::F32(unsafe { transmute(from) })
         } else {
             unreachable!()
         }
@@ -372,7 +385,11 @@ impl<'a, T: Scalar> TryFrom<FloatCowBuffer<'a>> for CowBuffer<'a, T> {
                 }
             }
         }
-        Err(anyhow!("Expected {} found {:?}!", type_name::<T>(), float_type))
+        Err(anyhow!(
+            "Expected {} found {:?}!",
+            type_name::<T>(),
+            float_type
+        ))
     }
 }
 
@@ -469,7 +486,7 @@ impl FloatData for FloatArcRepr {
     }
 }
 
-impl<T: Scalar> TryIntoData<T> for FloatArcRepr<> {
+impl<T: Scalar> TryIntoData<T> for FloatArcRepr {
     type Data = ArcRepr<T>;
     fn try_into_data(self) -> Result<Self::Data> {
         Ok(ArcRepr(self.0.try_into()?))
@@ -555,7 +572,7 @@ impl FloatData for FloatCowRepr<'_> {
         self.0.float_type()
     }
     fn into_float_buffer(self) -> Result<FloatBuffer> {
-        Ok(self.0.into_float_buffer()?)
+        self.0.into_float_buffer()
     }
     fn as_float_buffer_slice(&self) -> FloatBufferSlice {
         self.0.as_float_buffer_slice()
@@ -608,42 +625,28 @@ impl<S: FloatData, D: Dimension> TensorBase<S, D> {
         }
     }
     pub fn float_cast_into<T: Num>(self) -> Result<Tensor<T, D>>
-        where S: TryIntoData<bf16> + TryIntoData<f32> {
+    where
+        S: TryIntoData<bf16> + TryIntoData<f32>,
+    {
         match self.float_type() {
-            FloatType::BF16 => {
-                self.try_into_::<bf16>()?
-                    .cast_into()
-            }
-            FloatType::F32 => {
-                self.try_into_::<f32>()?
-                    .cast_into()
-            }
+            FloatType::BF16 => self.try_into_::<bf16>()?.cast_into(),
+            FloatType::F32 => self.try_into_::<f32>()?.cast_into(),
         }
     }
     pub fn float_cast_to<T: Num>(&self) -> Result<CowTensor<T, D>> {
         match self.float_type() {
             FloatType::BF16 => {
                 if type_eq::<T, bf16>() {
-                    Ok(self.float_view()
-                        .try_into_::<T>()?
-                        .into())
+                    Ok(self.float_view().try_into_::<T>()?.into())
                 } else {
-                    Ok(self.float_view()
-                        .try_into_::<bf16>()?
-                        .cast_into()?
-                        .into())
+                    Ok(self.float_view().try_into_::<bf16>()?.cast_into()?.into())
                 }
             }
             FloatType::F32 => {
                 if type_eq::<T, f32>() {
-                    Ok(self.float_view()
-                        .try_into_::<T>()?
-                        .into())
+                    Ok(self.float_view().try_into_::<T>()?.into())
                 } else {
-                    Ok(self.float_view()
-                        .try_into_::<f32>()?
-                        .cast_into()?
-                        .into())
+                    Ok(self.float_view().try_into_::<f32>()?.cast_into()?.into())
                 }
             }
         }
@@ -656,22 +659,26 @@ impl<S: FloatData, D: Dimension> TensorBase<S, D> {
             data: FloatCowRepr(self.data.as_float_buffer_slice().into()),
         })
     }
-    pub fn float_into_device(self, device: &Device) -> Result<impl Future<Output = Result<FloatTensor<D>>>> {
+    pub fn float_into_device(
+        self,
+        device: &Device,
+    ) -> Result<impl Future<Output = Result<FloatTensor<D>>>> {
         let device = device.clone();
         Ok(async move {
-            if &self.device == &device {
+            if self.device == device {
                 self.into_float_tensor()
             } else {
-                self.float_to_device(&device)?
-                    .await?
-                    .into_float_tensor()
+                self.float_to_device(&device)?.await?.into_float_tensor()
             }
         })
     }
-    pub fn float_into_device_arc(self, device: &Device) -> Result<impl Future<Output = Result<FloatArcTensor<D>>>> {
+    pub fn float_into_device_arc(
+        self,
+        device: &Device,
+    ) -> Result<impl Future<Output = Result<FloatArcTensor<D>>>> {
         let device = device.clone();
         Ok(async move {
-            if &self.device == &device {
+            if self.device == device {
                 self.into_float_arc_tensor()
             } else {
                 self.float_to_device(&device)?
@@ -680,17 +687,18 @@ impl<S: FloatData, D: Dimension> TensorBase<S, D> {
             }
         })
     }
-    pub fn float_to_device<'a>(&'a self, device: &Device) -> Result<impl Future<Output = Result<FloatCowTensor<'a, D>>> + 'a> {
+    pub fn float_to_device<'a>(
+        &'a self,
+        device: &Device,
+    ) -> Result<impl Future<Output = Result<FloatCowTensor<'a, D>>> + 'a> {
         let device = device.clone();
         Ok(async move {
-            if &self.device == &device {
+            if self.device == device {
                 self.to_float_cow_tensor()
             } else {
                 match self.data.as_float_buffer_slice() {
                     FloatBufferSlice::BF16(slice) => {
-                        let buffer: FloatBuffer = slice.into_device(&device)?
-                            .await?
-                            .into();
+                        let buffer: FloatBuffer = slice.into_device(&device)?.await?.into();
                         Ok(FloatCowTensor {
                             device,
                             dim: self.dim.clone(),
@@ -699,9 +707,7 @@ impl<S: FloatData, D: Dimension> TensorBase<S, D> {
                         })
                     }
                     FloatBufferSlice::F32(slice) => {
-                        let buffer: FloatBuffer = slice.into_device(&device)?
-                            .await?
-                            .into();
+                        let buffer: FloatBuffer = slice.into_device(&device)?.await?.into();
                         Ok(FloatCowTensor {
                             device,
                             dim: self.dim.clone(),
@@ -714,7 +720,8 @@ impl<S: FloatData, D: Dimension> TensorBase<S, D> {
         })
     }
     pub fn float_argmax(&self, axis: Axis) -> Result<Tensor<u32, D::Smaller>>
-    where D: RemoveAxis,
+    where
+        D: RemoveAxis,
     {
         match self.float_type() {
             FloatType::BF16 => self.float_view().try_into_::<bf16>()?.argmax(axis),
@@ -761,11 +768,15 @@ impl<S: FloatDataOwned, D: Dimension> TensorBase<S, D> {
             data,
         })
     }
-    pub fn float_to_device_mut<'a>(&'a mut self, device: &Device) -> Result<impl Future<Output = Result<()>> + 'a> {
+    pub fn float_to_device_mut<'a>(
+        &'a mut self,
+        device: &Device,
+    ) -> Result<impl Future<Output = Result<()>> + 'a> {
         let device = device.clone();
         Ok(async move {
-            if &self.device != &device {
-                let buffer = self.float_view()
+            if self.device != device {
+                let buffer = self
+                    .float_view()
                     .float_into_device(&device)?
                     .await?
                     .data

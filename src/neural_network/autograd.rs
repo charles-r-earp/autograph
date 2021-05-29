@@ -19,10 +19,10 @@ use std::{
     collections::HashMap,
     convert::TryInto,
     fmt::{self, Debug},
+    future::Future,
     hash::{Hash, Hasher},
     marker::PhantomData,
     sync::{Arc, Weak},
-    future::Future,
 };
 
 #[doc(hidden)]
@@ -340,7 +340,10 @@ impl<D: Dimension> Variable<D> {
     }
     // TODO: may want to implement this in graph
     pub fn into_device(self, device: &Device) -> Result<impl Future<Output = Result<Self>>> {
-        fn into_device_impl<T: Float, D: Dimension>(this: Variable<D>, value: Tensor<T, D>) -> Result<Variable<D>> {
+        fn into_device_impl<T: Float, D: Dimension>(
+            this: Variable<D>,
+            value: Tensor<T, D>,
+        ) -> Result<Variable<D>> {
             let mut builder = this.forward_op(move |_| Ok(value))?;
             builder.backward_op(|mut dx, dy| {
                 let device = dx.device().clone();
@@ -353,9 +356,7 @@ impl<D: Dimension> Variable<D> {
             if self.value().device() == &device {
                 Ok(self)
             } else {
-                let value = self.value.float_view()
-                    .float_into_device(&device)?
-                    .await?;
+                let value = self.value.float_view().float_into_device(&device)?.await?;
                 // TODO: macro for this pattern?
                 match value.float_type() {
                     FloatType::BF16 => into_device_impl::<bf16, _>(self, value.float_cast_into()?),
@@ -493,16 +494,15 @@ impl<S: FloatData, D: Dimension> ParameterBase<S, D> {
             vertex: self.vertex,
         }
     }
-    pub fn into_device(self, device: &Device) -> Result<impl Future<Output = Result<Parameter<D>>>> {
+    pub fn into_device(
+        self,
+        device: &Device,
+    ) -> Result<impl Future<Output = Result<Parameter<D>>>> {
         let device = device.clone();
         Ok(async move {
-            let value = self.value.float_into_device_arc(&device)?
-                .await?;
+            let value = self.value.float_into_device_arc(&device)?.await?;
             let vertex = Vertex::from_float_tensor(&value);
-            Ok(Parameter {
-                value,
-                vertex,
-            })
+            Ok(Parameter { value, vertex })
         })
     }
 }
@@ -514,11 +514,14 @@ impl<D: Dimension> Parameter<D> {
             vertex: self.vertex.clone(),
         })
     }
-    pub fn to_device_mut<'a>(&'a mut self, device: &Device) -> Result<impl Future<Output = Result<()>> + 'a> {
+    #[allow(clippy::wrong_self_convention)]
+    pub fn to_device_mut<'a>(
+        &'a mut self,
+        device: &Device,
+    ) -> Result<impl Future<Output = Result<()>> + 'a> {
         let device = device.clone();
         Ok(async move {
-            self.value.float_to_device_mut(&device)?
-                .await?;
+            self.value.float_to_device_mut(&device)?.await?;
             self.vertex = Vertex::from_float_tensor(&self.value);
             Ok(())
         })
