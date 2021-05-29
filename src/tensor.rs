@@ -1,6 +1,6 @@
 pub use crate::backend::{Float, Num, Scalar, Unsigned};
 use crate::{
-    backend::{Buffer, BufferSlice, BufferSliceMut, Device},
+    backend::{Buffer, BufferSlice, BufferSliceMut, CowBuffer, Device},
     Result,
 };
 use anyhow::{anyhow, ensure};
@@ -26,9 +26,16 @@ pub mod linalg;
 mod reduce;
 
 mod sealed {
+    use super::{Result, Data, Scalar};
+
     pub trait Sealed {}
+
+    pub trait TryIntoData<T: Scalar> {
+        type Data: Data<Elem=T>;
+        fn try_into_data(self) -> Result<Self::Data>;
+    }
 }
-use sealed::Sealed;
+use sealed::{Sealed, TryIntoData};
 
 pub trait DataBase: Sealed {}
 
@@ -153,20 +160,17 @@ impl<T: Scalar> DataMut for ViewMutRepr<'_, T> {
 }
 
 // TODO: impl Serialize + Deserialize
-pub enum CowRepr<'a, T> {
-    Owned(OwnedRepr<T>),
-    Borrowed(ViewRepr<'a, T>),
-}
+pub struct CowRepr<'a, T>(CowBuffer<'a, T>);
 
 impl<T: Scalar> From<OwnedRepr<T>> for CowRepr<'_, T> {
     fn from(from: OwnedRepr<T>) -> Self {
-        Self::Owned(from)
+        Self(from.0.into())
     }
 }
 
 impl<'a, T: Scalar> From<ViewRepr<'a, T>> for CowRepr<'a, T> {
     fn from(from: ViewRepr<'a, T>) -> Self {
-        Self::Borrowed(from)
+        Self(from.0.into())
     }
 }
 
@@ -177,16 +181,10 @@ impl<T: Scalar> DataBase for CowRepr<'_, T> {}
 impl<T: Scalar> Data for CowRepr<'_, T> {
     type Elem = T;
     fn into_buffer(self) -> Result<Buffer<Self::Elem>> {
-        match self {
-            Self::Owned(owned) => owned.into_buffer(),
-            Self::Borrowed(borrowed) => borrowed.into_buffer(),
-        }
+        self.0.into_buffer()
     }
     fn as_buffer_slice(&self) -> BufferSlice<Self::Elem> {
-        match self {
-            Self::Owned(owned) => owned.as_buffer_slice(),
-            Self::Borrowed(borrowed) => borrowed.as_buffer_slice(),
-        }
+        self.0.as_buffer_slice()
     }
 }
 
@@ -212,6 +210,7 @@ fn dim_strides_from_shape<D: Dimension>(shape: impl Into<StrideShape<D>>) -> (D,
 
 #[derive(Serialize, Deserialize)]
 pub struct TensorBase<S: DataBase, D: Dimension> {
+    // TODO: offset field?
     #[serde(skip, default = "Device::new_cpu")]
     device: Device,
     dim: D,
@@ -343,6 +342,13 @@ impl<S: DataBase, D: Dimension> TensorBase<S, D> {
     }
 }
 
+impl<S: DataBase, D: Dimension> TensorBase<S, D> {
+    fn try_into_<T: Scalar>(&self) -> Result<TensorBase<<S as TryIntoData<T>>::Data, D>>
+        where S: TryIntoData<T> {
+        todo!()
+    }
+}
+
 impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     pub fn into_tensor(self) -> Result<Tensor<T, D>> {
         Ok(TensorBase {
@@ -455,6 +461,19 @@ impl<T: Scalar, S: DataOwned<Elem = T>, D: Dimension> TensorBase<S, D> {
             data,
         })
     }
+    pub fn to_device_mut<'a>(&'a mut self, device: &Device) -> Result<impl Future<Output = Result<()>> + 'a> {
+        let device = device.clone();
+        Ok(async move {
+            if &self.device != &device {
+                let buffer = self.data.as_buffer_slice()
+                    .into_device(&device)?
+                    .await?;
+                self.device = device;
+                self.data = S::from_buffer(buffer);
+            }
+            Ok(())
+        })
+    }
 }
 
 impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
@@ -497,6 +516,14 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
             data: OwnedRepr(self.data.as_buffer_slice().to_buffer()?),
         })
     }
+    pub fn to_cow_tensor(&self) -> Result<CowTensor<T, D>> {
+        Ok(TensorBase {
+            device: self.device.clone(),
+            dim: self.dim.clone(),
+            strides: self.strides.clone(),
+            data: CowRepr(self.data.as_buffer_slice().into())
+        })
+    }
     /// Copies self into a new Tensor
     pub fn to_arc_tensor(&self) -> Result<ArcTensor<T, D>> {
         Ok(TensorBase {
@@ -520,6 +547,54 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
         Ok(async move {
             let vec = vec_future.await?;
             Ok(unsafe { Array::from_shape_vec_unchecked(dim.strides(strides), vec) })
+        })
+    }
+    pub fn into_device(self, device: &Device) -> Result<impl Future<Output = Result<Tensor<T, D>>>> {
+        let device = device.clone();
+        Ok(async move {
+            if &self.device == &device {
+                self.into_tensor()
+            } else {
+                let buffer = self.data.as_buffer_slice()
+                    .into_device(&device)?
+                    .await?;
+                Ok(Tensor {
+                    device,
+                    dim: self.dim.clone(),
+                    strides: self.strides.clone(),
+                    data: OwnedRepr(buffer),
+                })
+            }
+        })
+    }
+    pub fn into_device_arc(self, device: &Device) -> Result<impl Future<Output = Result<ArcTensor<T, D>>>> {
+        let device = device.clone();
+        Ok(async move {
+            if &self.device == &device {
+                self.into_arc_tensor()
+            } else {
+                Ok(self.into_device(&device)?
+                    .await?
+                    .into())
+            }
+        })
+    }
+    pub fn to_device<'a>(&'a self, device: &Device) -> Result<impl Future<Output = Result<CowTensor<'a, T, D>>> + 'a> {
+        let device = device.clone();
+        Ok(async move {
+            if &self.device == &device {
+                self.to_cow_tensor()
+            } else {
+                let buffer = self.data.as_buffer_slice()
+                    .into_device(&device)?
+                    .await?;
+                Ok(Tensor {
+                    device,
+                    dim: self.dim.clone(),
+                    strides: self.strides.clone(),
+                    data: OwnedRepr(buffer),
+                }.into())
+            }
         })
     }
 }

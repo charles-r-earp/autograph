@@ -2,7 +2,7 @@ use crate::{
     backend::Device,
     learn::{Fit, Predict},
     tensor::{
-        float_tensor::{FloatTensor, FloatTensorD, FloatTensorExt, FloatType},
+        float_tensor::{FloatTensor, FloatTensorD, FloatType},
         linalg::{gemm, gemm_bias},
         ArcTensor2, Axis, Data, Dimension, Float, Ix1, Ix2, Tensor, Tensor0, Tensor1, Tensor2,
         TensorBase, TensorView0, TensorView2, TensorViewD, TensorViewMut1, TensorViewMut2,
@@ -94,12 +94,12 @@ impl Optimizer for Sgd {
     }
 }
 
-// TODO: Derive this
+// TODO: docs for derive
 pub trait Forward {
     fn forward(&self, input: VariableD) -> Result<VariableD>;
 }
 
-// TODO: Derive this
+// TODO: docs for Derive
 pub trait Network: Forward {
     /// Implementation method for parameters_mut\
     ///
@@ -125,32 +125,30 @@ pub trait Network: Forward {
     fn layers_mut(&mut self) -> Vec<&mut dyn Network> {
         Vec::new()
     }
-    /*
     fn to_device_mut(&mut self, device: &Device) -> Result<()> {
-        for parameter in self.parameters_mut() {
-            todo!() // parameter.to_device_mut(device)?;
+        // issue is that if any transfers fail some data will be on the previous devices
+        for layer in self.layers_mut() {
+            layer.to_device_mut(device)?;
         }
+        Ok(())
     }
-    */
+    fn into_device(mut self, device: &Device) -> Result<Self>
+        where Self: Sized {
+        self.to_device_mut(device)?;
+        Ok(self)
+    }
 }
 
-#[derive(Default, Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, Copy, Serialize, Deserialize, Network, Forward)]
+// This replaces ::autograph with crate
+#[autograph(crate)]
 pub struct Identity;
-
-impl Forward for Identity {
-    fn forward(&self, input: VariableD) -> Result<VariableD> {
-        Ok(input)
-    }
-}
-
-impl Network for Identity {}
 
 #[derive(Serialize, Deserialize)]
 #[serde(bound(serialize = "A: Serialize", deserialize = "A: Deserialize<'de>"))]
 pub struct Dense<A = Identity> {
     weight: Parameter2,
     bias: Option<Parameter1>,
-    // #[autograph(layer)]
     activation: A,
 }
 
@@ -186,7 +184,7 @@ impl<A: Forward + 'static> Forward for Dense<A> {
     }
 }
 
-impl<A: Forward + 'static> Network for Dense<A> {
+impl<A: Network + 'static> Network for Dense<A> {
     fn collect_paramters_mut<'a>(
         &'a mut self,
         parameters: &mut Vec<ParameterViewMutD<'a>>,
@@ -196,6 +194,20 @@ impl<A: Forward + 'static> Network for Dense<A> {
             parameters.push(bias.make_mut()?.into_dyn());
         }
         Ok(())
+    }
+    fn layers_mut(&mut self) -> Vec<&mut dyn Network> {
+        vec![&mut self.activation]
+    }
+    fn to_device_mut(&mut self, device: &Device) -> Result<()> {
+        smol::block_on(async {
+            self.weight.to_device_mut(device)?
+                .await?;
+            if let Some(bias) = self.bias.as_mut() {
+                bias.to_device_mut(device)?
+                    .await?;
+            }
+            self.activation.to_device_mut(device)
+        })
     }
 }
 
@@ -235,7 +247,7 @@ impl Variable2 {
             let input_value: ArcTensor2<T> = input.value().clone().try_into()?;
             let weight_value: ArcTensor2<T> = weight.value().clone().try_into()?;
             let bias_value = if let Some(bias) = bias.as_ref() {
-                Some(bias.value().clone().cast_into::<T>()?)
+                Some(bias.value().clone().float_cast_into::<T>()?)
             } else {
                 None
             };
@@ -439,7 +451,7 @@ impl<
                 .value()
                 .float_view()
                 .into_dimensionality::<Ix2>()?
-                .argmax(Axis(1))?;
+                .float_argmax(Axis(1))?;
             pred.accuracy_mut(&t.view(), &mut correct.view_mut())?;
             let t_hot = t.to_one_hot::<T>(nclasses)?;
             let loss = y.cross_entropy_loss(t_hot.into())?;
@@ -482,7 +494,7 @@ impl<
                 .value()
                 .float_view()
                 .into_dimensionality::<Ix2>()?
-                .argmax(Axis(1))?;
+                .float_argmax(Axis(1))?;
             pred.accuracy_mut(&t.view(), &mut correct.view_mut())?;
             let t_hot = t.to_one_hot::<T>(nclasses)?;
             let loss = y.cross_entropy_loss(t_hot.into())?;
@@ -509,6 +521,6 @@ impl<T: Float, S: Data<Elem = T>, N: Network, O: Optimizer> Predict<TensorBase<S
             .value()
             .float_view()
             .into_dimensionality::<Ix2>()?
-            .argmax(Axis(1))
+            .float_argmax(Axis(1))
     }
 }

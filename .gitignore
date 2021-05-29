@@ -18,6 +18,7 @@ glsl-shaders/Cargo.lock
 #already existing elements are commented out
 
 /target
+/autograph_derive/target
 /glsl-shaders/target
 /examples/cluster/kmeans/iris/target
 /examples/cluster/kmeans/iris/plot.png

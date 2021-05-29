@@ -26,6 +26,11 @@ mod macros {
     }
 }
 
+#[allow(unused_imports)]
+#[macro_use]
+extern crate autograph_derive;
+pub use autograph_derive::*;
+
 pub mod backend;
 pub mod cluster;
 pub mod dataset;

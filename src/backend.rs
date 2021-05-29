@@ -779,11 +779,17 @@ pub struct ComputePass {
     work_groups: [u32; 3],
 }
 
+
 #[doc(hidden)]
 pub trait Data: Sealed + Sized {
     type Elem;
     #[doc(hidden)]
     fn needs_drop() -> bool;
+    #[doc(hidden)]
+    fn into_buffer(buffer: BufferBase<Self>) -> Result<Buffer<Self::Elem>>
+        where Self::Elem: Scalar {
+        buffer.to_buffer()
+    }
 }
 
 pub trait DataMut: Data {}
@@ -796,6 +802,9 @@ impl<T> Data for BufferRepr<T> {
     type Elem = T;
     fn needs_drop() -> bool {
         true
+    }
+    fn into_buffer(buffer: Buffer<T>) -> Result<Buffer<T>> {
+        Ok(buffer)
     }
 }
 
@@ -828,7 +837,7 @@ pub struct BufferBase<S: Data> {
     id: BufferId,
     offset: usize,
     len: usize,
-    _m: PhantomData<S>,
+    _m: PhantomData<S>
 }
 
 pub type Buffer<T> = BufferBase<BufferRepr<T>>;
@@ -851,6 +860,9 @@ impl<T: Scalar> Buffer<T> {
             len,
             _m: PhantomData::default(),
         })
+    }
+    pub fn from_vec(device: &Device, vec: Vec<T>) -> Result<Self> {
+        Self::from_cow(device, vec.into())
     }
     /// Constructs a new buffer\
     ///
@@ -901,6 +913,23 @@ impl<T: Scalar> Buffer<T> {
         }
         Ok(Arc::get_mut(buffer).unwrap().as_buffer_slice_mut())
     }
+    /// Transfers to a new device, in place.\
+    ///
+    /// See to_device
+    pub fn to_device_mut<'a>(&'a mut self, device: &Device) -> Result<impl Future<Output = Result<()>> + 'a> {
+        let device = device.clone();
+        Ok(async move {
+            if &self.device == &device {
+                Ok(())
+            } else {
+                let buffer = self.as_buffer_slice()
+                    .into_device(&device)?
+                    .await?;
+                *self = buffer;
+                Ok(())
+            }
+        })
+    }
 }
 
 impl<T, S: Data<Elem = T>> BufferBase<S> {
@@ -914,13 +943,13 @@ impl<T, S: Data<Elem = T>> BufferBase<S> {
             _m: PhantomData::default(),
         }
     }
+}
+
+impl<T: Scalar, S: Data<Elem=T>> BufferBase<S> {
     /// Copies self into a new Buffer
     ///
     /// Err: Errors if the backend cannot perform the operation, potentially due to a disconnect or running out of memory.
-    pub fn to_buffer(&self) -> Result<Buffer<T>>
-    where
-        T: Scalar,
-    {
+    pub fn to_buffer(&self) -> Result<Buffer<T>> {
         let buffer = unsafe { Buffer::uninitialized(&self.device, self.len)? };
         self.device.dyn_device.copy_buffer_to_buffer(
             self.id,
@@ -930,6 +959,15 @@ impl<T, S: Data<Elem = T>> BufferBase<S> {
             self.len * size_of::<T>(),
         )?;
         Ok(buffer)
+    }
+    /// Copies self into a new Buffer, consuming the buffer\
+    ///
+    /// A NOOP for Buffer
+    pub fn into_buffer(self) -> Result<Buffer<T>> {
+        S::into_buffer(self)
+    }
+    pub fn to_cow_buffer(&self) -> CowBuffer<T> {
+        self.as_buffer_slice().into()
     }
     /// Reads from device memory to a Vec.\
     ///
@@ -952,11 +990,33 @@ impl<T, S: Data<Elem = T>> BufferBase<S> {
     /// #  }
     ///```
     /// Err: Errors if the backend cannot perform the operation, potentially due to a disconnect or running out of memory.
-    pub fn to_vec(&self) -> Result<impl Future<Output = Result<Vec<T>>>>
-    where
-        T: Scalar,
-    {
+    pub fn to_vec(&self) -> Result<impl Future<Output = Result<Vec<T>>>> {
         self.device.read_buffer(self.id, self.offset, self.len)
+    }
+    /// Transfers the buffer to a new device\, consuming the buffer\
+    ///
+    /// A NOOP for owned buffers on the same device
+    pub fn into_device(self, device: &Device) -> Result<impl Future<Output = Result<Buffer<T>>>> {
+        // TODO: impl optimized non blocking version
+        let device = device.clone();
+        Ok(async move {
+            if &device == &self.device {
+                self.into_buffer()
+            } else {
+                Buffer::from_vec(&device, self.to_vec()?.await?)
+            }
+        })
+    }
+    pub fn to_device<'a>(&'a self, device: &Device) -> Result<impl Future<Output = Result<CowBuffer<'a, T>>> + 'a> {
+        // TODO: impl optimized non blocking version
+        let device = device.clone();
+        Ok(async move {
+            if &device == &self.device {
+                Ok(self.to_cow_buffer())
+            } else {
+                Ok(Buffer::from_vec(&device, self.to_vec()?.await?)?.into())
+            }
+        })
     }
 }
 
@@ -1024,5 +1084,40 @@ impl<'de, T: Scalar> Deserialize<'de> for Buffer<T> {
         let vec = Vec::deserialize(deserializer)?;
         // Should not fail for cpu
         Ok(Buffer::from_cow(&Device::new_cpu(), vec.into()).unwrap())
+    }
+}
+
+pub enum CowBuffer<'a, T> {
+    Owned(Buffer<T>),
+    Borrowed(BufferSlice<'a, T>),
+}
+
+impl<T: Scalar> CowBuffer<'_, T> {
+    pub fn as_buffer_slice(&self) -> BufferSlice<T> {
+        match self {
+            Self::Owned(buffer) => buffer.as_buffer_slice(),
+            Self::Borrowed(slice) => slice.as_buffer_slice(),
+        }
+    }
+    pub fn into_buffer(self) -> Result<Buffer<T>>
+    where
+        T: Scalar,
+    {
+        match self {
+            Self::Owned(buffer) => Ok(buffer),
+            Self::Borrowed(slice) => slice.to_buffer(),
+        }
+    }
+}
+
+impl<T> From<Buffer<T>> for CowBuffer<'_, T> {
+    fn from(buffer: Buffer<T>) -> Self {
+        Self::Owned(buffer)
+    }
+}
+
+impl<'a, T> From<BufferSlice<'a, T>> for CowBuffer<'a, T> {
+    fn from(slice: BufferSlice<'a, T>) -> Self {
+        Self::Borrowed(slice)
     }
 }

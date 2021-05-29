@@ -18,6 +18,7 @@ publish = false
 compile-shaders = []
 
 [dependencies]
+autograph_derive = { path = "autograph_derive" }
 proxy-enum = "0.3.1"
 bytemuck = { version = "1.4.1", features = ["derive"] }
 ndarray = { version = "0.14.0", features = ["approx", "serde"] }

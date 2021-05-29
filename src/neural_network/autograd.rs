@@ -12,6 +12,7 @@ use crate::{
     },
     Result,
 };
+use half::bf16;
 use serde::{Deserialize, Deserializer, Serialize};
 use smol::lock::{Mutex, MutexGuardArc};
 use std::{
@@ -21,6 +22,7 @@ use std::{
     hash::{Hash, Hasher},
     marker::PhantomData,
     sync::{Arc, Weak},
+    future::Future,
 };
 
 #[doc(hidden)]
@@ -138,6 +140,7 @@ impl GraphBase {
             .or_default()
             .push(Edge { output, op });
     }
+    // TODO: make this async for backward device transfers?
     fn backward(self) -> Result<HashMap<Vertex, FloatTensorD>> {
         if self.variable_edges.is_empty() {
             return Ok(HashMap::new());
@@ -301,7 +304,7 @@ impl<D: Dimension> Variable<D> {
         self.value
     }
     /// Convenience method for Forward::forward
-    pub fn forward<F: Forward>(self, f: F) -> Result<VariableD> {
+    pub fn forward<F: Forward>(self, f: &F) -> Result<VariableD> {
         f.forward(self.into_dyn())
     }
     /// Returns a VariableBuilder computed via the provided closure.\
@@ -313,7 +316,7 @@ impl<D: Dimension> Variable<D> {
         T: Float,
         T2: Float,
         D2: Dimension,
-        F: Fn(TensorView<T, D>) -> Result<Tensor<T2, D2>>,
+        F: FnOnce(TensorView<T, D>) -> Result<Tensor<T2, D2>>,
     {
         let output_value = f(self.value.float_view().try_into()?)?;
         Ok(VariableBuilder {
@@ -333,6 +336,32 @@ impl<D: Dimension> Variable<D> {
             value: self.value.into_dimensionality()?,
             training: self.training,
             grad_index: self.grad_index,
+        })
+    }
+    // TODO: may want to implement this in graph
+    pub fn into_device(self, device: &Device) -> Result<impl Future<Output = Result<Self>>> {
+        fn into_device_impl<T: Float, D: Dimension>(this: Variable<D>, value: Tensor<T, D>) -> Result<Variable<D>> {
+            let mut builder = this.forward_op(move |_| Ok(value))?;
+            builder.backward_op(|mut dx, dy| {
+                let device = dx.device().clone();
+                dx.add_assign(&smol::block_on(dy.into_device(&device)?)?)
+            });
+            Ok(builder.build())
+        }
+        let device = device.clone();
+        Ok(async move {
+            if self.value().device() == &device {
+                Ok(self)
+            } else {
+                let value = self.value.float_view()
+                    .float_into_device(&device)?
+                    .await?;
+                // TODO: macro for this pattern?
+                match value.float_type() {
+                    FloatType::BF16 => into_device_impl::<bf16, _>(self, value.float_cast_into()?),
+                    FloatType::F32 => into_device_impl::<f32, _>(self, value.float_cast_into()?),
+                }
+            }
         })
     }
 }
@@ -464,6 +493,18 @@ impl<S: FloatData, D: Dimension> ParameterBase<S, D> {
             vertex: self.vertex,
         }
     }
+    pub fn into_device(self, device: &Device) -> Result<impl Future<Output = Result<Parameter<D>>>> {
+        let device = device.clone();
+        Ok(async move {
+            let value = self.value.float_into_device_arc(&device)?
+                .await?;
+            let vertex = Vertex::from_float_tensor(&value);
+            Ok(Parameter {
+                value,
+                vertex,
+            })
+        })
+    }
 }
 
 impl<D: Dimension> Parameter<D> {
@@ -471,6 +512,15 @@ impl<D: Dimension> Parameter<D> {
         Ok(ParameterBase {
             value: self.value.float_make_mut()?,
             vertex: self.vertex.clone(),
+        })
+    }
+    pub fn to_device_mut<'a>(&'a mut self, device: &Device) -> Result<impl Future<Output = Result<()>> + 'a> {
+        let device = device.clone();
+        Ok(async move {
+            self.value.float_to_device_mut(&device)?
+                .await?;
+            self.vertex = Vertex::from_float_tensor(&self.value);
+            Ok(())
         })
     }
 }

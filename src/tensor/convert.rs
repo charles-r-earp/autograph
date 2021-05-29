@@ -1,9 +1,11 @@
 use super::{
-    Data, Dimension, Ix1, Num, Result, Scalar, Tensor, Tensor2, TensorBase, TensorView,
+    Data, Dimension, Ix1, Num, Result, Scalar, Tensor, Tensor2, TensorBase, TensorView, CowTensor,
     TensorViewMut, Unsigned,
+    CowRepr, ViewRepr, OwnedRepr,
 };
 use crate::util::type_eq;
 use half::bf16;
+use std::mem::transmute;
 
 impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     /// Scales the tensor to a new Tensor\
@@ -24,8 +26,49 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     /// Err: Does not currently support non standard layout. Errors if the operation cannot be executed.\
     /// Supports Scalar types u8, bf16, i32, u32, and f32
     pub fn cast_into<T2: Num>(self) -> Result<Tensor<T2, D>> {
-        // TODO: make T == T2 a noop for owned tensors
-        self.scale_into(T2::one())
+        if type_eq::<T, T2>() {
+            let TensorBase {
+                device,
+                dim,
+                strides,
+                data,
+            } = self;
+            let data: OwnedRepr<T> = OwnedRepr(data.into_buffer()?);
+            let data: OwnedRepr<T2> = unsafe {
+                transmute(data)
+            };
+            Ok(Tensor {
+                device: device.clone(),
+                dim: dim.clone(),
+                strides: strides.clone(),
+                data
+            })
+
+        } else {
+            Ok(self.scale_into(T2::one())?.into())
+        }
+    }
+    pub fn cast_to<T2: Num>(&self) -> Result<CowTensor<T2, D>> {
+        if type_eq::<T, T2>() {
+            let TensorBase {
+                device,
+                dim,
+                strides,
+                data,
+            } = self;
+            let data: CowRepr<T> = CowRepr::from(ViewRepr(data.as_buffer_slice()));
+            let data: CowRepr<T2> = unsafe {
+                transmute(data)
+            };
+            Ok(CowTensor {
+                device: device.clone(),
+                dim: dim.clone(),
+                strides: strides.clone(),
+                data
+            })
+        } else {
+            Ok(self.view().scale_into(T2::one())?.into())
+        }
     }
 }
 
