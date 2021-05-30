@@ -99,6 +99,8 @@ impl Optimizer for Sgd {
 /// /// # Derive
 /// Forward can be derived for a composite struct of layers:\
 ///```
+/// use autograph::neural_network::{Forward, Dense};
+///
 /// #[derive(Forward)]
 /// struct Net { // tuple structs ie Net(Dense, Dense) also supported
 ///     dense1: Dense,
@@ -119,6 +121,8 @@ pub trait Forward {
 /// # Derive
 /// Network (and Forward) can be derived for a composite struct of layers:\
 ///```
+/// use autograph::neural_network::{Network, Forward, Dense};
+///
 /// #[derive(Network, Forward)]
 /// struct Net { // tuple structs ie Net(Dense, Dense) also supported
 ///     dense1: Dense,
@@ -229,7 +233,17 @@ impl<A: Forward + 'static> Forward for Dense<A> {
                 (outputs, inputs),
             )?;
         }
-        self.forward(input)
+        // TODO: avoid dup of forward impl here, note that we need to call forward_mut on\
+        // activation because it may be a normalization layer
+        let input = input.into_dimensionality()?;
+        let output = {
+            /* specialization of fuzed ops
+            if type_eq::<A, Relu>() {
+                todo!()
+            }*/
+            input.dense(&self.weight, self.bias.as_ref())?
+        };
+        self.activation.forward_mut(output.into_dyn())
     }
 }
 
