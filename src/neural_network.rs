@@ -20,6 +20,8 @@ use std::{
     fmt::{self, Debug},
 };
 
+pub use autograph_derive::{Forward, Network};
+
 pub mod autograd;
 use autograd::{
     Graph, Parameter1, Parameter2, ParameterViewMutD, Variable, Variable0, Variable2, VariableD,
