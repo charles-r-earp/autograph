@@ -19,6 +19,8 @@ glsl-shaders/Cargo.lock
 
 /target
 /autograph_derive/target
+/rust-shaders/target
+/rust-shaders/rust-toolchain/target
 /glsl-shaders/target
 /examples/cluster/kmeans/iris/target
 /examples/cluster/kmeans/iris/plot.png

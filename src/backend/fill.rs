@@ -24,18 +24,31 @@ pub(super) fn fill<T: Scalar>(device: &Device, slice: BufferSliceMut<T>, x: T) -
 where
     T: Scalar,
 {
-    let src = if size_eq::<T, u64>() {
-        include_shader!("glsl/fill_u64.spv")
-    } else {
-        include_shader!("glsl/fill_u32.spv")
-    };
-
     let n = slice.len as u32;
     if n == 0 {
         return Ok(());
     }
 
-    let builder = device.compute_pass(src, "main")?.buffer_slice_mut(slice)?;
+    let (src, entry_point) = if cfg!(feature = "rust-shaders") {
+        let src = include_shader!("rust/shader.spv");
+        let entry_point = if size_eq::<T, u64>() {
+            "fill_u64"
+        } else {
+            "fill_u32"
+        };
+        (src, entry_point)
+    } else {
+        let src = if size_eq::<T, u64>() {
+            include_shader!("glsl/fill_u64.spv")
+        } else {
+            include_shader!("glsl/fill_u32.spv")
+        };
+        (src, "main")
+    };
+
+    let builder = device
+        .compute_pass(src, entry_point)?
+        .buffer_slice_mut(slice)?;
 
     let builder = if size_eq::<T, u64>() {
         builder.push_constants(bytemuck::cast_slice(&[FillPushConsts {

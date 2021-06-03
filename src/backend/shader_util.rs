@@ -28,6 +28,11 @@ pub(super) fn entry_descriptors_from_spirv(spirv: &[u8]) -> Result<Vec<EntryDesc
         .map_err(|e| anyhow!("{:?}", e))?;
     let module = loader.module();
 
+    /*use rspirv::binary::Disassemble;
+    println!("{}", module.disassemble());
+    dbg!();
+    panic!();
+    */
     let mut entry_points = HashMap::<Word, EntryPoint>::new();
 
     for (i, inst) in module.entry_points.iter().enumerate() {
@@ -449,11 +454,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn shader_module_fill_u32() {
-        let spirv = include_bytes!("../shaders/glsl/fill_u32.spv");
-
-        let entry_descriptors = entry_descriptors_from_spirv(spirv).unwrap();
-
+    fn shader_module_fill_u32() -> Result<()> {
+        let spirv = include_shader!("glsl/fill_u32.spv");
+        let entry_descriptors = entry_descriptors_from_spirv(spirv)?;
         let target = vec![EntryDescriptor {
             name: String::from("main"),
             local_size: [1024, 1, 1],
@@ -465,11 +468,34 @@ mod tests {
                 range: PushConstantRange { start: 0, end: 8 },
             }),
         }];
-
         assert_eq!(
             &entry_descriptors, &target,
             "output:\n{:#?}\n!=\ntarget\n{:#?}",
             entry_descriptors, target
         );
+        Ok(())
+    }
+
+    #[test]
+    fn shader_module_rust() -> Result<()> {
+        let spirv = include_shader!("rust/shader.spv");
+        let entry_descriptors = entry_descriptors_from_spirv(spirv)?;
+        let target = vec![EntryDescriptor {
+            name: String::from("fill_u32"),
+            local_size: [1024, 1, 1],
+            buffer_descriptors: vec![BufferDescriptor {
+                binding: 0,
+                mutable: true,
+            }],
+            push_constant_descriptor: Some(PushConstantDescriptor {
+                range: PushConstantRange { start: 0, end: 8 },
+            }),
+        }];
+        assert_eq!(
+            &entry_descriptors, &target,
+            "output:\n{:#?}\n!=\ntarget\n{:#?}",
+            entry_descriptors, target
+        );
+        Ok(())
     }
 }

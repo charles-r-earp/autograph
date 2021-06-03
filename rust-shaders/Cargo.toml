@@ -1,0 +1,9 @@
+[package]
+name = "rust-shaders"
+version = "0.1.0"
+authors = ["charles-r-earp <charles.r.earp@gmail.com>"]
+edition = "2018"
+
+[build-dependencies]
+spirv-builder = { git = "https://github.com/EmbarkStudios/rust-gpu" }
+#rspirv = "0.7.0"

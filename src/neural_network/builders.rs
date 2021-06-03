@@ -66,18 +66,22 @@ impl Default for DenseBuilder<Identity> {
 }
 
 impl<A> DenseBuilder<A> {
+    /// Set the device, defaults to cpu.
     pub fn device(mut self, device: &Device) -> Self {
         self.device = device.clone();
         self
     }
+    /// Set the number of inputs, defaults to 0 which will lazily initialize on Dense::forward_mut.
     pub fn inputs(mut self, inputs: usize) -> Self {
         self.inputs = inputs;
         self
     }
+    /// Set the number of outputs.
     pub fn outputs(mut self, outputs: usize) -> Self {
         self.outputs = outputs;
         self
     }
+    /// Whether to include a bias, defaults to false.
     pub fn bias(mut self, bias: bool) -> Self {
         self.bias_data = if bias {
             Some(vec![0.; self.outputs])
@@ -86,6 +90,9 @@ impl<A> DenseBuilder<A> {
         };
         self
     }
+    /// Sets the activation, defaults to Identity.\
+    //
+    // The activation A2 should impl Network + 'static
     pub fn activation<A2>(self, activation: A2) -> DenseBuilder<A2> {
         DenseBuilder {
             device: self.device,
