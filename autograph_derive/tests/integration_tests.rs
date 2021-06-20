@@ -1,9 +1,9 @@
 use autograph::{
-    Result,
     neural_network::{
+        autograd::{Parameter1, Parameter2, VariableD},
         Dense, Forward, Identity, Network,
-        autograd::{VariableD, Parameter2, Parameter1}
     },
+    Result,
 };
 
 #[derive(Network)]

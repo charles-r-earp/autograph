@@ -1,21 +1,21 @@
-
 use crate::{
     backend::Device,
     tensor::{
         float::{
-            FloatArcRepr, FloatArcTensor, FloatData, FloatDataMut, FloatTensor,
-            FloatTensorBase, FloatTensorView, FloatTensorViewMut, FloatType, FloatViewMutRepr, FloatViewRepr, FloatOwnedRepr,
-        }, Dimension, Ix0, Ix1, Ix2, Ix3, Ix4, Ix5, Ix6, IxDyn,
+            FloatArcRepr, FloatArcTensor, FloatData, FloatDataMut, FloatOwnedRepr, FloatTensor,
+            FloatTensorBase, FloatTensorView, FloatTensorViewMut, FloatType, FloatViewMutRepr,
+            FloatViewRepr,
+        },
+        Dimension, Ix0, Ix1, Ix2, Ix3, Ix4, Ix5, Ix6, IxDyn,
     },
     util::type_eq,
     Result,
 };
 use anyhow::anyhow;
 
-
+use futures_util::future::ready;
 use serde::{Deserialize, Deserializer, Serialize};
 use smol::lock::{Mutex, MutexGuard};
-use futures_util::future::ready;
 use std::{
     cell::RefCell,
     collections::{HashMap, VecDeque},
@@ -23,12 +23,12 @@ use std::{
     fmt::{self, Debug},
     future::Future,
     hash::{Hash, Hasher},
+    iter::FromIterator,
     marker::PhantomData,
     mem::transmute,
-    iter::FromIterator,
-    sync::Arc,
     ops::DerefMut,
     pin::Pin,
+    sync::Arc,
 };
 
 #[doc(hidden)]
@@ -42,7 +42,8 @@ pub struct VertexBase<D: Dimension> {
 impl<D: Dimension> VertexBase<D> {
     fn into_dimensionality<D2>(self) -> Result<VertexBase<D2>>
     where
-        D2: Dimension {
+        D2: Dimension,
+    {
         Ok(VertexBase {
             device: self.device,
             float_type: self.float_type,
@@ -67,7 +68,6 @@ impl<D: Dimension> Debug for VertexBase<D> {
             .finish()
     }
 }
-
 
 #[derive(Clone)]
 pub struct Vertex {
@@ -150,7 +150,6 @@ impl<S: FloatData, D: Dimension> GradientBase<S, D> {
     }
 }
 
-
 impl<S: FloatDataMut, D: Dimension> GradientBase<S, D> {
     pub fn view_mut(&mut self) -> GradientViewMut<D> {
         gradient_impl!(self, map x => x.view_mut())
@@ -161,29 +160,25 @@ impl<D: Dimension> Gradient<D> {
     /// converts to dense and returns a mutable view
     pub fn dense_view_mut(&mut self) -> FloatTensorViewMut<D> {
         match self {
-            Self::Dense(x) => x.view_mut()
+            Self::Dense(x) => x.view_mut(),
         }
     }
     pub fn to_dense_mut(&mut self) -> Result<()> {
         match self {
-            Self::Dense(_) => Ok(())
+            Self::Dense(_) => Ok(()),
         }
     }
     pub fn into_dense(mut self) -> Result<FloatTensor<D>> {
         self.to_dense_mut()?;
         match self {
-            Self::Dense(x) => Ok(x)
+            Self::Dense(x) => Ok(x),
         }
     }
 }
 
 fn into_dimensionality<D1: Dimension, D2: Dimension>(dim: D1) -> Result<D2> {
     D2::from_dimension(&dim)
-        .ok_or_else(|| anyhow!(
-        "Incompatible Shapes! {:?} => {:?}",
-        dim,
-        D2::NDIM
-    ))
+        .ok_or_else(|| anyhow!("Incompatible Shapes! {:?} => {:?}", dim, D2::NDIM))
 }
 
 pub struct OccupiedEntry<'a, D: Dimension> {
@@ -193,11 +188,12 @@ pub struct OccupiedEntry<'a, D: Dimension> {
 
 impl<'a, D: Dimension> OccupiedEntry<'a, D> {
     pub fn gradient_view_mut(&mut self) -> GradientViewMut<D> {
-        self.gradient.view_mut().into_dimensionality()
-            .unwrap()
+        self.gradient.view_mut().into_dimensionality().unwrap()
     }
     pub fn dense_view_mut(&mut self) -> FloatTensorViewMut<D> {
-        self.gradient.dense_view_mut().into_dimensionality()
+        self.gradient
+            .dense_view_mut()
+            .into_dimensionality()
             .unwrap()
     }
     pub fn into_dense_view_mut(self) -> Result<FloatTensorViewMut<'a, D>> {
@@ -242,11 +238,12 @@ impl<'a, D: Dimension> VacantEntry<'a, D> {
     /// The tensor may be uninitialized.
     pub unsafe fn into_dense_uninitialized(self) -> Result<FloatTensorViewMut<'a, D>> {
         let vertex = self.vertex;
-        self.gradient.replace(Gradient::Dense(FloatTensor::uninitialized(
-            &vertex.device,
-            vertex.float_type,
-            vertex.dim.into_dyn(),
-        )?));
+        self.gradient
+            .replace(Gradient::Dense(FloatTensor::uninitialized(
+                &vertex.device,
+                vertex.float_type,
+                vertex.dim.into_dyn(),
+            )?));
         match self.gradient {
             Some(Gradient::Dense(x)) => Ok(x.view_mut().into_dimensionality()?),
             None => unreachable!(),
@@ -279,14 +276,8 @@ pub type GradientEntryD<'a> = GradientEntry<'a, IxDyn>;
 impl<'a, D: Dimension> GradientEntry<'a, D> {
     fn new(vertex: VertexBase<D>, gradient: &'a mut Option<GradientD>) -> Self {
         match gradient {
-            Some(gradient) => Self::Occupied(OccupiedEntry {
-                vertex,
-                gradient,
-            }),
-            None => Self::Vacant(VacantEntry {
-                vertex,
-                gradient,
-            })
+            Some(gradient) => Self::Occupied(OccupiedEntry { vertex, gradient }),
+            None => Self::Vacant(VacantEntry { vertex, gradient }),
         }
     }
     pub fn or_dense_zeroed(self) -> Result<FloatTensorViewMut<'a, D>> {
@@ -306,14 +297,15 @@ impl<'a, D: Dimension> GradientEntry<'a, D> {
     }
 }
 
-pub struct GradientVec<'a>{
+pub struct GradientVec<'a> {
     gradients: Vec<Option<GradientEntryD<'a>>>,
 }
 
 impl<'a, const N: usize> TryInto<[Option<GradientEntryD<'a>>; N]> for GradientVec<'a> {
     type Error = anyhow::Error;
     fn try_into(self) -> Result<[Option<GradientEntryD<'a>>; N]> {
-        self.gradients.try_into()
+        self.gradients
+            .try_into()
             .map_err(|vec: Vec<_>| anyhow!("Expected {}, found {} gradients!", N, vec.len()))
     }
 }
@@ -325,12 +317,10 @@ impl<'a> GradientVec<'a> {
 }
 
 pub trait Backward: Send + Sync + 'static {
-    fn backward(
+    fn backward(&mut self, input_grads: GradientVec, output_grad: GradientD) -> Result<()>;
+    fn backward_parameters(
         &mut self,
-        input_grads: GradientVec,
-        output_grad: GradientD,
-    ) -> Result<()>;
-    fn backward_parameters(&mut self) -> Pin<Box<dyn Future<Output=Result<()>> + Send + Sync + 'static>> {
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + Sync + 'static>> {
         Box::pin(ready(Ok(())))
     }
 }
@@ -503,11 +493,12 @@ impl<D: Dimension> Variable<D> {
     /// #   Ok(())
     /// # }
     ///```
-    pub fn builder(graphs: impl IntoIterator<Item=Graph>) -> VariableBuilder {
+    pub fn builder(graphs: impl IntoIterator<Item = Graph>) -> VariableBuilder {
         let graphs = graphs.into_iter();
         let mut training = false;
         let mut requires_grad = false;
-        let nodes = graphs.into_iter()
+        let nodes = graphs
+            .into_iter()
             .map(|graph| {
                 training |= graph.training;
                 requires_grad |= graph.node.is_some();
@@ -534,11 +525,11 @@ impl<D: Dimension> Variable<D> {
     /// [`Backward::backward_parameters`] on each as necessary, dropping the op immediately. If a
     /// [`Variable`] or [`Graph`] is retained elsewhere, it will not not be visited.
     pub async fn backward(self) -> Result<()> {
-        let node = self.node.ok_or_else(|| anyhow!(
-            "Variable does not require grad!"
-        ))?;
-        let node = Arc::try_unwrap(node)
-            .map_err(|_| anyhow!("Variable must be exclusively held!"))?;
+        let node = self
+            .node
+            .ok_or_else(|| anyhow!("Variable does not require grad!"))?;
+        let node =
+            Arc::try_unwrap(node).map_err(|_| anyhow!("Variable must be exclusively held!"))?;
         let output_grad = Gradient::Dense(FloatTensor::ones(
             self.value.device(),
             self.value.float_type(),
@@ -548,13 +539,13 @@ impl<D: Dimension> Variable<D> {
         gradients.insert(node.vertex.clone(), RefCell::new(Some(output_grad)));
         let mut queue = VecDeque::from_iter([node]);
         while let Some(node) = queue.pop_front() {
-            let output_grad = gradients.remove(&node.vertex)
-                    .expect("Gradient was not computed!")
-                    .into_inner()
-                    .expect("Gradient was not computed!");
+            let output_grad = gradients
+                .remove(&node.vertex)
+                .expect("Gradient was not computed!")
+                .into_inner()
+                .expect("Gradient was not computed!");
             for node in node.nodes.iter().filter_map(Option::as_ref) {
-                gradients.entry(node.vertex.clone())
-                    .or_default();
+                gradients.entry(node.vertex.clone()).or_default();
             }
             let mut input_grad_muts = Vec::with_capacity(node.nodes.len());
             for node in node.nodes.iter() {
@@ -723,7 +714,11 @@ impl<S: FloatData, D: Dimension> ParameterBase<S, D> {
             let value = self.value.into_device_arc(&device)?.await?;
             let vertex = Vertex::from_float_tensor(&value);
             let grad = Arc::default();
-            Ok(Parameter { value, vertex, grad })
+            Ok(Parameter {
+                value,
+                vertex,
+                grad,
+            })
         })
     }
     pub async fn grad_lock(&'_ self) -> ParameterGradientGuard<'_, D> {
@@ -733,7 +728,7 @@ impl<S: FloatData, D: Dimension> ParameterBase<S, D> {
                 float_type: self.value.float_type(),
                 dim: self.value.raw_dim(),
             },
-            grad: self.grad.lock().await
+            grad: self.grad.lock().await,
         }
     }
     pub fn take_grad(&mut self) -> Option<Gradient<D>> {
@@ -800,7 +795,11 @@ impl<'de, D: Dimension + Deserialize<'de>> Deserialize<'de> for Parameter<D> {
         let value = FloatArcTensor::deserialize(deserializer)?;
         let vertex = Vertex::from_float_tensor(&value);
         let grad = Arc::default();
-        Ok(Self { value, vertex, grad })
+        Ok(Self {
+            value,
+            vertex,
+            grad,
+        })
     }
 }
 

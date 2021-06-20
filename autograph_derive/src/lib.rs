@@ -87,10 +87,18 @@ impl FieldKind {
                     if let Some(NestedMeta::Meta(Meta::Path(path))) = meta_list.nested.first() {
                         let s = path.to_token_stream().to_string();
                         match s.as_str() {
-                            "parameter" => { return Some(Self::Parameter); },
-                            "optional_parameter" => { return Some(Self::OptionalParameter); },
-                            "layer" => { return Some(Self::Layer); },
-                            "optional_layer" => { return Some(Self::OptionalLayer); },
+                            "parameter" => {
+                                return Some(Self::Parameter);
+                            }
+                            "optional_parameter" => {
+                                return Some(Self::OptionalParameter);
+                            }
+                            "layer" => {
+                                return Some(Self::Layer);
+                            }
+                            "optional_layer" => {
+                                return Some(Self::OptionalLayer);
+                            }
                             _ => (),
                         }
                     }
