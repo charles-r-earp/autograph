@@ -26,9 +26,9 @@ use std::{
     iter::{once, FromIterator},
     marker::PhantomData,
     mem::transmute,
+    ops::DerefMut as _,
     pin::Pin,
     sync::Arc,
-    ops::DerefMut as _,
 };
 
 #[doc(hidden)]
