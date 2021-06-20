@@ -28,6 +28,7 @@ use std::{
     mem::transmute,
     pin::Pin,
     sync::Arc,
+    ops::DerefMut as _,
 };
 
 #[doc(hidden)]
