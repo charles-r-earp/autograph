@@ -23,7 +23,7 @@ use std::{
     fmt::{self, Debug},
     future::Future,
     hash::{Hash, Hasher},
-    iter::{once, FromIterator},
+    iter::once,
     marker::PhantomData,
     mem::transmute,
     ops::DerefMut as _,
@@ -163,6 +163,7 @@ impl<D: Dimension> Gradient<D> {
             Self::Dense(x) => x.view_mut(),
         }
     }
+    #[allow(clippy::wrong_self_convention)]
     pub fn to_dense_mut(&mut self) -> Result<()> {
         match self {
             Self::Dense(_) => Ok(()),
@@ -537,7 +538,7 @@ impl<D: Dimension> Variable<D> {
         )?);
         let mut gradients = HashMap::new();
         gradients.insert(node.vertex.clone(), RefCell::new(Some(output_grad)));
-        let mut queue = VecDeque::from_iter(once(node));
+        let mut queue = once(node).collect::<VecDeque<_>>();
         while let Some(node) = queue.pop_front() {
             let output_grad = gradients
                 .remove(&node.vertex)
@@ -909,6 +910,7 @@ macro_rules! parameter_mut_inner_impl {
 }
 
 impl<'a> ParameterMutInner<'a> {
+    #[allow(clippy::transmute_ptr_to_ptr)]
     fn from_parameter<D: Dimension + 'static>(parameter: &'a mut Parameter<D>) -> Self {
         if type_eq::<D, Ix0>() {
             Self::Ix0(unsafe { transmute(parameter) })
