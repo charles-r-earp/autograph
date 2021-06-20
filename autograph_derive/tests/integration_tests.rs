@@ -1,46 +1,34 @@
-use autograph::neural_network::{Dense, Forward, Identity, Network};
-#[allow(unused_imports)]
-#[macro_use]
-extern crate autograph_derive;
-use autograph_derive::*;
+use autograph::{
+    Result,
+    neural_network::{
+        Dense, Forward, Identity, Network,
+        autograd::{VariableD, Parameter2, Parameter1}
+    },
+};
 
-#[derive(Network, Forward)]
-struct Net {
+#[derive(Network)]
+struct Net1 {
+    #[autograph(parameter)]
+    weight: Parameter2,
+    #[autograph(optional_parameter)]
+    bias: Option<Parameter1>,
+    #[autograph(layer)]
     dense1: Dense,
-    dense2: Dense<Identity>,
+    #[autograph(optional_layer)]
+    dense2: Option<Dense<Identity>>,
 }
-/*
-#[derive(Network, Forward)]
-struct Net2 (
-    Dense,
-    Dense,
-    Dense,
-);
+
+impl Forward for Net1 {
+    fn forward(&self, _input: VariableD) -> Result<VariableD> {
+        unimplemented!()
+    }
+}
 
 #[derive(Network, Forward)]
-struct Net2 (
-    Dense,
-    Dense,
-    Dense,
-);
-
-struct Thing {}
-
-#[derive(Network, Forward)]
-struct Net3 (
-    #[autograph(ignore)]
-    Tning,
-    Dense,
-    Dense,
-    Dense,
-);
-
-#[derive(Network, Forward)]
-struct Net3 (
-    // ignore the field
-    #[autograph(ignore)]
-    String,
-    Dense,
-    Dense,
-);
-*/
+struct Net2 {
+    #[autograph(layer)]
+    dense1: Dense,
+    #[autograph(optional_layer)]
+    dense2: Option<Dense<Identity>>,
+    _name: String,
+}

@@ -913,7 +913,7 @@ impl<T: Scalar> Buffer<T> {
         buffer.fill(elem)?;
         Ok(buffer)
     }
-    pub fn make_mut(buffer: &mut Arc<Self>) -> Result<BufferSliceMut<T>> {
+    pub fn make_shared_mut(buffer: &mut Arc<Self>) -> Result<BufferSliceMut<T>> {
         // TODO: eliminate extra call to get_mut
         // this is needed otherwise the borrow checker complains
         if Arc::get_mut(buffer).is_none() {
@@ -970,11 +970,15 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
         )?;
         Ok(buffer)
     }
+    pub fn into_owned(self) -> Result<Buffer<T>> {
+        S::into_buffer(self)
+    }
     /// Copies self into a new Buffer, consuming the buffer\
     ///
     /// A NOOP for Buffer
+    #[deprecated(note = "renamed to into_owned")]
     pub fn into_buffer(self) -> Result<Buffer<T>> {
-        S::into_buffer(self)
+        self.into_owned()
     }
     pub fn to_cow_buffer(&self) -> CowBuffer<T> {
         self.as_buffer_slice().into()
@@ -1011,7 +1015,7 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
         let device = device.clone();
         Ok(async move {
             if self.device == device {
-                self.into_buffer()
+                self.into_owned()
             } else {
                 Buffer::from_vec(&device, self.to_vec()?.await?)
             }

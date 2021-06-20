@@ -6,6 +6,9 @@ use bytemuck::{Pod, Zeroable};
 use half::bf16;
 use std::convert::TryInto;
 
+#[doc(inline)]
+pub use super::float::float_gemm;
+
 enum PostOp {
     Identity,
     #[allow(unused)]

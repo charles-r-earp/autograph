@@ -20,24 +20,17 @@ use std::{
 mod accuracy;
 mod binary;
 mod convert;
-pub mod float_tensor;
+pub mod float;
 mod index_select;
 pub mod linalg;
+#[doc(inline)]
+pub use linalg::{gemm, gemm_bias};
 mod reduce;
 
 mod sealed {
-    use super::{Data, Result, Scalar};
-
-    pub trait Sealed {}
-
-    pub trait TryIntoData<T: Scalar> {
-        type Data: Data<Elem = T>;
-        fn try_into_data(self) -> Result<Self::Data>;
-    }
+    pub trait DataBase {}
 }
-use sealed::{Sealed, TryIntoData};
-
-pub trait DataBase: Sealed {}
+use sealed::DataBase;
 
 pub trait Data: DataBase + Sized {
     type Elem: Scalar;
@@ -64,8 +57,6 @@ pub trait DataMut: Data {
 #[derive(Serialize, Deserialize)]
 #[serde(bound = "T: Scalar")]
 pub struct OwnedRepr<T>(Buffer<T>);
-
-impl<T> Sealed for OwnedRepr<T> {}
 
 impl<T> DataBase for OwnedRepr<T> {}
 
@@ -95,8 +86,6 @@ impl<T: Scalar> DataOwned for OwnedRepr<T> {
 #[serde(bound = "T: Scalar")]
 pub struct ArcRepr<T>(Arc<Buffer<T>>);
 
-impl<T> Sealed for ArcRepr<T> {}
-
 impl<T> DataBase for ArcRepr<T> {}
 
 impl<T: Scalar> Data for ArcRepr<T> {
@@ -123,8 +112,6 @@ impl<T: Scalar> DataOwned for ArcRepr<T> {
 
 pub struct ViewRepr<'a, T>(BufferSlice<'a, T>);
 
-impl<T> Sealed for ViewRepr<'_, T> {}
-
 impl<T> DataBase for ViewRepr<'_, T> {}
 
 impl<T: Scalar> Data for ViewRepr<'_, T> {
@@ -138,8 +125,6 @@ impl<T: Scalar> Data for ViewRepr<'_, T> {
 }
 
 pub struct ViewMutRepr<'a, T>(BufferSliceMut<'a, T>);
-
-impl<T> Sealed for ViewMutRepr<'_, T> {}
 
 impl<T> DataBase for ViewMutRepr<'_, T> {}
 
@@ -173,8 +158,6 @@ impl<'a, T: Scalar> From<ViewRepr<'a, T>> for CowRepr<'a, T> {
         Self(from.0.into())
     }
 }
-
-impl<T: Scalar> Sealed for CowRepr<'_, T> {}
 
 impl<T: Scalar> DataBase for CowRepr<'_, T> {}
 
@@ -342,22 +325,8 @@ impl<S: DataBase, D: Dimension> TensorBase<S, D> {
     }
 }
 
-impl<S: DataBase, D: Dimension> TensorBase<S, D> {
-    fn try_into_<T: Scalar>(self) -> Result<TensorBase<<S as TryIntoData<T>>::Data, D>>
-    where
-        S: TryIntoData<T>,
-    {
-        Ok(TensorBase {
-            device: self.device,
-            dim: self.dim,
-            strides: self.strides,
-            data: self.data.try_into_data()?,
-        })
-    }
-}
-
 impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
-    pub fn into_tensor(self) -> Result<Tensor<T, D>> {
+    pub fn into_owned(self) -> Result<Tensor<T, D>> {
         Ok(TensorBase {
             device: self.device,
             dim: self.dim,
@@ -365,7 +334,7 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
             data: OwnedRepr(self.data.into_buffer()?),
         })
     }
-    pub fn into_arc_tensor(self) -> Result<ArcTensor<T, D>> {
+    pub fn into_shared(self) -> Result<ArcTensor<T, D>> {
         Ok(TensorBase {
             device: self.device,
             dim: self.dim,
@@ -565,7 +534,7 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
         let device = device.clone();
         Ok(async move {
             if self.device == device {
-                self.into_tensor()
+                self.into_owned()
             } else {
                 let buffer = self.data.as_buffer_slice().into_device(&device)?.await?;
                 Ok(Tensor {
@@ -577,14 +546,14 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
             }
         })
     }
-    pub fn into_device_arc(
+    pub fn into_device_shared(
         self,
         device: &Device,
     ) -> Result<impl Future<Output = Result<ArcTensor<T, D>>>> {
         let device = device.clone();
         Ok(async move {
             if self.device == device {
-                self.into_arc_tensor()
+                self.into_shared()
             } else {
                 Ok(self.into_device(&device)?.await?.into())
             }
@@ -637,6 +606,18 @@ impl<T: Scalar, S: DataMut<Elem = T>, D: Dimension> TensorBase<S, D> {
         T: Scalar,
     {
         self.data.as_buffer_slice_mut().fill(x)
+    }
+}
+
+impl<T: Scalar, D: Dimension> ArcTensor<T, D> {
+    pub fn make_shared_mut(&mut self) -> Result<TensorViewMut<T, D>> {
+        let slice = Buffer::make_shared_mut(&mut self.data.0)?;
+        Ok(TensorViewMut {
+            device: self.device.clone(),
+            dim: self.dim.clone(),
+            strides: self.strides.clone(),
+            data: ViewMutRepr(slice),
+        })
     }
 }
 

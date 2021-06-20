@@ -5,7 +5,7 @@ use super::{
 use crate::{
     backend::Device,
     tensor::{
-        float_tensor::{FloatTensor, FloatType},
+        float::{FloatTensor, FloatType},
         Tensor,
     },
     Result,
@@ -128,7 +128,7 @@ impl<A> DenseBuilder<A> {
             )?;
             Parameter::from(FloatTensor::from(weight))
         } else if self.inputs == 0 {
-            Parameter::from(FloatTensor::float_zeros(
+            Parameter::from(FloatTensor::zeros(
                 &self.device,
                 FloatType::F32,
                 [self.outputs, 0],

@@ -89,11 +89,11 @@ impl u24 {
         let [a, b, c, _] = x.to_ne_bytes();
         Self([a, b, c])
     }
-    fn to_u32(&self) -> u32 {
+    fn to_u32(self) -> u32 {
         let [a, b, c] = self.0;
         u32::from_ne_bytes([a, b, c, 0])
     }
-    fn to_usize(&self) -> usize {
+    fn to_usize(self) -> usize {
         self.to_u32() as usize
     }
 }
@@ -122,8 +122,8 @@ impl StorageBuffer {
     fn range(&self) -> Range<u24> {
         self.start..self.end
     }
-    fn to_buffer_id(&self) -> BufferId {
-        unsafe { transmute(*self) }
+    fn to_buffer_id(self) -> BufferId {
+        unsafe { transmute(self) }
     }
     fn from_buffer_id(buffer_id: BufferId) -> Self {
         unsafe { transmute(buffer_id) }

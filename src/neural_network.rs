@@ -2,11 +2,13 @@ use crate::{
     backend::Device,
     learn::{Fit, Predict},
     tensor::{
-        float_tensor::{FloatTensor, FloatTensorD, FloatType},
-        linalg::{gemm, gemm_bias},
-        ArcTensor2, Axis, Data, Dimension, Float, Ix1, Ix2, Tensor, Tensor0, Tensor1, Tensor2,
-        TensorBase, TensorView0, TensorView2, TensorViewD, TensorViewMut1, TensorViewMut2,
-        TensorViewMutD, Unsigned,
+        float::{
+            float_gemm, FloatArcTensor, FloatArcTensor2, FloatTensor, FloatTensor2,
+            FloatTensorViewMut,
+        },
+        Axis, Data, Dimension, Float, Ix1, Ix2, Tensor, Tensor0, Tensor1, Tensor2, TensorBase,
+        TensorView0, TensorView2, TensorViewD, TensorViewMut1, TensorViewMut2, TensorViewMutD,
+        Unsigned,
     },
     util::type_eq,
     Result,
@@ -15,17 +17,17 @@ use anyhow::{bail, ensure};
 use half::bf16;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashMap,
-    convert::TryInto,
     fmt::{self, Debug},
+    future::Future,
+    pin::Pin,
 };
 
 pub use autograph_derive::{Forward, Network};
 
 pub mod autograd;
 use autograd::{
-    Graph, Parameter1, Parameter2, ParameterViewMutD, Variable, Variable0, Variable2, VariableD,
-    Vertex,
+    Backward, GradientD, GradientEntry, GradientVec, Parameter1, Parameter2, ParameterMutD,
+    Variable, Variable0, Variable2, VariableD,
 };
 
 pub mod builders;
@@ -34,11 +36,13 @@ use builders::{DenseBuilder, SgdBuilder};
 #[cfg(test)]
 mod tests;
 
+// for data parallel, a special DataParallel layer that adds ops to compute average gradients
+// for distr data parallel, a special DistrDataParallel layer
+
 pub trait Optimizer {
-    fn update(
+    fn update<'a>(
         &mut self,
-        parameters: &mut [ParameterViewMutD],
-        gradients: &HashMap<Vertex, FloatTensorD>,
+        parameters: impl ExactSizeIterator<Item = ParameterMutD<'a>>,
     ) -> Result<()>;
 }
 
@@ -66,26 +70,27 @@ fn sgd<T: Float>(value: &mut TensorViewMutD<T>, grad: &TensorViewD<T>, alpha: T)
 }
 
 impl Optimizer for Sgd {
-    fn update(
+    fn update<'a>(
         &mut self,
-        parameters: &mut [ParameterViewMutD],
-        gradients: &HashMap<Vertex, FloatTensorD>,
+        parameters: impl ExactSizeIterator<Item = ParameterMutD<'a>>,
     ) -> Result<()> {
         if self.momentum > 0. {
             todo!()
         } else {
-            for parameter in parameters {
-                if let Some(parameter_grad) = gradients.get(parameter.vertex()) {
-                    let parameter_value = parameter.value_view_mut();
-                    match parameter_value.float_type() {
-                        FloatType::BF16 => sgd::<bf16>(
-                            &mut parameter_value.try_into()?,
-                            &parameter_grad.float_view().try_into()?,
+            for mut parameter in parameters {
+                if let Some(parameter_grad) = parameter.take_grad() {
+                    let parameter_grad = parameter_grad.into_dense()?;
+                    let mut parameter = parameter.make_mut()?;
+                    let parameter = parameter.value_view_mut();
+                    match parameter {
+                        FloatTensorViewMut::BF16(mut parameter) => sgd(
+                            &mut parameter,
+                            &parameter_grad.cast_to()?.view(),
                             bf16::from_f32(-self.learning_rate),
                         )?,
-                        FloatType::F32 => sgd::<f32>(
-                            &mut parameter_value.try_into()?,
-                            &parameter_grad.float_view().try_into()?,
+                        FloatTensorViewMut::F32(mut parameter) => sgd(
+                            &mut parameter,
+                            &parameter_grad.cast_to()?.view(),
                             -self.learning_rate,
                         )?,
                     }
@@ -96,78 +101,58 @@ impl Optimizer for Sgd {
     }
 }
 
-/// Forward is a trait for Neural Networks and layers, that represent a Variable function.\
+/// Forward is a trait for Neural Networks and layers.\
 ///
-/// /// # Derive
-/// Forward can be derived for a composite struct of layers:\
-///```
-/// use autograph::neural_network::{Forward, Dense};
-///
-/// #[derive(Forward)]
-/// struct Net { // tuple structs ie Net(Dense, Dense) also supported
-///     dense1: Dense,
-///     dense2: Dense
-/// }
-///```
+/// Can be [derived](`autograph_derive`).
 pub trait Forward {
+    /// Forward pass\
+    ///
+    /// If [input.training()](`Variable::training`), the implementation should apply a [`Backward`] with\
+    /// [`Variable::builder`].
     fn forward(&self, input: VariableD) -> Result<VariableD>;
+    /// Mutable forward pass\
+    ///
+    /// Like [forward](`Forward::forward`), but can initialize or update parameters (like for normalization).
     fn forward_mut(&mut self, input: VariableD) -> Result<VariableD> {
         self.forward(input)
     }
 }
 
-/// Network is a trait for Neural Networks and layers\
+/// Network is a trait for Neural Networks and layers.\
 ///
-/// Implementation layers should implement collect_paramters_mut and to_device_mut if they have\
-/// parameters, and layers_mut if they have parameters.\
-/// # Derive
-/// Network (and Forward) can be derived for a composite struct of layers:\
-///```
-/// use autograph::neural_network::{Network, Forward, Dense};
-///
-/// #[derive(Network, Forward)]
-/// struct Net { // tuple structs ie Net(Dense, Dense) also supported
-///     dense1: Dense,
-///     dense2: Dense
-/// }
-///```
+/// Can be [derived](`autograph_derive`).
 pub trait Network: Forward {
-    /// Implementation method for parameters_mut\
-    ///
-    /// Mutable references to the parameters of the network (or layer) should be pushed into the\
-    /// provided vec. Note that this includes all parameters (including those of child layers).
-    #[allow(unused_variables)]
-    fn collect_paramters_mut<'a>(
-        &'a mut self,
-        parameters: &mut Vec<ParameterViewMutD<'a>>,
-    ) -> Result<()> {
-        Ok(())
+    /// Returns the total number of parameters.
+    fn parameters_count(&self) -> usize {
+        0
     }
-    /// Returns a Vec containing mutable references to all the parameters in the network.
-    ///
-    /// Generally this does should not be implemented, as the default implementation calls
-    /// collect_paramters_mut.
-    fn parameters_mut(&mut self) -> Result<Vec<ParameterViewMutD>> {
-        let mut parameters = Vec::new();
-        self.collect_paramters_mut(&mut parameters)?;
-        Ok(parameters)
+    /// Collects all of the parameters as ParameterMutD's.
+    #[allow(unused_variables)]
+    fn collect_parameters_mut<'a>(&'a mut self, parameters: &mut Vec<ParameterMutD<'a>>) {}
+    /// Returns the parameters of the network as [`ParameterMutD`].
+    fn parameters_mut(&mut self) -> Vec<ParameterMutD> {
+        let mut parameters = Vec::with_capacity(self.parameters_count());
+        self.collect_parameters_mut(&mut parameters);
+        parameters
     }
     /// Returns mutable references to the layers of the network\
+    ///
+    /// Composite layers should return their immediate children.
     fn layers_mut(&mut self) -> Vec<&mut dyn Network> {
         Vec::new()
     }
     /// Moves the network's data to the device in place.\
     ///
-    /// This method needs to be implemented when the layer has Parameters or other data that needs\
-    /// to be transfered to the new device. However, composite layers that implement layers_mut do\
-    /// not need to implement this method.
+    /// This method does not need to be implemented. Combine with layers_mut to transfer layers to\
+    /// different devices.
     #[allow(clippy::wrong_self_convention)]
     fn to_device_mut(&mut self, device: &Device) -> Result<()> {
-        // issue is that if any transfers fail some data will be on the previous devices
-        for layer in self.layers_mut() {
-            layer.to_device_mut(device)?;
-        }
-        Ok(())
+        smol::block_on(async {
+            for mut parameter in self.parameters_mut() {
+                parameter.to_device_mut(device)?.await?;
+            }
+            Ok(())
+        })
     }
     /// Moves the network's data to the device.\
     ///
@@ -181,16 +166,20 @@ pub trait Network: Forward {
     }
 }
 
-#[derive(Default, Debug, Clone, Copy, Serialize, Deserialize, Network, Forward)]
+#[derive(Default, Debug, Clone, Copy, Network, Forward, Serialize, Deserialize)]
 // This replaces ::autograph with crate
 #[autograph(crate)]
 pub struct Identity;
 
-#[derive(Serialize, Deserialize)]
+#[derive(Network, Clone, Serialize, Deserialize)]
+#[autograph(crate)]
 #[serde(bound(serialize = "A: Serialize", deserialize = "A: Deserialize<'de>"))]
 pub struct Dense<A = Identity> {
+    #[autograph(parameter)]
     weight: Parameter2,
+    #[autograph(optional_parameter)]
     bias: Option<Parameter1>,
+    #[autograph(layer)]
     activation: A,
 }
 
@@ -249,43 +238,6 @@ impl<A: Forward + 'static> Forward for Dense<A> {
     }
 }
 
-impl<A: Network + 'static> Network for Dense<A> {
-    fn collect_paramters_mut<'a>(
-        &'a mut self,
-        parameters: &mut Vec<ParameterViewMutD<'a>>,
-    ) -> Result<()> {
-        parameters.push(self.weight.make_mut()?.into_dyn());
-        if let Some(bias) = self.bias.as_mut() {
-            parameters.push(bias.make_mut()?.into_dyn());
-        }
-        // For normalization layer?
-        self.activation.collect_paramters_mut(parameters)?;
-        Ok(())
-    }
-    fn layers_mut(&mut self) -> Vec<&mut dyn Network> {
-        vec![&mut self.activation]
-    }
-    fn to_device_mut(&mut self, device: &Device) -> Result<()> {
-        smol::block_on(async {
-            self.weight.to_device_mut(device)?.await?;
-            if let Some(bias) = self.bias.as_mut() {
-                bias.to_device_mut(device)?.await?;
-            }
-            self.activation.to_device_mut(device)
-        })
-    }
-}
-
-impl<A: Network + Clone> Clone for Dense<A> {
-    fn clone(&self) -> Self {
-        Self {
-            weight: self.weight.clone(),
-            bias: self.bias.clone(),
-            activation: self.activation.clone(),
-        }
-    }
-}
-
 fn bias_backward<T: Float>(
     bias_grad: &mut TensorViewMut1<T>,
     output_grad: &TensorView2<T>,
@@ -310,70 +262,90 @@ fn bias_backward<T: Float>(
         .enqueue()
 }
 
+struct DenseBackward {
+    input: FloatArcTensor2,
+    weight: Parameter2,
+    bias: Option<Parameter1>,
+    output_grad: Option<FloatTensor2>,
+}
+
+impl Backward for DenseBackward {
+    fn backward(&mut self, input_grads: GradientVec, output_grad: GradientD) -> Result<()> {
+        let [input_grad] = input_grads.try_into_array()?;
+        let output_grad = output_grad.into_dimensionality()?.into_dense()?;
+        if let Some(input_grad) = input_grad {
+            let input_grad = input_grad.into_dimensionality()?;
+            let weight = self.weight.value_view();
+            let (beta, mut input_grad) = match input_grad {
+                GradientEntry::Occupied(input_grad) => (1., input_grad.into_dense_view_mut()?),
+                GradientEntry::Vacant(input_grad) => {
+                    (0., unsafe { input_grad.into_dense_uninitialized()? })
+                }
+            };
+            float_gemm(1., &output_grad.view(), &weight, beta, &mut input_grad)?;
+        }
+        self.output_grad.replace(output_grad);
+        Ok(())
+    }
+    fn backward_parameters(
+        &mut self,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + Sync + 'static>> {
+        let input = self.input.clone();
+        let weight = self.weight.clone();
+        let bias = self.bias.clone();
+        let output_grad = self.output_grad.take().unwrap();
+        Box::pin(async move {
+            let mut weight_grad = weight.grad_lock().await;
+            let (beta, mut weight_grad) = match weight_grad.entry() {
+                GradientEntry::Occupied(weight_grad) => (1., weight_grad.into_dense_view_mut()?),
+                GradientEntry::Vacant(weight_grad) => {
+                    (0., unsafe { weight_grad.into_dense_uninitialized()? })
+                }
+            };
+            float_gemm(1., &output_grad.t(), &input.view(), beta, &mut weight_grad)?;
+            if let Some(bias) = bias {
+                let mut bias_grad = bias.grad_lock().await;
+                // TODO: impl with beta
+                let (_beta, bias_grad) = match bias_grad.entry() {
+                    GradientEntry::Occupied(bias_grad) => (1., bias_grad.into_dense_view_mut()?),
+                    GradientEntry::Vacant(bias_grad) => {
+                        (0., unsafe { bias_grad.into_dense_uninitialized()? })
+                    }
+                };
+                match bias_grad {
+                    FloatTensorViewMut::BF16(mut bias_grad) => {
+                        bias_backward(&mut bias_grad, &output_grad.cast_to()?.view())?;
+                    }
+                    FloatTensorViewMut::F32(mut bias_grad) => {
+                        bias_backward(&mut bias_grad, &output_grad.cast_to()?.view())?;
+                    }
+                }
+            }
+            Ok(())
+        })
+    }
+}
+
 impl Variable2 {
     pub fn dense(self, weight: &Parameter2, bias: Option<&Parameter1>) -> Result<Self> {
-        fn dense_impl<T: Float>(
-            input: Variable2,
-            weight: &Parameter2,
-            bias: Option<&Parameter1>,
-        ) -> Result<Variable2> {
-            let device = weight.value().device();
-            // This will panic if input isn't T. Can use cast_into to convert but this may be unnecessary
-            let input_value: ArcTensor2<T> = input.value().clone().try_into()?;
-            let weight_value: ArcTensor2<T> = weight.value().clone().try_into()?;
-            let bias_value = if let Some(bias) = bias.as_ref() {
-                Some(bias.value().clone().float_cast_into::<T>()?)
-            } else {
-                None
-            };
-            let bias_value_view = bias_value.as_ref().map(|bias| bias.view());
-            let batch_size = input_value.dim().0;
-            let outputs = weight_value.dim().0;
-            let mut output = input.forward_op(|input_value: TensorView2<T>| {
-                let input_value = input_value.cast_into::<T>()?;
-                let mut output_value =
-                    unsafe { Tensor::uninitialized(device, [batch_size, outputs])? };
-                gemm_bias(
-                    T::one(),
-                    &input_value.view(),
-                    &weight_value.t(),
-                    T::zero(),
-                    bias_value_view.as_ref(),
-                    &mut output_value.view_mut(),
-                )?;
-                Ok(output_value)
-            })?;
-            output.backward_op(move |mut input_grad, output_grad| {
-                gemm(
-                    T::one(),
-                    &output_grad,
-                    &weight_value.view(),
-                    T::one(),
-                    &mut input_grad,
-                )
-            });
-            output.backward_parameter_op(&weight.view(), move |mut weight_grad, output_grad| {
-                gemm(
-                    T::one(),
-                    &output_grad.t(),
-                    &input_value.view(),
-                    T::one(),
-                    &mut weight_grad,
-                )
-            });
-            if let Some(bias) = bias {
-                output.backward_parameter_op(&bias.view(), |mut bias_grad, output_grad| {
-                    bias_backward(&mut bias_grad, &output_grad)
-                });
-            }
-            Ok(output.build())
-        }
-        // may want to automatically convert input to weight type
-        // this operation isn't implemented yet (ie with gradient ops)
-        match weight.value().float_type() {
-            FloatType::BF16 => dense_impl::<bf16>(self, weight, bias),
-            FloatType::F32 => dense_impl::<f32>(self, weight, bias),
-        }
+        Ok(Variable2::builder([self.graph()])
+            .parameterized()
+            .with_backward(|| {
+                Box::new(DenseBackward {
+                    input: self.value().clone(),
+                    weight: weight.clone(),
+                    bias: bias.map(Clone::clone),
+                    output_grad: None,
+                })
+            })
+            .build(
+                self.into_value()
+                    .mm_bias(
+                        &weight.value_view().t(),
+                        bias.map(Parameter1::value_view).as_ref(),
+                    )?
+                    .into(),
+            ))
     }
 }
 
@@ -453,8 +425,61 @@ fn cross_entropy_loss_backward<T: Float>(
         .enqueue()
 }
 
+struct CrossEntropyLossBackward {
+    input: FloatArcTensor2,
+    target: FloatArcTensor2,
+}
+
+impl Backward for CrossEntropyLossBackward {
+    fn backward(&mut self, input_grads: GradientVec, output_grad: GradientD) -> Result<()> {
+        let [input_grad] = input_grads.try_into_array()?;
+        if let Some(input_grad) = input_grad {
+            let output_grad = output_grad.into_dense()?.into_dimensionality()?;
+            match input_grad.or_dense_zeroed()? {
+                FloatTensorViewMut::BF16(input_grad) => cross_entropy_loss_backward(
+                    &self.input.cast_to()?.view(),
+                    &mut input_grad.into_dimensionality()?,
+                    &self.target.cast_to()?.view(),
+                    &output_grad.cast_to()?.view(),
+                )?,
+                FloatTensorViewMut::F32(input_grad) => cross_entropy_loss_backward(
+                    &self.input.cast_to()?.view(),
+                    &mut input_grad.into_dimensionality()?,
+                    &self.target.cast_to()?.view(),
+                    &output_grad.cast_to()?.view(),
+                )?,
+            }
+        }
+        Ok(())
+    }
+}
+
 impl Variable2 {
-    pub fn cross_entropy_loss<T: Float>(self, target: ArcTensor2<T>) -> Result<Variable0> {
+    pub fn cross_entropy_loss(self, target: FloatArcTensor2) -> Result<Variable0> {
+        Ok(Variable0::builder([self.graph()])
+            .with_backward(|| {
+                Box::new(CrossEntropyLossBackward {
+                    input: self.value().clone(),
+                    target: target.clone(),
+                })
+            })
+            .build(match self.into_value() {
+                FloatArcTensor::BF16(input) => {
+                    cross_entropy_loss(&input.view(), &target.cast_to()?.view())?
+                        .into_shape(input.len())?
+                        .sum(Axis(0))?
+                        .into_shared()?
+                        .into()
+                }
+                FloatArcTensor::F32(input) => {
+                    cross_entropy_loss(&input.view(), &target.cast_to()?.view())?
+                        .into_shape(input.len())?
+                        .sum(Axis(0))?
+                        .into_shared()?
+                        .into()
+                }
+            }))
+        /*
         let mut output = self.forward_op(|input| {
             cross_entropy_loss::<T>(&input, &target.view())?
                 .into_shape(self.value().len())?
@@ -471,6 +496,7 @@ impl Variable2 {
             )
         });
         Ok(output.build())
+        */
     }
 }
 
@@ -509,32 +535,29 @@ impl<
     where
         I: Iterator<Item = Result<(TensorBase<S1, D>, TensorBase<S2, Ix1>)>>,
     {
-        let mut total_loss = Tensor::zeros(device, ())?;
+        let mut total_loss = Tensor0::<f32>::zeros(device, ())?;
         let mut correct = Tensor::zeros(device, ())?;
         let mut num_samples = 0;
         for xt in train_iter {
             let (x, t) = xt?;
             num_samples += x.shape()[0];
-            let graph = Graph::default();
-            let x = Variable::from(FloatTensor::from(x.into_tensor()?).into_dyn())
-                .with_graph(&graph)
-                .with_training(true);
+            let x =
+                Variable::from(FloatTensor::from(x.into_owned()?).into_dyn()).with_training(true);
             let y = self.network.forward(x)?.into_dimensionality::<Ix2>()?;
             let nclasses = y.value().dim().1;
-            let t = t.into_tensor()?;
+            let t = t.into_owned()?;
             let pred = y
                 .value()
-                .float_view()
+                .view()
                 .into_dimensionality::<Ix2>()?
-                .float_argmax(Axis(1))?;
+                .argmax(Axis(1))?;
             pred.accuracy_mut(&t.view(), &mut correct.view_mut())?;
             let t_hot = t.to_one_hot::<T>(nclasses)?;
-            let loss = y.cross_entropy_loss(t_hot.into())?;
-            let loss_value: Tensor0<T> = loss.into_value().into_float_tensor()?.try_into()?;
-            total_loss.add_assign(&loss_value.view())?;
-            let parameter_grads = graph.backward()?;
+            let loss = y.cross_entropy_loss(t_hot.into_shared()?.into())?;
+            total_loss.add_assign(&loss.value().cast_to()?.view())?;
+            smol::block_on(loss.backward())?;
             self.optimizer
-                .update(&mut self.network.parameters_mut()?, &parameter_grads)?;
+                .update(self.network.parameters_mut().into_iter())?;
         }
         let alpha = if num_samples > 0 {
             1. / num_samples as f32
@@ -552,29 +575,26 @@ impl<
     where
         I: Iterator<Item = Result<(TensorBase<S1, D>, TensorBase<S2, Ix1>)>>,
     {
-        let mut total_loss = Tensor::zeros(device, ())?;
+        let mut total_loss = Tensor0::<f32>::zeros(device, ())?;
         let mut correct = Tensor::zeros(device, ())?;
         let mut num_samples = 0;
         for xt in test_iter {
             let (x, t) = xt?;
             num_samples += x.shape()[0];
-            let graph = Graph::default();
-            let x = Variable::from(FloatTensor::from(x.into_tensor()?).into_dyn())
-                .with_graph(&graph)
-                .with_training(false);
+            let x =
+                Variable::from(FloatTensor::from(x.into_owned()?).into_dyn()).with_training(false);
             let y = self.network.forward(x)?.into_dimensionality::<Ix2>()?;
             let nclasses = y.value().dim().1;
-            let t = t.into_tensor()?;
+            let t = t.into_owned()?;
             let pred = y
                 .value()
-                .float_view()
+                .view()
                 .into_dimensionality::<Ix2>()?
-                .float_argmax(Axis(1))?;
+                .argmax(Axis(1))?;
             pred.accuracy_mut(&t.view(), &mut correct.view_mut())?;
             let t_hot = t.to_one_hot::<T>(nclasses)?;
-            let loss = y.cross_entropy_loss(t_hot.into())?;
-            let loss_value: Tensor0<T> = loss.into_value().into_float_tensor()?.try_into()?;
-            total_loss.add_assign(&loss_value.view())?;
+            let loss = y.cross_entropy_loss(t_hot.into_shared()?.into())?;
+            total_loss.add_assign(&loss.value().cast_to()?.view())?;
         }
         let alpha = if num_samples > 0 {
             1. / num_samples as f32
@@ -590,12 +610,12 @@ impl<T: Float, S: Data<Elem = T>, N: Network, O: Optimizer> Predict<TensorBase<S
     for ClassificationTrainer<N, O>
 {
     fn predict(&self, input: TensorBase<S, Ix2>) -> Result<Tensor1<u32>> {
-        let input = Variable::from(FloatTensor::from(input.into_tensor()?).into_dyn());
+        let input = Variable::from(FloatTensor::from(input.into_owned()?).into_dyn());
         self.network
             .forward(input)?
             .value()
-            .float_view()
+            .view()
             .into_dimensionality::<Ix2>()?
-            .float_argmax(Axis(1))
+            .argmax(Axis(1))
     }
 }

@@ -480,17 +480,30 @@ mod tests {
     fn shader_module_rust() -> Result<()> {
         let spirv = include_shader!("rust/shader.spv");
         let entry_descriptors = entry_descriptors_from_spirv(spirv)?;
-        let target = vec![EntryDescriptor {
-            name: String::from("fill_u32"),
-            local_size: [1024, 1, 1],
-            buffer_descriptors: vec![BufferDescriptor {
-                binding: 0,
-                mutable: true,
-            }],
-            push_constant_descriptor: Some(PushConstantDescriptor {
-                range: PushConstantRange { start: 0, end: 8 },
-            }),
-        }];
+        let target = vec![
+            EntryDescriptor {
+                name: String::from("fill_u32"),
+                local_size: [64, 1, 1],
+                buffer_descriptors: vec![BufferDescriptor {
+                    binding: 0,
+                    mutable: true,
+                }],
+                push_constant_descriptor: Some(PushConstantDescriptor {
+                    range: PushConstantRange { start: 12, end: 20 },
+                }),
+            },
+            EntryDescriptor {
+                name: String::from("fill_u64"),
+                local_size: [64, 1, 1],
+                buffer_descriptors: vec![BufferDescriptor {
+                    binding: 0,
+                    mutable: true,
+                }],
+                push_constant_descriptor: Some(PushConstantDescriptor {
+                    range: PushConstantRange { start: 0, end: 12 },
+                }),
+            },
+        ];
         assert_eq!(
             &entry_descriptors, &target,
             "output:\n{:#?}\n!=\ntarget\n{:#?}",
