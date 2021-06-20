@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     fmt::{self, Debug},
     future::Future,
+    iter::once,
     pin::Pin,
 };
 
@@ -328,7 +329,7 @@ impl Backward for DenseBackward {
 
 impl Variable2 {
     pub fn dense(self, weight: &Parameter2, bias: Option<&Parameter1>) -> Result<Self> {
-        Ok(Variable2::builder([self.graph()])
+        Ok(Variable2::builder(once(self.graph()))
             .parameterized()
             .with_backward(|| {
                 Box::new(DenseBackward {
@@ -456,7 +457,7 @@ impl Backward for CrossEntropyLossBackward {
 
 impl Variable2 {
     pub fn cross_entropy_loss(self, target: FloatArcTensor2) -> Result<Variable0> {
-        Ok(Variable0::builder([self.graph()])
+        Ok(Variable0::builder(once(self.graph()))
             .with_backward(|| {
                 Box::new(CrossEntropyLossBackward {
                     input: self.value().clone(),
