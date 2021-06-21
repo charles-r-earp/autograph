@@ -871,6 +871,7 @@ impl<'a, D: Dimension> ParameterMut<'a, D> {
     pub fn vertex(&self) -> &Vertex {
         self.inner.vertex()
     }
+    #[allow(clippy::wrong_self_convention)]
     pub fn to_device_mut<'b: 'a>(
         &'b mut self,
         device: &Device,
