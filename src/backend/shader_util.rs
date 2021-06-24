@@ -476,6 +476,7 @@ mod tests {
         Ok(())
     }
 
+    /*
     #[test]
     fn shader_module_rust() -> Result<()> {
         let spirv = include_shader!("rust/shader.spv");
@@ -511,4 +512,5 @@ mod tests {
         );
         Ok(())
     }
+    */
 }
