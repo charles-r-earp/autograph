@@ -137,7 +137,7 @@ pub(super) mod builders {
         #[allow(unused)]
         #[cfg(any(target_os = "ios", target_os = "macos"))]
         fn metal_iter() -> impl Iterator<Item = Self> {
-            EngineBuilderBase::iter(&METAL_INSTANCE).map(|x| Self(DynEngineBuilder::Metal(x)))
+            EngineBuilderBase::iter(&METAL_INSTANCE).map(|x| Self::from(DynEngineBuilder::Metal(x)))
         }
         #[allow(unused)]
         #[cfg(not(any(target_os = "ios", target_os = "macos")))]
@@ -147,7 +147,7 @@ pub(super) mod builders {
         #[allow(unused)]
         #[cfg(windows)]
         fn dx12_iter() -> impl Iterator<Item = Self> {
-            EngineBuilderBase::iter(&DX12_INSTANCE).map(|x| Self(DynEngineBuilder::DX12(x)))
+            EngineBuilderBase::iter(&DX12_INSTANCE).map(|x| Self::from(DynEngineBuilder::DX12(x)))
         }
         #[allow(unused)]
         #[cfg(not(windows))]
@@ -190,7 +190,7 @@ pub(super) mod builders {
                 #[cfg(any(target_os = "ios", target_os = "macos"))]
                 Self::Metal(_) => API::Metal,
                 #[cfg(windows)]
-                Self::Windows(_) => API::Windows,
+                Self::DX12(_) => API::DX12,
             }
         }
         fn build(&self) -> DeviceResult<DynEngine> {
@@ -204,7 +204,7 @@ pub(super) mod builders {
                 #[cfg(any(target_os = "ios", target_os = "macos"))]
                 Self::Metal(base) => Ok(DynEngine::Metal(EngineBase::build(base)?)),
                 #[cfg(windows)]
-                Self::Windows(base) => Ok(DynEngine::DX12(EngineBase::build(base)?)),
+                Self::DX12(base) => Ok(DynEngine::DX12(EngineBase::build(base)?)),
             }
         }
     }
