@@ -302,12 +302,12 @@ impl Drop for DeviceBase {
 ///
 /// # Clone
 /// Devices can be cloned to create shared references.
-///```
+///```no-run
 /// # use autograph::{Result, device::Device};
 /// # fn main() -> Result<()> {
 /// // Devices are independent.
-/// let a = Device::new().unwrap();
-/// let b = Device::new().unwrap();
+/// let a = Device::new()?;
+/// let b = Device::new()?;
 /// assert_ne!(&a, &b);
 ///
 /// // Cloning creates a copy
