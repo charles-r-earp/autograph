@@ -396,7 +396,7 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
             DynBufferBase::Device(buffer) => buffer.len(),
         }
     }
-    /// Whether the buffer is empty. 
+    /// Whether the buffer is empty.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
