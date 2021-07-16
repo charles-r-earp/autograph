@@ -2,8 +2,6 @@ name: Continuous Integration
 
 on:
   push:
-    branches:
-      - main
   pull_request:
 
 env:
@@ -29,17 +27,9 @@ jobs:
       run: cargo fetch --target ${{ matrix.target }}
     - name: Check
       run: cargo check --tests --lib --benches
-    - name: Check KMeans Iris Example
-      run: cd examples/cluster/kmeans/iris && cargo check && cargo check --features plotters
-    - name: Check NeuralNetwork MNIST Example 
-      run: cd examples/neural_network/mnist && cargo check
-    - name: Test
-      run: cargo test --no-fail-fast -- --test-threads 1
-    - name: Test Benchmarks
-      run: cargo test --benches
-    - name: Test KMeans Iris Example
+    - name: Test  
       if: ${{ matrix.os == 'windows-latest' }}
-      run: cd examples/cluster/kmeans/iris && cargo run && cargo run --features plotters
+      run: cargo test
   lint:
     name: Lint
     runs-on: ubuntu-latest
