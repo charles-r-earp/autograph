@@ -141,7 +141,7 @@ pub mod builders {
 
     impl DeviceBuilder {
         /// [`API`] of the device.
-        pub fn api(&self) -> API {
+        pub fn api(&self) -> Api {
             self.engine_builder.api()
         }
         /// [`DeviceType`] of the device.
@@ -192,7 +192,7 @@ use builders::DeviceBuilder;
 /// Supported API's
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
-pub enum API {
+pub enum Api {
     Vulkan,
     Metal,
     DX12,
@@ -261,7 +261,7 @@ impl DeviceBase {
         buffer: BufferHandle,
         read_guard_fut: ReadGuardFuture,
     ) -> DeviceResult<()> {
-        self.engine.transfer(buffer, read_guard_fut)?.await?;
+        self.engine.transfer(buffer, read_guard_fut).await?;
         Ok(())
     }
     fn read(&self, buffer: BufferHandle) -> DeviceResult<ReadGuardFuture> {
@@ -343,12 +343,12 @@ impl Device {
     ///
     /// # Example
     ///```no_run
-    /// # use autograph::{Result, device::{Device, API, DeviceType}};
+    /// # use autograph::{Result, device::{Device, Api, DeviceType}};
     /// # fn main() -> Result<()> {
     /// use anyhow::anyhow;
     /// // Filter for a Vulkan DiscreteGpu with 4 GB of device memory
     /// let device = Device::builder_iter()
-    ///     .filter(|b| b.api() == API::Vulkan)
+    ///     .filter(|b| b.api() == Api::Vulkan)
     ///     .filter(|b| b.device_type() == DeviceType::DiscreteGpu)
     ///     .filter(|b| b.device_memory() >= 4_000_000_000)
     ///     .next()

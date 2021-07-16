@@ -1,4 +1,4 @@
-use super::{BufferHandle, BufferId, DeviceError, DeviceId, DeviceResult, WriteOnly, API};
+use super::{Api, BufferHandle, BufferId, DeviceError, DeviceId, DeviceResult, WriteOnly};
 use crate::{util::type_eq, Result};
 use crossbeam_channel::{unbounded as unbounded_channel, Receiver, Sender};
 use crossbeam_utils::atomic::AtomicCell;
@@ -28,7 +28,6 @@ use std::{
     collections::{HashSet, VecDeque},
     convert::TryFrom,
     fmt::{self, Debug},
-    future::Future,
     hash::{Hash, Hasher},
     iter::{empty, once, repeat},
     mem::{take, transmute, ManuallyDrop},
@@ -154,7 +153,7 @@ pub(super) mod builders {
         fn dx12_iter() -> impl Iterator<Item = Self> {
             empty()
         }
-        pub(in crate::device) fn api(&self) -> API {
+        pub(in crate::device) fn api(&self) -> Api {
             self.dyn_engine_builder.api()
         }
         pub(in crate::device) fn build(&self) -> DeviceResult<Engine> {
@@ -179,18 +178,18 @@ pub(super) mod builders {
     }
 
     impl DynEngineBuilder {
-        fn api(&self) -> API {
+        fn api(&self) -> Api {
             match self {
                 #[cfg(any(
                     all(unix, not(any(target_os = "ios", target_os = "macos"))),
                     feature = "gfx_backend_vulkan",
                     windows
                 ))]
-                Self::Vulkan(_) => API::Vulkan,
+                Self::Vulkan(_) => Api::Vulkan,
                 #[cfg(any(target_os = "ios", target_os = "macos"))]
-                Self::Metal(_) => API::Metal,
+                Self::Metal(_) => Api::Metal,
                 #[cfg(windows)]
-                Self::DX12(_) => API::DX12,
+                Self::DX12(_) => Api::DX12,
             }
         }
         fn build(&self) -> DeviceResult<DynEngine> {
@@ -277,9 +276,9 @@ pub(super) mod builders {
                             #[cfg(any(all(unix, not(any(target_os = "ios", target_os = "macos"))), feature="gfx_backend_vulkan", windows))]
                             Self::Vulkan(this) => this.$fn($($arg),*),
                             #[cfg(any(target_os = "ios", target_os = "macos"))]
-                            Metal(this) => this.$fn($($arg),*),
+                            Self::Metal(this) => this.$fn($($arg),*),
                             #[cfg(windows)]
-                            DX12(this) => this.$fn($($arg),*),
+                            Self::DX12(this) => this.$fn($($arg),*),
                         }
                     }
                 )*
@@ -314,6 +313,14 @@ pub(super) struct Engine {
 impl Engine {
     pub(super) fn builder_iter() -> impl Iterator<Item = EngineBuilder> {
         EngineBuilder::iter()
+    }
+    pub(super) async fn transfer(
+        &self,
+        buffer: BufferHandle,
+        read_guard_fut: ReadGuardFuture,
+    ) -> DeviceResult<()> {
+        self.transfer_impl(buffer, read_guard_fut.clone())?;
+        read_guard_fut.submit().await
     }
 }
 
@@ -420,9 +427,9 @@ macro_rules! engine_methods {
                         #[cfg(any(all(unix, not(any(target_os = "ios", target_os = "macos"))), feature="gfx_backend_vulkan", windows))]
                         Self::Vulkan(this) => this.$fn($($arg),*),
                         #[cfg(any(target_os = "ios", target_os = "macos"))]
-                        Metal(this) => this.$fn($($arg),*),
+                        Self::Metal(this) => this.$fn($($arg),*),
                         #[cfg(windows)]
-                        DX12(this) => this.$fn($($arg),*),
+                        Self::DX12(this) => this.$fn($($arg),*),
                     }
                 }
             )*
@@ -495,20 +502,17 @@ engine_methods! {
         self.send_op(op)?;
         Ok(Ok(t))
     }
-    pub(super) fn transfer<'a>(&'a self, buffer: BufferHandle, read_guard_fut: ReadGuardFuture) -> DeviceResult<impl Future<Output=DeviceResult<()>> + 'a> {
+    fn transfer_impl<'a>(&'a self, buffer: BufferHandle, read_guard_fut: ReadGuardFuture) -> DeviceResult<()> {
         self.worker_result.load()?;
         let (storage_slice, write_guard_base) = self.allocator().write(self.context(), buffer.id, buffer.offset, buffer.len)?;
         let write_slice = write_guard_base.write_slice();
         let op = Op::Write {
             src: write_slice,
             dst: storage_slice,
-            read_guard_fut: Some(read_guard_fut.clone()),
+            read_guard_fut: Some(read_guard_fut),
         };
         self.send_op(op)?;
-        Ok(async move {
-            read_guard_fut.submit().await?;
-            Ok(())
-        })
+        Ok(())
     }
     pub(super) fn read(&self, buffer: BufferHandle) -> DeviceResult<ReadGuardFuture> {
         self.worker_result.load()?;
