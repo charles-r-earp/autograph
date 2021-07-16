@@ -1,3 +1,4 @@
+#[allow(unused)]
 #[macro_use]
 mod macros {
     #[macro_export]
@@ -30,13 +31,15 @@ mod macros {
 #[macro_use]
 extern crate autograph_derive;
 
-pub mod backend;
-pub mod cluster;
+pub mod device;
+pub mod future;
+pub mod shader;
+mod util;
+/*pub mod cluster;
 pub mod dataset;
 pub mod learn;
 pub mod neural_network;
-pub mod tensor;
-mod util;
+pub mod tensor;*/
 
 pub use anyhow::Result;
 pub use ndarray;

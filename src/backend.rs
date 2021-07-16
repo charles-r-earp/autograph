@@ -17,9 +17,12 @@ use std::{
     sync::Arc,
 };
 
-mod fill;
-mod shader_util;
-
+//mod fill;
+//mod shader_util;
+pub mod shader;
+mod device;
+pub use device::Device;
+/*
 #[doc(hidden)]
 pub mod cpu;
 use cpu::Cpu;
@@ -27,7 +30,9 @@ use cpu::Cpu;
 #[doc(hidden)]
 pub mod gpu;
 use gpu::Gpu;
+*/
 
+/*
 use lazy_static::lazy_static;
 
 lazy_static! {
@@ -1142,3 +1147,4 @@ impl<'a, T> From<BufferSlice<'a, T>> for CowBuffer<'a, T> {
         Self::Borrowed(slice)
     }
 }
+*/
