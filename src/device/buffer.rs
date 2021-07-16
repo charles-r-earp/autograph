@@ -5,7 +5,7 @@ use crate::Result;
 use std::{
     marker::PhantomData,
     mem::{forget, transmute},
-    ops::Deref,
+    ops::{Deref, DerefMut},
     sync::Arc,
 };
 
@@ -95,6 +95,15 @@ impl<T: Scalar, S: Data<Elem = T>> HostBufferBase<S> {
             self.to_vec().into()
         }
     }
+    fn as_slice(&self) -> HostSlice<T> {
+        HostSlice::from(self.deref())
+    }
+    fn as_mut_slice(&mut self) -> HostSliceMut<T>
+    where
+        S: DataMut,
+    {
+        HostSliceMut::from(self.deref_mut())
+    }
 }
 
 impl<T: Scalar> HostBuffer<T> {
@@ -142,6 +151,12 @@ impl<T, S: Data<Elem = T>> Deref for HostBufferBase<S> {
     }
 }
 
+impl<T, S: DataMut<Elem = T>> DerefMut for HostBufferBase<S> {
+    fn deref_mut(&mut self) -> &mut [T] {
+        unsafe { std::slice::from_raw_parts_mut(self.ptr, self.len) }
+    }
+}
+
 impl<S: Data> Drop for HostBufferBase<S> {
     fn drop(&mut self) {
         if S::OWNED {
@@ -161,6 +176,8 @@ struct DeviceBufferBase<S: Data> {
 }
 
 type DeviceBuffer<T> = DeviceBufferBase<OwnedRepr<T>>;
+type DeviceSlice<'a, T> = DeviceBufferBase<SliceRepr<'a, T>>;
+type DeviceSliceMut<'a, T> = DeviceBufferBase<SliceMutRepr<'a, T>>;
 
 impl<T: Scalar, S: Data<Elem = T>> DeviceBufferBase<S> {
     unsafe fn from_raw_parts(
@@ -221,6 +238,17 @@ impl<T: Scalar, S: Data<Elem = T>> DeviceBufferBase<S> {
             _buffer: self,
             guard,
         })
+    }
+    fn as_slice(&self) -> DeviceSlice<T> {
+        unsafe { DeviceSlice::from_raw_parts(self.device.clone(), self.id, self.offset, self.len) }
+    }
+    fn as_mut_slice(&mut self) -> DeviceSliceMut<T>
+    where
+        S: DataMut,
+    {
+        unsafe {
+            DeviceSliceMut::from_raw_parts(self.device.clone(), self.id, self.offset, self.len)
+        }
     }
 }
 
@@ -387,6 +415,23 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
         match self.base {
             DynBufferBase::Host(buffer) => Ok(ReadGuardBase::Host(buffer).into()),
             DynBufferBase::Device(buffer) => Ok(ReadGuardBase::Device(buffer.read().await?).into()),
+        }
+    }
+    /// Borrows the buffer as a Slice.
+    pub fn as_slice(&self) -> Slice<T> {
+        match &self.base {
+            DynBufferBase::Host(buffer) => buffer.as_slice().into(),
+            DynBufferBase::Device(buffer) => buffer.as_slice().into(),
+        }
+    }
+    /// Mutably borrows the buffer as a SliceMut.
+    pub fn as_mut_slice(&mut self) -> SliceMut<T>
+    where
+        S: DataMut,
+    {
+        match &mut self.base {
+            DynBufferBase::Host(buffer) => buffer.as_mut_slice().into(),
+            DynBufferBase::Device(buffer) => buffer.as_mut_slice().into(),
         }
     }
     /// The length of the buffer.
