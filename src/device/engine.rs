@@ -113,6 +113,8 @@ pub(super) mod builders {
     impl EngineBuilder {
         pub(super) fn iter() -> impl Iterator<Item = Self> {
             Self::vulkan_iter()
+                .chain(Self::metal_iter())
+                .chain(Self::dx12_iter())
         }
         #[allow(unused)]
         #[cfg(any(
@@ -151,6 +153,7 @@ pub(super) mod builders {
         #[allow(unused)]
         #[cfg(not(windows))]
         fn dx12_iter() -> impl Iterator<Item = Self> {
+            panic!();
             empty()
         }
         pub(in crate::device) fn api(&self) -> Api {
@@ -252,7 +255,8 @@ pub(super) mod builders {
                 }
             };
             instance.into_iter().flat_map(|instance| {
-                dbg!(instance.enumerate_adapters())
+                instance
+                    .enumerate_adapters()
                     .into_iter()
                     .map(move |adapter| Self::new(instance.clone(), adapter))
             })
