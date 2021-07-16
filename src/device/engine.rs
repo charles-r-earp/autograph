@@ -252,8 +252,7 @@ pub(super) mod builders {
                 }
             };
             instance.into_iter().flat_map(|instance| {
-                instance
-                    .enumerate_adapters()
+                dbg!(instance.enumerate_adapters())
                     .into_iter()
                     .map(move |adapter| Self::new(instance.clone(), adapter))
             })

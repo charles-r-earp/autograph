@@ -417,6 +417,7 @@ mod tests {
     #[test]
     fn device_new() -> Result<()> {
         Device::new()?;
+        panic!();
         Ok(())
     }
 
