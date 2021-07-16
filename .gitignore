@@ -17,6 +17,7 @@ glsl-shaders/Cargo.lock
 #
 #already existing elements are commented out
 
+src/main.rs
 /target
 /autograph_derive/target
 /rust-shaders/target

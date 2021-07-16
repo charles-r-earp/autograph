@@ -305,17 +305,14 @@ impl Drop for DeviceBase {
 ///```
 /// # use autograph::{Result, device::Device};
 /// # fn main() -> Result<()> {
-/// # if Device::new().is_ok() {
 /// // Devices are independent.
-/// let a = Device::new()?;
-/// let b = Device::new()?;
+/// let a = Device::new().unwrap();
+/// let b = Device::new().unwrap();
 /// assert_ne!(&a, &b);
 ///
 /// // Cloning creates a copy
-/// let a = Device::new()?;
 /// let b = a.clone();
 /// assert_eq!(a, b);
-/// # }
 /// # Ok(())
 /// # }
 ///```
