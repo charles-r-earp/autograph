@@ -1,4 +1,4 @@
-use std::{env, fs, path::PathBuf, collections::HashMap};
+use std::{collections::HashMap, env, fs, path::PathBuf};
 use walkdir::WalkDir;
 
 type Result<T, E = Box<dyn std::error::Error>> = std::result::Result<T, E>;
@@ -15,9 +15,11 @@ fn generate_modules() -> Result<()> {
     for entry in WalkDir::new("src/shaders/glsl")
         .into_iter()
         .filter_map(Result::ok)
-        .filter(|e| e.file_type().is_file()) {
+        .filter(|e| e.file_type().is_file())
+    {
         let spirv_path = entry.path();
-        let name: &str = spirv_path.components()
+        let name: &str = spirv_path
+            .components()
             .last()
             .unwrap()
             .as_os_str()
@@ -25,18 +27,21 @@ fn generate_modules() -> Result<()> {
             .unwrap()
             .strip_suffix(".spv")
             .unwrap();
-        let module = Module::from_spirv(fs::read(spirv_path)?)?
-            .with_name(name);
+        let module = Module::from_spirv(fs::read(spirv_path)?)?.with_name(name);
         glsl_modules.insert(name.to_string(), module);
     }
     let glsl_modules_path = out_dir
-        .join("shaders").join("glsl").join("modules").with_extension("bincode");
+        .join("shaders")
+        .join("glsl")
+        .join("modules")
+        .with_extension("bincode");
     fs::write(glsl_modules_path, bincode::serialize(&glsl_modules)?)?;
     fs::create_dir_all(out_dir.join("shaders").join("rust"))?;
     for entry in WalkDir::new("src/shaders/rust")
         .into_iter()
         .filter_map(Result::ok)
-        .filter(|e| e.file_type().is_file()) {
+        .filter(|e| e.file_type().is_file())
+    {
         let spirv_path = entry.path();
         let module_path = out_dir
             .join(spirv_path.strip_prefix("src")?)

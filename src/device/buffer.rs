@@ -611,27 +611,19 @@ impl<T, S: Data<Elem = T>> BufferBase<S> {
             "fill_u32"
         };
         let builder = if option_env!("RUST_SHADERS").is_some() {
-            crate::rust_shaders::core()?
-                .compute_pass(name)?
+            crate::rust_shaders::core()?.compute_pass(name)?
         } else {
-            crate::glsl_shaders::module(name)?
-                .compute_pass("main")?
+            crate::glsl_shaders::module(name)?.compute_pass("main")?
         };
         let builder = builder.slice_mut(self.as_slice_mut())?;
         if size_eq::<T, u8>() {
             let n = if n % 4 == 0 { n / 4 } else { n / 4 + 1 };
-            builder.push(n)?
-                .push([elem; 4])?
-                .submit([n, 1, 1])
+            builder.push(n)?.push([elem; 4])?.submit([n, 1, 1])
         } else if size_eq::<T, u16>() {
             let n = if n % 2 == 0 { n / 2 } else { n / 2 + 1 };
-            builder.push(n)?
-                .push([elem; 2])?
-                .submit([n, 1, 1])
+            builder.push(n)?.push([elem; 2])?.submit([n, 1, 1])
         } else {
-            builder.push(n)?
-                .push(elem)?
-                .submit([n, 1, 1])
+            builder.push(n)?.push(elem)?.submit([n, 1, 1])
         }
     }
 }

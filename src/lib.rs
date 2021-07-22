@@ -30,8 +30,8 @@ pub mod error {
 }
 /// Device level backend.
 pub mod device;
-mod rust_shaders;
 mod glsl_shaders;
+mod rust_shaders;
 /// Scalar types.
 pub mod scalar;
 mod util;

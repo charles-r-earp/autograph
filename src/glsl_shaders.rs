@@ -1,7 +1,7 @@
 use crate::{device::shader::Module, result::Result};
+use anyhow::anyhow;
 use once_cell::sync::OnceCell;
 use std::collections::HashMap;
-use anyhow::anyhow;
 
 static MODULES: OnceCell<HashMap<&'static str, Module>> = OnceCell::new();
 
