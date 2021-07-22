@@ -18,7 +18,7 @@ use gfx_backend_metal::Backend as Metal;
 use gfx_backend_dx12::Backend as DX12;
 
 #[derive(Clone)]
-pub struct Gpu {
+pub(super) struct Gpu {
     hal: DynHalGpu,
 }
 

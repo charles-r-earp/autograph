@@ -1,5 +1,4 @@
-use std::any::TypeId;
-use std::mem::size_of;
+use std::{any::TypeId, mem::size_of};
 
 pub(crate) fn type_eq<A: 'static, B: 'static>() -> bool {
     TypeId::of::<A>() == TypeId::of::<B>()

@@ -1,0 +1,11 @@
+[package]
+name = "hello-compute"
+version = "0.1.0"
+edition = "2018"
+publish = false
+
+[build-dependencies]
+autograph = { path = "../../" }
+
+[dependencies]
+autograph = { path = "../../" }
