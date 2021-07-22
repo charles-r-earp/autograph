@@ -1599,9 +1599,11 @@ impl<B: Backend> Queue<B> {
         std::thread::Builder::new()
             .name(name)
             .spawn(move || {
-                result.store(
-                    catch_unwind(move || self.run(&done)).unwrap_or(Err(DeviceError::DeviceLost)),
-                );
+                result.store(if cfg!(debug_assertions) {
+                    dbg!(self.run(&done))
+                } else {
+                    catch_unwind(move || self.run(&done)).unwrap_or(Err(DeviceError::DeviceLost))
+                });
                 exited.store(true, Ordering::Relaxed);
             })
             .unwrap();
@@ -1988,16 +1990,9 @@ fn descriptor_range(offset: u32, mut len: u32) -> SubRange {
     }
 }
 
-fn barrier_range<B: Backend>(offset: u32, mut len: u32) -> SubRange {
+fn barrier_range(offset: u32, mut len: u32) -> SubRange {
     if len % 4 > 0 {
-        len += 4 - len % 4;
-    }
-    #[cfg(windows)]
-    if type_eq::<B, DX12>() {
-        return SubRange {
-            offset: (offset / 4) as u64,
-            size: Some(len as u64),
-        };
+        len += 4 - (len % 4);
     }
     SubRange {
         offset: offset as u64,
@@ -2077,10 +2072,6 @@ impl<B: Backend> Frame<B> {
                     Descriptor::Buffer(
                         arg.slice.buffer(),
                         descriptor_range(arg.slice.offset, arg.slice.len),
-                        /*SubRange {
-                            offset: arg.slice.offset as u64,
-                            size: Some(arg.slice.len as u64),
-                        },*/
                     )
                 });
                 unsafe {
@@ -2105,46 +2096,27 @@ impl<B: Backend> Frame<B> {
                             bytemuck::cast_slice(&push_constants),
                         );
                     }
-                    for arg in args.iter() {
-                        self.command_buffer.pipeline_barrier(
-                            PipelineStage::TRANSFER | PipelineStage::COMPUTE_SHADER
-                                ..PipelineStage::COMPUTE_SHADER,
-                            Dependencies::empty(),
-                            once(Barrier::Buffer {
-                                states: State::TRANSFER_WRITE | State::SHADER_WRITE
-                                    ..State::SHADER_READ,
-                                target: arg.slice.buffer(),
-                                range: barrier_range::<B>(arg.slice.offset, arg.slice.len),
-                                /*range: SubRange {
-                                    offset: arg.slice.offset as u64,
-                                    size: Some(arg.slice.len as u64),
-                                },*/
-                                families: None,
-                            }),
-                        );
-                    }
-                    self.command_buffer.dispatch(work_groups);
-                    for arg in args.iter() {
+                    let barriers = args.iter().map(|arg| {
+                        let mut states =
+                            State::TRANSFER_WRITE | State::SHADER_WRITE..State::SHADER_READ;
                         if arg.mutable {
-                            self.command_buffer.pipeline_barrier(
-                                PipelineStage::COMPUTE_SHADER
-                                    ..PipelineStage::TRANSFER | PipelineStage::COMPUTE_SHADER,
-                                Dependencies::empty(),
-                                once(Barrier::Buffer {
-                                    states: State::SHADER_WRITE
-                                        ..State::SHADER_READ | State::TRANSFER_READ,
-                                    target: arg.slice.buffer(),
-                                    range: barrier_range::<B>(arg.slice.offset, arg.slice.len),
-                                    /*
-                                    range: SubRange {
-                                        offset: arg.slice.offset as u64,
-                                        size: Some(arg.slice.len as u64),
-                                    },*/
-                                    families: None,
-                                }),
-                            );
+                            states.start |= State::TRANSFER_READ | State::SHADER_READ;
+                            states.end |= State::SHADER_WRITE;
                         }
-                    }
+                        Barrier::Buffer {
+                            states,
+                            target: arg.slice.buffer(),
+                            range: barrier_range(arg.slice.offset, arg.slice.len),
+                            families: None,
+                        }
+                    });
+                    self.command_buffer.pipeline_barrier(
+                        PipelineStage::TRANSFER | PipelineStage::COMPUTE_SHADER
+                            ..PipelineStage::COMPUTE_SHADER,
+                        Dependencies::empty(),
+                        barriers,
+                    );
+                    self.command_buffer.dispatch(work_groups);
                 }
             }
             Op::Copy { src, dst } => {
@@ -2154,41 +2126,34 @@ impl<B: Backend> Frame<B> {
                     size: dst.len as u64,
                 };
                 unsafe {
+                    let src_barrier = Barrier::Buffer {
+                        states: State::TRANSFER_WRITE
+                            | State::TRANSFER_READ
+                            | State::SHADER_WRITE
+                            | State::SHADER_READ
+                            ..State::TRANSFER_READ,
+                        target: src.buffer(),
+                        range: barrier_range(src.offset, src.len),
+                        families: None,
+                    };
+                    let dst_barrier = Barrier::Buffer {
+                        states: State::TRANSFER_WRITE
+                            | State::TRANSFER_READ
+                            | State::SHADER_WRITE
+                            | State::SHADER_READ
+                            ..State::TRANSFER_WRITE,
+                        target: dst.buffer(),
+                        range: barrier_range(dst.offset, dst.len),
+                        families: None,
+                    };
                     self.command_buffer.pipeline_barrier(
                         PipelineStage::TRANSFER | PipelineStage::COMPUTE_SHADER
                             ..PipelineStage::TRANSFER,
                         Dependencies::empty(),
-                        once(Barrier::Buffer {
-                            states: State::TRANSFER_WRITE | State::SHADER_WRITE
-                                ..State::TRANSFER_READ,
-                            target: src.buffer(),
-                            range: barrier_range::<B>(src.offset, src.len),
-                            /*range: SubRange {
-                                offset: src.offset as u64,
-                                size: Some(src.len as u64),
-                            },*/
-                            families: None,
-                        }),
+                        once(src_barrier).chain(once(dst_barrier)),
                     );
                     self.command_buffer
                         .copy_buffer(src.buffer(), dst.buffer(), once(region));
-                    self.command_buffer.pipeline_barrier(
-                        PipelineStage::TRANSFER
-                            ..PipelineStage::TRANSFER | PipelineStage::COMPUTE_SHADER,
-                        Dependencies::empty(),
-                        once(Barrier::Buffer {
-                            states: State::TRANSFER_WRITE
-                                ..State::TRANSFER_READ | State::SHADER_READ,
-                            target: dst.buffer(),
-                            range: barrier_range::<B>(src.offset, src.len),
-                            /*
-                            range: SubRange {
-                                offset: dst.offset as u64,
-                                size: Some(dst.len as u64),
-                            },*/
-                            families: None,
-                        }),
-                    );
                 }
             }
             Op::Write {
@@ -2205,21 +2170,6 @@ impl<B: Backend> Frame<B> {
                 unsafe {
                     self.command_buffer
                         .copy_buffer(src.buffer(), dst.buffer(), once(region));
-                    self.command_buffer.pipeline_barrier(
-                        PipelineStage::TRANSFER..PipelineStage::COMPUTE_SHADER,
-                        Dependencies::empty(),
-                        once(Barrier::Buffer {
-                            states: State::TRANSFER_WRITE
-                                ..State::SHADER_READ | State::TRANSFER_READ,
-                            target: dst.buffer(),
-                            range: barrier_range::<B>(dst.offset, dst.len),
-                            /*range: SubRange {
-                                offset: dst.offset as u64,
-                                size: Some(dst.len as u64),
-                            },*/
-                            families: None,
-                        }),
-                    );
                 }
                 if let Some(fut) = read_guard_fut {
                     self.async_writes.push((src, fut));
@@ -2241,34 +2191,12 @@ impl<B: Backend> Frame<B> {
                             states: State::SHADER_WRITE | State::TRANSFER_WRITE
                                 ..State::TRANSFER_READ,
                             target: src.buffer(),
-                            range: barrier_range::<B>(src.offset, src.len),
-                            /*
-                            range: SubRange {
-                                offset: src.offset as u64,
-                                size: Some(src.len as u64),
-                            },*/
+                            range: barrier_range(src.offset, src.len),
                             families: None,
                         }),
                     );
                     self.command_buffer
                         .copy_buffer(src.buffer, dst.buffer(), once(region));
-                    self.command_buffer.pipeline_barrier(
-                        PipelineStage::TRANSFER
-                            ..PipelineStage::COMPUTE_SHADER | PipelineStage::TRANSFER,
-                        Dependencies::empty(),
-                        once(Barrier::Buffer {
-                            states: State::TRANSFER_READ
-                                ..State::SHADER_WRITE | State::TRANSFER_WRITE,
-                            target: src.buffer(),
-                            range: barrier_range::<B>(src.offset, src.len),
-                            /*
-                            range: SubRange {
-                                offset: src.offset as u64,
-                                size: Some(src.len as u64),
-                            },*/
-                            families: None,
-                        }),
-                    );
                 }
             }
             Op::Sync { finished } => {
@@ -2280,7 +2208,7 @@ impl<B: Backend> Frame<B> {
         Ok(Ok(()))
     }
     fn poll(&mut self, device: &B::Device) -> DeviceResult<bool> {
-        if unsafe { device.get_fence_status(&self.fence)? } {
+        if unsafe { dbg!(device.get_fence_status(&self.fence))? } {
             unsafe {
                 self.command_buffer.reset(false);
                 self.command_buffer
