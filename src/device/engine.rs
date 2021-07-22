@@ -1988,13 +1988,16 @@ fn descriptor_range(offset: u32, mut len: u32) -> SubRange {
     }
 }
 
-fn barrier_range<B: Backend>(offset: u32, len: u32) -> SubRange {
+fn barrier_range<B: Backend>(offset: u32, mut len: u32) -> SubRange {
+    if len % 4 > 0 {
+        len += 4 - len % 4;
+    }
     #[cfg(windows)]
     if type_eq::<B, DX12>() {
-        SubRange {
+        return SubRange {
             offset: (offset / 4) as u64,
-            size: Some(len + len % 4) as u64,
-        }
+            size: Some(len as u64),
+        };
     }
     SubRange {
         offset: offset as u64,
