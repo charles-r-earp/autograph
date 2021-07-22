@@ -1,4 +1,4 @@
-use spirv_builder::{SpirvBuilder, ModuleResult};
+use spirv_builder::{SpirvBuilder, ModuleResult, Capability};
 /*
 use rspirv::{
     dr::Loader,
@@ -13,6 +13,7 @@ use std::{
 fn main() -> Result<(), Box<dyn Error>> {
     let result = SpirvBuilder::new("shaders", "spirv-unknown-vulkan1.0")
         .bindless(true)
+        .capability(Capability::Int8)
         .build()?;
     match result.module {
         ModuleResult::SingleModule(path) => {

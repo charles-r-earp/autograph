@@ -1978,6 +1978,30 @@ impl<B: Backend> DescriptorSetAllocator<B> {
     }
 }
 
+fn descriptor_range(offset: u32, mut len: u32) -> SubRange {
+    if len % 4 > 0 {
+        len += 4 - len % 4;
+    }
+    SubRange {
+        offset: offset as u64,
+        size: Some(len as u64),
+    }
+}
+
+fn barrier_range<B: Backend>(offset: u32, len: u32) -> SubRange {
+    #[cfg(windows)]
+    if type_eq::<B, DX12>() {
+        SubRange {
+            offset: (offset / 4) as u64,
+            size: Some(len + len % 4) as u64,
+        }
+    }
+    SubRange {
+        offset: offset as u64,
+        size: Some(len as u64),
+    }
+}
+
 #[derive(Debug)]
 struct Frame<B: Backend> {
     semaphore: B::Semaphore,
@@ -2049,10 +2073,11 @@ impl<B: Backend> Frame<B> {
                 let descriptors = args.iter().map(|arg| {
                     Descriptor::Buffer(
                         arg.slice.buffer(),
-                        SubRange {
+                        descriptor_range(arg.slice.offset, arg.slice.len),
+                        /*SubRange {
                             offset: arg.slice.offset as u64,
                             size: Some(arg.slice.len as u64),
-                        },
+                        },*/
                     )
                 });
                 unsafe {
@@ -2086,10 +2111,11 @@ impl<B: Backend> Frame<B> {
                                 states: State::TRANSFER_WRITE | State::SHADER_WRITE
                                     ..State::SHADER_READ,
                                 target: arg.slice.buffer(),
-                                range: SubRange {
+                                range: barrier_range::<B>(arg.slice.offset, arg.slice.len),
+                                /*range: SubRange {
                                     offset: arg.slice.offset as u64,
                                     size: Some(arg.slice.len as u64),
-                                },
+                                },*/
                                 families: None,
                             }),
                         );
@@ -2105,10 +2131,12 @@ impl<B: Backend> Frame<B> {
                                     states: State::SHADER_WRITE
                                         ..State::SHADER_READ | State::TRANSFER_READ,
                                     target: arg.slice.buffer(),
+                                    range: barrier_range::<B>(arg.slice.offset, arg.slice.len),
+                                    /*
                                     range: SubRange {
                                         offset: arg.slice.offset as u64,
                                         size: Some(arg.slice.len as u64),
-                                    },
+                                    },*/
                                     families: None,
                                 }),
                             );
@@ -2131,10 +2159,11 @@ impl<B: Backend> Frame<B> {
                             states: State::TRANSFER_WRITE | State::SHADER_WRITE
                                 ..State::TRANSFER_READ,
                             target: src.buffer(),
-                            range: SubRange {
+                            range: barrier_range::<B>(src.offset, src.len),
+                            /*range: SubRange {
                                 offset: src.offset as u64,
                                 size: Some(src.len as u64),
-                            },
+                            },*/
                             families: None,
                         }),
                     );
@@ -2148,10 +2177,12 @@ impl<B: Backend> Frame<B> {
                             states: State::TRANSFER_WRITE
                                 ..State::TRANSFER_READ | State::SHADER_READ,
                             target: dst.buffer(),
+                            range: barrier_range::<B>(src.offset, src.len),
+                            /*
                             range: SubRange {
                                 offset: dst.offset as u64,
                                 size: Some(dst.len as u64),
-                            },
+                            },*/
                             families: None,
                         }),
                     );
@@ -2178,10 +2209,11 @@ impl<B: Backend> Frame<B> {
                             states: State::TRANSFER_WRITE
                                 ..State::SHADER_READ | State::TRANSFER_READ,
                             target: dst.buffer(),
-                            range: SubRange {
+                            range: barrier_range::<B>(dst.offset, dst.len),
+                            /*range: SubRange {
                                 offset: dst.offset as u64,
                                 size: Some(dst.len as u64),
-                            },
+                            },*/
                             families: None,
                         }),
                     );
@@ -2206,10 +2238,12 @@ impl<B: Backend> Frame<B> {
                             states: State::SHADER_WRITE | State::TRANSFER_WRITE
                                 ..State::TRANSFER_READ,
                             target: src.buffer(),
+                            range: barrier_range::<B>(src.offset, src.len),
+                            /*
                             range: SubRange {
                                 offset: src.offset as u64,
                                 size: Some(src.len as u64),
-                            },
+                            },*/
                             families: None,
                         }),
                     );
@@ -2223,16 +2257,19 @@ impl<B: Backend> Frame<B> {
                             states: State::TRANSFER_READ
                                 ..State::SHADER_WRITE | State::TRANSFER_WRITE,
                             target: src.buffer(),
+                            range: barrier_range::<B>(src.offset, src.len),
+                            /*
                             range: SubRange {
                                 offset: src.offset as u64,
                                 size: Some(src.len as u64),
-                            },
+                            },*/
                             families: None,
                         }),
                     );
                 }
             }
             Op::Sync { finished } => {
+                // TODO: Avoid unnecssary sync when empty
                 self.syncs.push(finished);
             }
         }
@@ -2300,6 +2337,7 @@ impl<B: Backend> Frame<B> {
         for read_chunk in self.read_chunks.iter() {
             read_chunk.blocks.state.store(OpState::Pending);
         }
+        self.ready_to_submit = false;
         Ok(())
     }
     unsafe fn free(self, device: &B::Device) {

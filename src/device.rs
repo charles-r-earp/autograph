@@ -14,9 +14,12 @@
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<()> {
-//!     // The spirv source can be created at runtime and imported via include_bytes! or compiled at runtime (JIT).
+//!     // The spirv source can be created at runtime and imported via include_bytes! or compiled
+//!     // at runtime (JIT).
 //!     let spirv: Vec<u8> = todo!();
-//!     // The module stores the spirv and does reflection on it to extract all of the entry functions and their arguments. Module can be serialized and deserialized with [serde](https://serde.rs/) so it can be created at compile time as well.
+//!     // The module stores the spirv and does reflection on it to extract all of the entry
+//!     // functions and their arguments. Module can be serialized and deserialized with serde so
+//!     // it can be created at compile time and loaded at runtime as well.
 //!     let module = Module::from_spirv(spirv)?;
 //!     // Create a device.
 //!     let device = Device::new()?;
@@ -26,14 +29,15 @@
 //!     let b = Slice::from([1, 2, 3, 4].as_ref()).into_device(device).await?;
 //!     // Allocate the result on the device. This is unsafe because it is not initialized.
 //!     let mut y = unsafe { Buffer::<u32>::alloc(device, a.len())? };
+//!     let n = y.len() as u32;
 //!     // Enqueue the compute pass
 //!     module
 //!         .compute_pass("add")?
 //!         .slice(a.as_slice())?
 //!         .slice(b.as_slice())?
 //!         .slice_mut(y.as_slice_mut())?
-//!         .push(a.len() as u32)?
-//!         .submit([a.len() as u32, 1, 1])?;
+//!         .push(n)?
+//!         .submit([n, 1, 1])?;
 //!     // Read the data back.
 //!     let output = y.read().await?;
 //!     println!("{:?}", output.as_slice());

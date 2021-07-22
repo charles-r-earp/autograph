@@ -7,7 +7,7 @@ pub(crate) fn core() -> Result<&'static Module> {
     Ok(CORE.get_or_try_init(|| {
         bincode::deserialize(include_bytes!(concat!(
             env!("OUT_DIR"),
-            "/shaders/rust/core.module"
+            "/shaders/rust/core.bincode"
         )))
     })?)
 }

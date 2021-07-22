@@ -100,7 +100,7 @@ fn compile_glsl(
     let src_artifact = compiler.preprocess(src, name, "main", options)?;
     eprintln!("{}", src_artifact.as_text());
     let artifact = compiler.compile_into_spirv(src, ShaderKind::Compute, name, "main", options)?;
-    let glsl_path = PathBuf::from(env::var("AUTOGRAPH_DIR")?)
+    let glsl_path = PathBuf::from("../")
         .join("src")
         .join("shaders")
         .join("glsl");

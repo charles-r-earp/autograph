@@ -7,8 +7,8 @@ buffer Y {
 };
 
 layout(push_constant) uniform PushConsts {
-    uint x;
     uint n;
+    uint x;
 };
 
 void main() {

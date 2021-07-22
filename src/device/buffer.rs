@@ -605,21 +605,34 @@ impl<T, S: Data<Elem = T>> BufferBase<S> {
         S: DataMut,
     {
         let n = self.len() as u32;
-        let module = crate::rust_shaders::core()?;
-        let builder = if size_eq::<T, u64>() {
-            module.compute_pass("fill_u64")?
+        let name = if size_eq::<T, u64>() {
+            "fill_u64"
         } else {
-            module.compute_pass("fill_u32")?
+            "fill_u32"
         };
-        let builder = builder.slice_mut(self.as_slice_mut())?.push(n)?;
-        let builder = if size_eq::<T, u8>() {
-            builder.push([elem; 4])?
+        let builder = if option_env!("RUST_SHADERS").is_some() {
+            crate::rust_shaders::core()?
+                .compute_pass(name)?
+        } else {
+            crate::glsl_shaders::module(name)?
+                .compute_pass("main")?
+        };
+        let builder = builder.slice_mut(self.as_slice_mut())?;
+        if size_eq::<T, u8>() {
+            let n = if n % 4 == 0 { n / 4 } else { n / 4 + 1 };
+            builder.push(n)?
+                .push([elem; 4])?
+                .submit([n, 1, 1])
         } else if size_eq::<T, u16>() {
-            builder.push([elem; 2])?
+            let n = if n % 2 == 0 { n / 2 } else { n / 2 + 1 };
+            builder.push(n)?
+                .push([elem; 2])?
+                .submit([n, 1, 1])
         } else {
-            builder.push(elem)?
-        };
-        builder.submit([n, 1, 1])
+            builder.push(n)?
+                .push(elem)?
+                .submit([n, 1, 1])
+        }
     }
 }
 
@@ -774,64 +787,71 @@ mod tests {
 
     #[tokio::test]
     async fn fill_u8() -> Result<()> {
-        fill(10, 11).await?;
+        fill(15, 11u8).await?;
         fill(100, 251).await?;
         Ok(())
     }
 
     #[tokio::test]
     async fn fill_i8() -> Result<()> {
-        fill(10, 11).await?;
-        fill(100, -111).await?;
+        fill(10, 11u8).await?;
+        fill(100, -111i8).await?;
         Ok(())
     }
 
     #[tokio::test]
     async fn fill_u16() -> Result<()> {
-        fill(10, 11).await?;
-        fill(1000, 211).await?;
+        fill(10, 11u16).await?;
+        fill(1000, 211u16).await?;
         Ok(())
     }
 
     #[tokio::test]
     async fn fill_i16() -> Result<()> {
-        fill(10, 11).await?;
-        fill(1000, -211).await?;
+        fill(10, 11i16).await?;
+        fill(1000, -211i16).await?;
         Ok(())
     }
 
     #[tokio::test]
     async fn fill_u32() -> Result<()> {
-        fill(10, 11).await?;
-        fill(1000, 211).await?;
+        fill(10, 11u32).await?;
+        fill(1000, 211u32).await?;
         Ok(())
     }
 
     #[tokio::test]
     async fn fill_i32() -> Result<()> {
-        fill(10, 11).await?;
-        fill(1000, -211).await?;
+        fill(10, 11i32).await?;
+        fill(1000, -211i32).await?;
         Ok(())
     }
 
     #[tokio::test]
     async fn fill_f32() -> Result<()> {
-        fill(10, 11.11).await?;
-        fill(1000, -211.11).await?;
+        fill(10, 11.11f32).await?;
+        fill(1000, -211.11f32).await?;
         Ok(())
     }
 
     #[tokio::test]
     async fn fill_u64() -> Result<()> {
-        fill(10, 11).await?;
-        fill(1000, 211).await?;
+        fill(10, 11u64).await?;
+        fill(1000, 211u64).await?;
         Ok(())
     }
 
     #[tokio::test]
     async fn fill_i64() -> Result<()> {
-        fill(10, 11).await?;
-        fill(1000, -211).await?;
+        fill(10, 11i64).await?;
+        fill(1000, -211i64).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn fill_f64() -> Result<()> {
+        fill(10, 11.11f64).await?;
+        fill(1000, -211.11f64).await?;
         Ok(())
     }
 }
