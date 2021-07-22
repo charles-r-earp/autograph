@@ -1,67 +1,116 @@
-use crate::{
-    Result,
-    future::BlockingFuture,
-};
-use std::{
-    mem::size_of,
-    borrow::Cow,
-    sync::{Arc, atomic::{AtomicUsize, Ordering}},
-    alloc::Layout,
-    collections::{HashMap, HashSet},
-};
 use anyhow::{anyhow, bail, ensure};
+use hibitset::BitSet;
+use lazy_static::lazy_static;
+use parking_lot::Mutex;
 use rspirv::{
     binary::Parser,
     dr::{Loader, Operand},
     spirv::{Decoration, ExecutionMode, ExecutionModel, Op, StorageClass, Word},
 };
-use smol::lock::Mutex;
-use hibitset::BitSet;
-use lazy_static::lazy_static;
-use tinyvec::ArrayVec;
+use serde::{de::Error as _, Deserialize, Deserializer, Serialize};
+use std::{
+    alloc::Layout,
+    borrow::Cow,
+    collections::{HashMap, HashSet},
+    fmt::{self, Debug},
+};
+type Result<T, E = anyhow::Error> = std::result::Result<T, E>;
 
-pub(crate) static MAX_PUSH_CONSTANT_SIZE: usize = 64;
+pub(super) const PUSH_CONSTANT_SIZE: usize = 64;
+pub(super) const SPECIALIZATION_SIZE: usize = 32;
 
 lazy_static! {
     static ref MODULE_IDS: Mutex<BitSet> = Mutex::new(BitSet::new());
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(super) struct ModuleId(u32);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(super) struct EntryId(u32);
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub(super) struct ModuleId(pub(super) u32);
 
 impl ModuleId {
-    async fn create() -> Result<Self> {
-        let mut ids = MODULE_IDS.lock().await;
-        todo!()
+    fn create() -> Result<Self> {
+        let mut ids = MODULE_IDS.lock();
+        for id in 0.. {
+            if !ids.contains(id) {
+                ids.add(id);
+                return Ok(Self(id));
+            }
+        }
+        Err(anyhow!("Too many modules!"))
+    }
+    fn deserialize_create<'de, D: Deserializer<'de>>(_: D) -> Result<Self, D::Error> {
+        Self::create().map_err(D::Error::custom)
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub(super) struct EntryId(pub(super) u32);
 
+/// A compute shader module.
+///
+/// A module has an [SPIRV](https://www.khronos.org/spir/) source and info about each entry (shader function).
+///
+/// # Limits
+/// - Up to 4 Buffer arguments.
+/// - Up to 64 bytes of push constants.
+#[derive(Serialize, Deserialize)]
 pub struct Module {
-    spirv: Cow<'static, [u8]>,
-    descriptor: ModuleDescriptor,
-    id: ModuleId,
+    pub(super) spirv: Cow<'static, [u8]>,
+    pub(super) descriptor: ModuleDescriptor,
+    #[serde(skip_serializing, deserialize_with = "ModuleId::deserialize_create")]
+    pub(super) id: ModuleId,
+    name: String,
 }
 
 impl Module {
+    /// Parses the spirv into a Module.
+    ///
+    /// Note: If `spirv` is not aligned to 4 bytes, will clone the data (generally this will happen when using the include_bytes! macro).
+    ///
+    /// **Errors**
+    /// - Will error if the `spirv` is invalid.
     pub fn from_spirv(spirv: impl Into<Cow<'static, [u8]>>) -> Result<Self> {
-        let spirv = spirv.into();
+        let mut spirv = spirv.into();
+        if bytemuck::try_cast_slice::<u8, u32>(spirv.as_ref()).is_err() {
+            spirv.to_mut();
+        }
         let descriptor = ModuleDescriptor::parse(&spirv)?;
-        let id = ModuleId::create().block()?;
+        let id = ModuleId::create()?;
         Ok(Self {
             spirv,
             descriptor,
             id,
+            name: String::new(),
         })
+    }
+    /// Names the module.
+    ///
+    /// The name will be used in error messages.
+    pub fn with_name(mut self, name: impl Into<String>) -> Self {
+        self.name = name.into();
+        self
+    }
+    pub(super) fn name(&self) -> Option<&str> {
+        if !self.name.is_empty() {
+            Some(self.name.as_str())
+        } else {
+            None
+        }
     }
 }
 
-#[derive(Default, Debug)]
-struct ModuleDescriptor {
-    entries: HashMap<String, EntryDescriptor>,
+impl Debug for Module {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        if let Some(name) = self.name() {
+            f.debug_tuple("Module").field(&name).finish()
+        } else {
+            f.debug_tuple("Module").field(&self.id.0).finish()
+        }
+    }
+}
+
+#[derive(Default, Debug, Serialize, Deserialize)]
+pub(super) struct ModuleDescriptor {
+    pub(super) entries: HashMap<String, EntryDescriptor>,
 }
 
 impl ModuleDescriptor {
@@ -70,23 +119,21 @@ impl ModuleDescriptor {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-struct EntryDescriptor {
-    id: EntryId,
-    local_size: [u32; 3],
-    buffers: Vec<bool>,
-    push_constants: u8,
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(super) struct EntryDescriptor {
+    pub(super) id: EntryId,
+    pub(super) local_size: [u32; 3],
+    pub(super) buffers: Vec<bool>,
+    pub(super) push_constant_size: u8,
+    pub(super) specialization_size: u8,
 }
 
 impl EntryDescriptor {
-    pub(crate) fn mutable_buffers(&self) -> usize {
-        self.mutable_buffers as usize
+    pub(super) fn push_constant_size(&self) -> usize {
+        self.push_constant_size as usize
     }
-    pub(crate) fn immutable_buffers(&self) -> usize {
-        self.immutable_buffers as usize
-    }
-    pub(crate) fn push_constants(&self) -> usize {
-        self.push_constants as usize
+    pub(super) fn specialization_size(&self) -> usize {
+        self.specialization_size as usize
     }
 }
 
@@ -446,8 +493,8 @@ fn parse_spirv(spirv: &[u8]) -> Result<ModuleDescriptor> {
                     )
                 })?;
                 let layout_size = layout.size();
-                let push_consts = if layout_size > MAX_PUSH_CONSTANT_SIZE {
-                    bail!("Push constant range must be less than {}!", MAX_PUSH_CONSTANT_SIZE);
+                let push_consts = if layout_size > PUSH_CONSTANT_SIZE {
+                    bail!("Push constants are limited to {} B!", PUSH_CONSTANT_SIZE);
                 } else {
                     layout_size as u8
                 };
@@ -506,35 +553,32 @@ fn parse_spirv(spirv: &[u8]) -> Result<ModuleDescriptor> {
                     buffers.push(buffer);
                 } else if let Some(&push_consts) = push_constants.get(&variable) {
                     if push_constant_range > 0 {
-                        bail!("entry_point: {} functions[{}] only 1 push constant block is allowed:\n{:#?}", &entry_point.name, f, &function);
+                        bail!("entry_point: {} functions[{}] only 1 push constant block is allowed!\n{:#?}", &entry_point.name, f, &function);
                     }
                     push_constant_range = push_consts;
                 }
             }
             buffers.sort_by_key(|b| b.binding);
-            let mut mutable_buffers = 0;
-            let mut immutable_buffers = 0;
-            for buffer in buffers.iter() {
-                if buffer.mutable {
-                    if immutable_buffers > 0 {
-                        bail!("entry_point: {} functions[{}] mutable buffers must be before immutable_buffers:\n{:#?}", &entry_point.name, f, &function);
-                    }
-                    mutable_buffers += 1;
-                } else {
-                    immutable_buffers += 1;
+            for (i, buffer) in buffers.iter().enumerate() {
+                if i != buffer.binding as usize {
+                    bail!("entry_point: {} functions[{}] buffer bindings must be in order from 0 .. N!\n{:#?}", &entry_point.name, f, &function);
                 }
             }
-            module_descriptor.entries.insert(entry_point.name.clone(), EntryDescriptor {
-                id: EntryId({
-                    let id = entry_id;
-                    entry_id += 1;
-                    id
-                }),
-                local_size: entry_point.local_size,
-                mutable_buffers,
-                immutable_buffers,
-                push_constants: push_constant_range,
-            });
+            let buffers = buffers.iter().map(|b| b.mutable).collect();
+            module_descriptor.entries.insert(
+                entry_point.name.clone(),
+                EntryDescriptor {
+                    id: EntryId({
+                        let id = entry_id;
+                        entry_id += 1;
+                        id
+                    }),
+                    local_size: entry_point.local_size,
+                    buffers,
+                    push_constant_size: push_constant_range,
+                    specialization_size: 0,
+                },
+            );
         }
     }
 
@@ -547,7 +591,13 @@ mod tests {
 
     #[test]
     fn shader_module_from_spirv() -> Result<()> {
-        ShaderModule::from_spirv(include_shader!("rust/shader.spv"))?;
+        Module::from_spirv(
+            include_bytes!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/shaders/rust/core.spv"
+            ))
+            .as_ref(),
+        )?;
         Ok(())
     }
 }

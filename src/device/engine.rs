@@ -1,9 +1,13 @@
-use super::{Api, BufferHandle, BufferId, DeviceError, DeviceId, DeviceResult, WriteOnly};
-use crate::{util::type_eq, Result};
+use super::{
+    shader::{EntryDescriptor, EntryId, Module, ModuleId, SPECIALIZATION_SIZE},
+    Api, BufferHandle, BufferId, ComputePass, DeviceError, DeviceId, DeviceResult, WriteOnly,
+};
+use crate::{result::Result, util::type_eq};
+use anyhow::{anyhow, bail};
 use crossbeam_channel::{unbounded as unbounded_channel, Receiver, Sender};
 use crossbeam_utils::atomic::AtomicCell;
 use gfx_hal::{
-    adapter::{Adapter, AdapterInfo, MemoryProperties, PhysicalDevice},
+    adapter::{Adapter, DeviceType, MemoryProperties, PhysicalDevice},
     buffer::{CreationError as BufferCreationError, State, SubRange, Usage},
     command::{BufferCopy, CommandBuffer, CommandBufferFlags, Level as CommandLevel},
     device::{
@@ -12,25 +16,27 @@ use gfx_hal::{
     },
     memory::{Barrier, Dependencies, HeapFlags, Properties, Segment, SparseFlags},
     pool::{CommandPool, CommandPoolCreateFlags},
-    //prelude::DescriptorPool,
-    pso::PipelineStage,
+    prelude::DescriptorPool,
+    pso::{
+        BufferDescriptorFormat, BufferDescriptorType, ComputePipelineDesc, CreationError,
+        Descriptor, DescriptorPoolCreateFlags, DescriptorRangeDesc, DescriptorSetLayoutBinding,
+        DescriptorSetWrite, DescriptorType, EntryPoint, PipelineStage, ShaderStageFlags,
+        Specialization, /* SpecializationConstant, */
+    },
     queue::{Queue as CommandQueue, QueueFamily, QueueFamilyId, QueueType},
-    Backend,
-    Features,
-    Instance,
-    MemoryTypeId,
+    Backend, Features, Instance, MemoryTypeId,
 };
 use hibitset::BitSet;
 use lazy_static::lazy_static;
 use once_cell::sync::OnceCell;
 use parking_lot::Mutex;
 use std::{
-    collections::{HashSet, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     convert::TryFrom,
     fmt::{self, Debug},
     hash::{Hash, Hasher},
     iter::{empty, once, repeat},
-    mem::{take, transmute, ManuallyDrop},
+    mem::{take, transmute, ManuallyDrop, MaybeUninit},
     ops::Deref,
     panic::RefUnwindSafe,
     panic::{catch_unwind, UnwindSafe},
@@ -39,8 +45,9 @@ use std::{
         atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
         Arc, Weak,
     },
-    thread::JoinHandle,
+    time::Duration,
 };
+use tinyvec::ArrayVec;
 
 #[cfg(any(
     all(unix, not(any(target_os = "ios", target_os = "macos"))),
@@ -153,7 +160,6 @@ pub(super) mod builders {
         #[allow(unused)]
         #[cfg(not(windows))]
         fn dx12_iter() -> impl Iterator<Item = Self> {
-            panic!();
             empty()
         }
         pub(in crate::device) fn api(&self) -> Api {
@@ -295,10 +301,26 @@ pub(super) mod builders {
     }
 
     engine_builder_methods! {
-        pub(in crate::device) fn adapter_info(&ref self) -> &AdapterInfo {
-            &self.adapter.info
+        pub(in crate::device) fn name(&ref self) -> &str {
+            self.adapter.info.name.as_str()
         }
-        pub(in crate::device) fn device_memory(&ref self) -> u64 {
+        pub(in crate::device) fn device(&ref self) -> usize {
+            self.adapter.info.device
+        }
+        pub(in crate::device) fn vendor(&ref self) -> usize {
+            self.adapter.info.vendor
+        }
+        pub(in crate::device) fn device_type(&ref self) -> crate::device::DeviceType {
+            use crate::device::DeviceType::*;
+            match &self.adapter.info.device_type {
+                DeviceType::DiscreteGpu => DiscreteGpu,
+                DeviceType::IntegratedGpu => IntegratedGpu,
+                DeviceType::Cpu => Cpu,
+                DeviceType::VirtualGpu => VirtualGpu,
+                DeviceType::Other => Other,
+            }
+        }
+        pub(in crate::device) fn memory(&ref self) -> u64 {
             self.allocator_config.storage_memory()
         }
         pub(in crate::device) fn set_device_id(&mut self, id: DeviceId) {
@@ -344,10 +366,10 @@ enum DynEngine {
 #[derive(Debug)]
 struct EngineBase<B: Backend> {
     context: Arc<Context<B>>,
-    worker_sender: Sender<Op<B>>,
-    worker_handle: ManuallyDrop<JoinHandle<()>>,
-    worker_done: Arc<AtomicBool>,
-    worker_result: Arc<AtomicCell<DeviceResult<()>>>,
+    sender: Sender<Op<B>>,
+    done: Arc<AtomicBool>,
+    result: Arc<AtomicCell<DeviceResult<()>>>,
+    exited: Arc<AtomicBool>,
 }
 
 impl<B: Backend> EngineBase<B> {
@@ -376,17 +398,18 @@ impl<B: Backend> EngineBase<B> {
         let compute_id = compute_family.id();
         let allocator = Allocator::new(&device, &builder.allocator_config)?;
         let context = Arc::new(Context::new(device, allocator, adapter, instance));
-        let (worker_sender, receiver) = unbounded_channel();
+        let (sender, receiver) = unbounded_channel();
         let queue = Queue::new(receiver, context.clone(), compute_queue, compute_id)?;
-        let worker_result = Arc::new(AtomicCell::new(Ok(())));
-        let worker_done = Arc::new(AtomicBool::default());
-        let worker_handle = queue.launch(builder.id, worker_done.clone(), worker_result.clone());
+        let done = Arc::new(AtomicBool::default());
+        let result = Arc::new(AtomicCell::new(Ok(())));
+        let exited = Arc::new(AtomicBool::default());
+        queue.launch(builder.id, done.clone(), result.clone(), exited.clone());
         Ok(Self {
             context,
-            worker_sender,
-            worker_handle: ManuallyDrop::new(worker_handle),
-            worker_done,
-            worker_result,
+            sender,
+            done,
+            result,
+            exited,
         })
     }
     fn context(&self) -> &Arc<Context<B>> {
@@ -399,17 +422,15 @@ impl<B: Backend> EngineBase<B> {
         &self.context.allocator
     }
     fn send_op(&self, op: Op<B>) -> DeviceResult<()> {
-        self.worker_sender
-            .send(op)
-            .or_else(|_| self.worker_result.load())
+        self.sender.send(op).or_else(|_| self.result.load())
     }
 }
 
 impl<B: Backend> Drop for EngineBase<B> {
     fn drop(&mut self) {
-        unsafe {
-            self.worker_done.store(true, Ordering::Relaxed);
-            let _ = ManuallyDrop::take(&mut self.worker_handle).join();
+        self.done.store(true, Ordering::Relaxed);
+        while !self.exited.load(Ordering::Relaxed) {
+            std::thread::sleep(Duration::from_millis(1));
         }
     }
 }
@@ -479,7 +500,7 @@ impl BufferIdExt for BufferId {
 
 engine_methods! {
     pub(super) fn alloc(&self, len: u32) -> DeviceResult<BufferId> {
-        self.worker_result.load()?;
+        self.result.load()?;
         self.allocator().alloc(self.device(), len)
     }
     pub(super) fn dealloc(&self, id: BufferId) {
@@ -488,7 +509,6 @@ engine_methods! {
     pub(super) fn try_write<'a, T, E>(&'a self, buffer: BufferHandle, f: impl FnOnce(WriteOnly<[u8]>)
         -> Result<T, E> + 'a) -> DeviceResult<Result<T, E>>
         where T: 'a, E: 'a {
-        self.worker_result.load()?;
         let (storage_slice, mut write_guard_base) = self.allocator().write(self.context(), buffer.id, buffer.offset, buffer.len).unwrap();
         let t = match f(write_guard_base.write_only()) {
             Ok(t) => t,
@@ -506,7 +526,6 @@ engine_methods! {
         Ok(Ok(t))
     }
     fn transfer_impl<'a>(&'a self, buffer: BufferHandle, read_guard_fut: ReadGuardFuture) -> DeviceResult<()> {
-        self.worker_result.load()?;
         let (storage_slice, write_guard_base) = self.allocator().write(self.context(), buffer.id, buffer.offset, buffer.len)?;
         let write_slice = write_guard_base.write_slice();
         let op = Op::Write {
@@ -518,8 +537,7 @@ engine_methods! {
         Ok(())
     }
     pub(super) fn read(&self, buffer: BufferHandle) -> DeviceResult<ReadGuardFuture> {
-        self.worker_result.load()?;
-        let (storage_slice, read_fut) = self.allocator().read(self.context(), &self.worker_result, buffer.id, buffer.offset, buffer.len)?;
+        let (storage_slice, read_fut) = self.allocator().read(self.context(), &self.result, buffer.id, buffer.offset, buffer.len)?;
         let read_slice = read_fut.read_slice();
         let op = Op::Read {
             src: storage_slice,
@@ -527,6 +545,61 @@ engine_methods! {
         };
         self.send_op(op)?;
         Ok(read_fut.read_guard_future())
+    }
+    pub(super) fn copy(&self, src: BufferHandle, dst: BufferHandle) -> DeviceResult<()> {
+        let src = self.allocator().storage_slice(src.id, src.offset, src.len);
+        let dst = self.allocator().storage_slice(dst.id, dst.offset, dst.len);
+        let op = Op::Copy {
+            src,
+            dst,
+        };
+        self.send_op(op)?;
+        Ok(())
+    }
+    pub(super) fn module(&self, module: &Module) -> DeviceResult<()> {
+        let descriptor = &module.descriptor;
+        let entries = descriptor.entries.iter()
+            .map(|(k, v)| (k.clone(), v.clone()));
+        let shader_module = ShaderModule::new(self.context.clone(), &module.spirv)?
+            .with_entries(entries)?;
+        let op = Op::Module {
+            id: module.id,
+            module: shader_module,
+        };
+        self.send_op(op)
+    }
+    pub(super) fn compute(&self, compute_pass: ComputePass) -> DeviceResult<()> {
+        self.result.load()?;
+        let args: Vec<_> = compute_pass.args.into_iter()
+            .map(|arg| {
+                let buffer = arg.buffer;
+                let slice = self.allocator().storage_slice(buffer.id, buffer.offset, buffer.len);
+                ComputeArg {
+                    slice,
+                    mutable: arg.mutable,
+                }
+            }).collect();
+        let op = Op::Compute {
+            module: compute_pass.module,
+            entry: compute_pass.entry,
+            work_groups: compute_pass.work_groups,
+            args,
+            push_constants: compute_pass.push_constants,
+            specialization: compute_pass.specialization,
+        };
+        self.send_op(op)
+    }
+    pub(super) fn sync(&self) -> DeviceResult<SyncFuture> {
+        self.result.load()?;
+        let finished = Arc::new(AtomicBool::default());
+        let op = Op::Sync {
+            finished: finished.clone(),
+        };
+        self.send_op(op)?;
+        Ok(SyncFuture {
+            finished,
+            result: self.result.clone()
+        })
     }
 }
 
@@ -544,6 +617,12 @@ impl BlockId {
 
 #[derive(Clone, Copy, Debug)]
 struct BlockLen(u32);
+
+impl BlockLen {
+    fn as_bytes(&self) -> u32 {
+        self.0 * BLOCK_SIZE
+    }
+}
 
 impl TryFrom<u32> for BlockLen {
     type Error = DeviceError;
@@ -691,6 +770,7 @@ struct StorageChunk<B: Backend> {
 }
 
 impl<B: Backend> StorageChunk<B> {
+    /*
     fn init(
         &self,
         device: &B::Device,
@@ -699,7 +779,7 @@ impl<B: Backend> StorageChunk<B> {
         self.base
             .get_or_try_init(|| ChunkBase::new_storage(device, ids))?;
         Ok(())
-    }
+    }*/
     fn initialized(&self) -> bool {
         self.base.get().is_some()
     }
@@ -722,6 +802,25 @@ impl<B: Backend> StorageChunk<B> {
     }
     fn dealloc(&self, range: BlockRange) {
         self.blocks.lock().dealloc(range);
+    }
+    fn slice(&self, offset: u32, len: u32, block_len: BlockLen) -> Result<StorageSlice<B>> {
+        let buffer: &B::Buffer = &self
+            .base
+            .get()
+            .ok_or_else(|| anyhow!("StorageChunk is not initialized!"))?
+            .buffer;
+        let buffer: &'static B::Buffer = unsafe { transmute(buffer) };
+        if len > block_len.as_bytes() {
+            bail!("Slice len out of range!");
+        }
+        if offset > len {
+            bail!("Slice offset out of range!");
+        }
+        Ok(StorageSlice {
+            buffer,
+            offset,
+            len,
+        })
     }
     unsafe fn slice_unchecked(&self, offset: u32, len: u32) -> StorageSlice<B> {
         let buffer: &B::Buffer = &self.base.get_unchecked().buffer;
@@ -868,7 +967,7 @@ struct MappingChunk<B: Backend> {
 }
 
 impl<B: Backend> MappingChunk<B> {
-    fn init(
+    /*fn init(
         &self,
         device: &B::Device,
         ids: impl Iterator<Item = MemoryTypeId>,
@@ -879,7 +978,7 @@ impl<B: Backend> MappingChunk<B> {
     }
     fn initialized(&self) -> bool {
         self.base.get().is_some()
-    }
+    }*/
     fn alloc_write(
         &self,
         context: &Arc<Context<B>>,
@@ -1076,7 +1175,7 @@ struct Allocator<B: Backend> {
 }
 
 impl<B: Backend> Allocator<B> {
-    fn new(device: &B::Device, config: &AllocatorConfig) -> DeviceResult<Self> {
+    fn new(_device: &B::Device, config: &AllocatorConfig) -> DeviceResult<Self> {
         let device_id = config.device_id();
         let shared_id = config.shared_id();
         let host_id = config.host_id();
@@ -1096,26 +1195,13 @@ impl<B: Backend> Allocator<B> {
             .map(|_| MappingChunk::<B>::default())
             .take(config.mapping_chunks())
             .collect();
-        let allocator = Self {
+        Ok(Self {
             device_id,
             shared_id,
             host_id,
             storage_chunks,
             mapping_chunks,
-        };
-        if let Err(e) = allocator.alloc_storage_chunks(device, config.initial_storage_chunks) {
-            unsafe {
-                allocator.free(device);
-            }
-            return Err(e);
-        }
-        if let Err(e) = allocator.alloc_mapping_chunks(device, config.initial_mapping_chunks) {
-            unsafe {
-                allocator.free(device);
-            }
-            return Err(e);
-        }
-        Ok(allocator)
+        })
     }
     fn storage_ids(&self) -> impl Iterator<Item = MemoryTypeId> {
         self.device_id.into_iter().chain(self.shared_id)
@@ -1123,7 +1209,7 @@ impl<B: Backend> Allocator<B> {
     fn mapping_ids(&self) -> impl Iterator<Item = MemoryTypeId> {
         self.shared_id.into_iter().chain(self.host_id)
     }
-    fn alloc_storage_chunks(&self, device: &B::Device, count: usize) -> DeviceResult<()> {
+    /*fn alloc_storage_chunks(&self, device: &B::Device, count: usize) -> DeviceResult<()> {
         let mut allocated = 0;
         for chunk in self.storage_chunks.iter() {
             if allocated >= count {
@@ -1148,7 +1234,7 @@ impl<B: Backend> Allocator<B> {
             }
         }
         Ok(())
-    }
+    }*/
     fn alloc(&self, device: &B::Device, len: u32) -> DeviceResult<BufferId> {
         let len = BlockLen::try_from(len)?;
         let (chunk, block) = self.alloc_storage(device, len)?;
@@ -1216,6 +1302,22 @@ impl<B: Backend> Allocator<B> {
         }
         // TODO: maybe wait for memory to become available?
         Err(DeviceError::OutOfHostMemory)
+    }
+    fn storage_slice(&self, id: BufferId, offset: u32, len: u32) -> StorageSlice<B> {
+        let (chunk, range) = id.unpack();
+        if cfg!(debug_assertions) {
+            return self
+                .storage_chunks
+                .get(chunk.0 as usize)
+                .unwrap()
+                .slice(offset, len, range.len)
+                .unwrap();
+        }
+        unsafe {
+            self.storage_chunks
+                .get_unchecked(chunk.0 as usize)
+                .slice_unchecked(offset, len)
+        }
     }
     fn dealloc(&self, id: BufferId) {
         let (chunk, range) = id.unpack();
@@ -1413,6 +1515,22 @@ impl Deref for ReadGuard {
     }
 }
 
+#[derive(Debug)]
+pub(super) struct SyncFuture {
+    finished: Arc<AtomicBool>,
+    result: Arc<AtomicCell<DeviceResult<()>>>,
+}
+
+impl SyncFuture {
+    pub(super) async fn finish(self) -> DeviceResult<()> {
+        while !self.finished.load(Ordering::Relaxed) {
+            self.result.load()?;
+            smol::future::yield_now().await;
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
 enum OpState {
@@ -1434,6 +1552,7 @@ struct Queue<B: Backend> {
     command_pool: ManuallyDrop<B::CommandPool>,
     ready_frames: VecDeque<Frame<B>>,
     pending_frames: VecDeque<Frame<B>>,
+    modules: HashMap<ModuleId, ShaderModule<B>>,
 }
 
 impl<B: Backend> Queue<B> {
@@ -1460,6 +1579,7 @@ impl<B: Backend> Queue<B> {
             command_pool,
             ready_frames,
             pending_frames,
+            modules: HashMap::new(),
         };
         for _ in 0..n_frames {
             let frame = Frame::new(queue.context.device(), &mut *queue.command_pool)?;
@@ -1472,7 +1592,8 @@ impl<B: Backend> Queue<B> {
         id: Option<DeviceId>,
         done: Arc<AtomicBool>,
         result: Arc<AtomicCell<DeviceResult<()>>>,
-    ) -> JoinHandle<()> {
+        exited: Arc<AtomicBool>,
+    ) {
         let id_string = id.map_or("".into(), |id| format!("({})", id.0));
         let name = format!("autograph::Device{}", id_string);
         std::thread::Builder::new()
@@ -1481,8 +1602,9 @@ impl<B: Backend> Queue<B> {
                 result.store(
                     catch_unwind(move || self.run(&done)).unwrap_or(Err(DeviceError::DeviceLost)),
                 );
+                exited.store(true, Ordering::Relaxed);
             })
-            .unwrap()
+            .unwrap();
     }
     fn poll(&mut self) -> DeviceResult<()> {
         if let Some(frame) = self.pending_frames.front_mut() {
@@ -1515,7 +1637,9 @@ impl<B: Backend> Queue<B> {
                     .into_iter()
                     .chain(self.receiver.try_iter())
                 {
-                    if let Err(op) = frame.try_encode(op)? {
+                    if let Err(op) =
+                        frame.try_encode(op, self.context.device(), &mut self.modules)?
+                    {
                         current_op.replace(op);
                         break;
                     }
@@ -1544,10 +1668,202 @@ impl<B: Backend> Drop for Queue<B> {
 impl<B: Backend> UnwindSafe for Queue<B> {}
 
 #[derive(Debug)]
+struct ShaderModule<B: Backend> {
+    context: Arc<Context<B>>,
+    module: ManuallyDrop<B::ShaderModule>,
+    shaders: Vec<Shader<B>>,
+}
+
+impl<B: Backend> ShaderModule<B> {
+    fn new(context: Arc<Context<B>>, spirv: &[u8]) -> DeviceResult<Self> {
+        let module = unsafe {
+            context
+                .device()
+                .create_shader_module(bytemuck::cast_slice(spirv))
+                .unwrap()
+        };
+        Ok(Self {
+            context,
+            module: ManuallyDrop::new(module),
+            shaders: Vec::new(),
+        })
+    }
+    fn device(&self) -> &B::Device {
+        self.context.device()
+    }
+    fn with_entries<I>(mut self, entries: I) -> DeviceResult<Self>
+    where
+        I: ExactSizeIterator<Item = (String, EntryDescriptor)>,
+    {
+        let mut shaders: Vec<MaybeUninit<Shader<B>>> =
+            std::iter::from_fn(|| Some(MaybeUninit::uninit()))
+                .take(entries.len())
+                .collect();
+        for (entry, descriptor) in entries {
+            let shader = Shader::new(self.device(), entry, &descriptor)?;
+            unsafe {
+                shaders
+                    .get_unchecked_mut(descriptor.id.0 as usize)
+                    .as_mut_ptr()
+                    .write(shader);
+            }
+        }
+        self.shaders = unsafe { transmute(shaders) };
+        Ok(self)
+    }
+    fn pipeline(&mut self, entry: EntryId, specialization: &[u8]) -> DeviceResult<PipelineRef<B>> {
+        let context = &self.context;
+        let shader = unsafe { self.shaders.get_unchecked_mut(entry.0 as usize) };
+        shader.pipeline(context.device(), &*self.module, specialization)
+    }
+}
+
+impl<B: Backend> Drop for ShaderModule<B> {
+    fn drop(&mut self) {
+        unsafe {
+            let module = ManuallyDrop::take(&mut self.module);
+            self.device().destroy_shader_module(module);
+        }
+    }
+}
+
+#[derive(Debug)]
+struct PipelineRef<'a, B: Backend> {
+    descriptor_set_layout: &'a B::DescriptorSetLayout,
+    pipeline_layout: &'a B::PipelineLayout,
+    compute_pipeline: &'a B::ComputePipeline,
+}
+
+#[derive(Debug)]
+struct Shader<B: Backend> {
+    entry: String,
+    descriptor_set_layout: B::DescriptorSetLayout,
+    pipeline_layout: B::PipelineLayout,
+    compute_pipelines: HashMap<ArrayVec<[u8; SPECIALIZATION_SIZE]>, B::ComputePipeline>,
+}
+
+impl<B: Backend> Shader<B> {
+    fn new(device: &B::Device, entry: String, descriptor: &EntryDescriptor) -> DeviceResult<Self> {
+        let bindings =
+            descriptor
+                .buffers
+                .iter()
+                .enumerate()
+                .map(|(i, mutable)| DescriptorSetLayoutBinding {
+                    binding: i as u32,
+                    ty: DescriptorType::Buffer {
+                        ty: BufferDescriptorType::Storage {
+                            read_only: !mutable,
+                        },
+                        format: BufferDescriptorFormat::Structured {
+                            dynamic_offset: false,
+                        },
+                    },
+                    count: 1,
+                    stage_flags: ShaderStageFlags::COMPUTE,
+                    immutable_samplers: false,
+                });
+        let descriptor_set_layout =
+            unsafe { device.create_descriptor_set_layout(bindings, empty())? };
+        let push_constant_size = descriptor.push_constant_size as u32;
+        let push_constant_range = if push_constant_size > 0 {
+            Some((ShaderStageFlags::COMPUTE, 0..push_constant_size))
+        } else {
+            None
+        };
+        let pipeline_layout_result = unsafe {
+            device.create_pipeline_layout(
+                once(&descriptor_set_layout),
+                push_constant_range.into_iter(),
+            )
+        };
+        let pipeline_layout = match pipeline_layout_result {
+            Ok(pipeline_layout) => pipeline_layout,
+            Err(e) => {
+                unsafe {
+                    device.destroy_descriptor_set_layout(descriptor_set_layout);
+                }
+                return Err(e.into());
+            }
+        };
+        Ok(Self {
+            entry,
+            descriptor_set_layout,
+            pipeline_layout,
+            compute_pipelines: HashMap::new(),
+        })
+    }
+    fn pipeline(
+        &mut self,
+        device: &B::Device,
+        module: &B::ShaderModule,
+        specialization: &[u8],
+    ) -> DeviceResult<PipelineRef<B>> {
+        use std::collections::hash_map::Entry;
+        let specialization = ArrayVec::try_from(specialization).unwrap();
+        let compute_pipeline = match self.compute_pipelines.entry(specialization) {
+            Entry::Occupied(occupied) => occupied.into_mut(),
+            Entry::Vacant(vacant) => {
+                let entry_point = EntryPoint {
+                    entry: &self.entry,
+                    module,
+                    specialization: Specialization::default(), // TODO: impl specialization
+                };
+                let compute_pipeline_result = unsafe {
+                    device.create_compute_pipeline(
+                        &ComputePipelineDesc::new(entry_point, &self.pipeline_layout),
+                        None,
+                    )
+                };
+                let compute_pipeline = match compute_pipeline_result {
+                    Ok(compute_pipeline) => compute_pipeline,
+                    Err(e) => match e {
+                        CreationError::OutOfMemory(out_of_memory) => {
+                            return Err(out_of_memory.into());
+                        }
+                        _ => {
+                            if cfg!(debug_assertions) {
+                                dbg!(e);
+                            }
+                            return Err(DeviceError::ShaderCompilationFailed);
+                        }
+                    },
+                };
+                vacant.insert(compute_pipeline)
+            }
+        };
+        Ok(PipelineRef {
+            descriptor_set_layout: &self.descriptor_set_layout,
+            pipeline_layout: &self.pipeline_layout,
+            compute_pipeline,
+        })
+    }
+}
+
+#[derive(Debug)]
+struct ComputeArg<B: Backend> {
+    slice: StorageSlice<B>,
+    mutable: bool,
+}
+
+#[derive(Debug)]
 enum Op<B: Backend> {
-    //Module {},
-    //Compute {},
-    //Copy {},
+    Module {
+        id: ModuleId,
+        module: ShaderModule<B>,
+    },
+    Compute {
+        module: ModuleId,
+        entry: EntryId,
+        work_groups: [u32; 3],
+        args: Vec<ComputeArg<B>>,
+        push_constants: Vec<u8>,
+        specialization: Vec<u8>,
+    },
+    Copy {
+        src: StorageSlice<B>,
+        dst: StorageSlice<B>,
+    },
     Write {
         src: WriteSlice<B>,
         dst: StorageSlice<B>,
@@ -1556,6 +1872,9 @@ enum Op<B: Backend> {
     Read {
         src: StorageSlice<B>,
         dst: ReadSlice<B>,
+    },
+    Sync {
+        finished: Arc<AtomicBool>,
     },
 }
 
@@ -1601,13 +1920,74 @@ impl<B: Backend> Debug for MappingChunkRef<B> {
 }
 
 #[derive(Debug)]
+struct DescriptorSetAllocator<B: Backend> {
+    pools: Vec<B::DescriptorPool>,
+}
+
+impl<B: Backend> Default for DescriptorSetAllocator<B> {
+    fn default() -> Self {
+        Self {
+            pools: Vec::default(),
+        }
+    }
+}
+
+impl<B: Backend> DescriptorSetAllocator<B> {
+    fn allocate(
+        &mut self,
+        device: &B::Device,
+        layout: &B::DescriptorSetLayout,
+    ) -> DeviceResult<B::DescriptorSet> {
+        let set = if let Some(pool) = self.pools.last_mut() {
+            unsafe { pool.allocate_one(layout).unwrap() }
+        } else {
+            let descriptor_ranges =
+                once(false)
+                    .chain(once(true))
+                    .map(|read_only| DescriptorRangeDesc {
+                        ty: DescriptorType::Buffer {
+                            ty: BufferDescriptorType::Storage { read_only },
+                            format: BufferDescriptorFormat::Structured {
+                                dynamic_offset: false,
+                            },
+                        },
+                        count: 500,
+                    });
+            let pool = unsafe {
+                device.create_descriptor_pool(
+                    1000,
+                    descriptor_ranges,
+                    DescriptorPoolCreateFlags::empty(),
+                )?
+            };
+            self.pools.push(pool);
+            let pool = self.pools.last_mut().unwrap();
+            unsafe { pool.allocate_one(layout).unwrap() }
+        };
+        Ok(set)
+    }
+    unsafe fn reset(&mut self) {
+        for pool in self.pools.iter_mut() {
+            pool.reset();
+        }
+    }
+    unsafe fn free(self, device: &B::Device) {
+        for pool in self.pools {
+            device.destroy_descriptor_pool(pool);
+        }
+    }
+}
+
+#[derive(Debug)]
 struct Frame<B: Backend> {
     semaphore: B::Semaphore,
     fence: B::Fence,
+    descriptor_set_allocator: DescriptorSetAllocator<B>,
     command_buffer: B::CommandBuffer,
     async_writes: Vec<(WriteSlice<B>, ReadGuardFuture)>,
     write_chunks: HashSet<MappingChunkRef<B>>,
     read_chunks: HashSet<MappingChunkRef<B>>,
+    syncs: Vec<Arc<AtomicBool>>,
     ready_to_submit: bool,
 }
 
@@ -1630,21 +2010,153 @@ impl<B: Backend> Frame<B> {
         Ok(Self {
             semaphore,
             fence,
+            descriptor_set_allocator: DescriptorSetAllocator::default(),
             command_buffer,
             async_writes: Vec::new(),
             write_chunks: HashSet::new(),
             read_chunks: HashSet::new(),
+            syncs: Vec::new(),
             ready_to_submit: false,
         })
     }
     fn ready_to_submit(&mut self) -> bool {
         self.ready_to_submit
     }
-    fn try_encode(&mut self, op: Op<B>) -> DeviceResult<Result<(), Op<B>>> {
-        if self.read_chunks.len() > 100 {
-            return Ok(Err(op));
-        }
+    fn try_encode(
+        &mut self,
+        op: Op<B>,
+        device: &B::Device,
+        modules: &mut HashMap<ModuleId, ShaderModule<B>>,
+    ) -> DeviceResult<Result<(), Op<B>>> {
         match op {
+            Op::Module { id, module } => {
+                debug_assert!(!modules.contains_key(&id));
+                modules.insert(id, module);
+            }
+            Op::Compute {
+                module,
+                entry,
+                work_groups,
+                args,
+                push_constants,
+                specialization,
+            } => {
+                let module = modules.get_mut(&module).unwrap();
+                let pipeline = module.pipeline(entry, &specialization)?;
+                let mut descriptor_set = self
+                    .descriptor_set_allocator
+                    .allocate(device, pipeline.descriptor_set_layout)?;
+                let descriptors = args.iter().map(|arg| {
+                    Descriptor::Buffer(
+                        arg.slice.buffer(),
+                        SubRange {
+                            offset: arg.slice.offset as u64,
+                            size: Some(arg.slice.len as u64),
+                        },
+                    )
+                });
+                unsafe {
+                    device.write_descriptor_set(DescriptorSetWrite {
+                        set: &mut descriptor_set,
+                        binding: 0,
+                        array_offset: 0,
+                        descriptors,
+                    });
+                    self.command_buffer
+                        .bind_compute_pipeline(&pipeline.compute_pipeline);
+                    self.command_buffer.bind_compute_descriptor_sets(
+                        &pipeline.pipeline_layout,
+                        0,
+                        once(&descriptor_set),
+                        empty(),
+                    );
+                    if !push_constants.is_empty() {
+                        self.command_buffer.push_compute_constants(
+                            &pipeline.pipeline_layout,
+                            0,
+                            bytemuck::cast_slice(&push_constants),
+                        );
+                    }
+                    for arg in args.iter() {
+                        self.command_buffer.pipeline_barrier(
+                            PipelineStage::TRANSFER | PipelineStage::COMPUTE_SHADER
+                                ..PipelineStage::COMPUTE_SHADER,
+                            Dependencies::empty(),
+                            once(Barrier::Buffer {
+                                states: State::TRANSFER_WRITE | State::SHADER_WRITE
+                                    ..State::SHADER_READ,
+                                target: arg.slice.buffer(),
+                                range: SubRange {
+                                    offset: arg.slice.offset as u64,
+                                    size: Some(arg.slice.len as u64),
+                                },
+                                families: None,
+                            }),
+                        );
+                    }
+                    self.command_buffer.dispatch(work_groups);
+                    for arg in args.iter() {
+                        if arg.mutable {
+                            self.command_buffer.pipeline_barrier(
+                                PipelineStage::COMPUTE_SHADER
+                                    ..PipelineStage::TRANSFER | PipelineStage::COMPUTE_SHADER,
+                                Dependencies::empty(),
+                                once(Barrier::Buffer {
+                                    states: State::SHADER_WRITE
+                                        ..State::SHADER_READ | State::TRANSFER_READ,
+                                    target: arg.slice.buffer(),
+                                    range: SubRange {
+                                        offset: arg.slice.offset as u64,
+                                        size: Some(arg.slice.len as u64),
+                                    },
+                                    families: None,
+                                }),
+                            );
+                        }
+                    }
+                }
+            }
+            Op::Copy { src, dst } => {
+                let region = BufferCopy {
+                    src: src.offset as u64,
+                    dst: dst.offset as u64,
+                    size: dst.len as u64,
+                };
+                unsafe {
+                    self.command_buffer.pipeline_barrier(
+                        PipelineStage::TRANSFER | PipelineStage::COMPUTE_SHADER
+                            ..PipelineStage::TRANSFER,
+                        Dependencies::empty(),
+                        once(Barrier::Buffer {
+                            states: State::TRANSFER_WRITE | State::SHADER_WRITE
+                                ..State::TRANSFER_READ,
+                            target: src.buffer(),
+                            range: SubRange {
+                                offset: src.offset as u64,
+                                size: Some(src.len as u64),
+                            },
+                            families: None,
+                        }),
+                    );
+                    self.command_buffer
+                        .copy_buffer(src.buffer(), dst.buffer(), once(region));
+                    self.command_buffer.pipeline_barrier(
+                        PipelineStage::TRANSFER
+                            ..PipelineStage::TRANSFER | PipelineStage::COMPUTE_SHADER,
+                        Dependencies::empty(),
+                        once(Barrier::Buffer {
+                            states: State::TRANSFER_WRITE
+                                ..State::TRANSFER_READ | State::SHADER_READ,
+                            target: dst.buffer(),
+                            range: SubRange {
+                                offset: dst.offset as u64,
+                                size: Some(dst.len as u64),
+                            },
+                            families: None,
+                        }),
+                    );
+                }
+            }
             Op::Write {
                 src,
                 dst,
@@ -1657,26 +2169,14 @@ impl<B: Backend> Frame<B> {
                     size: dst.len as u64,
                 };
                 unsafe {
-                    self.command_buffer.pipeline_barrier(
-                        PipelineStage::COMPUTE_SHADER..PipelineStage::TRANSFER,
-                        Dependencies::empty(),
-                        once(Barrier::Buffer {
-                            states: State::SHADER_WRITE..State::TRANSFER_WRITE,
-                            target: dst.buffer(),
-                            range: SubRange {
-                                offset: dst.offset as u64,
-                                size: Some(dst.len as u64),
-                            },
-                            families: None,
-                        }),
-                    );
                     self.command_buffer
                         .copy_buffer(src.buffer(), dst.buffer(), once(region));
                     self.command_buffer.pipeline_barrier(
                         PipelineStage::TRANSFER..PipelineStage::COMPUTE_SHADER,
                         Dependencies::empty(),
                         once(Barrier::Buffer {
-                            states: State::TRANSFER_WRITE..State::SHADER_WRITE | State::SHADER_READ,
+                            states: State::TRANSFER_WRITE
+                                ..State::SHADER_READ | State::TRANSFER_READ,
                             target: dst.buffer(),
                             range: SubRange {
                                 offset: dst.offset as u64,
@@ -1731,9 +2231,12 @@ impl<B: Backend> Frame<B> {
                         }),
                     );
                 }
-                self.ready_to_submit = true;
-            } //_ => todo!("\n{:#?}", op),
+            }
+            Op::Sync { finished } => {
+                self.syncs.push(finished);
+            }
         }
+        self.ready_to_submit = true;
         Ok(Ok(()))
     }
     fn poll(&mut self, device: &B::Device) -> DeviceResult<bool> {
@@ -1742,9 +2245,13 @@ impl<B: Backend> Frame<B> {
                 self.command_buffer.reset(false);
                 self.command_buffer
                     .begin_primary(CommandBufferFlags::ONE_TIME_SUBMIT);
+                self.descriptor_set_allocator.reset();
             }
             for read_chunk in take(&mut self.read_chunks) {
                 read_chunk.blocks.state.store(OpState::Finished);
+            }
+            for sync in take(&mut self.syncs) {
+                sync.store(true, Ordering::Relaxed);
             }
             Ok(true)
         } else {
@@ -1759,6 +2266,13 @@ impl<B: Backend> Frame<B> {
     ) -> DeviceResult<()> {
         unsafe {
             device.reset_fence(&mut self.fence)?;
+        }
+        for write_chunk in self.write_chunks.iter() {
+            let blocks = &write_chunk.blocks;
+            blocks.write_blocks.store(BLOCKS, Ordering::Release);
+            while blocks.writers.load(Ordering::Acquire) > 0 {
+                std::thread::sleep(Duration::from_nanos(100));
+            }
         }
         for read_chunk in self.read_chunks.iter() {
             read_chunk
@@ -1791,14 +2305,15 @@ impl<B: Backend> Frame<B> {
     unsafe fn free(self, device: &B::Device) {
         device.destroy_semaphore(self.semaphore);
         device.destroy_fence(self.fence);
+        self.descriptor_set_allocator.free(device);
     }
 }
 
 struct Context<B: Backend> {
     device: B::Device,
     allocator: ManuallyDrop<Allocator<B>>,
-    adapter: Arc<Adapter<B>>,
-    instance: Arc<B::Instance>,
+    _adapter: Arc<Adapter<B>>,
+    _instance: Arc<B::Instance>,
 }
 
 impl<B: Backend> Context<B> {
@@ -1810,9 +2325,9 @@ impl<B: Backend> Context<B> {
     ) -> Self {
         Self {
             device,
-            adapter,
             allocator: ManuallyDrop::new(allocator),
-            instance,
+            _adapter: adapter,
+            _instance: instance,
         }
     }
     fn device(&self) -> &B::Device {
@@ -1832,12 +2347,7 @@ impl<B: Backend> RefUnwindSafe for Context<B> {}
 
 impl<B: Backend> Debug for Context<B> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("Context")
-            .field("device", &self.device)
-            .field("allocator", &self.allocator)
-            .field("adapter", &self.adapter)
-            .field("instance", &Arc::as_ptr(&self.instance))
-            .finish()
+        f.debug_struct("Context").finish()
     }
 }
 

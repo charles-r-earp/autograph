@@ -22,6 +22,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .await?
         .text()
         .await?;
+    dbg!(&body);
     let config: Config = toml::from_str(&body)?;
     let toolchain = config.toolchain;
     let output = Command::new("rustup")
@@ -33,21 +34,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .output()?;
     if output.status.success() {
         let stdout = String::from_utf8(output.stdout)?;
-        let components: Vec<String> = toolchain.components.into_iter()
-            .filter(|component| {
-                !stdout.lines().any(|x| x.starts_with::<&str>(component.as_str()))
-            })
-            .collect();
-        if components.is_empty() {
+        if !toolchain.components.iter()
+            .any(|component| !stdout.lines().any(|x| x.starts_with::<&str>(component.as_str()))) {
             println!("{}", &toolchain.channel);
-            Ok(())
-        } else {
-            Err(format!("run: rustup toolchain install {} --component {}",
-                &toolchain.channel,
-                components.join(" "),
-            ).into())
+            return Ok(());
         }
-    } else {
-        Err(String::from_utf8(output.stderr)?.into())
     }
+    Err(format!("run: rustup toolchain install {} --component {}",
+        &toolchain.channel,
+        toolchain.components.join(" "),
+    ).into())
 }

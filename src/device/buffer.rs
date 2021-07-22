@@ -1,7 +1,10 @@
 use super::{
-    len_checked, BufferHandle, BufferId, Device, DeviceBase, ReadGuard as RawReadGuard, WriteOnly,
+    len_checked, BufferHandle, BufferId, Device, DeviceBase, ReadGuard as RawReadGuard, Result,
+    WriteOnly,
 };
-use crate::Result;
+use crate::{scalar::Scalar, util::size_eq};
+use anyhow::bail;
+use bytemuck::{Pod, Zeroable};
 use std::{
     marker::PhantomData,
     mem::{forget, transmute},
@@ -10,56 +13,57 @@ use std::{
 };
 
 mod sealed {
-    use super::*;
-    use bytemuck::{Pod, Zeroable};
-
-    pub trait ScalarBase: Default + Copy + Pod + Zeroable + 'static {}
-
-    pub trait DataBase {
-        #[doc(hidden)]
-        const OWNED: bool;
-        type Elem: Scalar;
-    }
+    pub trait Sealed {}
 }
-use sealed::{DataBase, ScalarBase};
+use sealed::Sealed;
 
-pub trait Scalar: ScalarBase {}
+/// Marker trait for BufferBase representation.
+///
+/// Typically use [`Buffer'] / [`Slice`] / [`SliceMut`] types directly.
+pub trait Data: Sealed {
+    #[doc(hidden)]
+    const OWNED: bool;
+    /// The element type.
+    type Elem;
+}
 
-impl ScalarBase for u32 {}
-
-impl<T: ScalarBase> Scalar for T {}
-
-pub trait Data: DataBase {}
-
+/// Mutable data marker.
 pub trait DataMut: Data {}
 
-impl<S: DataBase> Data for S {}
-
+/// Data for Buffer
 pub struct OwnedRepr<T> {
     _m: PhantomData<T>,
 }
 
-impl<T: Scalar> DataBase for OwnedRepr<T> {
+impl<T> Sealed for OwnedRepr<T> {}
+
+impl<T> Data for OwnedRepr<T> {
     const OWNED: bool = true;
     type Elem = T;
 }
 
-impl<T: Scalar> DataMut for OwnedRepr<T> {}
+impl<T> DataMut for OwnedRepr<T> {}
 
+/// Data for Slice
 pub struct SliceRepr<'a, T> {
     _m: PhantomData<&'a T>,
 }
 
-impl<T: Scalar> DataBase for SliceRepr<'_, T> {
+impl<T> Sealed for SliceRepr<'_, T> {}
+
+impl<T> Data for SliceRepr<'_, T> {
     const OWNED: bool = false;
     type Elem = T;
 }
 
+/// Data for SliceMut
 pub struct SliceMutRepr<'a, T> {
     _m: PhantomData<&'a mut T>,
 }
 
-impl<T: Scalar> DataBase for SliceMutRepr<'_, T> {
+impl<T> Sealed for SliceMutRepr<'_, T> {}
+
+impl<T> Data for SliceMutRepr<'_, T> {
     const OWNED: bool = false;
     type Elem = T;
 }
@@ -77,36 +81,55 @@ type HostBuffer<T> = HostBufferBase<OwnedRepr<T>>;
 type HostSlice<'a, T> = HostBufferBase<SliceRepr<'a, T>>;
 type HostSliceMut<'a, T> = HostBufferBase<SliceMutRepr<'a, T>>;
 
-impl<T: Scalar, S: Data<Elem = T>> HostBufferBase<S> {
+impl<T, S: Data<Elem = T>> HostBufferBase<S> {
     fn len(&self) -> usize {
         self.len
     }
-    fn into_vec(self) -> Vec<T> {
+    fn into_vec(self) -> Vec<T>
+    where
+        T: Copy,
+    {
         if S::OWNED {
             unsafe { Vec::from_raw_parts(self.ptr, self.len, self.capacity) }
         } else {
             self.to_vec()
         }
     }
-    fn into_owned(self) -> HostBuffer<T> {
+    fn into_owned(self) -> HostBuffer<T>
+    where
+        T: Copy,
+    {
         if S::OWNED {
             unsafe { transmute(self) }
         } else {
-            self.to_vec().into()
+            self.to_owned()
         }
+    }
+    fn to_owned(&self) -> HostBuffer<T>
+    where
+        T: Copy,
+    {
+        self.to_vec().into()
     }
     fn as_slice(&self) -> HostSlice<T> {
         HostSlice::from(self.deref())
     }
-    fn as_mut_slice(&mut self) -> HostSliceMut<T>
+    fn as_slice_mut(&mut self) -> HostSliceMut<T>
     where
         S: DataMut,
     {
         HostSliceMut::from(self.deref_mut())
     }
+    fn copy_from_slice(&mut self, slice: HostSlice<T>)
+    where
+        T: Copy,
+        S: DataMut,
+    {
+        self.deref_mut().copy_from_slice(slice.deref());
+    }
 }
 
-impl<T: Scalar> HostBuffer<T> {
+impl<T: Zeroable> HostBuffer<T> {
     unsafe fn alloc(len: usize) -> Self {
         let mut vec = Vec::with_capacity(len);
         vec.set_len(len);
@@ -114,7 +137,7 @@ impl<T: Scalar> HostBuffer<T> {
     }
 }
 
-impl<T: Scalar> From<Vec<T>> for HostBuffer<T> {
+impl<T> From<Vec<T>> for HostBuffer<T> {
     fn from(vec: Vec<T>) -> Self {
         let ptr = vec.as_ptr() as *mut T;
         let len = vec.len();
@@ -124,7 +147,7 @@ impl<T: Scalar> From<Vec<T>> for HostBuffer<T> {
     }
 }
 
-impl<'a, T: Scalar> From<&'a [T]> for HostSlice<'a, T> {
+impl<'a, T> From<&'a [T]> for HostSlice<'a, T> {
     fn from(slice: &'a [T]) -> Self {
         Self {
             ptr: slice.as_ptr() as *mut T,
@@ -134,7 +157,7 @@ impl<'a, T: Scalar> From<&'a [T]> for HostSlice<'a, T> {
     }
 }
 
-impl<'a, T: Scalar> From<&'a mut [T]> for HostSliceMut<'a, T> {
+impl<'a, T> From<&'a mut [T]> for HostSliceMut<'a, T> {
     fn from(slice: &'a mut [T]) -> Self {
         Self {
             ptr: slice.as_mut_ptr(),
@@ -167,7 +190,10 @@ impl<S: Data> Drop for HostBufferBase<S> {
     }
 }
 
-struct DeviceBufferBase<S: Data> {
+unsafe impl<S: Data> Send for HostBufferBase<S> {}
+unsafe impl<S: Data> Sync for HostBufferBase<S> {}
+
+pub(super) struct DeviceBufferBase<S: Data> {
     device: Arc<DeviceBase>,
     id: BufferId,
     offset: usize,
@@ -176,10 +202,10 @@ struct DeviceBufferBase<S: Data> {
 }
 
 type DeviceBuffer<T> = DeviceBufferBase<OwnedRepr<T>>;
-type DeviceSlice<'a, T> = DeviceBufferBase<SliceRepr<'a, T>>;
-type DeviceSliceMut<'a, T> = DeviceBufferBase<SliceMutRepr<'a, T>>;
+pub(super) type DeviceSlice<'a, T> = DeviceBufferBase<SliceRepr<'a, T>>;
+pub(super) type DeviceSliceMut<'a, T> = DeviceBufferBase<SliceMutRepr<'a, T>>;
 
-impl<T: Scalar, S: Data<Elem = T>> DeviceBufferBase<S> {
+impl<T, S: Data<Elem = T>> DeviceBufferBase<S> {
     unsafe fn from_raw_parts(
         device: Arc<DeviceBase>,
         id: BufferId,
@@ -194,10 +220,10 @@ impl<T: Scalar, S: Data<Elem = T>> DeviceBufferBase<S> {
             _m: PhantomData::default(),
         }
     }
-    fn handle(&self) -> BufferHandle {
+    pub(super) fn handle(&self) -> BufferHandle {
         BufferHandle::new_unchecked::<T>(self.id, self.offset, self.len)
     }
-    fn device(&self) -> &Arc<DeviceBase> {
+    pub(super) fn device(&self) -> &Arc<DeviceBase> {
         &self.device
     }
     fn len(&self) -> usize {
@@ -211,6 +237,7 @@ impl<T: Scalar, S: Data<Elem = T>> DeviceBufferBase<S> {
     }*/
     fn write<'a, T2, F>(&'a mut self, f: F) -> Result<T2>
     where
+        T: Pod,
         S: DataMut,
         T2: 'a,
         F: FnOnce(WriteOnly<[T]>) -> T2,
@@ -219,10 +246,28 @@ impl<T: Scalar, S: Data<Elem = T>> DeviceBufferBase<S> {
             .device
             .write(self.handle(), |slice| f(slice.cast_slice_mut()))?)
     }
-    fn into_owned(self) -> Result<DeviceBuffer<T>> {
-        todo!()
+    fn into_owned(self) -> Result<DeviceBuffer<T>>
+    where
+        T: Pod,
+    {
+        if S::OWNED {
+            unsafe { Ok(transmute(self)) }
+        } else {
+            self.to_owned()
+        }
     }
-    async fn into_device(self, device: Arc<DeviceBase>) -> Result<DeviceBuffer<T>> {
+    fn to_owned(&self) -> Result<DeviceBuffer<T>>
+    where
+        T: Pod,
+    {
+        let mut buffer = unsafe { DeviceBuffer::alloc(self.device().clone(), self.len())? };
+        buffer.copy_from_slice(self.as_slice())?;
+        Ok(buffer)
+    }
+    async fn into_device(self, device: Arc<DeviceBase>) -> Result<DeviceBuffer<T>>
+    where
+        T: Pod,
+    {
         if Arc::ptr_eq(self.device(), &device) {
             self.into_owned()
         } else {
@@ -232,7 +277,10 @@ impl<T: Scalar, S: Data<Elem = T>> DeviceBufferBase<S> {
             Ok(buffer)
         }
     }
-    async fn read(self) -> Result<DeviceReadGuard<S>> {
+    async fn read(self) -> Result<DeviceReadGuard<S>>
+    where
+        T: Pod,
+    {
         let guard = self.device.read(self.handle())?.finish().await?;
         Ok(DeviceReadGuard {
             _buffer: self,
@@ -242,7 +290,7 @@ impl<T: Scalar, S: Data<Elem = T>> DeviceBufferBase<S> {
     fn as_slice(&self) -> DeviceSlice<T> {
         unsafe { DeviceSlice::from_raw_parts(self.device.clone(), self.id, self.offset, self.len) }
     }
-    fn as_mut_slice(&mut self) -> DeviceSliceMut<T>
+    fn as_slice_mut(&mut self) -> DeviceSliceMut<T>
     where
         S: DataMut,
     {
@@ -250,9 +298,15 @@ impl<T: Scalar, S: Data<Elem = T>> DeviceBufferBase<S> {
             DeviceSliceMut::from_raw_parts(self.device.clone(), self.id, self.offset, self.len)
         }
     }
+    fn copy_from_slice(&mut self, slice: DeviceSlice<T>) -> Result<()>
+    where
+        S: DataMut,
+    {
+        Ok(self.device.copy(slice.handle(), self.handle())?)
+    }
 }
 
-impl<T: Scalar> DeviceBuffer<T> {
+impl<T: Zeroable> DeviceBuffer<T> {
     unsafe fn alloc(device: Arc<DeviceBase>, len: usize) -> Result<Self> {
         let id = device.alloc(len_checked::<T>(len)?)?;
         Ok(Self::from_raw_parts(device, id, 0, len))
@@ -272,13 +326,13 @@ struct DeviceReadGuard<S: Data> {
     guard: RawReadGuard,
 }
 
-impl<T: Scalar, S: Data<Elem = T>> DeviceReadGuard<S> {
+impl<T: Pod, S: Data<Elem = T>> DeviceReadGuard<S> {
     fn as_slice(&self) -> &[T] {
         bytemuck::cast_slice(self.guard.deref())
     }
 }
 
-impl<T: Scalar, S: Data<Elem = T>> Deref for DeviceReadGuard<S> {
+impl<T: Pod, S: Data<Elem = T>> Deref for DeviceReadGuard<S> {
     type Target = [T];
     fn deref(&self) -> &[T] {
         self.as_slice()
@@ -302,12 +356,12 @@ impl<S: Data> From<DeviceBufferBase<S>> for DynBufferBase<S> {
     }
 }
 
-/// A storage buffer.
+/// Host / Device Buffer
 ///
 /// Like [`Device`], [`BufferBase`] comes in 2 forms, Host and Device.
 ///
 /// # Host
-/// Host buffers are trivially constructible (without copying) from Vec / [T]. Note that generally in order to perform computations, the buffer must be transfered to the device via [`.to_device()`].
+/// Host buffers are trivially constructible (without copying) from Vec / \[T\]. Note that generally in order to perform computations, the buffer must be transfered to the device via [`.to_device()`].
 ///
 /// # Device
 /// Allocated on the device, like a GPU. Operations are asynchronous with the host, only made visible after awaiting ['.read()`].
@@ -315,11 +369,16 @@ pub struct BufferBase<S: Data> {
     base: DynBufferBase<S>,
 }
 
+/// Owned buffer, like a Vec<T>.
 pub type Buffer<T> = BufferBase<OwnedRepr<T>>;
+
+/// Borrowed buffer, like a &\[T\].
 pub type Slice<'a, T> = BufferBase<SliceRepr<'a, T>>;
+
+/// Mutably borrowed buffer, like a &mut \[T\].
 pub type SliceMut<'a, T> = BufferBase<SliceMutRepr<'a, T>>;
 
-impl<T: Scalar> Buffer<T> {
+impl<T> Buffer<T> {
     /// Allocate a buffer with length `len`.
     ///
     /// # Safety
@@ -329,15 +388,53 @@ impl<T: Scalar> Buffer<T> {
     /// - AllocationTooLarge: Device allocations are limited to 256 MB per Buffer.
     /// - OutOfDeviceMemory: Device memory is exhausted.
     /// - DeviceLost: The device panicked or disconnected.
-    pub unsafe fn alloc(device: Device, len: usize) -> Result<Self> {
+    ///
+    /// # Note
+    /// - For constructing a buffer on the host, prefer [`Buffer::from`].
+    /// - See [`.zeros()`](BufferBase::zeros) for a safe alternative.
+    pub unsafe fn alloc(device: Device, len: usize) -> Result<Self>
+    where
+        T: Zeroable,
+    {
         Ok(match device.into_base() {
             Some(device) => DeviceBuffer::alloc(device, len)?.into(),
             None => HostBuffer::alloc(len).into(),
         })
     }
+    /// Creates a buffer with length `len` filled with `elem`.
+    ///
+    /// **Errors**
+    /// - AllocationTooLarge: Device allocations are limited to 256 MB per Buffer.
+    /// - OutOfDeviceMemory: Device memory is exhausted.
+    /// - DeviceLost: The device panicked or disconnected.
+    pub fn from_elem(device: Device, len: usize, elem: T) -> Result<Self>
+    where
+        T: Scalar,
+    {
+        Ok(match device.into_base() {
+            Some(device) => {
+                let mut buffer = Self::from(unsafe { DeviceBuffer::alloc(device, len)? });
+                buffer.fill(elem)?;
+                buffer
+            }
+            None => Self::from(vec![elem; len]),
+        })
+    }
+    /// Creates a buffer with length `len` filled with 0's.
+    ///
+    /// **Errors**
+    /// - AllocationTooLarge: Device allocations are limited to 256 MB per Buffer.
+    /// - OutOfDeviceMemory: Device memory is exhausted.
+    /// - DeviceLost: The device panicked or disconnected.
+    pub fn zeros(device: Device, len: usize) -> Result<Self>
+    where
+        T: Scalar,
+    {
+        Self::from_elem(device, len, T::default())
+    }
 }
 
-impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
+impl<T, S: Data<Elem = T>> BufferBase<S> {
     /// Transfers the buffer into the `device`.
     ///
     /// # Host to Host
@@ -350,13 +447,16 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
     /// Reads the src buffer, scheduling a write into a new Buffer on the dst device. The future waits until the read is submitted to the device queue (but not completed) to avoid a deadlock.
     ///
     /// # Device to Host
-    /// Reads the data back into a new Buffer. The future will resolve when the data is ready. Prefer [`.read()`] for direct access to a Vec<T> or [T].
+    /// Reads the data back into a new Buffer. The future will resolve when the data is ready. Prefer [`.read()`](BufferBase::read) for direct access to a Vec<T> or \[T\].
     ///
     /// **Errors**
     /// - AllocationTooLarge: Device allocations are limited to 256 MB.
     /// - OutOfDeviceMemory: Device memory is exhausted.
     /// - DeviceLost: The device panicked or disconnected.
-    pub async fn into_device(self, device: Device) -> Result<Buffer<T>> {
+    pub async fn into_device(self, device: Device) -> Result<Buffer<T>>
+    where
+        T: Pod,
+    {
         match (self.base, device.into_base()) {
             (DynBufferBase::Host(buffer), None) => Ok(buffer.into_owned().into()),
             (DynBufferBase::Host(src), Some(device)) => {
@@ -379,39 +479,13 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
     /// # Device
     /// Returns a [`ReadGuard`] that can be converted to a slice or a vec. The future will resolve when all previous operations have been completed and the transfer is complete.
     ///
-    /// # Example
-    ///```
-    /// use autograph::{Result, device::{Device, buffer::{Buffer, Slice}}};
-    ///
-    /// #[tokio::main]
-    /// async fn main() -> Result<()> {
-    ///     let device = Device::new()?;
-    ///     let a = Buffer::from(vec![1, 2, 3, 4])
-    ///         .into_device(device.clone())
-    ///         .await?;
-    ///     // Note that we can also borrow the data
-    ///     let b = Slice::from([5, 6, 7, 8].as_ref())
-    ///         .into_device(device.clone())
-    ///         .await?;
-    ///     let (a, b) = tokio::try_join!(a.read(), b.read())?;
-    ///     let a_vec: Vec<u32> = a.to_vec();
-    ///     let b_slice: &[u32] = b.as_slice();
-    ///     Ok(())
-    /// }
-    ///```
-    /// Note: Use the [`BlockingFuture`](crate::future::BlockingFuture) trait to block on futures without an executor.
-    ///```
-    /// use autograph::{Result, device::{Device, buffer::Buffer}, future::BlockingFuture};
-    ///
-    /// fn main() -> Result<()> {
-    ///     let device = Device::new()?;
-    ///     let a = Buffer::from(vec![1, 2, 3, 4])
-    ///         .into_device(device.clone())
-    ///         .block()?;
-    ///     let a_vec = a.read().block()?;
-    ///     Ok(())
-    /// }
-    pub async fn read(self) -> Result<ReadGuard<S>> {
+    /// **Errors**
+    /// - OutOfDeviceMemory: Device memory is exhausted.
+    /// - DeviceLost: The device panicked or disconnected.
+    pub async fn read(self) -> Result<ReadGuard<S>>
+    where
+        T: Pod,
+    {
         match self.base {
             DynBufferBase::Host(buffer) => Ok(ReadGuardBase::Host(buffer).into()),
             DynBufferBase::Device(buffer) => Ok(ReadGuardBase::Device(buffer.read().await?).into()),
@@ -425,13 +499,81 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
         }
     }
     /// Mutably borrows the buffer as a SliceMut.
-    pub fn as_mut_slice(&mut self) -> SliceMut<T>
+    pub fn as_slice_mut(&mut self) -> SliceMut<T>
     where
         S: DataMut,
     {
         match &mut self.base {
-            DynBufferBase::Host(buffer) => buffer.as_mut_slice().into(),
-            DynBufferBase::Device(buffer) => buffer.as_mut_slice().into(),
+            DynBufferBase::Host(buffer) => buffer.as_slice_mut().into(),
+            DynBufferBase::Device(buffer) => buffer.as_slice_mut().into(),
+        }
+    }
+    /// Copies from a slice
+    ///
+    /// **Errors**
+    /// - The source length must match the destination length.
+    /// - The source device must match the destination device.
+    pub fn copy_from_slice(&mut self, slice: Slice<T>) -> Result<()>
+    where
+        T: Copy,
+        S: DataMut,
+    {
+        if self.len() != slice.len() {
+            bail!(
+                "Source buffer length ({}) does not match destination buffer length ({})!",
+                self.len(),
+                slice.len()
+            );
+        }
+        if self.device() != slice.device() {
+            bail!(
+                "Source device {:?} does not match destination device {:?}!",
+                self.device(),
+                slice.device()
+            )
+        }
+        match (&mut self.base, slice.base) {
+            (DynBufferBase::Host(buffer), DynBufferBase::Host(slice)) => {
+                buffer.copy_from_slice(slice);
+            }
+            (DynBufferBase::Device(buffer), DynBufferBase::Device(slice)) => {
+                buffer.copy_from_slice(slice)?;
+            }
+            _ => unreachable!(),
+        }
+        Ok(())
+    }
+    /// Converts into an owned buffer.
+    ///
+    /// **Errors**
+    /// - Potentially allocates the buffer [`Buffer::alloc`](BufferBase::alloc).
+    pub fn into_owned(self) -> Result<Buffer<T>>
+    where
+        T: Pod,
+    {
+        match self.base {
+            DynBufferBase::Host(buffer) => Ok(buffer.into_owned().into()),
+            DynBufferBase::Device(buffer) => Ok(buffer.into_owned()?.into()),
+        }
+    }
+    /// Copies into a new buffer.
+    ///
+    /// **Errors**
+    /// - Allocates the buffer [`Buffer::alloc`](BufferBase::alloc).
+    pub fn to_owned(&self) -> Result<Buffer<T>>
+    where
+        T: Pod,
+    {
+        match &self.base {
+            DynBufferBase::Host(buffer) => Ok(buffer.to_owned().into()),
+            DynBufferBase::Device(buffer) => Ok(buffer.to_owned()?.into()),
+        }
+    }
+    /// The device of the buffer.
+    pub fn device(&self) -> Device {
+        match &self.base {
+            DynBufferBase::Host(_) => Device::host(),
+            DynBufferBase::Device(buffer) => Device::from(buffer.device().clone()),
         }
     }
     /// The length of the buffer.
@@ -444,6 +586,40 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
     /// Whether the buffer is empty.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+    pub(super) fn into_device_buffer_base(self) -> Option<DeviceBufferBase<S>> {
+        match self.base {
+            DynBufferBase::Device(buffer) => Some(buffer),
+            DynBufferBase::Host(_) => None,
+        }
+    }
+    /// Fills the buffer with `elem`.
+    ///
+    /// **Errors**
+    /// - Not supported on the host.
+    /// - The device panicked or disconnected.
+    /// - The operation could not be performed.
+    pub fn fill(&mut self, elem: T) -> Result<()>
+    where
+        T: Scalar,
+        S: DataMut,
+    {
+        let n = self.len() as u32;
+        let module = crate::rust_shaders::core()?;
+        let builder = if size_eq::<T, u64>() {
+            module.compute_pass("fill_u64")?
+        } else {
+            module.compute_pass("fill_u32")?
+        };
+        let builder = builder.slice_mut(self.as_slice_mut())?.push(n)?;
+        let builder = if size_eq::<T, u8>() {
+            builder.push([elem; 4])?
+        } else if size_eq::<T, u16>() {
+            builder.push([elem; 2])?
+        } else {
+            builder.push(elem)?
+        };
+        builder.submit([n, 1, 1])
     }
 }
 
@@ -465,19 +641,19 @@ impl<S: Data> From<DeviceBufferBase<S>> for BufferBase<S> {
     }
 }
 
-impl<T: Scalar> From<Vec<T>> for Buffer<T> {
+impl<T> From<Vec<T>> for Buffer<T> {
     fn from(vec: Vec<T>) -> Self {
         HostBuffer::from(vec).into()
     }
 }
 
-impl<'a, T: Scalar> From<&'a [T]> for Slice<'a, T> {
+impl<'a, T> From<&'a [T]> for Slice<'a, T> {
     fn from(slice: &'a [T]) -> Self {
         HostSlice::from(slice).into()
     }
 }
 
-impl<'a, T: Scalar> From<&'a mut [T]> for SliceMut<'a, T> {
+impl<'a, T> From<&'a mut [T]> for SliceMut<'a, T> {
     fn from(slice: &'a mut [T]) -> Self {
         HostSliceMut::from(slice).into()
     }
@@ -488,7 +664,7 @@ enum ReadGuardBase<S: Data> {
     Device(DeviceReadGuard<S>),
 }
 
-impl<T: Scalar, S: Data<Elem = T>> ReadGuardBase<S> {
+impl<T: Pod, S: Data<Elem = T>> ReadGuardBase<S> {
     fn into_vec(self) -> Vec<T> {
         match self {
             Self::Host(buffer) => buffer.into_vec(),
@@ -503,7 +679,7 @@ impl<T: Scalar, S: Data<Elem = T>> ReadGuardBase<S> {
     }
 }
 
-impl<T: Scalar, S: Data<Elem = T>> Deref for ReadGuardBase<S> {
+impl<T: Pod, S: Data<Elem = T>> Deref for ReadGuardBase<S> {
     type Target = [T];
     fn deref(&self) -> &[T] {
         self.as_slice()
@@ -524,7 +700,7 @@ pub struct ReadGuard<S: Data> {
     base: ReadGuardBase<S>,
 }
 
-impl<T: Scalar, S: Data<Elem = T>> ReadGuard<S> {
+impl<T: Pod, S: Data<Elem = T>> ReadGuard<S> {
     /// Moves into a Vec, copying if necessary.
     pub fn into_vec(self) -> Vec<T> {
         self.base.into_vec()
@@ -535,7 +711,7 @@ impl<T: Scalar, S: Data<Elem = T>> ReadGuard<S> {
     }
 }
 
-impl<T: Scalar, S: Data<Elem = T>> Deref for ReadGuard<S> {
+impl<T: Pod, S: Data<Elem = T>> Deref for ReadGuard<S> {
     type Target = [T];
     fn deref(&self) -> &[T] {
         self.base.deref()
@@ -545,5 +721,117 @@ impl<T: Scalar, S: Data<Elem = T>> Deref for ReadGuard<S> {
 impl<S: Data> From<ReadGuardBase<S>> for ReadGuard<S> {
     fn from(base: ReadGuardBase<S>) -> Self {
         Self { base }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn host_buffer_copy_from_slice() -> Result<()> {
+        let mut a = Buffer::from(vec![0; 4]);
+        let b_vec = vec![1, 2, 3, 4];
+        a.copy_from_slice(b_vec.as_slice().into())?;
+        let a_guard = a.read().await?;
+        assert_eq!(a_guard.as_slice(), b_vec.as_slice());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn device_buffer_copy_from_slice() -> Result<()> {
+        let device = Device::new()?;
+        let mut a = Slice::from([0; 4].as_ref())
+            .into_device(device.clone())
+            .await?;
+        let b_vec = vec![1, 2, 3, 4];
+        let b = Slice::from(b_vec.as_slice()).into_device(device).await?;
+        a.copy_from_slice(b.as_slice())?;
+        let a_guard = a.read().await?;
+        assert_eq!(a_guard.as_slice(), b_vec.as_slice());
+        Ok(())
+    }
+
+    async fn fill<T: Scalar>(n: usize, elem: T) -> Result<()> {
+        let vec: Vec<T> = (0..n)
+            .into_iter()
+            .map(|n| T::from_usize(n).unwrap())
+            .collect();
+        let device = Device::new()?;
+        let mut y = Slice::from(vec.as_slice())
+            .into_device(device.clone())
+            .await?;
+        y.fill(elem)?;
+        let y_guard = y.read().await?;
+        assert!(
+            y_guard.iter().copied().all(|y| y == elem),
+            "{:?} != {:?}",
+            y_guard.as_slice(),
+            elem
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn fill_u8() -> Result<()> {
+        fill(10, 11).await?;
+        fill(100, 251).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn fill_i8() -> Result<()> {
+        fill(10, 11).await?;
+        fill(100, -111).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn fill_u16() -> Result<()> {
+        fill(10, 11).await?;
+        fill(1000, 211).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn fill_i16() -> Result<()> {
+        fill(10, 11).await?;
+        fill(1000, -211).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn fill_u32() -> Result<()> {
+        fill(10, 11).await?;
+        fill(1000, 211).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn fill_i32() -> Result<()> {
+        fill(10, 11).await?;
+        fill(1000, -211).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn fill_f32() -> Result<()> {
+        fill(10, 11.11).await?;
+        fill(1000, -211.11).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn fill_u64() -> Result<()> {
+        fill(10, 11).await?;
+        fill(1000, 211).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn fill_i64() -> Result<()> {
+        fill(10, 11).await?;
+        fill(1000, -211).await?;
+        Ok(())
     }
 }

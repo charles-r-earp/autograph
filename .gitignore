@@ -23,7 +23,5 @@ src/main.rs
 /rust-shaders/target
 /rust-shaders/rust-toolchain/target
 /glsl-shaders/target
-/examples/cluster/kmeans/iris/target
-/examples/cluster/kmeans/iris/plot.png
-/examples/neural_network/mnist/target
+/_examples
 #**/*.rs.bk
