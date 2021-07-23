@@ -30,6 +30,9 @@ jobs:
     - name: Test  
       if: ${{ matrix.os == 'windows-latest' }}
       run: cargo test -- --test-threads 1
+    - name: Test Rust Shaders  
+      if: ${{ matrix.os == 'windows-latest' }}
+      run: RUST_SHADERS=1 cargo test -- --test-threads 1
   lint:
     name: Lint
     runs-on: ubuntu-latest
