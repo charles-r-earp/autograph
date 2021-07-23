@@ -11,4 +11,4 @@ publish = false
 crate-type = ["dylib"]
 
 [dependencies]
-spirv-std = { git = "https://github.com/EmbarkStudios/rust-gpu", tag = "v0.4.0-alpha.10" }
+spirv-std = { git = "https://github.com/EmbarkStudios/rust-gpu", tag = "v0.4.0-alpha.10", features = ["glam"] }

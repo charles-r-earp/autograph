@@ -24,9 +24,7 @@ pub fn fill_u32(
     push_consts: &FillPushConstsU32,
 ) {
     if global_id.x < push_consts.n {
-        unsafe {
-            y[global_id.x as usize] = push_consts.x;
-        }
+        y[global_id.x as usize] = push_consts.x;
     }
 }
 
@@ -40,16 +38,14 @@ pub struct FillPushConstsU64 {
 #[spirv(compute(threads(64)))]
 pub fn fill_u64(
     #[spirv(global_invocation_id)]
-    global_id: GlobalId,
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 0, non_readable)] y: &mut &[u32],
+    global_id: UVec3,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 0, non_readable)] y: &mut [u32],
     #[spirv(push_constant)]
     push_consts: &FillPushConstsU64,
 ) {
     if global_id.x < push_consts.n {
         let index = (global_id.x as usize) * 2;
-        unsafe {
-            y[index] = push_consts.x1;
-            y[index + 1] = push_consts.x2;
-        }
+        y[index] = push_consts.x1;
+        y[index + 1] = push_consts.x2;
     }
 }
