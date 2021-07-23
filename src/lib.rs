@@ -10,7 +10,7 @@
 //!```
 //!
 //! # Requirements
-//! - For computation, a device (typically a gpu) with drivers for a supported API:
+//! - A device (typically a gpu) with drivers for a supported API:
 //!     - Vulkan (All platforms) <https://www.vulkan.org/>
 //!     - Metal (MacOS / iOS) <https://developer.apple.com/metal/>
 //!     - DX12 (Windows) <https://docs.microsoft.com/windows/win32/directx>

@@ -20,7 +20,15 @@ autograph = { git = https://github.com/charles-r-earp/autograph }
 
 # Requirements
 - Rust <https://www.rust-lang.org/>
-- For computation, a device (typically a gpu) with drivers for a supported API:
+- A device (typically a gpu) with drivers for a supported API:
     - Vulkan (All platforms) <https://www.vulkan.org/>
     - Metal (MacOS / iOS) <https://developer.apple.com/metal/>
     - DX12 (Windows) <https://docs.microsoft.com/windows/win32/directx>
+
+# Tests
+To check that you have a valid device, run `cargo test device_new`.
+
+Run the tests with `cargo test`. Some drivers have limits on the number of logical devices that can be created. Run the tests with `cargo test -- --test-threads 1` or a small value to fix.
+
+# Custom Shader Code
+You can write your own shaders and execute them with **autograph**. See the [Hello Compute](examples/hello-compute/README.md) example.

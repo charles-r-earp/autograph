@@ -750,8 +750,11 @@ mod tests {
             .into_device(device.clone())
             .await?;
         let b_vec = vec![1, 2, 3, 4];
-        let b = Slice::from(b_vec.as_slice()).into_device(device).await?;
+        let b = Slice::from(b_vec.as_slice())
+            .into_device(device.clone())
+            .await?;
         a.copy_from_slice(b.as_slice())?;
+        //device.sync().await?;
         let a_guard = a.read().await?;
         assert_eq!(a_guard.as_slice(), b_vec.as_slice());
         Ok(())

@@ -501,7 +501,8 @@ impl BufferIdExt for BufferId {
 engine_methods! {
     pub(super) fn alloc(&self, len: u32) -> DeviceResult<BufferId> {
         self.result.load()?;
-        self.allocator().alloc(self.device(), len)
+        let id = self.allocator().alloc(self.device(), len)?;
+        Ok(id)
     }
     pub(super) fn dealloc(&self, id: BufferId) {
         self.allocator().dealloc(id)
@@ -803,28 +804,30 @@ impl<B: Backend> StorageChunk<B> {
     fn dealloc(&self, range: BlockRange) {
         self.blocks.lock().dealloc(range);
     }
-    fn slice(&self, offset: u32, len: u32, block_len: BlockLen) -> Result<StorageSlice<B>> {
+    fn slice(&self, range: BlockRange, offset: u32, len: u32) -> Result<StorageSlice<B>> {
         let buffer: &B::Buffer = &self
             .base
             .get()
             .ok_or_else(|| anyhow!("StorageChunk is not initialized!"))?
             .buffer;
         let buffer: &'static B::Buffer = unsafe { transmute(buffer) };
-        if len > block_len.as_bytes() {
+        if len > range.len.as_bytes() {
             bail!("Slice len out of range!");
         }
         if offset > len {
-            bail!("Slice offset out of range!");
+            bail!("Slice offset {} out of range {}!", offset, len);
         }
+        let offset = offset + range.block.as_offset_bytes();
         Ok(StorageSlice {
             buffer,
             offset,
             len,
         })
     }
-    unsafe fn slice_unchecked(&self, offset: u32, len: u32) -> StorageSlice<B> {
+    unsafe fn slice_unchecked(&self, block: BlockId, offset: u32, len: u32) -> StorageSlice<B> {
         let buffer: &B::Buffer = &self.base.get_unchecked().buffer;
         let buffer: &'static B::Buffer = transmute(buffer);
+        let offset = offset + block.as_offset_bytes();
         StorageSlice {
             buffer,
             offset,
@@ -1263,14 +1266,14 @@ impl<B: Backend> Allocator<B> {
         offset: u32,
         len: u32,
     ) -> DeviceResult<(StorageSlice<B>, WriteGuardBase<B>)> {
-        let (storage_chunk_id, _storage_range) = id.unpack();
+        let (storage_chunk_id, storage_range) = id.unpack();
         // TODO: check in bounds
         for chunk in self.mapping_chunks.iter() {
             if let Some(write_guard) = chunk.alloc_write(context, self.mapping_ids(), len)? {
                 let storage_slice = unsafe {
                     self.storage_chunks
                         .get_unchecked(storage_chunk_id.0 as usize)
-                        .slice_unchecked(offset, len)
+                        .slice_unchecked(storage_range.block, offset, len)
                 };
                 return Ok((storage_slice, write_guard));
             }
@@ -1286,7 +1289,7 @@ impl<B: Backend> Allocator<B> {
         offset: u32,
         len: u32,
     ) -> DeviceResult<(StorageSlice<B>, ReadFuture<B>)> {
-        let (storage_chunk_id, _storage_range) = id.unpack();
+        let (storage_chunk_id, storage_range) = id.unpack();
         // TODO: check in bounds
         for chunk in self.mapping_chunks.iter() {
             if let Some(read_fut) =
@@ -1295,7 +1298,7 @@ impl<B: Backend> Allocator<B> {
                 let storage_slice = unsafe {
                     self.storage_chunks
                         .get_unchecked(storage_chunk_id.0 as usize)
-                        .slice_unchecked(offset, len)
+                        .slice_unchecked(storage_range.block, offset, len)
                 };
                 return Ok((storage_slice, read_fut));
             }
@@ -1310,13 +1313,13 @@ impl<B: Backend> Allocator<B> {
                 .storage_chunks
                 .get(chunk.0 as usize)
                 .unwrap()
-                .slice(offset, len, range.len)
+                .slice(range, offset, len)
                 .unwrap();
         }
         unsafe {
             self.storage_chunks
                 .get_unchecked(chunk.0 as usize)
-                .slice_unchecked(offset, len)
+                .slice_unchecked(range.block, offset, len)
         }
     }
     fn dealloc(&self, id: BufferId) {
@@ -1599,11 +1602,9 @@ impl<B: Backend> Queue<B> {
         std::thread::Builder::new()
             .name(name)
             .spawn(move || {
-                result.store(if cfg!(debug_assertions) {
-                    dbg!(self.run(&done))
-                } else {
-                    catch_unwind(move || self.run(&done)).unwrap_or(Err(DeviceError::DeviceLost))
-                });
+                result.store(
+                    catch_unwind(move || self.run(&done)).unwrap_or(Err(DeviceError::DeviceLost)),
+                );
                 exited.store(true, Ordering::Relaxed);
             })
             .unwrap();
@@ -2154,6 +2155,22 @@ impl<B: Backend> Frame<B> {
                     );
                     self.command_buffer
                         .copy_buffer(src.buffer(), dst.buffer(), once(region));
+                    let dst_barrier = Barrier::Buffer {
+                        states: State::TRANSFER_WRITE
+                            ..State::TRANSFER_WRITE
+                                | State::TRANSFER_READ
+                                | State::SHADER_WRITE
+                                | State::SHADER_READ,
+                        target: dst.buffer(),
+                        range: barrier_range(dst.offset, dst.len),
+                        families: None,
+                    };
+                    self.command_buffer.pipeline_barrier(
+                        PipelineStage::TRANSFER | PipelineStage::COMPUTE_SHADER
+                            ..PipelineStage::TRANSFER,
+                        Dependencies::empty(),
+                        once(dst_barrier),
+                    );
                 }
             }
             Op::Write {
@@ -2208,7 +2225,7 @@ impl<B: Backend> Frame<B> {
         Ok(Ok(()))
     }
     fn poll(&mut self, device: &B::Device) -> DeviceResult<bool> {
-        if unsafe { dbg!(device.get_fence_status(&self.fence))? } {
+        if unsafe { device.get_fence_status(&self.fence)? } {
             unsafe {
                 self.command_buffer.reset(false);
                 self.command_buffer

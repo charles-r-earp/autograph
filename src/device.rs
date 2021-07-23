@@ -306,7 +306,7 @@ pub mod builders {
         /// **Errors**
         /// - The slice is on the host.
         /// - The slice is not on the same device as previous arguments.
-        /// - The slice was declared mutable (not readonly).
+        /// - The slice was declared mutable (not NonWritable).
         /// - There are no more arguments to be bound.
         ///
         /// # Note
@@ -327,12 +327,12 @@ pub mod builders {
         /// **Errors**
         /// - The slice is on the host.
         /// - The slice is not on the same device as previous arguments.
-        /// - The slice was declared immutable (readonly).
+        /// - The slice was declared immutable (non_writable).
         /// - There are no more arguments to be bound.
         ///
         /// # Note
         /// - Does not check the numerical type of the buffer.
-        /// - No special behavior for `write_only`.
+        /// - No special behavior for `non_readable`.
         pub fn slice_mut<'b2, T>(
             self,
             slice: SliceMut<'b2, T>,
@@ -374,9 +374,9 @@ pub mod builders {
                     if mutable { "mutable slice" } else { "slice" },
                     self.args.len(),
                     if declared_mutable {
-                        "mutable (not readonly)"
+                        "mutable (not non_writable)"
                     } else {
-                        "immutable (readonly)"
+                        "immutable (non_writable)"
                     },
                     self.module,
                     &self.entry,

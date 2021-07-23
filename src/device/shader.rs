@@ -543,13 +543,14 @@ fn parse_spirv(spirv: &[u8]) -> Result<ModuleDescriptor> {
             let mut push_constant_range = 0;
             for &variable in parameters.iter() {
                 if let Some(&buffer) = buffer_bindings.get(&variable) {
-                    ensure!(
-                        buffer.descriptor_set == 0,
-                        "entry_point: {} functions[{}] descriptor set must be 0\n{:#?}",
-                        &entry_point.name,
-                        f,
-                        &function,
-                    );
+                    if buffer.descriptor_set != 0 {
+                        bail!(
+                            "entry_point: {} functions[{}] descriptor set must be 0\n{:#?}",
+                            &entry_point.name,
+                            f,
+                            &function,
+                        );
+                    }
                     buffers.push(buffer);
                 } else if let Some(&push_consts) = push_constants.get(&variable) {
                     if push_constant_range > 0 {

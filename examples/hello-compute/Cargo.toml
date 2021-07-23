@@ -1,11 +1,24 @@
 [package]
 name = "hello-compute"
 version = "0.1.0"
+authors = ["Charles R Earp <charles.r.earp@gmail.com>"]
 edition = "2018"
+license = "MIT/Apache-2.0"
+description = "Hello Compute Example"
+readme = "README.md"
 publish = false
 
 [build-dependencies]
+#spirv-builder = { git = "https://github.com/EmbarkStudios/rust-gpu", tag = "v0.4.0-alpha.10" }
+spirv-builder = { git = "https://github.com/charles-r-earp/rust-gpu", branch = "non-writable" }
 autograph = { path = "../../" }
+bincode = "1.3.3"
+rspirv = "0.7.0"
 
 [dependencies]
 autograph = { path = "../../" }
+bincode = "1.3.3"
+tokio = "1.9.0"
+once_cell = "1.8.0"
+anyhow = "1.0.42"
+smol = "1.2.5"
