@@ -14,6 +14,8 @@ publish = false
 
 [features]
 derive = ["autograph_derive"]
+# requires nightly
+bench = []
 
 [dependencies]
 autograph_derive = { path = "autograph_derive", optional = true }
@@ -63,7 +65,7 @@ gfx-backend-vulkan = "0.9.0"
 gfx-backend-dx12 = "0.9.0"
 
 [dev-dependencies]
-#approx = "0.4.0"
+approx = "0.4.0"
 #criterion = "0.3.3"
 tokio = { version = "1.8.1", features = ["full"] }
 

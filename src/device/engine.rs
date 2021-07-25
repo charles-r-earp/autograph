@@ -1553,7 +1553,7 @@ struct Queue<B: Backend> {
     queue: B::Queue,
     context: Arc<Context<B>>,
     command_pool: ManuallyDrop<B::CommandPool>,
-    ready_frames: VecDeque<Frame<B>>,
+    ready_frames: Vec<Frame<B>>,
     pending_frames: VecDeque<Frame<B>>,
     modules: HashMap<ModuleId, ShaderModule<B>>,
 }
@@ -1573,7 +1573,7 @@ impl<B: Backend> Queue<B> {
             )
         };
         let n_frames = 3;
-        let ready_frames = VecDeque::with_capacity(n_frames);
+        let ready_frames = Vec::with_capacity(n_frames);
         let pending_frames = VecDeque::with_capacity(n_frames);
         let mut queue = Self {
             receiver,
@@ -1586,7 +1586,7 @@ impl<B: Backend> Queue<B> {
         };
         for _ in 0..n_frames {
             let frame = Frame::new(queue.context.device(), &mut *queue.command_pool)?;
-            queue.ready_frames.push_back(frame);
+            queue.ready_frames.push(frame);
         }
         Ok(queue)
     }
@@ -1610,36 +1610,52 @@ impl<B: Backend> Queue<B> {
             .unwrap();
     }
     fn poll(&mut self) -> DeviceResult<()> {
+        let mut finished = None;
         if let Some(frame) = self.pending_frames.front_mut() {
             if frame.poll(self.context.device())? {
-                let frame = self.pending_frames.pop_front().unwrap();
-                self.ready_frames.push_back(frame);
+                finished = self.pending_frames.pop_front();
             }
         }
-        if let Some(frame) = self.ready_frames.front_mut() {
-            if frame.ready_to_submit() {
-                // don't need to err here, checking the fence ran out of memory
-                // could wait but don't want to deadlock
+        if let Some(frame) = self.ready_frames.last_mut() {
+            if self.pending_frames.len() <= 1 && frame.ready_to_submit() {
                 frame.submit(
                     self.context.device(),
                     self.pending_frames.front(),
                     &mut self.queue,
                 )?;
-                let frame = self.ready_frames.pop_front().unwrap();
+                let frame = self.ready_frames.pop().unwrap();
                 self.pending_frames.push_back(frame);
             }
+        }
+        if let Some(frame) = finished {
+            self.ready_frames.push(frame);
         }
         Ok(())
     }
     fn run(&mut self, done: &AtomicBool) -> DeviceResult<()> {
         let mut current_op: Option<Op<B>> = None;
         while !done.load(Ordering::Relaxed) {
-            if let Some(frame) = self.ready_frames.front_mut() {
+            if let Some(frame) = self.ready_frames.last_mut() {
                 for op in current_op
                     .take()
                     .into_iter()
                     .chain(self.receiver.try_iter())
                 {
+                    let op = match op {
+                        // Sync only frames that have work or signal immediately.
+                        Op::Sync { finished } => {
+                            if !frame.ready_to_submit() {
+                                if let Some(frame) = self.pending_frames.back_mut() {
+                                    frame.syncs.push(finished);
+                                } else {
+                                    finished.store(true, Ordering::Relaxed);
+                                }
+                                continue;
+                            }
+                            Op::Sync { finished }
+                        }
+                        op => op,
+                    };
                     if let Err(op) =
                         frame.try_encode(op, self.context.device(), &mut self.modules)?
                     {
@@ -1940,10 +1956,14 @@ impl<B: Backend> DescriptorSetAllocator<B> {
         &mut self,
         device: &B::Device,
         layout: &B::DescriptorSetLayout,
-    ) -> DeviceResult<B::DescriptorSet> {
-        let set = if let Some(pool) = self.pools.last_mut() {
-            unsafe { pool.allocate_one(layout).unwrap() }
-        } else {
+    ) -> DeviceResult<Option<B::DescriptorSet>> {
+        if let Some(pool) = self.pools.last_mut() {
+            if let Ok(set) = unsafe { pool.allocate_one(layout) } {
+                return Ok(Some(set));
+            }
+        }
+        // TODO: May be able to use more pools, trouble is that one frame could grab all the pools, exhausting memory, but this is unlikely for small numbers.
+        if self.pools.is_empty() {
             let descriptor_ranges =
                 once(false)
                     .chain(once(true))
@@ -1965,9 +1985,10 @@ impl<B: Backend> DescriptorSetAllocator<B> {
             };
             self.pools.push(pool);
             let pool = self.pools.last_mut().unwrap();
-            unsafe { pool.allocate_one(layout).unwrap() }
-        };
-        Ok(set)
+            Ok(Some(unsafe { pool.allocate_one(layout).unwrap() }))
+        } else {
+            Ok(None)
+        }
     }
     unsafe fn reset(&mut self) {
         for pool in self.pools.iter_mut() {
@@ -2064,11 +2085,25 @@ impl<B: Backend> Frame<B> {
                 push_constants,
                 specialization,
             } => {
-                let module = modules.get_mut(&module).unwrap();
-                let pipeline = module.pipeline(entry, &specialization)?;
-                let mut descriptor_set = self
+                let pipeline = modules
+                    .get_mut(&module)
+                    .unwrap()
+                    .pipeline(entry, &specialization)?;
+                let mut descriptor_set = if let Some(descriptor_set) = self
                     .descriptor_set_allocator
-                    .allocate(device, pipeline.descriptor_set_layout)?;
+                    .allocate(device, pipeline.descriptor_set_layout)?
+                {
+                    descriptor_set
+                } else {
+                    return Ok(Err(Op::Compute {
+                        module,
+                        entry,
+                        work_groups,
+                        args,
+                        push_constants,
+                        specialization,
+                    }));
+                };
                 let descriptors = args.iter().map(|arg| {
                     Descriptor::Buffer(
                         arg.slice.buffer(),
@@ -2236,7 +2271,7 @@ impl<B: Backend> Frame<B> {
                 read_chunk.blocks.state.store(OpState::Finished);
             }
             for sync in take(&mut self.syncs) {
-                sync.store(true, Ordering::Relaxed);
+                sync.store(true, Ordering::SeqCst);
             }
             Ok(true)
         } else {
@@ -2274,13 +2309,20 @@ impl<B: Backend> Frame<B> {
             })
             .into_iter();
         unsafe {
+            //let finish = Instant::now();
             self.command_buffer.finish();
+            //dbg!(finish.elapsed());
+            //let submit = Instant::now();
             queue.submit(
                 once(&self.command_buffer),
                 wait_iter,
                 once(&self.semaphore),
                 Some(&mut self.fence),
             );
+            //dbg!(submit.elapsed());
+            //let run = Instant::now();
+            //queue.wait_idle()?;
+            //dbg!(run.elapsed());
         }
         for read_chunk in self.read_chunks.iter() {
             read_chunk.blocks.state.store(OpState::Pending);

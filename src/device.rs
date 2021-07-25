@@ -31,13 +31,14 @@
 //!     let mut y = unsafe { Buffer::<u32>::alloc(device, a.len())? };
 //!     let n = y.len() as u32;
 //!     // Enqueue the compute pass
-//!     module
+//!     let builder = module
 //!         .compute_pass("add")?
 //!         .slice(a.as_slice())?
 //!         .slice(b.as_slice())?
 //!         .slice_mut(y.as_slice_mut())?
-//!         .push(n)?
-//!         .submit([n, 1, 1])?;
+//!         .push(n)?;
+//!     // Executing compute shaders is unsafe
+//!     unsafe { builder.submit([n, 1, 1])?; }
 //!     // Read the data back.
 //!     let output = y.read().await?;
 //!     println!("{:?}", output.as_slice());
@@ -382,7 +383,9 @@ pub mod builders {
                     &self.entry,
                 )
             }
-            self.check_args_size(self.args.len() + 1, false)?;
+            if cfg!(debug_assertions) {
+                self.check_args_size(self.args.len() + 1, false)?;
+            }
             self.args.push(ComputePassArg { buffer, mutable });
             Ok(ComputePassBuilder {
                 device: self.device,
@@ -426,7 +429,9 @@ pub mod builders {
         /// - The push constants exceed the size declared in the module.
         pub fn push_bytes(mut self, bytes: &[u8]) -> Result<Self> {
             let push_constant_size = self.push_constants.len() + bytes.len();
-            self.check_push_constant_size(push_constant_size, false)?;
+            if cfg!(debug_assertions) {
+                self.check_push_constant_size(push_constant_size, false)?;
+            }
             self.push_constants.extend_from_slice(bytes);
             Ok(self)
         }
@@ -488,18 +493,26 @@ pub mod builders {
         }
         /// Submits the compute pass to the device with the given `global_size`.
         ///
+        /// The compute pass will be executed with enough "work groups" such that for each dimension GLOBAL_SIZE >= WORK_GROUPS * LOCAL_SIZE.
+        ///
+        /// # Non-Blocking
         /// Does not block, the implementation submits work to the driver asynchronously.
+        ///
+        /// # Safety
+        /// The caller must ensure:
+        /// 1. The type `T` of each slice argument is valid. For example `Slice<u8>` can be bound to shader buffer that is a uint or u32, or any arbitrary type. The only constraint that is enforced is that the mutability matches, where buffers declared `NonWritable` are immutable, and buffers not declared `NonWritable` are mutable.
+        /// 2. The type(s) of the push constants are valid. Only the size (in bytes) is checked, the shader can interpret the bytes arbitrarily.
+        /// 3. The `global_size` is valid. If too large, the shader may perform out of bounds reads or writes, which is undefined behavior. If too small, the shader may not fully compute the output(s). Note that the shader will be executed with potentially more invocations than `global_size`, in blocks of the `local_size` declared in the shader. Typically the actual work size (ie the length of the buffer(s)) is passed as a push constant.
+        /// 4. The shader is valid. Executing a compute shader is essentially a foreign function call, and is inherently unsafe.
         ///
         /// **Errors**
         /// - The number of arguments does not match the number declared in the module.
         /// - The total size in bytes of all push constants does not match that declared in the module.
         /// - The total size in bytes of all specialization constants does not match that declared in the module.
         /// - The device panicked or disconnected.
-        /// - The device could not compile the module (compiles on first use).
-        ///
-        /// # Note
-        /// Shaders are lazily compiled and executed asynchronously, any errors encountered that can not be handled internally will shutdown the internal device thread. This ensures that results are not invalidated by a shader that did not run. The implementation does not track dependencies beyond ensuring correct execution order, and cannot single out just that buffer and fail any dependencies of it. Any subsequent operations will return an error. Be careful with JIT or specialization constants as they will trigger compilation on first use, which may fail or produce invalid binary. Generally it's best to "warm-up" all needed functions first before operating on actual data, to eliminate the startup cost and reduce potential for failures.
-        pub fn submit(mut self, global_size: [u32; 3]) -> Result<()> {
+        /// - The device could not compile the module (compiles all entries on first use).
+        /// - The device could not compile the specialization (compiles each entry / specialization on first use).
+        pub unsafe fn submit(mut self, global_size: [u32; 3]) -> Result<()> {
             fn work_groups(global_size: [u32; 3], local_size: [u32; 3]) -> [u32; 3] {
                 let mut work_groups = [0; 3];
                 for (wg, (gs, ls)) in work_groups

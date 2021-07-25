@@ -15,6 +15,11 @@
 //!     - Metal (MacOS / iOS) <https://developer.apple.com/metal/>
 //!     - DX12 (Windows) <https://docs.microsoft.com/windows/win32/directx>
 
+#![cfg_attr(feature = "bench", feature(test))]
+
+#[cfg(feature = "bench")]
+extern crate test;
+
 #[cfg(feature = "derive")]
 #[allow(unused_imports)]
 #[macro_use]
@@ -31,7 +36,11 @@ pub mod error {
 /// Device level backend.
 pub mod device;
 mod glsl_shaders;
+/// Numerical operations.
+pub mod ops;
 mod rust_shaders;
 /// Scalar types.
 pub mod scalar;
+/// Tensors.
+pub mod tensor;
 mod util;

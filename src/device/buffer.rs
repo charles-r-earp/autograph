@@ -2,10 +2,15 @@ use super::{
     len_checked, BufferHandle, BufferId, Device, DeviceBase, ReadGuard as RawReadGuard, Result,
     WriteOnly,
 };
-use crate::{scalar::Scalar, util::size_eq};
+use crate::{
+    scalar::Scalar,
+    util::{elem_type_name, size_eq},
+};
 use anyhow::bail;
-use bytemuck::{Pod, Zeroable};
+use bytemuck::Pod;
+use serde::{de::Deserializer, ser::Serializer, Deserialize, Serialize};
 use std::{
+    fmt::{self, Debug},
     marker::PhantomData,
     mem::{forget, transmute},
     ops::{Deref, DerefMut},
@@ -68,9 +73,8 @@ impl<T> Data for SliceMutRepr<'_, T> {
     type Elem = T;
 }
 
-impl<T: Scalar> DataMut for SliceMutRepr<'_, T> {}
+impl<T> DataMut for SliceMutRepr<'_, T> {}
 
-#[derive(Debug)]
 struct HostBufferBase<S: Data> {
     ptr: *mut S::Elem,
     len: usize,
@@ -114,6 +118,9 @@ impl<T, S: Data<Elem = T>> HostBufferBase<S> {
     fn as_slice(&self) -> HostSlice<T> {
         HostSlice::from(self.deref())
     }
+    fn slice_impl(&self, offset: usize, len: usize) -> HostSlice<T> {
+        self.deref()[offset..len].into()
+    }
     fn as_slice_mut(&mut self) -> HostSliceMut<T>
     where
         S: DataMut,
@@ -129,13 +136,13 @@ impl<T, S: Data<Elem = T>> HostBufferBase<S> {
     }
 }
 
-impl<T: Zeroable> HostBuffer<T> {
+/*impl<T: Zeroable> HostBuffer<T> {
     unsafe fn alloc(len: usize) -> Self {
         let mut vec = Vec::with_capacity(len);
         vec.set_len(len);
         vec.into()
     }
-}
+}*/
 
 impl<T> From<Vec<T>> for HostBuffer<T> {
     fn from(vec: Vec<T>) -> Self {
@@ -177,6 +184,33 @@ impl<T, S: Data<Elem = T>> Deref for HostBufferBase<S> {
 impl<T, S: DataMut<Elem = T>> DerefMut for HostBufferBase<S> {
     fn deref_mut(&mut self) -> &mut [T] {
         unsafe { std::slice::from_raw_parts_mut(self.ptr, self.len) }
+    }
+}
+
+impl<T, S: Data<Elem = T>> Debug for HostBufferBase<S> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("HostBufferBase")
+            .field("len", &self.len)
+            .field("elem", &elem_type_name::<T>())
+            .finish()
+    }
+}
+
+impl<T: Serialize, S: Data<Elem = T>> Serialize for HostBufferBase<S> {
+    fn serialize<Se>(&self, serializer: Se) -> Result<Se::Ok, Se::Error>
+    where
+        Se: Serializer,
+    {
+        self.deref().serialize(serializer)
+    }
+}
+
+impl<'de, T: Deserialize<'de>> Deserialize<'de> for HostBuffer<T> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Ok(Vec::deserialize(deserializer)?.into())
     }
 }
 
@@ -246,20 +280,14 @@ impl<T, S: Data<Elem = T>> DeviceBufferBase<S> {
             .device
             .write(self.handle(), |slice| f(slice.cast_slice_mut()))?)
     }
-    fn into_owned(self) -> Result<DeviceBuffer<T>>
-    where
-        T: Pod,
-    {
+    fn into_owned(self) -> Result<DeviceBuffer<T>> {
         if S::OWNED {
             unsafe { Ok(transmute(self)) }
         } else {
             self.to_owned()
         }
     }
-    fn to_owned(&self) -> Result<DeviceBuffer<T>>
-    where
-        T: Pod,
-    {
+    fn to_owned(&self) -> Result<DeviceBuffer<T>> {
         let mut buffer = unsafe { DeviceBuffer::alloc(self.device().clone(), self.len())? };
         buffer.copy_from_slice(self.as_slice())?;
         Ok(buffer)
@@ -290,6 +318,13 @@ impl<T, S: Data<Elem = T>> DeviceBufferBase<S> {
     fn as_slice(&self) -> DeviceSlice<T> {
         unsafe { DeviceSlice::from_raw_parts(self.device.clone(), self.id, self.offset, self.len) }
     }
+    fn slice_impl(&self, offset: usize, len: usize) -> DeviceSlice<T> {
+        assert!(offset <= len);
+        assert!(offset + len <= self.len());
+        unsafe {
+            DeviceSlice::from_raw_parts(self.device.clone(), self.id, self.offset + offset, len)
+        }
+    }
     fn as_slice_mut(&mut self) -> DeviceSliceMut<T>
     where
         S: DataMut,
@@ -306,10 +341,31 @@ impl<T, S: Data<Elem = T>> DeviceBufferBase<S> {
     }
 }
 
-impl<T: Zeroable> DeviceBuffer<T> {
+impl<T> DeviceBuffer<T> {
     unsafe fn alloc(device: Arc<DeviceBase>, len: usize) -> Result<Self> {
         let id = device.alloc(len_checked::<T>(len)?)?;
         Ok(Self::from_raw_parts(device, id, 0, len))
+    }
+}
+
+impl<T: Pod + Serialize, S: Data<Elem = T>> Serialize for DeviceBufferBase<S> {
+    fn serialize<Se>(&self, serializer: Se) -> Result<Se::Ok, Se::Error>
+    where
+        Se: Serializer,
+    {
+        use serde::ser::Error;
+        let guard = smol::block_on(self.as_slice().read()).map_err(Se::Error::custom)?;
+        guard.deref().serialize(serializer)
+    }
+}
+
+impl<T, S: Data<Elem = T>> Debug for DeviceBufferBase<S> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("DeviceBufferBase")
+            .field("device", &self.device.id)
+            .field("len", &self.len)
+            .field("elem", &elem_type_name::<T>())
+            .finish()
     }
 }
 
@@ -339,6 +395,9 @@ impl<T: Pod, S: Data<Elem = T>> Deref for DeviceReadGuard<S> {
     }
 }
 
+#[derive(Debug, Serialize)]
+#[serde(bound = "S::Elem: Pod + Serialize")]
+#[serde(untagged)]
 enum DynBufferBase<S: Data> {
     Host(HostBufferBase<S>),
     Device(DeviceBufferBase<S>),
@@ -356,6 +415,15 @@ impl<S: Data> From<DeviceBufferBase<S>> for DynBufferBase<S> {
     }
 }
 
+impl<'de, T: Deserialize<'de>> Deserialize<'de> for DynBufferBase<OwnedRepr<T>> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Ok(HostBuffer::deserialize(deserializer)?.into())
+    }
+}
+
 /// Host / Device Buffer
 ///
 /// Like [`Device`], [`BufferBase`] comes in 2 forms, Host and Device.
@@ -365,6 +433,8 @@ impl<S: Data> From<DeviceBufferBase<S>> for DynBufferBase<S> {
 ///
 /// # Device
 /// Allocated on the device, like a GPU. Operations are asynchronous with the host, only made visible after awaiting ['.read()`].
+#[derive(Serialize)]
+#[serde(bound = "S::Elem: Pod + Serialize")]
 pub struct BufferBase<S: Data> {
     base: DynBufferBase<S>,
 }
@@ -394,11 +464,11 @@ impl<T> Buffer<T> {
     /// - See [`.zeros()`](BufferBase::zeros) for a safe alternative.
     pub unsafe fn alloc(device: Device, len: usize) -> Result<Self>
     where
-        T: Zeroable,
+        T: Default + Copy,
     {
         Ok(match device.into_base() {
             Some(device) => DeviceBuffer::alloc(device, len)?.into(),
-            None => HostBuffer::alloc(len).into(),
+            None => HostBuffer::from(vec![T::default(); len]).into(),
         })
     }
     /// Creates a buffer with length `len` filled with `elem`.
@@ -498,6 +568,12 @@ impl<T, S: Data<Elem = T>> BufferBase<S> {
             DynBufferBase::Device(buffer) => buffer.as_slice().into(),
         }
     }
+    fn slice_impl(&self, offset: usize, len: usize) -> Slice<T> {
+        match &self.base {
+            DynBufferBase::Host(buffer) => buffer.slice_impl(offset, len).into(),
+            DynBufferBase::Device(buffer) => buffer.slice_impl(offset, len).into(),
+        }
+    }
     /// Mutably borrows the buffer as a SliceMut.
     pub fn as_slice_mut(&mut self) -> SliceMut<T>
     where
@@ -549,7 +625,7 @@ impl<T, S: Data<Elem = T>> BufferBase<S> {
     /// - Potentially allocates the buffer [`Buffer::alloc`](BufferBase::alloc).
     pub fn into_owned(self) -> Result<Buffer<T>>
     where
-        T: Pod,
+        T: Copy,
     {
         match self.base {
             DynBufferBase::Host(buffer) => Ok(buffer.into_owned().into()),
@@ -562,7 +638,7 @@ impl<T, S: Data<Elem = T>> BufferBase<S> {
     /// - Allocates the buffer [`Buffer::alloc`](BufferBase::alloc).
     pub fn to_owned(&self) -> Result<Buffer<T>>
     where
-        T: Pod,
+        T: Copy,
     {
         match &self.base {
             DynBufferBase::Host(buffer) => Ok(buffer.to_owned().into()),
@@ -587,10 +663,20 @@ impl<T, S: Data<Elem = T>> BufferBase<S> {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+    // Gets a vec when on the host
+    pub(crate) fn into_vec(self) -> Option<Vec<T>>
+    where
+        T: Copy,
+    {
+        match self.base {
+            DynBufferBase::Host(buffer) => Some(buffer.into_vec()),
+            DynBufferBase::Device(_) => None,
+        }
+    }
     pub(super) fn into_device_buffer_base(self) -> Option<DeviceBufferBase<S>> {
         match self.base {
-            DynBufferBase::Device(buffer) => Some(buffer),
             DynBufferBase::Host(_) => None,
+            DynBufferBase::Device(buffer) => Some(buffer),
         }
     }
     /// Fills the buffer with `elem`.
@@ -610,21 +696,22 @@ impl<T, S: Data<Elem = T>> BufferBase<S> {
         } else {
             "fill_u32"
         };
-        let builder = if option_env!("RUST_SHADERS").is_some() {
-            crate::rust_shaders::core()?.compute_pass(name)?
-        } else {
-            crate::glsl_shaders::module(name)?.compute_pass("main")?
-        };
-        let builder = builder.slice_mut(self.as_slice_mut())?;
-        if size_eq::<T, u8>() {
+        let builder = crate::rust_shaders::core()?
+            .compute_pass(name)?
+            .slice_mut(self.as_slice_mut())?;
+        let (builder, n) = if size_eq::<T, u8>() {
             let n = if n % 4 == 0 { n / 4 } else { n / 4 + 1 };
-            builder.push(n)?.push([elem; 4])?.submit([n, 1, 1])
+            let builder = builder.push(n)?.push([elem; 4])?;
+            (builder, n)
         } else if size_eq::<T, u16>() {
             let n = if n % 2 == 0 { n / 2 } else { n / 2 + 1 };
-            builder.push(n)?.push([elem; 2])?.submit([n, 1, 1])
+            let builder = builder.push(n)?.push([elem; 2])?;
+            (builder, n)
         } else {
-            builder.push(n)?.push(elem)?.submit([n, 1, 1])
-        }
+            let builder = builder.push(n)?.push(elem)?;
+            (builder, n)
+        };
+        unsafe { builder.submit([n, 1, 1]) }
     }
 }
 
@@ -661,6 +748,25 @@ impl<'a, T> From<&'a [T]> for Slice<'a, T> {
 impl<'a, T> From<&'a mut [T]> for SliceMut<'a, T> {
     fn from(slice: &'a mut [T]) -> Self {
         HostSliceMut::from(slice).into()
+    }
+}
+
+impl<'de, T: Deserialize<'de>> Deserialize<'de> for Buffer<T> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Ok(DynBufferBase::deserialize(deserializer)?.into())
+    }
+}
+
+impl<T, S: Data<Elem = T>> Debug for BufferBase<S> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("BufferBase")
+            .field("device", &self.device())
+            .field("len", &self.len())
+            .field("elem", &elem_type_name::<T>())
+            .finish()
     }
 }
 
@@ -729,6 +835,193 @@ impl<S: Data> From<ReadGuardBase<S>> for ReadGuard<S> {
     }
 }
 
+/// Shared Buffer
+#[derive(Clone)]
+pub struct ArcBuffer<T> {
+    buffer: Arc<Buffer<T>>,
+    offset: usize,
+    len: usize,
+}
+
+impl<T> ArcBuffer<T> {
+    unsafe fn from_raw_parts(buffer: Arc<Buffer<T>>, offset: usize, len: usize) -> Self {
+        debug_assert!(
+            offset + len <= buffer.len(),
+            "{} > {}",
+            offset + len,
+            buffer.len()
+        );
+        Self {
+            buffer,
+            offset,
+            len,
+        }
+    }
+    /// Borrows the buffer as a Slice.
+    pub fn as_slice(&self) -> Slice<T> {
+        self.buffer.slice_impl(self.offset, self.len)
+    }
+    pub(crate) fn try_unwrap(self) -> Result<Buffer<T>, Self> {
+        if self.offset == 0 && self.len == self.buffer.len() {
+            match Arc::try_unwrap(self.buffer) {
+                Ok(buffer) => Ok(buffer),
+                Err(buffer) => Err(Self {
+                    buffer,
+                    offset: self.offset,
+                    len: self.len,
+                }),
+            }
+        } else {
+            Err(self)
+        }
+    }
+    /// Converts into a [`Buffer`].
+    ///
+    /// **Errors**
+    /// - Potentially allocates the buffer [`Buffer::alloc`](BufferBase::alloc).
+    pub fn into_owned(self) -> Result<Buffer<T>>
+    where
+        T: Copy,
+    {
+        match self.try_unwrap() {
+            Ok(buffer) => Ok(buffer),
+            Err(buffer) => buffer.to_owned(),
+        }
+    }
+    /// Copies into a new [`Buffer`].
+    ///
+    /// **Errors**
+    /// - Allocates the buffer [`Buffer::alloc`](BufferBase::alloc).
+    pub fn to_owned(&self) -> Result<Buffer<T>>
+    where
+        T: Copy,
+    {
+        self.as_slice().to_owned()
+    }
+    /// The device of the buffer.
+    pub fn device(&self) -> Device {
+        self.buffer.device()
+    }
+    /// The length of the buffer.
+    pub fn len(&self) -> usize {
+        self.len
+    }
+    /// Whether the buffer is empty.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+impl<T> From<Buffer<T>> for ArcBuffer<T> {
+    fn from(buffer: Buffer<T>) -> Self {
+        let len = buffer.len();
+        unsafe { Self::from_raw_parts(buffer.into(), 0, len) }
+    }
+}
+
+impl<T: Pod + Serialize> Serialize for ArcBuffer<T> {
+    fn serialize<Se>(&self, serializer: Se) -> Result<Se::Ok, Se::Error>
+    where
+        Se: Serializer,
+    {
+        self.as_slice().serialize(serializer)
+    }
+}
+
+impl<'de, T: Deserialize<'de>> Deserialize<'de> for ArcBuffer<T> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Ok(Buffer::deserialize(deserializer)?.into())
+    }
+}
+
+impl<T> Debug for ArcBuffer<T> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("ArcBuffer")
+            .field("device", &self.buffer.device())
+            .field("len", &self.len)
+            .field("elem", &elem_type_name::<T>())
+            .finish()
+    }
+}
+
+/// A Borrowed or Owned Buffer
+#[derive(Debug)]
+pub enum CowBuffer<'a, T> {
+    /// Borrowed
+    Slice(Slice<'a, T>),
+    /// Owned
+    Buffer(Buffer<T>),
+}
+
+impl<T> CowBuffer<'_, T> {
+    /// Borrows the buffer as a Slice.
+    pub fn as_slice(&self) -> Slice<T> {
+        match self {
+            Self::Slice(slice) => slice.as_slice(),
+            Self::Buffer(buffer) => buffer.as_slice(),
+        }
+    }
+    /// Converts into a [`Buffer`].
+    ///
+    /// **Errors**
+    /// - Potentially allocates the buffer [`Buffer::alloc`](BufferBase::alloc).
+    pub fn into_owned(self) -> Result<Buffer<T>>
+    where
+        T: Copy,
+    {
+        match self {
+            Self::Slice(slice) => slice.to_owned(),
+            Self::Buffer(buffer) => Ok(buffer),
+        }
+    }
+    /// Copies into a new [`Buffer`].
+    ///
+    /// **Errors**
+    /// - Allocates the buffer [`Buffer::alloc`](BufferBase::alloc).
+    pub fn to_owned(&self) -> Result<Buffer<T>>
+    where
+        T: Copy,
+    {
+        match self {
+            Self::Slice(slice) => slice.to_owned(),
+            Self::Buffer(buffer) => buffer.to_owned(),
+        }
+    }
+    /// The device of the buffer.
+    pub fn device(&self) -> Device {
+        match self {
+            Self::Slice(slice) => slice.device(),
+            Self::Buffer(buffer) => buffer.device(),
+        }
+    }
+    /// The length of the buffer.
+    pub fn len(&self) -> usize {
+        match self {
+            Self::Slice(slice) => slice.len(),
+            Self::Buffer(buffer) => buffer.len(),
+        }
+    }
+    /// Whether the buffer is empty.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+impl<'a, T> From<Slice<'a, T>> for CowBuffer<'a, T> {
+    fn from(slice: Slice<'a, T>) -> Self {
+        Self::Slice(slice)
+    }
+}
+
+impl<T> From<Buffer<T>> for CowBuffer<'_, T> {
+    fn from(buffer: Buffer<T>) -> Self {
+        Self::Buffer(buffer)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -740,6 +1033,15 @@ mod tests {
         a.copy_from_slice(b_vec.as_slice().into())?;
         let a_guard = a.read().await?;
         assert_eq!(a_guard.as_slice(), b_vec.as_slice());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn host_buffer_serde() -> Result<()> {
+        let x = [1u32, 2, 3, 4];
+        let slice = Slice::from(x.as_ref());
+        let buffer: Buffer<u32> = bincode::deserialize(&bincode::serialize(&slice)?)?;
+        assert_eq!(x.as_ref(), buffer.read().await?.as_slice());
         Ok(())
     }
 
@@ -757,6 +1059,16 @@ mod tests {
         //device.sync().await?;
         let a_guard = a.read().await?;
         assert_eq!(a_guard.as_slice(), b_vec.as_slice());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn device_buffer_serde() -> Result<()> {
+        let device = Device::new()?;
+        let x = [1u32, 2, 3, 4];
+        let buffer = Slice::from(x.as_ref()).into_device(device.clone()).await?;
+        let buffer: Buffer<u32> = bincode::deserialize(&bincode::serialize(&buffer)?)?;
+        assert_eq!(x.as_ref(), buffer.read().await?.as_slice());
         Ok(())
     }
 
