@@ -694,7 +694,10 @@ impl Device {
     ///
     /// This is a simple way to get a single device. Use [`.builder_iter()`](Device::builder_iter()) for more control.
     pub fn new() -> Result<Self> {
-        let mut builders: Vec<_> = Self::builder_iter().collect();
+        let mut builders: Vec<_> = Self::builder_iter()
+            //.filter(|b| b.info().api() == Api::Vulkan)
+            //.filter(|b| b.info().device_type() == DeviceType::DiscreteGpu)
+            .collect();
         builders.sort_by_key(|b| b.info().device_type());
         builders
             .first()

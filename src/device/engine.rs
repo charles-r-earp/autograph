@@ -2002,7 +2002,12 @@ impl<B: Backend> DescriptorSetAllocator<B> {
     }
 }
 
-fn descriptor_range(offset: u32, mut len: u32) -> SubRange {
+#[allow(unused_mut)]
+fn descriptor_range<B: Backend>(mut offset: u32, mut len: u32) -> SubRange {
+    #[cfg(windows)]
+    if type_eq::<B, DX12>() {
+        offset /= 4;
+    }
     if len % 4 > 0 {
         len += 4 - len % 4;
     }
@@ -2107,7 +2112,7 @@ impl<B: Backend> Frame<B> {
                 let descriptors = args.iter().map(|arg| {
                     Descriptor::Buffer(
                         arg.slice.buffer(),
-                        descriptor_range(arg.slice.offset, arg.slice.len),
+                        descriptor_range::<B>(arg.slice.offset, arg.slice.len),
                     )
                 });
                 unsafe {
@@ -2139,6 +2144,10 @@ impl<B: Backend> Frame<B> {
                             states.start |= State::TRANSFER_READ | State::SHADER_READ;
                             states.end |= State::SHADER_WRITE;
                         }
+                        #[cfg(windows)]
+                        if type_eq::<B, DX12>() {
+                            states.end = State::all();
+                        }
                         Barrier::Buffer {
                             states,
                             target: arg.slice.buffer(),
@@ -2150,7 +2159,7 @@ impl<B: Backend> Frame<B> {
                         PipelineStage::TRANSFER | PipelineStage::COMPUTE_SHADER
                             ..PipelineStage::COMPUTE_SHADER,
                         Dependencies::empty(),
-                        barriers,
+                        barriers.take(1),
                     );
                     self.command_buffer.dispatch(work_groups);
                 }
@@ -2309,20 +2318,13 @@ impl<B: Backend> Frame<B> {
             })
             .into_iter();
         unsafe {
-            //let finish = Instant::now();
             self.command_buffer.finish();
-            //dbg!(finish.elapsed());
-            //let submit = Instant::now();
             queue.submit(
                 once(&self.command_buffer),
                 wait_iter,
                 once(&self.semaphore),
                 Some(&mut self.fence),
             );
-            //dbg!(submit.elapsed());
-            //let run = Instant::now();
-            //queue.wait_idle()?;
-            //dbg!(run.elapsed());
         }
         for read_chunk in self.read_chunks.iter() {
             read_chunk.blocks.state.store(OpState::Pending);
