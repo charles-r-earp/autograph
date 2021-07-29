@@ -2,7 +2,10 @@ use super::{
     shader::{EntryDescriptor, EntryId, Module, ModuleId, SPECIALIZATION_SIZE},
     Api, BufferHandle, BufferId, ComputePass, DeviceError, DeviceId, DeviceResult, WriteOnly,
 };
-use crate::{result::Result, util::{type_eq, UnwrapUnchecked as _}};
+use crate::{
+    result::Result,
+    util::{type_eq, UnwrapUnchecked as _},
+};
 use anyhow::{anyhow, bail};
 use crossbeam_channel::{unbounded as unbounded_channel, Receiver, Sender};
 use crossbeam_utils::atomic::AtomicCell;
@@ -28,7 +31,10 @@ use gfx_hal::{
 };
 use hibitset::BitSet;
 use lazy_static::lazy_static;
-use parking_lot::{Mutex, RwLock, RwLockUpgradableReadGuard, RwLockReadGuard, RwLockWriteGuard, MappedRwLockReadGuard};
+use parking_lot::{
+    MappedRwLockReadGuard, Mutex, RwLock, RwLockReadGuard, RwLockUpgradableReadGuard,
+    RwLockWriteGuard,
+};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     convert::TryFrom,
@@ -796,9 +802,12 @@ impl<B: Backend> StorageChunk<B> {
         self.blocks.lock().dealloc(range);
     }
     fn slice(&self, range: BlockRange, offset: u32, len: u32) -> Result<StorageSlice<B>> {
-        let base = self.base.try_read()
+        let base = self
+            .base
+            .try_read()
             .ok_or_else(|| anyhow!("StorageChunk is not initialized!"))?;
-        let buffer = &base.as_ref()
+        let buffer = &base
+            .as_ref()
             .ok_or_else(|| anyhow!("StorageChunk is not initialized!"))?
             .buffer;
         let buffer: &'static B::Buffer = unsafe { transmute(buffer) };
@@ -847,11 +856,10 @@ impl<B: Backend> Default for StorageChunk<B> {
 #[derive(Copy, Clone, Debug)]
 enum MapKind {
     Write,
-    Read
+    Read,
 }
 
 use std::sync::atomic::AtomicU32;
-
 
 #[derive(Debug)]
 struct MappingBlocks {
@@ -874,9 +882,12 @@ impl MappingBlocks {
     }
     fn alloc_impl(&self, len: BlockLen, kind: MapKind) -> Option<BlockId> {
         let len = len.0;
-        if self.state.load() == OpState::Ready && self.offset.load(Ordering::SeqCst) + len  <= BLOCKS {
+        if self.state.load() == OpState::Ready && self.offset.load(Ordering::SeqCst) + len <= BLOCKS
+        {
             let block = self.offset.fetch_add(len, Ordering::SeqCst);
-            if block == 0 /* block + len <= BLOCKS*/ {
+            if block == 0
+            /* block + len <= BLOCKS*/
+            {
                 match kind {
                     MapKind::Write => {
                         self.writers.fetch_add(1, Ordering::SeqCst);
@@ -916,10 +927,8 @@ impl MappingBlocks {
     }
     fn drop_read_guard(&self) {
         let prev = self.readers.fetch_sub(1, Ordering::SeqCst);
-        if prev == 1 {
-            if self.state.load() == OpState::Finished {
-                self.state.store(OpState::Ready);
-            }
+        if prev == 1 && self.state.load() == OpState::Finished {
+            self.state.store(OpState::Ready);
         }
     }
 }
@@ -949,10 +958,7 @@ impl<B: Backend> MappingChunkBase<B> {
         };
         let map = NonNull::new(map).ok_or(DeviceError::MappingFailed)?;
         let blocks = MappingBlocks::new(map);
-        Ok(Self {
-            base,
-            blocks,
-        })
+        Ok(Self { base, blocks })
     }
     fn buffer(&self) -> &B::Buffer {
         &self.base.buffer
@@ -977,7 +983,11 @@ struct MappingChunk<B: Backend> {
 }
 
 impl<B: Backend> MappingChunk<B> {
-    fn get_or_try_init(&self, device: &B::Device, ids: impl Iterator<Item = MemoryTypeId>) -> DeviceResult<MappedRwLockReadGuard<MappingChunkBase<B>>> {
+    fn get_or_try_init(
+        &self,
+        device: &B::Device,
+        ids: impl Iterator<Item = MemoryTypeId>,
+    ) -> DeviceResult<MappedRwLockReadGuard<MappingChunkBase<B>>> {
         let base = self.base.upgradable_read();
         let base = if base.is_some() {
             RwLockUpgradableReadGuard::downgrade(base)
@@ -988,7 +998,9 @@ impl<B: Backend> MappingChunk<B> {
             }
             RwLockWriteGuard::downgrade(base)
         };
-        Ok(RwLockReadGuard::map(base, |base| unsafe { base.as_ref()._unwrap_unchecked() }))
+        Ok(RwLockReadGuard::map(base, |base| unsafe {
+            base.as_ref()._unwrap_unchecked()
+        }))
     }
     fn alloc_write(
         &self,
@@ -1259,7 +1271,7 @@ impl<B: Backend> Allocator<B> {
             return Ok((ChunkId(c as u8), block));
         }
         for (c, chunk) in self.storage_chunks.iter().enumerate() {
-            if let Some(block) = chunk.alloc(device, self.storage_ids(), len).expect(&format!("chunk: {}", c)) {
+            if let Some(block) = chunk.alloc(device, self.storage_ids(), len)? {
                 return Ok((ChunkId(c as u8), block));
             }
         }
@@ -1612,8 +1624,8 @@ impl<B: Backend> Queue<B> {
         std::thread::Builder::new()
             .name(name)
             .spawn(move || {
-                let r = catch_unwind(move || self.run(&done))
-                    .unwrap_or(Err(DeviceError::DeviceLost));
+                let r =
+                    catch_unwind(move || self.run(&done)).unwrap_or(Err(DeviceError::DeviceLost));
                 result.store(r);
                 exited.store(true, Ordering::Relaxed);
             })
@@ -2241,11 +2253,13 @@ impl<B: Backend> Frame<B> {
                     );
                     self.command_buffer
                         .copy_buffer(src.buffer(), dst.buffer(), once(region));
-                    self.command_buffer.pipeline_barrier(PipelineStage::TRANSFER
+                    self.command_buffer.pipeline_barrier(
+                        PipelineStage::TRANSFER
                             ..PipelineStage::COMPUTE_SHADER | PipelineStage::TRANSFER,
                         Dependencies::empty(),
                         once(Barrier::Buffer {
-                            states: State::TRANSFER_WRITE .. State::SHADER_WRITE | State::SHADER_READ | State::TRANSFER_READ,
+                            states: State::TRANSFER_WRITE
+                                ..State::SHADER_WRITE | State::SHADER_READ | State::TRANSFER_READ,
                             target: dst.buffer(),
                             range: barrier_range(dst.offset, dst.len),
                             families: None,

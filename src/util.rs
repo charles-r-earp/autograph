@@ -1,8 +1,4 @@
-use std::{
-    any::TypeId,
-    mem::size_of,
-    hint::unreachable_unchecked,
-};
+use std::{any::TypeId, hint::unreachable_unchecked, mem::size_of};
 
 pub(crate) fn elem_type_name<T>() -> &'static str {
     let name = std::any::type_name::<T>();
@@ -30,7 +26,7 @@ impl<T> UnwrapUnchecked for Option<T> {
         debug_assert!(self.is_some());
         match self {
             Some(x) => x,
-            None => unreachable_unchecked()
+            None => unreachable_unchecked(),
         }
     }
 }
