@@ -194,6 +194,7 @@ mod tests {
             };
             let a_true = a1.dot(&a2);
             let t_out = t1.dot(t2)?;
+            device.sync().await?;
             let a_out = t_out.read().await?.into_array();
             (a_true, a_out)
         }};
