@@ -96,7 +96,7 @@ static VULKAN_INSTANCE: Lazy<Mutex<Weak<VulkanInstance>>> = Lazy::new(Mutex::def
 static METAL_INSTANCE: Lazy<Mutex<Weak<MetalInstance>>> = Lazy::new(Mutex::default);
 
 #[cfg(windows)]
-static DX12_INSTANCE: Mutex<Weak<DX12Instance>> = Lazy::new(Mutex::default);
+static DX12_INSTANCE: Lazy<Mutex<Weak<DX12Instance>>> = Lazy::new(Mutex::default);
 
 fn create_instance<B: Backend>() -> Option<B::Instance> {
     B::Instance::create("autograph", 1).ok()
