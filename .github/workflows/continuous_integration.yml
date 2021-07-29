@@ -27,9 +27,12 @@ jobs:
       run: cargo fetch --target ${{ matrix.target }}
     - name: Check
       run: cargo check --tests --lib --benches
-    - name: Test  
+    - name: Test Host Only 
+      if: ${{ matrix.os != 'windows-latest' }}
+      run: cargo test --no-default-features
+    - name: Test 
       if: ${{ matrix.os == 'windows-latest' }}
-      run: cargo test -- --test-threads 1
+      run: cargo test
   lint:
     name: Lint
     runs-on: ubuntu-latest
