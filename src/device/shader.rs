@@ -1,6 +1,6 @@
 use anyhow::{anyhow, bail, ensure};
 use hibitset::BitSet;
-use lazy_static::lazy_static;
+use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use rspirv::{
     binary::Parser,
@@ -19,9 +19,7 @@ type Result<T, E = anyhow::Error> = std::result::Result<T, E>;
 pub(super) const PUSH_CONSTANT_SIZE: usize = 64;
 pub(super) const SPECIALIZATION_SIZE: usize = 32;
 
-lazy_static! {
-    static ref MODULE_IDS: Mutex<BitSet> = Mutex::new(BitSet::new());
-}
+static MODULE_IDS: Lazy<Mutex<BitSet>> = Lazy::new(Mutex::default);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub(super) struct ModuleId(pub(super) u32);
@@ -152,7 +150,7 @@ struct BufferBinding {
 
 fn parse_spirv(spirv: &[u8]) -> Result<ModuleDescriptor> {
     let mut loader = Loader::new();
-    Parser::new(&spirv, &mut loader)
+    Parser::new(spirv, &mut loader)
         .parse()
         .map_err(|e| anyhow!("{:?}", e))?;
     let module = loader.module();

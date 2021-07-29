@@ -140,7 +140,7 @@ impl<'b, T: Scalar, S: Data<Elem = T>> DotAccumulate<TensorView2<'b, T>> for Ten
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "device_tests"))]
 mod tests {
     use super::*;
     use approx::assert_relative_eq;

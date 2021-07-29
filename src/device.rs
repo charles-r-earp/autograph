@@ -52,7 +52,7 @@ use derive_more::Display;
 use hibitset::{AtomicBitSet, BitSet};
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
-#[cfg(test)]
+#[cfg(all(test, feature = "device_tests"))]
 use smol::lock::{Semaphore, SemaphoreGuard};
 use std::{
     fmt::{self, Debug},
@@ -684,10 +684,10 @@ impl Drop for DeviceBase {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "device_tests"))]
 static TEST_DEVICE: Mutex<Option<Device>> = parking_lot::const_mutex(None);
 
-#[cfg(test)]
+#[cfg(all(test, feature = "device_tests"))]
 static TEST_DEVICE_SEMAPHORE: Semaphore = Semaphore::new(4);
 
 /// Device.
@@ -709,7 +709,7 @@ impl Device {
                 .ok_or_else(|| anyhow!("No device!"))?
                 .build()
         }
-        #[cfg(test)]
+        #[cfg(all(test, feature = "device_tests"))]
         {
             let mut guard = TEST_DEVICE.lock();
             if let Some(device) = guard.as_ref() {
@@ -776,21 +776,32 @@ impl Device {
         self.base
     }
     /// [`DeviceInfo`]
+    ///
+    /// Returns info about the device. The host returns [`None`].
     pub fn info(&self) -> Option<&DeviceInfo> {
         self.base.as_deref().map(DeviceBase::info)
     }
     /// Synchronizes pending operations.
     ///
     /// The returned future will resolve when all previous transfer and compute operations are complete.
+    ///
+    /// NOOP on the host.
+    ///
+    /// **Errors**
+    /// - The device panicked or disconnected.
     pub async fn sync(&self) -> Result<()> {
         if let Some(base) = self.base.as_ref() {
             base.sync().await?;
         }
         Ok(())
     }
-    #[cfg(test)]
-    pub(crate) async fn acquire(&self) -> SemaphoreGuard<'static> {
-        TEST_DEVICE_SEMAPHORE.acquire().await
+    #[cfg(all(test, feature = "device_tests"))]
+    pub(crate) async fn acquire(&self) -> Option<SemaphoreGuard<'static>> {
+        if self.base.is_some() {
+            Some(TEST_DEVICE_SEMAPHORE.acquire().await)
+        } else {
+            None
+        }
     }
 }
 
@@ -824,14 +835,17 @@ impl From<Arc<DeviceBase>> for Device {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "device_tests")]
     use super::*;
 
+    #[cfg(feature = "device_tests")]
     #[test]
     fn device_new() -> Result<()> {
         Device::new()?;
         Ok(())
     }
 
+    #[cfg(feature = "device_tests")]
     #[test]
     fn device_builder_iter_build() -> Result<()> {
         for builder in Device::builder_iter() {

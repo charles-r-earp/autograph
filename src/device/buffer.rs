@@ -136,14 +136,6 @@ impl<T, S: Data<Elem = T>> HostBufferBase<S> {
     }
 }
 
-/*impl<T: Zeroable> HostBuffer<T> {
-    unsafe fn alloc(len: usize) -> Self {
-        let mut vec = Vec::with_capacity(len);
-        vec.set_len(len);
-        vec.into()
-    }
-}*/
-
 impl<T> From<Vec<T>> for HostBuffer<T> {
     fn from(vec: Vec<T>) -> Self {
         let ptr = vec.as_ptr() as *mut T;
@@ -1045,6 +1037,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(feature = "device_tests")]
     #[tokio::test]
     async fn device_buffer_copy_from_slice() -> Result<()> {
         let device = Device::new()?;
@@ -1063,6 +1056,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(feature = "device_tests")]
     #[tokio::test]
     async fn device_buffer_serde() -> Result<()> {
         let device = Device::new()?;
@@ -1074,6 +1068,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(feature = "device_tests")]
     async fn fill<T: Scalar>(n: usize, elem: T) -> Result<()> {
         let vec: Vec<T> = (0..n)
             .into_iter()
@@ -1095,6 +1090,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(feature = "device_tests")]
     #[tokio::test]
     async fn fill_u8() -> Result<()> {
         fill(15, 11u8).await?;
@@ -1102,6 +1098,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(feature = "device_tests")]
     #[tokio::test]
     async fn fill_i8() -> Result<()> {
         fill(10, 11u8).await?;
@@ -1109,6 +1106,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(feature = "device_tests")]
     #[tokio::test]
     async fn fill_u16() -> Result<()> {
         fill(10, 11u16).await?;
@@ -1116,6 +1114,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(feature = "device_tests")]
     #[tokio::test]
     async fn fill_i16() -> Result<()> {
         fill(10, 11i16).await?;
@@ -1123,6 +1122,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(feature = "device_tests")]
     #[tokio::test]
     async fn fill_u32() -> Result<()> {
         fill(10, 11u32).await?;
@@ -1130,6 +1130,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(feature = "device_tests")]
     #[tokio::test]
     async fn fill_i32() -> Result<()> {
         fill(10, 11i32).await?;
@@ -1137,6 +1138,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(feature = "device_tests")]
     #[tokio::test]
     async fn fill_f32() -> Result<()> {
         fill(10, 11.11f32).await?;
@@ -1144,6 +1146,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(feature = "device_tests")]
     #[tokio::test]
     async fn fill_u64() -> Result<()> {
         fill(10, 11u64).await?;
@@ -1151,6 +1154,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(feature = "device_tests")]
     #[tokio::test]
     async fn fill_i64() -> Result<()> {
         fill(10, 11i64).await?;
@@ -1158,6 +1162,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(feature = "device_tests")]
     #[tokio::test]
     async fn fill_f64() -> Result<()> {
         fill(10, 11.11f64).await?;

@@ -703,22 +703,13 @@ impl<T: Pod + Debug, S: Data<Elem = T>, D: Dimension> Debug for ReadGuard<S, D> 
 
 #[cfg(test)]
 mod tests {
+    #[allow(unused)]
     use super::*;
 
     async fn tensor_from_array<D: Dimension>(x: Array<u32, D>) -> Result<()> {
-        let device = Device::new()?;
-        let _s = device.acquire().await;
-        let y = TensorView::try_from(x.view())?
-            .into_device(device.clone())
-            .await?
-            .read()
-            .await?;
+        let y = TensorView::try_from(x.view())?.read().await?;
         assert_eq!(x.view(), y.as_array());
-        let y_t = TensorView::try_from(x.t())?
-            .into_device(device)
-            .await?
-            .read()
-            .await?;
+        let y_t = TensorView::try_from(x.t())?.read().await?;
         assert_eq!(x.t(), y_t.as_array());
         Ok(())
     }
@@ -788,10 +779,7 @@ mod tests {
         .await
     }
 
-    #[tokio::test]
-    async fn tensor_serde() -> Result<()> {
-        let device = Device::new()?;
-        let _s = device.acquire().await;
+    async fn tensor_serde(device: Device) -> Result<()> {
         let x = (0..4 * 5 * 6 * 7).into_iter().collect::<Vec<u32>>();
         let array = Array::from(x).into_shape([4, 5, 6, 7])?;
         let tensor = TensorView::try_from(array.view())?
@@ -800,5 +788,18 @@ mod tests {
         let tensor: Tensor4<u32> = bincode::deserialize(&bincode::serialize(&tensor)?)?;
         assert_eq!(array.view(), tensor.read().await?.as_array());
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn tensor_serde_host() -> Result<()> {
+        tensor_serde(Device::host()).await
+    }
+
+    #[cfg(feature = "device_tests")]
+    #[tokio::test]
+    async fn tensor_serde_device() -> Result<()> {
+        let device = Device::new()?;
+        let _s = device.acquire().await;
+        tensor_serde(device).await
     }
 }

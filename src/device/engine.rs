@@ -30,7 +30,7 @@ use gfx_hal::{
     Backend, Features, Instance, MemoryTypeId,
 };
 use hibitset::BitSet;
-use lazy_static::lazy_static;
+use once_cell::sync::Lazy;
 use parking_lot::{
     MappedRwLockReadGuard, Mutex, RwLock, RwLockReadGuard, RwLockUpgradableReadGuard,
     RwLockWriteGuard,
@@ -90,19 +90,13 @@ pub(super) const MAX_ALLOCATION: usize = CHUNK_SIZE as usize;
     feature = "gfx_backend_vulkan",
     windows
 ))]
-lazy_static! {
-    static ref VULKAN_INSTANCE: Mutex<Weak<VulkanInstance>> = Mutex::default();
-}
+static VULKAN_INSTANCE: Lazy<Mutex<Weak<VulkanInstance>>> = Lazy::new(Mutex::default);
 
 #[cfg(any(target_os = "ios", target_os = "macos"))]
-lazy_static! {
-    static ref METAL_INSTANCE: Mutex<Weak<MetalInstance>> = Mutex::default();
-}
+static METAL_INSTANCE: Lazy<Mutex<Weak<MetalInstance>>> = Lazy::new(Mutex::default);
 
 #[cfg(windows)]
-lazy_static! {
-    static ref DX12_INSTANCE: Mutex<Weak<DX12Instance>> = Mutex::default();
-}
+static DX12_INSTANCE: Mutex<Weak<DX12Instance>> = Lazy::new(Mutex::default);
 
 fn create_instance<B: Backend>() -> Option<B::Instance> {
     B::Instance::create("autograph", 1).ok()
@@ -2142,16 +2136,16 @@ impl<B: Backend> Frame<B> {
                         descriptors,
                     });
                     self.command_buffer
-                        .bind_compute_pipeline(&pipeline.compute_pipeline);
+                        .bind_compute_pipeline(pipeline.compute_pipeline);
                     self.command_buffer.bind_compute_descriptor_sets(
-                        &pipeline.pipeline_layout,
+                        pipeline.pipeline_layout,
                         0,
                         once(&descriptor_set),
                         empty(),
                     );
                     if !push_constants.is_empty() {
                         self.command_buffer.push_compute_constants(
-                            &pipeline.pipeline_layout,
+                            pipeline.pipeline_layout,
                             0,
                             bytemuck::cast_slice(&push_constants),
                         );

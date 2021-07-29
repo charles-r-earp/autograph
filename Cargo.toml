@@ -13,13 +13,15 @@ readme = "README.md"
 publish = false
 
 [features]
+default = ["device_tests"]
 derive = ["autograph_derive"]
+# device tests
+device_tests = []
 # requires nightly
 bench = []
 
 [dependencies]
 autograph_derive = { path = "autograph_derive", optional = true }
-#proxy-enum = "0.3.1"
 bytemuck = { version = "1.4.1", features = ["derive"] }
 ndarray = { version = "0.14.0", features = ["approx", "serde"] }
 smol = "1.2.5"
@@ -36,13 +38,12 @@ derive_more = "0.99.11"
 #downloader = "0.2.0"
 #http = "0.2.3"
 #futures-channel = "0.3.11"
-rand = "0.8.2"
+#rand = "0.8.2"
 #futures-util = "0.3.11"
 #indicatif = "0.15.0"
-rand_distr = "0.4.0"
+#rand_distr = "0.4.0"
 #flate2 = "1.0.20"
 #byteorder = "1.4.3"
-lazy_static = "1.4.0"
 #bincode = "1.3.3"
 #futures-core = "0.3.15"
 crossbeam-utils = "0.8.5"
@@ -73,7 +74,7 @@ tokio = { version = "1.8.1", features = ["full"] }
 rspirv = "0.7.0"
 bytemuck = "1.7.0"
 anyhow = "1.0.42"
-lazy_static = "1.4.0"
+once_cell = "1.8.0"
 serde = { version = "1.0.126", features = ["derive"] }
 hibitset = "0.6.3"
 parking_lot = "0.11.1"
