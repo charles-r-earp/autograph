@@ -50,13 +50,14 @@ use crate::result::Result;
 use anyhow::anyhow;
 use derive_more::Display;
 use hibitset::{AtomicBitSet, BitSet};
-use lazy_static::lazy_static;
+use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use std::{
     fmt::{self, Debug},
     mem::size_of,
     sync::Arc,
 };
+//#[cfg(test)]
 
 mod engine;
 use engine::{builders::EngineBuilder, Engine, ReadGuard, ReadGuardFuture, MAX_ALLOCATION};
@@ -71,9 +72,7 @@ use shader::{EntryId, Module, ModuleId};
 const MAX_DEVICE_ID: u32 =
     (size_of::<usize>() * size_of::<usize>() * size_of::<usize>() * size_of::<usize>()) as u32;
 
-lazy_static! {
-    static ref DEVICE_IDS: Mutex<BitSet> = Mutex::default();
-}
+static DEVICE_IDS: Lazy<Mutex<BitSet>> = Lazy::new(Mutex::default);
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct DeviceId(u32);
@@ -664,8 +663,9 @@ impl DeviceBase {
     }
     fn compute_pass(&self, module: &Module, compute_pass: ComputePass) -> DeviceResult<()> {
         debug_assert_eq!(module.id, compute_pass.module);
-        if !self.modules.add_atomic(module.id.0) {
+        if !self.modules.contains(module.id.0) {
             self.engine.module(module)?;
+            self.modules.add_atomic(module.id.0);
         }
         self.engine.compute(compute_pass)
     }
@@ -683,6 +683,9 @@ impl Drop for DeviceBase {
     }
 }
 
+#[cfg(test)]
+static TEST_DEVICE: Lazy<Mutex<Option<Device>>> = Lazy::new(Mutex::default);
+
 /// Device.
 #[derive(Clone)]
 pub struct Device {
@@ -694,12 +697,34 @@ impl Device {
     ///
     /// This is a simple way to get a single device. Use [`.builder_iter()`](Device::builder_iter()) for more control.
     pub fn new() -> Result<Self> {
-        let mut builders: Vec<_> = Self::builder_iter().collect();
-        builders.sort_by_key(|b| b.info().device_type());
-        builders
-            .first()
-            .ok_or_else(|| anyhow!("No device!"))?
-            .build()
+        fn new_impl() -> Result<Device> {
+            let mut builders: Vec<_> = Device::builder_iter().collect();
+            builders.sort_by_key(|b| b.info().device_type());
+            builders
+                .first()
+                .ok_or_else(|| anyhow!("No device!"))?
+                .build()
+        }
+        #[cfg(test)]
+        {
+            let mut guard = TEST_DEVICE.lock();
+            if let Some(device) = guard.as_ref() {
+                return Ok(device.clone());
+            } else {
+                let device = if let Some(name) = option_env!("AUTOGRAPH_TEST_DEVICE") {
+                    Device::builder_iter()
+                        .find(|b| b.info().name() == name)
+                        .ok_or(anyhow!("Device {:?} not found!"))?
+                        .build()?
+                } else {
+                    new_impl()?
+                };
+                guard.replace(device.clone());
+                return Ok(device);
+            }
+        }
+        #[cfg_attr(test, allow(unreachable_code))]
+        new_impl()
     }
     /// Enumerates available [`DeviceBuilder`]'s.
     ///
@@ -712,10 +737,12 @@ impl Device {
     /// use anyhow::anyhow;
     /// // Filter for a Vulkan DiscreteGpu with 4 GB of device memory
     /// let device = Device::builder_iter()
-    ///     .filter(|b| b.info().api() == Api::Vulkan)
-    ///     .filter(|b| b.info().device_type() == DeviceType::DiscreteGpu)
-    ///     .filter(|b| b.info().memory() >= 4_000_000_000)
-    ///     .next()
+    ///     .find(|builder| {
+    ///         let info = builder.info();
+    ///         info.api() == Api::Vulkan
+    ///             && info.device_type() == DeviceType::DiscreteGpu
+    ///             && info.memory() >= 4_000_000_000
+    ///     })
     ///     .ok_or(anyhow!("No valid device!"))?
     ///     .build()?;
     /// # Ok(())

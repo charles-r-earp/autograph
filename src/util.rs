@@ -1,4 +1,8 @@
-use std::{any::TypeId, mem::size_of};
+use std::{
+    any::TypeId,
+    mem::size_of,
+    hint::unreachable_unchecked,
+};
 
 pub(crate) fn elem_type_name<T>() -> &'static str {
     let name = std::any::type_name::<T>();
@@ -13,6 +17,22 @@ pub(crate) fn type_eq<A: 'static, B: 'static>() -> bool {
 
 pub(crate) fn size_eq<A, B>() -> bool {
     size_of::<A>() == size_of::<B>()
+}
+
+pub(crate) trait UnwrapUnchecked {
+    type Output;
+    unsafe fn _unwrap_unchecked(self) -> Self::Output;
+}
+
+impl<T> UnwrapUnchecked for Option<T> {
+    type Output = T;
+    unsafe fn _unwrap_unchecked(self) -> T {
+        debug_assert!(self.is_some());
+        match self {
+            Some(x) => x,
+            None => unreachable_unchecked()
+        }
+    }
 }
 
 #[cfg(test)]

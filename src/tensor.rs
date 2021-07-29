@@ -151,7 +151,8 @@ impl<T> Data for ArcRepr<T> {
         self.0.device()
     }
     fn into_buffer(self) -> Result<Buffer<T>, Self> {
-        todo!()
+        self.0.try_unwrap()
+            .map_err(Self)
     }
     fn into_arc_buffer(self) -> Result<ArcBuffer<T>, Self> {
         Ok(self.0)
@@ -786,7 +787,7 @@ mod tests {
         )?)
         .await
     }
-
+    
     #[tokio::test]
     async fn tensor_serde() -> Result<()> {
         let device = Device::new()?;

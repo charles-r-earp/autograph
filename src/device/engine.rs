@@ -2,7 +2,7 @@ use super::{
     shader::{EntryDescriptor, EntryId, Module, ModuleId, SPECIALIZATION_SIZE},
     Api, BufferHandle, BufferId, ComputePass, DeviceError, DeviceId, DeviceResult, WriteOnly,
 };
-use crate::{result::Result, util::type_eq};
+use crate::{result::Result, util::{type_eq, UnwrapUnchecked as _}};
 use anyhow::{anyhow, bail};
 use crossbeam_channel::{unbounded as unbounded_channel, Receiver, Sender};
 use crossbeam_utils::atomic::AtomicCell;
@@ -28,8 +28,7 @@ use gfx_hal::{
 };
 use hibitset::BitSet;
 use lazy_static::lazy_static;
-use once_cell::sync::OnceCell;
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock, RwLockUpgradableReadGuard, RwLockReadGuard, RwLockWriteGuard, MappedRwLockReadGuard};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     convert::TryFrom,
@@ -42,7 +41,7 @@ use std::{
     panic::{catch_unwind, UnwindSafe},
     ptr::NonNull,
     sync::{
-        atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc, Weak,
     },
     time::Duration,
@@ -510,7 +509,7 @@ engine_methods! {
     pub(super) fn try_write<'a, T, E>(&'a self, buffer: BufferHandle, f: impl FnOnce(WriteOnly<[u8]>)
         -> Result<T, E> + 'a) -> DeviceResult<Result<T, E>>
         where T: 'a, E: 'a {
-        let (storage_slice, mut write_guard_base) = self.allocator().write(self.context(), buffer.id, buffer.offset, buffer.len).unwrap();
+        let (storage_slice, mut write_guard_base) = self.allocator().write(self.context(), buffer.id, buffer.offset, buffer.len)?;
         let t = match f(write_guard_base.write_only()) {
             Ok(t) => t,
             Err(e) => {
@@ -653,59 +652,6 @@ impl BlockRange {
     }
 }
 
-#[derive(Default)]
-struct StorageBlocks {
-    blocks: BitSet,
-}
-
-impl StorageBlocks {
-    fn alloc(&mut self, len: BlockLen) -> Option<BlockId> {
-        let len = len.0;
-        let mut block = 0;
-        let mut end = len;
-        'outer: while end <= BLOCKS {
-            #[allow(clippy::mut_range_bound)]
-            for i in block..end {
-                if self.blocks.contains(i) {
-                    block = i + 1;
-                    end = block + len;
-                    continue 'outer;
-                }
-            }
-            self.blocks.extend(block..end);
-            return Some(BlockId(block));
-        }
-        None
-    }
-    fn dealloc(&mut self, range: BlockRange) {
-        for b in range.block.0..range.block.0 + range.len.0 {
-            debug_assert!(self.blocks.contains(b), "{:?} {} \n{:?}", range, b, self);
-            self.blocks.remove(b);
-        }
-    }
-}
-
-impl Debug for StorageBlocks {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let n = (0..BLOCKS)
-            .into_iter()
-            .rev()
-            .find_map(|i| {
-                if self.blocks.contains(i) {
-                    Some(i + 1)
-                } else {
-                    None
-                }
-            })
-            .unwrap_or(0);
-        let s = (0..n)
-            .into_iter()
-            .map(|i| if self.blocks.contains(i) { '1' } else { '0' })
-            .collect::<String>();
-        f.debug_struct("StorageBlocks").field("blocks", &s).finish()
-    }
-}
-
 #[derive(Debug)]
 struct ChunkBase<B: Backend> {
     buffer: B::Buffer,
@@ -764,28 +710,68 @@ impl<B: Backend> ChunkBase<B> {
     }
 }
 
+#[derive(Default)]
+struct StorageBlocks {
+    blocks: BitSet,
+}
+
+impl StorageBlocks {
+    fn alloc(&mut self, len: BlockLen) -> Option<BlockId> {
+        let len = len.0;
+        let mut block = 0;
+        let mut end = len;
+        'outer: while end <= BLOCKS {
+            #[allow(clippy::mut_range_bound)]
+            for i in block..end {
+                if self.blocks.contains(i) {
+                    block = i + 1;
+                    end = block + len;
+                    continue 'outer;
+                }
+            }
+            self.blocks.extend(block..end);
+            return Some(BlockId(block));
+        }
+        None
+    }
+    fn dealloc(&mut self, range: BlockRange) {
+        for b in range.block.0..range.block.0 + range.len.0 {
+            debug_assert!(self.blocks.contains(b), "{:?} {} \n{:?}", range, b, self);
+            self.blocks.remove(b);
+        }
+    }
+}
+
+impl Debug for StorageBlocks {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let n = (0..BLOCKS)
+            .into_iter()
+            .rev()
+            .find_map(|i| {
+                if self.blocks.contains(i) {
+                    Some(i + 1)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(0);
+        let s = (0..n)
+            .into_iter()
+            .map(|i| if self.blocks.contains(i) { '1' } else { '0' })
+            .collect::<String>();
+        f.debug_struct("StorageBlocks").field("blocks", &s).finish()
+    }
+}
+
 #[derive(Debug)]
 struct StorageChunk<B: Backend> {
-    base: OnceCell<ChunkBase<B>>,
+    base: RwLock<Option<ChunkBase<B>>>,
     blocks: Mutex<StorageBlocks>,
 }
 
 impl<B: Backend> StorageChunk<B> {
-    /*
-    fn init(
-        &self,
-        device: &B::Device,
-        ids: impl Iterator<Item = MemoryTypeId>,
-    ) -> DeviceResult<()> {
-        self.base
-            .get_or_try_init(|| ChunkBase::new_storage(device, ids))?;
-        Ok(())
-    }*/
-    fn initialized(&self) -> bool {
-        self.base.get().is_some()
-    }
     fn try_alloc(&self, len: BlockLen) -> Option<BlockId> {
-        if self.initialized() {
+        if self.base.try_read()?.is_some() {
             self.blocks.try_lock()?.alloc(len)
         } else {
             None
@@ -797,17 +783,22 @@ impl<B: Backend> StorageChunk<B> {
         ids: impl Iterator<Item = MemoryTypeId>,
         len: BlockLen,
     ) -> DeviceResult<Option<BlockId>> {
-        self.base
-            .get_or_try_init(|| ChunkBase::new_storage(device, ids))?;
+        let base = self.base.upgradable_read();
+        if base.is_none() {
+            let mut base = RwLockUpgradableReadGuard::upgrade(base);
+            if base.is_none() {
+                base.replace(ChunkBase::new_storage(device, ids)?);
+            }
+        }
         Ok(self.blocks.lock().alloc(len))
     }
     fn dealloc(&self, range: BlockRange) {
         self.blocks.lock().dealloc(range);
     }
     fn slice(&self, range: BlockRange, offset: u32, len: u32) -> Result<StorageSlice<B>> {
-        let buffer: &B::Buffer = &self
-            .base
-            .get()
+        let base = self.base.try_read()
+            .ok_or_else(|| anyhow!("StorageChunk is not initialized!"))?;
+        let buffer = &base.as_ref()
             .ok_or_else(|| anyhow!("StorageChunk is not initialized!"))?
             .buffer;
         let buffer: &'static B::Buffer = unsafe { transmute(buffer) };
@@ -824,10 +815,13 @@ impl<B: Backend> StorageChunk<B> {
             len,
         })
     }
-    unsafe fn slice_unchecked(&self, block: BlockId, offset: u32, len: u32) -> StorageSlice<B> {
-        let buffer: &B::Buffer = &self.base.get_unchecked().buffer;
+    unsafe fn slice_unchecked(&self, range: BlockRange, offset: u32, len: u32) -> StorageSlice<B> {
+        if cfg!(debug_assertions) {
+            self.slice(range, offset, len).unwrap();
+        }
+        let buffer: &B::Buffer = &(*self.base.data_ptr()).as_ref()._unwrap_unchecked().buffer;
         let buffer: &'static B::Buffer = transmute(buffer);
-        let offset = offset + block.as_offset_bytes();
+        let offset = offset + range.block.as_offset_bytes();
         StorageSlice {
             buffer,
             offset,
@@ -844,70 +838,89 @@ impl<B: Backend> StorageChunk<B> {
 impl<B: Backend> Default for StorageChunk<B> {
     fn default() -> Self {
         Self {
-            base: OnceCell::default(),
+            base: RwLock::default(),
             blocks: Mutex::default(),
         }
     }
 }
 
+#[derive(Copy, Clone, Debug)]
+enum MapKind {
+    Write,
+    Read
+}
+
+use std::sync::atomic::AtomicU32;
+
+
 #[derive(Debug)]
 struct MappingBlocks {
     map: NonNull<u8>,
-    write_blocks: AtomicU32,
-    read_blocks: AtomicU32,
+    state: AtomicCell<OpState>,
+    offset: AtomicU32,
     writers: AtomicUsize,
     readers: AtomicUsize,
-    state: AtomicCell<OpState>,
 }
 
 impl MappingBlocks {
-    fn alloc_write(&self, len: BlockLen) -> Option<BlockId> {
+    fn new(map: NonNull<u8>) -> Self {
+        Self {
+            map,
+            state: AtomicCell::new(OpState::Ready),
+            offset: AtomicU32::default(),
+            writers: AtomicUsize::default(),
+            readers: AtomicUsize::default(),
+        }
+    }
+    fn alloc_impl(&self, len: BlockLen, kind: MapKind) -> Option<BlockId> {
         let len = len.0;
-        self.writers.fetch_add(1, Ordering::Acquire);
-        if self.state.load() == OpState::Ready {
-            let mut block = 0;
-            while block < BLOCKS {
-                match self.write_blocks.compare_exchange(
-                    block,
-                    block + len,
-                    Ordering::SeqCst,
-                    Ordering::SeqCst,
-                ) {
-                    Ok(prev) => {
-                        return Some(BlockId(prev));
+        if self.state.load() == OpState::Ready && self.offset.load(Ordering::SeqCst) + len  <= BLOCKS {
+            let block = self.offset.fetch_add(len, Ordering::SeqCst);
+            if block == 0 /* block + len <= BLOCKS*/ {
+                match kind {
+                    MapKind::Write => {
+                        self.writers.fetch_add(1, Ordering::SeqCst);
                     }
-                    Err(prev) => {
-                        block = prev;
+                    MapKind::Read => {
+                        self.readers.fetch_add(1, Ordering::SeqCst);
                     }
                 }
+                return Some(BlockId(block));
             }
         }
-        self.writers.fetch_sub(1, Ordering::Release);
         None
     }
+    fn alloc_write(&self, len: BlockLen) -> Option<BlockId> {
+        self.alloc_impl(len, MapKind::Write)
+    }
     fn alloc_read(&self, len: BlockLen) -> Option<BlockId> {
-        let len = len.0;
-        self.readers.fetch_add(1, Ordering::Acquire);
-        if self.state.load() == OpState::Ready {
-            let mut block = 0;
-            while block < BLOCKS {
-                match self.read_blocks.compare_exchange(
-                    block,
-                    block + len,
-                    Ordering::SeqCst,
-                    Ordering::SeqCst,
-                ) {
-                    Ok(prev) => {
-                        return Some(BlockId(prev));
-                    }
-                    Err(prev) => {
-                        block = prev;
-                    }
-                }
+        self.alloc_impl(len, MapKind::Read)
+    }
+    fn submit(&self) {
+        self.state.store(OpState::Pending);
+        self.offset.store(BLOCKS, Ordering::SeqCst);
+        while self.writers.load(Ordering::SeqCst) > 0 {
+            std::thread::sleep(Duration::from_nanos(100));
+        }
+    }
+    fn finish(&self) {
+        self.offset.store(0, Ordering::SeqCst);
+        if self.readers.load(Ordering::SeqCst) == 0 {
+            self.state.store(OpState::Ready);
+        } else {
+            self.state.store(OpState::Finished);
+        }
+    }
+    fn drop_write_guard(&self) {
+        self.writers.fetch_sub(1, Ordering::SeqCst);
+    }
+    fn drop_read_guard(&self) {
+        let prev = self.readers.fetch_sub(1, Ordering::SeqCst);
+        if prev == 1 {
+            if self.state.load() == OpState::Finished {
+                self.state.store(OpState::Ready);
             }
         }
-        self.readers.fetch_sub(1, Ordering::Release);
-        None
     }
 }
 
@@ -935,16 +948,10 @@ impl<B: Backend> MappingChunkBase<B> {
             )?
         };
         let map = NonNull::new(map).ok_or(DeviceError::MappingFailed)?;
+        let blocks = MappingBlocks::new(map);
         Ok(Self {
             base,
-            blocks: MappingBlocks {
-                map,
-                write_blocks: AtomicU32::default(),
-                read_blocks: AtomicU32::default(),
-                writers: AtomicUsize::default(),
-                readers: AtomicUsize::default(),
-                state: AtomicCell::new(OpState::Ready),
-            },
+            blocks,
         })
     }
     fn buffer(&self) -> &B::Buffer {
@@ -966,31 +973,31 @@ unsafe impl<B: Backend> Sync for MappingChunkBase<B> {}
 
 #[derive(Debug)]
 struct MappingChunk<B: Backend> {
-    base: OnceCell<MappingChunkBase<B>>,
+    base: RwLock<Option<MappingChunkBase<B>>>,
 }
 
 impl<B: Backend> MappingChunk<B> {
-    /*fn init(
-        &self,
-        device: &B::Device,
-        ids: impl Iterator<Item = MemoryTypeId>,
-    ) -> DeviceResult<()> {
-        self.base
-            .get_or_try_init(|| MappingChunkBase::new(device, ids))?;
-        Ok(())
+    fn get_or_try_init(&self, device: &B::Device, ids: impl Iterator<Item = MemoryTypeId>) -> DeviceResult<MappedRwLockReadGuard<MappingChunkBase<B>>> {
+        let base = self.base.upgradable_read();
+        let base = if base.is_some() {
+            RwLockUpgradableReadGuard::downgrade(base)
+        } else {
+            let mut base = RwLockUpgradableReadGuard::upgrade(base);
+            if base.is_none() {
+                base.replace(MappingChunkBase::new(device, ids)?);
+            }
+            RwLockWriteGuard::downgrade(base)
+        };
+        Ok(RwLockReadGuard::map(base, |base| unsafe { base.as_ref()._unwrap_unchecked() }))
     }
-    fn initialized(&self) -> bool {
-        self.base.get().is_some()
-    }*/
     fn alloc_write(
         &self,
         context: &Arc<Context<B>>,
         ids: impl Iterator<Item = MemoryTypeId>,
         len: u32,
     ) -> DeviceResult<Option<WriteGuardBase<B>>> {
-        let chunk: &MappingChunkBase<B> = self
-            .base
-            .get_or_try_init(|| MappingChunkBase::new(context.device(), ids))?;
+        let chunk = self.get_or_try_init(context.device(), ids)?;
+        let chunk: &MappingChunkBase<B> = chunk.deref();
         let chunk: &'static MappingChunkBase<B> = unsafe { transmute(chunk) };
         let block_len = BlockLen::try_from(len)?;
         if let Some(block) = chunk.alloc_write(block_len) {
@@ -1012,9 +1019,8 @@ impl<B: Backend> MappingChunk<B> {
         ids: impl Iterator<Item = MemoryTypeId>,
         len: u32,
     ) -> DeviceResult<Option<ReadFuture<B>>> {
-        let chunk: &MappingChunkBase<B> = self
-            .base
-            .get_or_try_init(|| MappingChunkBase::new(context.device(), ids))?;
+        let chunk = self.get_or_try_init(context.device(), ids)?;
+        let chunk: &MappingChunkBase<B> = chunk.deref();
         let chunk: &'static MappingChunkBase<B> = unsafe { transmute(chunk) };
         let block_len = BlockLen::try_from(len)?;
         if let Some(block) = chunk.alloc_read(block_len) {
@@ -1040,7 +1046,7 @@ impl<B: Backend> MappingChunk<B> {
 impl<B: Backend> Default for MappingChunk<B> {
     fn default() -> Self {
         Self {
-            base: OnceCell::default(),
+            base: RwLock::default(),
         }
     }
 }
@@ -1253,7 +1259,7 @@ impl<B: Backend> Allocator<B> {
             return Ok((ChunkId(c as u8), block));
         }
         for (c, chunk) in self.storage_chunks.iter().enumerate() {
-            if let Some(block) = chunk.alloc(device, self.storage_ids(), len)? {
+            if let Some(block) = chunk.alloc(device, self.storage_ids(), len).expect(&format!("chunk: {}", c)) {
                 return Ok((ChunkId(c as u8), block));
             }
         }
@@ -1273,7 +1279,7 @@ impl<B: Backend> Allocator<B> {
                 let storage_slice = unsafe {
                     self.storage_chunks
                         .get_unchecked(storage_chunk_id.0 as usize)
-                        .slice_unchecked(storage_range.block, offset, len)
+                        .slice_unchecked(storage_range, offset, len)
                 };
                 return Ok((storage_slice, write_guard));
             }
@@ -1298,7 +1304,7 @@ impl<B: Backend> Allocator<B> {
                 let storage_slice = unsafe {
                     self.storage_chunks
                         .get_unchecked(storage_chunk_id.0 as usize)
-                        .slice_unchecked(storage_range.block, offset, len)
+                        .slice_unchecked(storage_range, offset, len)
                 };
                 return Ok((storage_slice, read_fut));
             }
@@ -1319,7 +1325,7 @@ impl<B: Backend> Allocator<B> {
         unsafe {
             self.storage_chunks
                 .get_unchecked(chunk.0 as usize)
-                .slice_unchecked(range.block, offset, len)
+                .slice_unchecked(range, offset, len)
         }
     }
     fn dealloc(&self, id: BufferId) {
@@ -1405,7 +1411,7 @@ impl<B: Backend> WriteGuardBase<B> {
 
 impl<B: Backend> Drop for WriteGuardBase<B> {
     fn drop(&mut self) {
-        self.chunk.blocks.writers.fetch_sub(1, Ordering::Relaxed);
+        self.chunk.blocks.drop_write_guard();
     }
 }
 
@@ -1440,13 +1446,21 @@ impl<B: Backend> ReadFuture<B> {
         }
     }
     fn read_guard_future(self) -> ReadGuardFuture {
-        ReadGuardFuture {
-            context: self.context.into(),
-            worker_result: self.worker_result,
+        let fut = ReadGuardFuture {
+            context: self.context.clone().into(),
+            worker_result: self.worker_result.clone(),
             blocks: &self.chunk.blocks,
             offset: self.offset,
             len: self.len,
-        }
+        };
+        std::mem::forget(self);
+        fut
+    }
+}
+
+impl<B: Backend> Drop for ReadFuture<B> {
+    fn drop(&mut self) {
+        self.chunk.blocks.drop_read_guard();
     }
 }
 
@@ -1478,23 +1492,23 @@ impl ReadGuardFuture {
                 self.len as usize,
             )
         };
-        Ok(ReadGuard {
+        let read_guard = ReadGuard {
             _context: self.context.clone(),
             blocks: self.blocks,
             slice,
-        })
+        };
+        std::mem::forget(self);
+        Ok(read_guard)
     }
 }
 
 impl Drop for ReadGuardFuture {
     fn drop(&mut self) {
-        let prev = self.blocks.readers.fetch_sub(1, Ordering::SeqCst);
-        if prev == 1 {
-            self.blocks.read_blocks.store(0, Ordering::Relaxed);
-        }
+        self.blocks.drop_read_guard();
     }
 }
 
+#[derive(Clone, Debug)]
 pub(crate) struct ReadGuard {
     _context: DynContext,
     blocks: &'static MappingBlocks,
@@ -1503,11 +1517,7 @@ pub(crate) struct ReadGuard {
 
 impl Drop for ReadGuard {
     fn drop(&mut self) {
-        let prev = self.blocks.readers.fetch_sub(1, Ordering::SeqCst);
-        if prev == 1 {
-            self.blocks.read_blocks.store(0, Ordering::Relaxed);
-            self.blocks.state.store(OpState::Ready);
-        }
+        self.blocks.drop_read_guard();
     }
 }
 
@@ -1602,9 +1612,9 @@ impl<B: Backend> Queue<B> {
         std::thread::Builder::new()
             .name(name)
             .spawn(move || {
-                result.store(
-                    catch_unwind(move || self.run(&done)).unwrap_or(Err(DeviceError::DeviceLost)),
-                );
+                let r = catch_unwind(move || self.run(&done))
+                    .unwrap_or(Err(DeviceError::DeviceLost));
+                result.store(r);
                 exited.store(true, Ordering::Relaxed);
             })
             .unwrap();
@@ -2029,8 +2039,7 @@ struct Frame<B: Backend> {
     descriptor_set_allocator: DescriptorSetAllocator<B>,
     command_buffer: B::CommandBuffer,
     async_writes: Vec<(WriteSlice<B>, ReadGuardFuture)>,
-    write_chunks: HashSet<MappingChunkRef<B>>,
-    read_chunks: HashSet<MappingChunkRef<B>>,
+    mapping_chunks: HashSet<MappingChunkRef<B>>,
     syncs: Vec<Arc<AtomicBool>>,
     ready_to_submit: bool,
 }
@@ -2057,8 +2066,7 @@ impl<B: Backend> Frame<B> {
             descriptor_set_allocator: DescriptorSetAllocator::default(),
             command_buffer,
             async_writes: Vec::new(),
-            write_chunks: HashSet::new(),
-            read_chunks: HashSet::new(),
+            mapping_chunks: HashSet::new(),
             syncs: Vec::new(),
             ready_to_submit: false,
         })
@@ -2074,8 +2082,7 @@ impl<B: Backend> Frame<B> {
     ) -> DeviceResult<Result<(), Op<B>>> {
         match op {
             Op::Module { id, module } => {
-                debug_assert!(!modules.contains_key(&id));
-                modules.insert(id, module);
+                modules.entry(id).or_insert(module);
             }
             Op::Compute {
                 module,
@@ -2213,22 +2220,44 @@ impl<B: Backend> Frame<B> {
                 dst,
                 read_guard_fut,
             } => {
-                self.write_chunks.insert(src.chunk.into());
+                self.mapping_chunks.insert(src.chunk.into());
                 let region = BufferCopy {
                     src: src.offset as u64,
                     dst: dst.offset as u64,
                     size: dst.len as u64,
                 };
                 unsafe {
+                    self.command_buffer.pipeline_barrier(
+                        PipelineStage::COMPUTE_SHADER | PipelineStage::TRANSFER
+                            ..PipelineStage::TRANSFER,
+                        Dependencies::empty(),
+                        once(Barrier::Buffer {
+                            states: State::SHADER_WRITE | State::SHADER_READ | State::TRANSFER_READ
+                                ..State::TRANSFER_WRITE,
+                            target: dst.buffer(),
+                            range: barrier_range(dst.offset, dst.len),
+                            families: None,
+                        }),
+                    );
                     self.command_buffer
                         .copy_buffer(src.buffer(), dst.buffer(), once(region));
+                    self.command_buffer.pipeline_barrier(PipelineStage::TRANSFER
+                            ..PipelineStage::COMPUTE_SHADER | PipelineStage::TRANSFER,
+                        Dependencies::empty(),
+                        once(Barrier::Buffer {
+                            states: State::TRANSFER_WRITE .. State::SHADER_WRITE | State::SHADER_READ | State::TRANSFER_READ,
+                            target: dst.buffer(),
+                            range: barrier_range(dst.offset, dst.len),
+                            families: None,
+                        }),
+                    );
                 }
                 if let Some(fut) = read_guard_fut {
                     self.async_writes.push((src, fut));
                 }
             }
             Op::Read { src, dst } => {
-                self.read_chunks.insert(dst.chunk.into());
+                self.mapping_chunks.insert(dst.chunk.into());
                 let region = BufferCopy {
                     src: src.offset as u64,
                     dst: dst.offset as u64,
@@ -2252,7 +2281,6 @@ impl<B: Backend> Frame<B> {
                 }
             }
             Op::Sync { finished } => {
-                // TODO: Avoid unnecssary sync when empty
                 self.syncs.push(finished);
             }
         }
@@ -2261,17 +2289,17 @@ impl<B: Backend> Frame<B> {
     }
     fn poll(&mut self, device: &B::Device) -> DeviceResult<bool> {
         if unsafe { device.get_fence_status(&self.fence)? } {
+            for chunk in take(&mut self.mapping_chunks) {
+                chunk.blocks.finish();
+            }
+            for sync in take(&mut self.syncs) {
+                sync.store(true, Ordering::SeqCst);
+            }
             unsafe {
                 self.command_buffer.reset(false);
                 self.command_buffer
                     .begin_primary(CommandBufferFlags::ONE_TIME_SUBMIT);
                 self.descriptor_set_allocator.reset();
-            }
-            for read_chunk in take(&mut self.read_chunks) {
-                read_chunk.blocks.state.store(OpState::Finished);
-            }
-            for sync in take(&mut self.syncs) {
-                sync.store(true, Ordering::SeqCst);
             }
             Ok(true)
         } else {
@@ -2287,19 +2315,6 @@ impl<B: Backend> Frame<B> {
         unsafe {
             device.reset_fence(&mut self.fence)?;
         }
-        for write_chunk in self.write_chunks.iter() {
-            let blocks = &write_chunk.blocks;
-            blocks.write_blocks.store(BLOCKS, Ordering::Release);
-            while blocks.writers.load(Ordering::Acquire) > 0 {
-                std::thread::sleep(Duration::from_nanos(100));
-            }
-        }
-        for read_chunk in self.read_chunks.iter() {
-            read_chunk
-                .blocks
-                .read_blocks
-                .store(BLOCKS, Ordering::Relaxed);
-        }
         let wait_iter = previous
             .map(|f| {
                 (
@@ -2309,23 +2324,18 @@ impl<B: Backend> Frame<B> {
             })
             .into_iter();
         unsafe {
-            //let finish = Instant::now();
             self.command_buffer.finish();
-            //dbg!(finish.elapsed());
-            //let submit = Instant::now();
+        }
+        for chunk in self.mapping_chunks.iter() {
+            chunk.blocks.submit();
+        }
+        unsafe {
             queue.submit(
                 once(&self.command_buffer),
                 wait_iter,
                 once(&self.semaphore),
                 Some(&mut self.fence),
             );
-            //dbg!(submit.elapsed());
-            //let run = Instant::now();
-            //queue.wait_idle()?;
-            //dbg!(run.elapsed());
-        }
-        for read_chunk in self.read_chunks.iter() {
-            read_chunk.blocks.state.store(OpState::Pending);
         }
         self.ready_to_submit = false;
         Ok(())

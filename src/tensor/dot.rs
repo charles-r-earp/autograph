@@ -44,8 +44,8 @@ fn gemm_impl<T: Scalar>(
 
     // Patch for custom 16 bit ops
     // If 16 bit is supported then this is unnecessary
-    if size_eq::<T, u16>() && acc {
-        todo!(); // c.fill(T::zero())?;
+    if size_eq::<T, u16>() && !acc {
+        c.as_raw_slice_mut().fill(T::default())?;
     }
 
     let name = format!(
