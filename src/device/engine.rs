@@ -2024,7 +2024,12 @@ impl<B: Backend> DescriptorSetAllocator<B> {
     }
 }
 
-fn descriptor_range(offset: u32, mut len: u32) -> SubRange {
+#[allow(unused_mut)]
+fn descriptor_range<B: Backend>(mut offset: u32, mut len: u32) -> SubRange {
+    #[cfg(windows)]
+    if type_eq::<B, DX12>() {
+        offset /= 4;
+    }
     if len % 4 > 0 {
         len += 4 - len % 4;
     }
@@ -2126,7 +2131,7 @@ impl<B: Backend> Frame<B> {
                 let descriptors = args.iter().map(|arg| {
                     Descriptor::Buffer(
                         arg.slice.buffer(),
-                        descriptor_range(arg.slice.offset, arg.slice.len),
+                        descriptor_range::<B>(arg.slice.offset, arg.slice.len),
                     )
                 });
                 unsafe {
@@ -2156,6 +2161,10 @@ impl<B: Backend> Frame<B> {
                             State::TRANSFER_WRITE | State::SHADER_WRITE..State::SHADER_READ;
                         if arg.mutable {
                             states.start |= State::TRANSFER_READ | State::SHADER_READ;
+                        }
+                        // TODO: This prevents a failure on DX12, but likely at a performance cost
+                        // since reads can't be concurrent.
+                        if arg.mutable || type_eq::<B, DX12>() {
                             states.end |= State::SHADER_WRITE;
                         }
                         Barrier::Buffer {

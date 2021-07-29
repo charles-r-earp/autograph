@@ -707,6 +707,7 @@ mod tests {
 
     async fn tensor_from_array<D: Dimension>(x: Array<u32, D>) -> Result<()> {
         let device = Device::new()?;
+        let _s = device.acquire().await;
         let y = TensorView::try_from(x.view())?
             .into_device(device.clone())
             .await?
@@ -790,6 +791,7 @@ mod tests {
     #[tokio::test]
     async fn tensor_serde() -> Result<()> {
         let device = Device::new()?;
+        let _s = device.acquire().await;
         let x = (0..4 * 5 * 6 * 7).into_iter().collect::<Vec<u32>>();
         let array = Array::from(x).into_shape([4, 5, 6, 7])?;
         let tensor = TensorView::try_from(array.view())?

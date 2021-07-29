@@ -1048,6 +1048,7 @@ mod tests {
     #[tokio::test]
     async fn device_buffer_copy_from_slice() -> Result<()> {
         let device = Device::new()?;
+        let _s = device.acquire().await;
         let mut a = Slice::from([0; 4].as_ref())
             .into_device(device.clone())
             .await?;
@@ -1065,6 +1066,7 @@ mod tests {
     #[tokio::test]
     async fn device_buffer_serde() -> Result<()> {
         let device = Device::new()?;
+        let _s = device.acquire().await;
         let x = [1u32, 2, 3, 4];
         let buffer = Slice::from(x.as_ref()).into_device(device.clone()).await?;
         let buffer: Buffer<u32> = bincode::deserialize(&bincode::serialize(&buffer)?)?;
@@ -1078,6 +1080,7 @@ mod tests {
             .map(|n| T::from_usize(n).unwrap())
             .collect();
         let device = Device::new()?;
+        let _s = device.acquire().await;
         let mut y = Slice::from(vec.as_slice())
             .into_device(device.clone())
             .await?;

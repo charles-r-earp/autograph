@@ -52,12 +52,13 @@ use derive_more::Display;
 use hibitset::{AtomicBitSet, BitSet};
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
+#[cfg(test)]
+use smol::lock::{Semaphore, SemaphoreGuard};
 use std::{
     fmt::{self, Debug},
     mem::size_of,
     sync::Arc,
 };
-//#[cfg(test)]
 
 mod engine;
 use engine::{builders::EngineBuilder, Engine, ReadGuard, ReadGuardFuture, MAX_ALLOCATION};
@@ -684,7 +685,10 @@ impl Drop for DeviceBase {
 }
 
 #[cfg(test)]
-static TEST_DEVICE: Lazy<Mutex<Option<Device>>> = Lazy::new(Mutex::default);
+static TEST_DEVICE: Mutex<Option<Device>> = parking_lot::const_mutex(None);
+
+#[cfg(test)]
+static TEST_DEVICE_SEMAPHORE: Semaphore = Semaphore::new(4);
 
 /// Device.
 #[derive(Clone)]
@@ -783,6 +787,10 @@ impl Device {
             base.sync().await?;
         }
         Ok(())
+    }
+    #[cfg(test)]
+    pub(crate) async fn acquire(&self) -> SemaphoreGuard<'static> {
+        TEST_DEVICE_SEMAPHORE.acquire().await
     }
 }
 

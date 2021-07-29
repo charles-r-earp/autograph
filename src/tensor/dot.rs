@@ -167,6 +167,7 @@ mod tests {
     macro_rules! tensor_dot {
         ($t1:ty, $t2:tt, $args:expr) => {{
             let device = Device::new()?;
+            let _s = device.acquire().await;
             let (m, k, n, a_t, b_t) = $args;
             let dim1 = match a_t {
                 Transpose::N => [m, k],
@@ -287,6 +288,7 @@ mod tests {
                     #[bench]
                     fn $name (bencher: &mut Bencher) {
                         let device = Device::new().unwrap();
+                        let _s = device.acquire().await;
                         let (m, k, n, a_t, b_t) = $args;
                         let dim1 = match a_t {
                             Transpose::N => [m, k],
