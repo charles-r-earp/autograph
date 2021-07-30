@@ -20,7 +20,7 @@ jobs:
             features: host_full
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            features: foll
+            features: full
           - os: macos-latest
             target: x86_64-apple-darwin
             features: host_full
