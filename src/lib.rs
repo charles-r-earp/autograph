@@ -35,16 +35,22 @@ pub mod error {
 }
 /// Device level backend.
 pub mod device;
+#[cfg(feature = "tensor")]
 mod glsl_shaders;
+/// Linear Algebra.
+mod linalg;
 /// Numerical operations.
-pub mod ops;
+mod ops;
 mod rust_shaders;
 /// Scalar types.
 pub mod scalar;
 /// Tensors.
+#[cfg(feature = "tensor")]
 pub mod tensor;
 mod util;
 
-/*/// Machine Learning
-mod learn;
-*/
+/// Datasets.
+pub mod dataset;
+
+/// Machine Learning.
+pub mod learn;

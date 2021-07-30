@@ -1,71 +1,124 @@
-use crate::{
-    result::Result,
-};
-use rand::{thread_rng, seq::SliceRandom};
+use crate::result::Result;
+#[cfg(feature = "tensor")]
+use crate::tensor::{ArcTensor1, ArcTensor2};
+#[cfg(feature = "Serde")]
+use serde::{Deserialize, Serialize};
+
 use std::{
-    ops::Range,
+    iter::empty,
+    time::{Duration, Instant},
 };
 
-#[derive(Default, Clone, Copy, Debug)]
-struct Stats {
-    mean_loss: Option<f32>,
-    correct: Option<usize>,
-    len: usize,
+trait Infer<X> {
+    type Output;
+    fn infer(&self, input: X) -> Result<Self::Output>;
 }
 
-trait Infer<X, Y> {
-    fn infer(&self, input: X) -> Result<Y>;
-}
-
-trait Test<B> {
-    fn test<I>(&self, input_iter: I) -> Result<Stats>
-        where I: IntoIterator<Item=Result<B>>;
-}
-
-trait Train<B>: Test<B> {
-    fn train<I>(&mut self, input_iter: I) -> Result<Stats>
-        where I: IntoIterator<Item=Result<B>>;
-}
-
-trait Fit<B>: Train<B> {
+#[cfg(feature = "tensor")]
+trait Classify<X> {
+    // May change to dynamic types id FloatArcTensor2.
+    fn classify<F>(input: X) -> Result<ArcTensor2<F>>;
     #[allow(unused)]
-    fn init<S: Dataset<Item=B>>(&mut self, dataset: &S) -> Result<()> {
-        Ok(())
-    }
-    fn fit<S>(&mut self, dataset: &S, batch_size: usize, test_ratio: f32) -> Result<(Stats, Stats)>
-        where S: Dataset<Item=B> {
-        let test_len = (dataset.len() as f32 * test_ratio).round() as usize;
-        let train_len = dataset.len() - test_len;
-        self.init(dataset)?; // <-- need to limit length, ie slice the dataset
-        let mut train_indices = (0 .. train_len).into_iter().collect::<Vec<_>>();
-        train_indices.shuffle(&mut thread_rng());
-        let train_stats = self.train(dataset.batches(Indices::Vec(train_indices), batch_size)?)?;
-        let test_stats = if test_len > 0 {
-            self.test(dataset.batches(Indices::Range(train_len .. dataset.len()), batch_size)?)?
-        } else {
-            Stats::default()
-        };
-        Ok((train_stats, test_stats))
+    fn predict<U>(input: X) -> Result<ArcTensor1<U>> {
+        todo!()
     }
 }
 
-enum Indices {
-    Range(Range<usize>),
-    Vec(Vec<usize>),
+/// Training / Testing statistics.
+#[derive(Default, Clone, Copy, Debug)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct Stats {
+    count: usize,
+    loss: Option<f32>,
+    correct: Option<usize>,
 }
 
-trait Dataset {
-    type Item;
-    type Iter: Iterator<Item=Result<Self::Item>>;
-    fn sample(&self, indices: Indices) -> Result<Self::Item>;
-    fn batches(&self, indices: Indices, batch_size: usize) -> Result<Self::Iter>;
-    fn len(&self) -> usize;
-    fn is_empty(&self) -> bool {
-        self.len() == 0
+/// Summary of training.
+#[derive(Default, Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct Summary {
+    epoch: usize,
+    epoch_time: Duration,
+    total_time: Duration,
+    train: Stats,
+    test: Stats,
+}
+
+impl Summary {
+    /// Runs an epoch with `f`.
+    ///
+    /// Times `f`. If `f` returns `Ok`, updates the epoch time and accumulates the total time and the epoch. Otherwise returns the error.
+    pub fn run_epoch<F>(&mut self, mut f: F) -> Result<(Stats, Stats)>
+    where
+        F: FnMut(&Self) -> Result<(Stats, Stats)>,
+    {
+        let start = Instant::now();
+        let (train, test) = f(self)?;
+        self.epoch_time = start.elapsed();
+        self.total_time += self.epoch_time;
+        self.epoch += 1;
+        self.train = train;
+        self.test = test;
+        Ok((train, test))
     }
 }
 
-trait Batches<I, B> {
-    type Iter: Iterator<Item=Result<B>>;
-    fn batches(&self, indices: I, batch_size: usize) -> Result<Self::Iter>;
+/// Summerizes the trainer.
+pub trait Summarize {
+    /// Returns a summary.
+    fn summarize(&self) -> Summary;
+}
+
+/// Training.
+///
+/// [`Train`] is a general purpose trait for machine learning "trainers" that train a model, potentially iteratively with several "epochs". [`.train()`](Train::train()) trains the model
+///
+/// # Summary
+/// Implement [`Summarize`], as the trainer is expected to compute a summary on each call to [`.train()`](Train::train()). Use [`Summary::run_epoch()`] to compute the next summary.
+///
+/// # Test
+/// Implement [`Test`] so that the model can be tested without exclusive access.
+///
+/// # serde
+/// Implement [`Serialize`](serde::Serialize) and [`Deserialize`](serde::Deserialize) for saving and loading checkpoints.
+pub trait Train<X> {
+    /// Trains the model with the training and testing sets.
+    ///
+    /// Returns (`train_stats`, `test_stats`).
+    ///
+    /// **Errors**
+    /// Returns an error if training / testing could not be performed. The trainer may be modified even when returning an error.
+    fn train_test<I1, I2>(&mut self, train_iter: I1, test_iter: I2) -> Result<(Stats, Stats)>
+    where
+        I1: IntoIterator<Item = X>,
+        I2: IntoIterator<Item = X>;
+    /// Trains the model with the training set.
+    ///
+    /// Returns the training stats.
+    ///
+    /// **Errors**
+    /// Returns an error if training could not be performed. The trainer may be modified even when returning an error.
+    fn train<I>(&mut self, train_iter: I) -> Result<Stats>
+    where
+        I: IntoIterator<Item = X>,
+    {
+        Ok(self.train_test(train_iter, empty())?.0)
+    }
+}
+
+/// Testing / Evaluation.
+///
+/// [`Test`] is a general purpose trait for testing / evaluating a trainer / model.
+pub trait Test<X> {
+    /// Tests the model with the test data.
+    ///
+    /// Unlike [`Train::train_test()`], this method does not require mutable (exclusive) access. This may be useful for evaluating the model on a large dataset, since it can be run in parallel (ie with [rayon](https://docs.rs/rayon/rayon/)).
+    ///
+    /// Returns the testing stats.
+    ///
+    /// **Errors**
+    /// Returns an error if testing could not be performed.
+    fn test<I>(&self, test_iter: I) -> Result<Stats>
+    where
+        I: IntoIterator<Item = X>;
 }

@@ -13,17 +13,25 @@ readme = "README.md"
 publish = false
 
 [features]
-default = ["device_tests"]
+# derive macros
 derive = ["autograph_derive"]
 # device tests
 device_tests = []
-# requires nightly
+# benchmarks, requires nightly
 bench = []
+# tensors
+tensor = ["ndarray"]
+# iris dataset
+iris = ["ndarray"]
+# all features except device tests
+host_full = ["tensor", "iris", "derive"]
+# all features
+full = ["host_full", "device_tests"]
 
 [dependencies]
 autograph_derive = { path = "autograph_derive", optional = true }
 bytemuck = { version = "1.4.1", features = ["derive"] }
-ndarray = { version = "0.14.0", features = ["approx", "serde"] }
+ndarray = { version = "0.14.0", features = ["approx", "serde"], optional = true }
 smol = "1.2.5"
 rspirv = "0.7.0"
 serde = { version = "1.0.126", features = ["derive", "rc"] }
@@ -34,13 +42,7 @@ hibitset = "0.6.3"
 anyhow = "1.0.37"
 thiserror = "1.0.23"
 derive_more = "0.99.11"
-#dirs = "3.0.1"
-#downloader = "0.2.0"
-#http = "0.2.3"
-#futures-channel = "0.3.11"
-#rand = "0.8.2"
-#futures-util = "0.3.11"
-#indicatif = "0.15.0"
+rand = { version = "0.8.2", optional = true }
 #rand_distr = "0.4.0"
 #flate2 = "1.0.20"
 #byteorder = "1.4.3"
@@ -67,7 +69,6 @@ gfx-backend-dx12 = "0.9.0"
 
 [dev-dependencies]
 approx = "0.4.0"
-#criterion = "0.3.3"
 tokio = { version = "1.8.1", features = ["full"] }
 
 [build-dependencies]

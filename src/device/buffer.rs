@@ -656,6 +656,7 @@ impl<T, S: Data<Elem = T>> BufferBase<S> {
         self.len() == 0
     }
     // Gets a vec when on the host
+    #[cfg(feature = "tensor")]
     pub(crate) fn into_vec(self) -> Option<Vec<T>>
     where
         T: Copy,

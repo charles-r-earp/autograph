@@ -29,7 +29,7 @@ mod sealed {
 }
 use sealed::Sealed;
 
-mod dot;
+mod linalg;
 
 /// Marker trait for TensorBase representation.
 ///
