@@ -2161,12 +2161,15 @@ impl<B: Backend> Frame<B> {
                             State::TRANSFER_WRITE | State::SHADER_WRITE..State::SHADER_READ;
                         if arg.mutable {
                             states.start |= State::TRANSFER_READ | State::SHADER_READ;
+                            states.end |= State::SHADER_WRITE;
                         }
                         // TODO: This prevents a failure on DX12, but likely at a performance cost
                         // since reads can't be concurrent.
-                        if arg.mutable || type_eq::<B, DX12>() {
+                        #[cfg(windows)]
+                        if type_eq::<B, DX12>() {
                             states.end |= State::SHADER_WRITE;
                         }
+
                         Barrier::Buffer {
                             states,
                             target: arg.slice.buffer(),
