@@ -12,10 +12,9 @@ use crate::{
 };
 use anyhow::{anyhow, bail};
 use bytemuck::Pod;
-use ndarray::{Array, ArrayBase, ArrayView, RawArrayView};
-pub use ndarray::{
-    Axis, Dimension, IntoDimension, Ix, Ix0, Ix1, Ix2, Ix3, Ix4, Ix5, Ix6, IxDyn, RemoveAxis,
-    ShapeBuilder, StrideShape,
+use ndarray::{
+    Array, ArrayBase, ArrayView, Dimension, IntoDimension, Ix0, Ix1, Ix2, Ix3, Ix4, Ix5, Ix6,
+    IxDyn, RawArrayView, ShapeBuilder, StrideShape,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -24,23 +23,51 @@ use std::{
     mem::transmute,
 };
 
-mod sealed {
-    pub trait Sealed {}
-}
-use sealed::Sealed;
-
 mod linalg;
+
+mod sealed {
+    use super::Device;
+
+    pub trait DataBase {
+        #[doc(hidden)]
+        fn device(&self) -> Device;
+        fn len(&self) -> usize;
+        #[doc(hidden)]
+        fn is_empty(&self) -> bool {
+            self.len() == 0
+        }
+    }
+}
+pub(crate) use sealed::DataBase;
+
+macro_rules! impl_data_base {
+    ($($data:ident $(<$a:lifetime>)?),+) => {
+        $(
+            impl<T> DataBase for $data <$($a,)? T> {
+                fn device(&self) -> Device {
+                    self.0.device()
+                }
+                fn len(&self) -> usize {
+                    self.0.len()
+                }
+                fn is_empty(&self) -> bool {
+                    self.0.is_empty()
+                }
+            }
+        )+
+    };
+}
+
+impl_data_base! {OwnedRepr, ArcRepr, ViewRepr<'_>, ViewMutRepr<'_>, CowRepr<'_>}
 
 /// Marker trait for TensorBase representation.
 ///
 /// Typically use [`Tensor'] / [`ArcTensor`] / [`TensorView`] / [`TensorViewMut`] / [`CowTensor`] types directly.
-pub trait Data: Sized + Sealed {
+pub trait Data: Sized + DataBase {
     /// Element type of the tensor.
     type Elem;
     #[doc(hidden)]
-    fn device(&self) -> Device;
-    #[doc(hidden)]
-    fn into_buffer(self) -> Result<Buffer<Self::Elem>, Self> {
+    fn try_into_buffer(self) -> Result<Buffer<Self::Elem>, Self> {
         Err(self)
     }
     #[doc(hidden)]
@@ -48,33 +75,27 @@ pub trait Data: Sized + Sealed {
     where
         Self::Elem: Copy,
     {
-        match self.into_buffer() {
+        match self.try_into_buffer() {
             Ok(buffer) => Ok(OwnedRepr(buffer)),
             Err(this) => Ok(OwnedRepr(this.as_slice().to_owned()?)),
         }
     }
     #[doc(hidden)]
-    fn into_arc_buffer(self) -> Result<ArcBuffer<Self::Elem>, Self> {
-        self.into_buffer().map(Into::into)
+    fn try_into_arc_buffer(self) -> Result<ArcBuffer<Self::Elem>, Self> {
+        self.try_into_buffer().map(Into::into)
     }
     #[doc(hidden)]
     fn into_shared(self) -> Result<ArcRepr<Self::Elem>>
     where
         Self::Elem: Copy,
     {
-        match self.into_arc_buffer() {
+        match self.try_into_arc_buffer() {
             Ok(buffer) => Ok(ArcRepr(buffer)),
             Err(this) => Ok(ArcRepr(this.as_slice().to_owned()?.into())),
         }
     }
     #[doc(hidden)]
     fn as_slice(&self) -> Slice<Self::Elem>;
-    #[doc(hidden)]
-    fn len(&self) -> usize;
-    #[doc(hidden)]
-    fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
 }
 
 /// Marker trait for owned tensors [`Tensor`] / [`ArcTensor`] / [`CowTensor`].
@@ -89,6 +110,7 @@ pub trait DataMut: Data {
     fn as_slice_mut(&mut self) -> SliceMut<Self::Elem>;
 }
 
+/*
 /// Marker trait for potentially mutable tensors [`Tensor`] / [`TensorViewMut`] / ['ArcTensor`] / ['CowTensor`].
 pub trait DataTryMut: Data {
     #[doc(hidden)]
@@ -96,6 +118,7 @@ pub trait DataTryMut: Data {
     #[doc(hidden)]
     fn make_mut(&mut self) -> Result<SliceMut<Self::Elem>>;
 }
+*/
 
 /// Tensor representation.
 #[derive(Debug, Serialize, Deserialize)]
@@ -105,21 +128,14 @@ pub trait DataTryMut: Data {
 ))]
 pub struct OwnedRepr<T>(Buffer<T>);
 
-impl<T> Sealed for OwnedRepr<T> {}
-
 impl<T> Data for OwnedRepr<T> {
     type Elem = T;
-    fn device(&self) -> Device {
-        self.0.device()
-    }
-    fn into_buffer(self) -> Result<Buffer<T>, Self> {
+
+    fn try_into_buffer(self) -> Result<Buffer<T>, Self> {
         Ok(self.0)
     }
     fn as_slice(&self) -> Slice<T> {
         self.0.as_slice()
-    }
-    fn len(&self) -> usize {
-        self.0.len()
     }
 }
 
@@ -143,24 +159,16 @@ impl<T> DataMut for OwnedRepr<T> {
 ))]
 pub struct ArcRepr<T>(ArcBuffer<T>);
 
-impl<T> Sealed for ArcRepr<T> {}
-
 impl<T> Data for ArcRepr<T> {
     type Elem = T;
-    fn device(&self) -> Device {
-        self.0.device()
-    }
-    fn into_buffer(self) -> Result<Buffer<T>, Self> {
+    fn try_into_buffer(self) -> Result<Buffer<T>, Self> {
         self.0.try_unwrap().map_err(Self)
     }
-    fn into_arc_buffer(self) -> Result<ArcBuffer<T>, Self> {
+    fn try_into_arc_buffer(self) -> Result<ArcBuffer<T>, Self> {
         Ok(self.0)
     }
     fn as_slice(&self) -> Slice<T> {
         self.0.as_slice()
-    }
-    fn len(&self) -> usize {
-        self.0.len()
     }
 }
 
@@ -171,22 +179,14 @@ impl<T> DataOwned for ArcRepr<T> {
 }
 
 /// TensorView representation.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(bound = "T: Pod + Serialize")]
 pub struct ViewRepr<'a, T>(Slice<'a, T>);
 
-impl<T> Sealed for ViewRepr<'_, T> {}
-
 impl<T> Data for ViewRepr<'_, T> {
     type Elem = T;
-    fn device(&self) -> Device {
-        self.0.device()
-    }
     fn as_slice(&self) -> Slice<T> {
         self.0.as_slice()
-    }
-    fn len(&self) -> usize {
-        self.0.len()
     }
 }
 
@@ -195,24 +195,36 @@ impl<T> Data for ViewRepr<'_, T> {
 #[serde(bound = "T: Pod + Serialize")]
 pub struct ViewMutRepr<'a, T>(SliceMut<'a, T>);
 
-impl<T> Sealed for ViewMutRepr<'_, T> {}
-
 impl<T> Data for ViewMutRepr<'_, T> {
     type Elem = T;
-    fn device(&self) -> Device {
-        self.0.device()
-    }
     fn as_slice(&self) -> Slice<T> {
         self.0.as_slice()
-    }
-    fn len(&self) -> usize {
-        self.0.len()
     }
 }
 
 impl<T> DataMut for ViewMutRepr<'_, T> {
     fn as_slice_mut(&mut self) -> SliceMut<T> {
         self.0.as_slice_mut()
+    }
+}
+
+/// CowTensor representation.
+#[derive(Debug)]
+pub struct CowRepr<'a, T>(CowBuffer<'a, T>);
+
+impl<T> Data for CowRepr<'_, T> {
+    type Elem = T;
+    fn as_slice(&self) -> Slice<T> {
+        self.0.as_slice()
+    }
+    fn try_into_buffer(self) -> Result<Buffer<T>, Self> {
+        self.0.try_unwrap().map_err(Self)
+    }
+}
+
+impl<T> DataOwned for CowRepr<'_, T> {
+    fn from_buffer(buffer: Buffer<T>) -> Self {
+        Self(buffer.into())
     }
 }
 
@@ -229,19 +241,59 @@ where
     strides
 }
 
-fn dim_strides_from_shape<D: Dimension>(shape: impl Into<StrideShape<D>>) -> (D, D) {
+// pub(crate) for FloatTensor
+pub(crate) fn dim_strides_from_shape<D: Dimension>(shape: impl Into<StrideShape<D>>) -> (D, D) {
     let array = unsafe { RawArrayView::from_shape_ptr(shape, &()) };
     let dim = array.raw_dim();
     let strides = strides_from_array(&array);
     (dim, strides)
 }
 
+pub(crate) fn into_dimensionality<D1, D2>(dim: &D1, strides: &D1) -> Result<(D2, D2)>
+where
+    D1: Dimension,
+    D2: Dimension,
+{
+    D2::from_dimension(dim)
+        .and_then(|dim| D2::from_dimension(strides).map(|strides| (dim, strides)))
+        .ok_or_else(|| {
+            let strides = bytemuck::cast_slice::<_, isize>(strides.slice());
+            anyhow!(
+                "Incompatible Shapes! {:?} {:?} => {:?}",
+                dim.slice(),
+                strides,
+                D2::NDIM
+            )
+        })
+}
+
+pub(crate) fn into_shape<D1, E>(dim: &D1, strides: &D1, shape: E) -> Result<(E::Dim, E::Dim)>
+where
+    D1: Dimension,
+    E: IntoDimension,
+{
+    let shape = shape.into_dimension();
+    // TODO potentially handle Fotran layout
+    if shape.size() == dim.size() && strides == &dim.default_strides() {
+        let strides = shape.default_strides();
+        Ok((shape, strides))
+    } else {
+        Err(anyhow!(
+            "Incompatible Shapes! {:?} {:?} => {:?}",
+            dim.slice(),
+            strides,
+            shape.slice()
+        ))
+    }
+}
+
 /// Multi-dimensional matrix
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TensorBase<S: Data, D: Dimension> {
-    dim: D,
-    strides: D,
-    data: S,
+    // pub(crate) here for easy conversions to / from FloatTensorBase
+    pub(crate) dim: D,
+    pub(crate) strides: D,
+    pub(crate) data: S,
 }
 
 /// Owned Tensor
@@ -328,17 +380,26 @@ pub type TensorViewMut6<'a, T> = TensorViewMut<'a, T, Ix6>;
 /// TensorViewMut with dynamic dimensions
 pub type TensorViewMutD<'a, T> = TensorViewMut<'a, T, IxDyn>;
 
-/*
+/// Tensor that is either borrowed or owned.
+///
+/// See [`TensorBase`].
 pub type CowTensor<'a, T, D> = TensorBase<CowRepr<'a, T>, D>;
+/// CowTensor with 1 element
 pub type CowTensor0<'a, T> = CowTensor<'a, T, Ix0>;
+/// CowTensor with 1 dimension
 pub type CowTensor1<'a, T> = CowTensor<'a, T, Ix1>;
+/// CowTensor with 2 dimensions
 pub type CowTensor2<'a, T> = CowTensor<'a, T, Ix2>;
+/// CowTensor with 3 dimensions
 pub type CowTensor3<'a, T> = CowTensor<'a, T, Ix3>;
+/// CowTensor with 4 dimensions
 pub type CowTensor4<'a, T> = CowTensor<'a, T, Ix4>;
+/// CowTensor with 5 dimensions
 pub type CowTensor5<'a, T> = CowTensor<'a, T, Ix5>;
+/// CowTensor with 6 dimensions
 pub type CowTensor6<'a, T> = CowTensor<'a, T, Ix6>;
+/// CowTensor with dynamic dimensions
 pub type CowTensorD<'a, T> = CowTensor<'a, T, IxDyn>;
-*/
 
 impl<T, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     /// Allocates a tensor on `device` with `shape`.
@@ -428,6 +489,13 @@ impl<T, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     where
         D2: Dimension,
     {
+        let (dim, strides) = into_dimensionality(&self.dim, &self.strides)?;
+        Ok(TensorBase {
+            dim,
+            strides,
+            data: self.data,
+        })
+        /*
         if let Some(dim) = D2::from_dimension(&self.dim) {
             if let Some(strides) = D2::from_dimension(&self.strides) {
                 return Ok(TensorBase {
@@ -443,7 +511,7 @@ impl<T, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
             self.shape(),
             strides,
             D2::NDIM
-        ))
+        ))*/
     }
     /// Returns the tensor with dim `shape`.
     ///
@@ -453,6 +521,13 @@ impl<T, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     where
         E: IntoDimension,
     {
+        let (dim, strides) = into_shape(&self.dim, &self.strides, shape)?;
+        Ok(TensorBase {
+            dim,
+            strides,
+            data: self.data,
+        })
+        /*
         let dim = shape.into_dimension();
         // TODO potentially handle Fotran layout
         if self.dim.size() == dim.size() && self.strides == self.dim.default_strides() {
@@ -464,6 +539,7 @@ impl<T, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
             });
         }
         Err(anyhow!("Incompatible Shapes!"))
+        */
     }
     /// Converts the dimensionality of the tensor to [`IxDyn`](type@ndarray::IxDyn).
     pub fn into_dyn(self) -> TensorBase<S, IxDyn> {
@@ -682,7 +758,7 @@ impl<T: Pod, S: Data<Elem = T>, D: Dimension> ReadGuard<S, D> {
     }
     /// Converts into an [`Array`], potentially copying.
     pub fn into_array(self) -> Array<T, D> {
-        if let Ok(buffer) = self.data.into_buffer() {
+        if let Ok(buffer) = self.data.try_into_buffer() {
             if let Some(vec) = buffer.into_vec() {
                 unsafe {
                     return Array::from_shape_vec_unchecked(self.dim.strides(self.strides), vec);

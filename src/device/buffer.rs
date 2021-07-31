@@ -3,8 +3,9 @@ use super::{
     WriteOnly,
 };
 use crate::{
-    scalar::Scalar,
-    util::{elem_type_name, size_eq},
+    glsl_shaders,
+    scalar::{Scalar, ScalarType},
+    util::{elem_type_name, size_eq, type_eq},
 };
 use anyhow::bail;
 use bytemuck::Pod;
@@ -162,6 +163,16 @@ impl<'a, T> From<&'a mut [T]> for HostSliceMut<'a, T> {
             ptr: slice.as_mut_ptr(),
             len: slice.len(),
             capacity: slice.len(),
+        }
+    }
+}
+
+impl<T> Clone for HostSlice<'_, T> {
+    fn clone(&self) -> Self {
+        Self {
+            ptr: self.ptr,
+            len: self.len,
+            capacity: self.capacity,
         }
     }
 }
@@ -340,6 +351,12 @@ impl<T> DeviceBuffer<T> {
     }
 }
 
+impl<T> Clone for DeviceSlice<'_, T> {
+    fn clone(&self) -> Self {
+        unsafe { Self::from_raw_parts(self.device.clone(), self.id, self.offset, self.len) }
+    }
+}
+
 impl<T: Pod + Serialize, S: Data<Elem = T>> Serialize for DeviceBufferBase<S> {
     fn serialize<Se>(&self, serializer: Se) -> Result<Se::Ok, Se::Error>
     where
@@ -395,6 +412,19 @@ enum DynBufferBase<S: Data> {
     Device(DeviceBufferBase<S>),
 }
 
+type DynBuffer<T> = DynBufferBase<OwnedRepr<T>>;
+type DynSlice<'a, T> = DynBufferBase<SliceRepr<'a, T>>;
+//type DynSliceMut<'a, T> = DynBufferBase<SliceMutRepr<'a, T>>;
+
+impl<T> Clone for DynSlice<'_, T> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Host(slice) => slice.clone().into(),
+            Self::Device(slice) => slice.clone().into(),
+        }
+    }
+}
+
 impl<S: Data> From<HostBufferBase<S>> for DynBufferBase<S> {
     fn from(buffer: HostBufferBase<S>) -> Self {
         Self::Host(buffer)
@@ -407,7 +437,7 @@ impl<S: Data> From<DeviceBufferBase<S>> for DynBufferBase<S> {
     }
 }
 
-impl<'de, T: Deserialize<'de>> Deserialize<'de> for DynBufferBase<OwnedRepr<T>> {
+impl<'de, T: Deserialize<'de>> Deserialize<'de> for DynBuffer<T> {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
@@ -421,7 +451,7 @@ impl<'de, T: Deserialize<'de>> Deserialize<'de> for DynBufferBase<OwnedRepr<T>> 
 /// Like [`Device`], [`BufferBase`] comes in 2 forms, Host and Device.
 ///
 /// # Host
-/// Host buffers are trivially constructible (without copying) from Vec / \[T\]. Note that generally in order to perform computations, the buffer must be transfered to the device via [`.to_device()`].
+/// Host buffers are trivially constructible (without copying) from Vec / \[T\]. Note that generally in order to perform computations, the buffer must be transfered to the device via [`.to_device()`](BufferBase::into_device()).
 ///
 /// # Device
 /// Allocated on the device, like a GPU. Operations are asynchronous with the host, only made visible after awaiting ['.read()`].
@@ -744,6 +774,12 @@ impl<'a, T> From<&'a mut [T]> for SliceMut<'a, T> {
     }
 }
 
+impl<T> Clone for Slice<'_, T> {
+    fn clone(&self) -> Self {
+        self.base.clone().into()
+    }
+}
+
 impl<'de, T: Deserialize<'de>> Deserialize<'de> for Buffer<T> {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -760,6 +796,88 @@ impl<T, S: Data<Elem = T>> Debug for BufferBase<S> {
             .field("len", &self.len())
             .field("elem", &elem_type_name::<T>())
             .finish()
+    }
+}
+
+/// Casts
+impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
+    /// Casts the buffer into a new buffer.
+    ///
+    /// # Note
+    /// NOOP for Buffer<T> -> Buffer<T>.
+    ///
+    /// **Errors**
+    /// - Not implemented on the host.
+    /// - Not implemented for i8, f16, u64, i64, or f64.
+    /// - Potentially allocates, see [`Buffer::alloc()`](BufferBase::alloc()).
+    /// - The device paicked or disconnected.
+    pub fn cast_into<T2: Scalar>(self) -> Result<Buffer<T2>> {
+        self.scale_into(T2::one())
+    }
+    /// Casts the buffer into a new buffer.
+    ///
+    /// Returns a CowBuffer, where for T -> T, borrows the buffer.
+    ///
+    /// **Errors**
+    /// - Not implemented for i8, f16, u64, i64, or f64.
+    /// - Potentially allocates, see [`Buffer::alloc()`](BufferBase::alloc()).
+    /// - The device paicked or disconnected.
+    pub fn cast_to<T2: Scalar>(&self) -> Result<CowBuffer<T2>> {
+        if type_eq::<T, T2>() {
+            Ok(unsafe { transmute(CowBuffer::from(self.as_slice())) })
+        } else {
+            Ok(self.as_slice().cast_into::<T2>()?.into())
+        }
+    }
+    /// Scales the buffer into a new buffer.
+    ///
+    /// # Note
+    /// NOOP for Buffer<T> -> Buffer<T> where alpha == 1.
+    ///
+    /// **Errors**
+    /// - Not implemented on the host.
+    /// - Not implemented for i8, f16, u64, i64, or f64.
+    /// - Potentially allocates, see [`Buffer::alloc()`](BufferBase::alloc()).
+    /// - The device paicked or disconnected.
+    pub fn scale_into<T2: Scalar>(self, alpha: T2) -> Result<Buffer<T2>> {
+        if alpha == T2::one() && type_eq::<T, T2>() {
+            Ok(unsafe { transmute(self.into_owned()?) })
+        } else {
+            {
+                use ScalarType::*;
+                if matches!(T::scalar_type(), I8 | F16 | U64 | I64 | F64)
+                    || matches!(T2::scalar_type(), I8 | F16 | U64 | I64 | F64)
+                {
+                    bail!(
+                        "scale_into {} -> {} not implemented!",
+                        T::scalar_name(),
+                        T2::scalar_name(),
+                    )
+                }
+            }
+            let name = format!("scaled_cast_{}_{}", T::scalar_name(), T2::scalar_name());
+            let module = glsl_shaders::module(name)?;
+            let mut output = unsafe { Buffer::alloc(self.device(), self.len())? };
+            let n = self.len() as u32;
+            let builder = module
+                .compute_pass("main")?
+                .slice(self.as_slice())?
+                .slice_mut(output.as_slice_mut())?
+                .push(n)?;
+            let builder = {
+                use ScalarType::*;
+                match T2::scalar_type() {
+                    U8 | U16 => builder.push(alpha.to_u32().unwrap())?,
+                    I8 | I16 => builder.push(alpha.to_i32().unwrap())?,
+                    F16 | BF16 => builder.push(alpha.to_f32().unwrap())?,
+                    _ => builder.push(alpha)?,
+                }
+            };
+            unsafe {
+                builder.submit([n, 1, 1])?;
+            }
+            Ok(output)
+        }
     }
 }
 
@@ -850,6 +968,49 @@ impl<T> ArcBuffer<T> {
             len,
         }
     }
+    /// Allocate a buffer with length `len`.
+    ///
+    /// # Safety
+    /// The buffer will not be initialized.
+    ///
+    /// **Errors**
+    /// - AllocationTooLarge: Device allocations are limited to 256 MB per Buffer.
+    /// - OutOfDeviceMemory: Device memory is exhausted.
+    /// - DeviceLost: The device panicked or disconnected.
+    ///
+    /// # Note
+    /// - For constructing a buffer on the host, prefer [`Buffer::from`].
+    /// - See [`.zeros()`](BufferBase::zeros) for a safe alternative.
+    pub unsafe fn alloc(device: Device, len: usize) -> Result<Self>
+    where
+        T: Default + Copy,
+    {
+        Ok(Buffer::alloc(device, len)?.into())
+    }
+    /// Creates a buffer with length `len` filled with `elem`.
+    ///
+    /// **Errors**
+    /// - AllocationTooLarge: Device allocations are limited to 256 MB per Buffer.
+    /// - OutOfDeviceMemory: Device memory is exhausted.
+    /// - DeviceLost: The device panicked or disconnected.
+    pub fn from_elem(device: Device, len: usize, elem: T) -> Result<Self>
+    where
+        T: Scalar,
+    {
+        Ok(Buffer::from_elem(device, len, elem)?.into())
+    }
+    /// Creates a buffer with length `len` filled with 0's.
+    ///
+    /// **Errors**
+    /// - AllocationTooLarge: Device allocations are limited to 256 MB per Buffer.
+    /// - OutOfDeviceMemory: Device memory is exhausted.
+    /// - DeviceLost: The device panicked or disconnected.
+    pub fn zeros(device: Device, len: usize) -> Result<Self>
+    where
+        T: Scalar,
+    {
+        Ok(Buffer::zeros(device, len)?.into())
+    }
     /// Borrows the buffer as a Slice.
     pub fn as_slice(&self) -> Slice<T> {
         self.buffer.slice_impl(self.offset, self.len)
@@ -890,6 +1051,20 @@ impl<T> ArcBuffer<T> {
         T: Copy,
     {
         self.as_slice().to_owned()
+    }
+    /// Transfers the buffer into the `device`.
+    ///
+    /// **Errors**
+    /// See [`Buffer::into_device()`](BufferBase::into_device()).
+    pub async fn into_device(self, device: Device) -> Result<Buffer<T>>
+    where
+        T: Pod,
+    {
+        if self.device() == device {
+            self.into_owned()
+        } else {
+            self.as_slice().into_device(device).await
+        }
     }
     /// The device of the buffer.
     pub fn device(&self) -> Device {
@@ -940,6 +1115,51 @@ impl<T> Debug for ArcBuffer<T> {
     }
 }
 
+/// Casts
+impl<T: Scalar> ArcBuffer<T> {
+    /// Casts the buffer into a new buffer.
+    ///
+    /// # Note
+    /// NOOP for Buffer<T> -> Buffer<T>.
+    ///
+    /// **Errors**
+    /// - Not implemented on the host.
+    /// - Not implemented for i8, f16, u64, i64, or f64.
+    /// - Potentially allocates, see [`Buffer::alloc()`](BufferBase::alloc()).
+    /// - The device paicked or disconnected.
+    pub fn cast_into<T2: Scalar>(self) -> Result<Buffer<T2>> {
+        match self.try_unwrap() {
+            Ok(buffer) => buffer.cast_into(),
+            Err(this) => this.as_slice().cast_into(),
+        }
+    }
+    /// Casts the buffer into a new buffer.
+    ///
+    /// Returns a CowBuffer, where for T -> T, borrows the buffer.
+    ///
+    /// **Errors**
+    /// - Not implemented on the host.
+    /// - Not implemented for i8, f16, u64, i64, or f64.
+    /// - Potentially allocates, see [`Buffer::alloc()`](BufferBase::alloc()).
+    /// - The device paicked or disconnected.
+    pub fn cast_to<T2: Scalar>(&self) -> Result<CowBuffer<T2>> {
+        Ok(self.as_slice().cast_into()?.into())
+    }
+    /// Scales the buffer into a new buffer.
+    ///
+    /// # Note
+    /// NOOP for Buffer<T> -> Buffer<T> where alpha == 1.
+    ///
+    /// **Errors**
+    /// - Not implemented on the host.
+    /// - Not implemented for i8, f16, u64, i64, or f64.
+    /// - Potentially allocates, see [`Buffer::alloc()`](BufferBase::alloc()).
+    /// - The device paicked or disconnected.
+    pub fn scale_into<T2: Scalar>(self, alpha: T2) -> Result<Buffer<T2>> {
+        self.as_slice().scale_into(alpha)
+    }
+}
+
 /// A Borrowed or Owned Buffer
 #[derive(Debug)]
 pub enum CowBuffer<'a, T> {
@@ -950,11 +1170,75 @@ pub enum CowBuffer<'a, T> {
 }
 
 impl<T> CowBuffer<'_, T> {
+    /// Allocate a buffer with length `len`.
+    ///
+    /// # Safety
+    /// The buffer will not be initialized.
+    ///
+    /// **Errors**
+    /// - AllocationTooLarge: Device allocations are limited to 256 MB per Buffer.
+    /// - OutOfDeviceMemory: Device memory is exhausted.
+    /// - DeviceLost: The device panicked or disconnected.
+    ///
+    /// # Note
+    /// - For constructing a buffer on the host, prefer [`Buffer::from`].
+    /// - See [`.zeros()`](BufferBase::zeros) for a safe alternative.
+    pub unsafe fn alloc(device: Device, len: usize) -> Result<Self>
+    where
+        T: Default + Copy,
+    {
+        Ok(Buffer::alloc(device, len)?.into())
+    }
+    /// Creates a buffer with length `len` filled with `elem`.
+    ///
+    /// **Errors**
+    /// - AllocationTooLarge: Device allocations are limited to 256 MB per Buffer.
+    /// - OutOfDeviceMemory: Device memory is exhausted.
+    /// - DeviceLost: The device panicked or disconnected.
+    pub fn from_elem(device: Device, len: usize, elem: T) -> Result<Self>
+    where
+        T: Scalar,
+    {
+        Ok(Buffer::from_elem(device, len, elem)?.into())
+    }
+    /// Creates a buffer with length `len` filled with 0's.
+    ///
+    /// **Errors**
+    /// - AllocationTooLarge: Device allocations are limited to 256 MB per Buffer.
+    /// - OutOfDeviceMemory: Device memory is exhausted.
+    /// - DeviceLost: The device panicked or disconnected.
+    pub fn zeros(device: Device, len: usize) -> Result<Self>
+    where
+        T: Scalar,
+    {
+        Ok(Buffer::zeros(device, len)?.into())
+    }
     /// Borrows the buffer as a Slice.
     pub fn as_slice(&self) -> Slice<T> {
         match self {
             Self::Slice(slice) => slice.as_slice(),
             Self::Buffer(buffer) => buffer.as_slice(),
+        }
+    }
+    #[allow(unused)]
+    pub(crate) fn try_unwrap(self) -> Result<Buffer<T>, Self> {
+        match self {
+            Self::Buffer(buffer) => Ok(buffer),
+            slice => Err(slice),
+        }
+    }
+    /// Transfers the buffer into the `device`.
+    ///
+    /// **Errors**
+    /// See [`Buffer::into_device()`](BufferBase::into_device()).
+    pub async fn into_device(self, device: Device) -> Result<Buffer<T>>
+    where
+        T: Pod,
+    {
+        if self.device() == device {
+            self.into_owned()
+        } else {
+            self.as_slice().into_device(device).await
         }
     }
     /// Converts into a [`Buffer`].
@@ -1015,9 +1299,54 @@ impl<T> From<Buffer<T>> for CowBuffer<'_, T> {
     }
 }
 
+/// Casts
+impl<T: Scalar> CowBuffer<'_, T> {
+    /// Casts the buffer into a new buffer.
+    ///
+    /// # Note
+    /// NOOP for Buffer<T> -> Buffer<T>.
+    ///
+    /// **Errors**
+    /// - Not implemented on the host.
+    /// - Not implemented for i8, f16, u64, i64, or f64.
+    /// - Potentially allocates, see [`Buffer::alloc()`](BufferBase::alloc()).
+    /// - The device paicked or disconnected.
+    pub fn cast_into<T2: Scalar>(self) -> Result<Buffer<T2>> {
+        match self.try_unwrap() {
+            Ok(buffer) => buffer.cast_into(),
+            Err(this) => this.as_slice().cast_into(),
+        }
+    }
+    /// Casts the buffer into a new buffer.
+    ///
+    /// Returns a CowBuffer, where for T -> T, borrows the buffer.
+    ///
+    /// **Errors**
+    /// - Not implemented for i8, f16, u64, i64, or f64.
+    /// - Potentially allocates, see [`Buffer::alloc()`](BufferBase::alloc()).
+    /// - The device paicked or disconnected.
+    pub fn cast_to<T2: Scalar>(&self) -> Result<CowBuffer<T2>> {
+        Ok(self.as_slice().cast_into()?.into())
+    }
+    /// Scales the buffer into a new buffer.
+    ///
+    /// # Note
+    /// NOOP for Buffer<T> -> Buffer<T> where alpha == 1.
+    ///
+    /// **Errors**
+    /// - Not implemented for i8, f16, u64, i64, or f64.
+    /// - Potentially allocates, see [`Buffer::alloc()`](BufferBase::alloc()).
+    /// - The device paicked or disconnected.
+    pub fn scale_into<T2: Scalar>(self, alpha: T2) -> Result<Buffer<T2>> {
+        self.as_slice().scale_into(alpha)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "device_tests")]
+    use half::{bf16, f16};
 
     #[tokio::test]
     async fn host_buffer_copy_from_slice() -> Result<()> {
@@ -1125,6 +1454,22 @@ mod tests {
 
     #[cfg(feature = "device_tests")]
     #[tokio::test]
+    async fn fill_f16() -> Result<()> {
+        fill(10, f16::from_f32(11.11)).await?;
+        fill(1000, f16::from_f32(-211.11)).await?;
+        Ok(())
+    }
+
+    #[cfg(feature = "device_tests")]
+    #[tokio::test]
+    async fn fill_bf16() -> Result<()> {
+        fill(10, bf16::from_f32(11.11)).await?;
+        fill(1000, bf16::from_f32(-211.11)).await?;
+        Ok(())
+    }
+
+    #[cfg(feature = "device_tests")]
+    #[tokio::test]
     async fn fill_u32() -> Result<()> {
         fill(10, 11u32).await?;
         fill(1000, 211u32).await?;
@@ -1170,4 +1515,66 @@ mod tests {
         fill(1000, -211.11f64).await?;
         Ok(())
     }
+
+    #[cfg(feature = "device_tests")]
+    async fn scale<T1: Scalar, T2: Scalar>() -> Result<()> {
+        /*let alpha = T1::from_f32(-0.5)
+            .or(T1::from_i32(-1))
+            .or(T1::from_u32(1))
+            .unwrap();
+        let beta = T2::from_f32(-2.)
+            .or(T2::from_i32(-2))
+            .or(T2::from_u32(2))
+            .unwrap();*/
+        let alpha = T2::from_u8(2).unwrap();
+        let device = Device::new()?;
+        let _s = device.acquire().await;
+        for n in [10, 100] {
+            let x_vec = (0..n)
+                .into_iter()
+                .map(|x| T1::from_u8(x).unwrap())
+                .collect::<Vec<_>>();
+            let y_vec = x_vec
+                .iter()
+                .map(|x| T2::from_u8(x.to_u8().unwrap() * alpha.to_u8().unwrap()).unwrap())
+                .collect::<Vec<_>>();
+            let x_buffer = Slice::from(x_vec.as_slice())
+                .into_device(device.clone())
+                .await?;
+            let y_buffer = x_buffer.scale_into(alpha)?;
+            let y_guard = y_buffer.read().await?;
+            assert_eq!(y_guard.as_slice(), y_vec.as_slice());
+        }
+        Ok(())
+    }
+
+    macro_rules! impl_binary_tests {
+        ($func:ident => $($t1:ident),+ | $t2s:tt) => {
+            mod $func {
+                use super::$func;
+
+                $(
+                    impl_binary_tests!{@Inner $func => $t1 | $t2s}
+                )+
+            }
+        };
+        (@Inner $func:ident => $t1:ident | ($($t2:ident),+)) => {
+            mod $t1 {
+                use super::$func;
+                use crate::result::Result;
+
+                $(
+                    #[tokio::test]
+                    async fn $t2() -> Result<()> {
+                        #[allow(unused_imports)]
+                        use half::{f16, bf16};
+                        $func::<$t1, $t2>().await
+                    }
+                )+
+            }
+        };
+    }
+
+    #[cfg(feature = "device_tests")]
+    impl_binary_tests! {scale => u8, u16, bf16 | (u32, i32, f32)}
 }

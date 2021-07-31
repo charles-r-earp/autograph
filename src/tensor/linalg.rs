@@ -31,11 +31,11 @@ unsafe impl<T: Pod> Pod for GemmPushConsts<T> {}
 
 #[allow(clippy::too_many_arguments, clippy::many_single_char_names)]
 fn gemm_impl<T: Scalar>(
-    a: TensorView2<T>,
-    b: TensorView2<T>,
-    bias: Option<TensorView1<T>>,
+    a: &TensorView2<T>,
+    b: &TensorView2<T>,
+    bias: Option<&TensorView1<T>>,
     acc: bool,
-    mut c: TensorViewMut2<T>,
+    c: &mut TensorViewMut2<T>,
 ) -> Result<()> {
     use ScalarType::*;
     if !matches!(T::scalar_type(), U32 | I32 | F32 | BF16) {
@@ -122,7 +122,11 @@ fn gemm_impl<T: Scalar>(
 impl<'b, T: Scalar, S: Data<Elem = T>> Dot<TensorView2<'b, T>> for TensorBase<S, Ix2> {
     type Output = Tensor2<T>;
     type Bias = TensorView1<'b, T>;
-    fn dot_bias(self, rhs: TensorView2<'b, T>, bias: Option<Self::Bias>) -> Result<Self::Output> {
+    fn dot_bias(
+        &self,
+        rhs: &TensorView2<'b, T>,
+        bias: Option<&Self::Bias>,
+    ) -> Result<Self::Output> {
         let mut output = unsafe { Tensor::alloc(self.device(), [self.dim().0, rhs.dim().1])? };
         self.dot_bias_acc(rhs, bias, &mut output)?;
         Ok(output)
@@ -131,12 +135,12 @@ impl<'b, T: Scalar, S: Data<Elem = T>> Dot<TensorView2<'b, T>> for TensorBase<S,
 
 impl<'b, T: Scalar, S: Data<Elem = T>> DotAccumulate<TensorView2<'b, T>> for TensorBase<S, Ix2> {
     fn dot_bias_acc(
-        self,
-        rhs: TensorView2<'b, T>,
-        bias: Option<Self::Bias>,
+        &self,
+        rhs: &TensorView2<'b, T>,
+        bias: Option<&Self::Bias>,
         output: &mut Self::Output,
     ) -> Result<()> {
-        gemm_impl(self.view(), rhs, bias, false, output.view_mut())
+        gemm_impl(&self.view(), rhs, bias, false, &mut output.view_mut())
     }
 }
 
@@ -194,7 +198,7 @@ mod tests {
                 Transpose::T => (a2.t(), t2.t()),
             };
             let a_true = a1.dot(&a2);
-            let t_out = t1.dot(t2)?;
+            let t_out = t1.dot(&t2)?;
             device.sync().await?;
             let a_out = t_out.read().await?.into_array();
             (a_true, a_out)
@@ -309,11 +313,11 @@ mod tests {
                             T => b.t()
                         };
                         for _ in 0 .. 10 {
-                            a.view().dot(b.view()).unwrap();
+                            a.view().dot(&b.view()).unwrap();
                             smol::block_on(device.sync()).unwrap();
                         }
                         bencher.iter(|| {
-                            a.view().dot(b.view()).unwrap();
+                            a.view().dot(&b.view()).unwrap();
                             smol::block_on(device.sync()).unwrap();
                         });
                     }

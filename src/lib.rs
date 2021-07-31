@@ -35,19 +35,29 @@ pub mod error {
 }
 /// Device level backend.
 pub mod device;
-#[cfg(feature = "tensor")]
+
+mod util;
+
 mod glsl_shaders;
+mod rust_shaders;
+
+/// Float types.
+pub mod float;
+/// Scalar types.
+pub mod scalar;
+
 /// Linear Algebra.
 mod linalg;
 /// Numerical operations.
 mod ops;
-mod rust_shaders;
-/// Scalar types.
-pub mod scalar;
+
 /// Tensors.
 #[cfg(feature = "tensor")]
 pub mod tensor;
-mod util;
+
+/// Float Tensors.
+#[cfg(feature = "tensor")]
+pub mod float_tensor;
 
 /// Datasets.
 pub mod dataset;

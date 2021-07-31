@@ -52,13 +52,28 @@ pub trait ToPrimitiveExt: ToPrimitive {
     }
 }
 
-impl ToPrimitiveExt for u8 {}
+/// Extends FromPrimitive to include half types.
+pub trait FromPrimitiveExt: FromPrimitive {
+    /// Converts from f16.
+    fn from_f16(n: f16) -> Option<Self> {
+        Self::from_f32(n.into())
+    }
+    /// Converts from bf16.
+    fn from_bf16(n: bf16) -> Option<Self> {
+        Self::from_f32(n.into())
+    }
+}
 
-impl ToPrimitiveExt for i8 {}
+macro_rules! impl_primitive_ext {
+    ($($t:ty),+) => {
+        $(
+            impl ToPrimitiveExt for $t {}
+            impl FromPrimitiveExt for $t {}
+        )+
+    };
+}
 
-impl ToPrimitiveExt for u16 {}
-
-impl ToPrimitiveExt for i16 {}
+impl_primitive_ext! {u8, i8, u16, i16, u32, i32, f32, u64, i64, f64}
 
 impl ToPrimitiveExt for f16 {
     fn to_f16(&self) -> Option<Self> {
@@ -72,38 +87,6 @@ impl ToPrimitiveExt for bf16 {
     }
 }
 
-impl ToPrimitiveExt for u32 {}
-
-impl ToPrimitiveExt for i32 {}
-
-impl ToPrimitiveExt for f32 {}
-
-impl ToPrimitiveExt for u64 {}
-
-impl ToPrimitiveExt for i64 {}
-
-impl ToPrimitiveExt for f64 {}
-
-/// Extends FromPrimitive to include half types.
-pub trait FromPrimitiveExt: FromPrimitive {
-    /// Converts from f16.
-    fn from_f16(n: f16) -> Option<Self> {
-        Self::from_f32(n.into())
-    }
-    /// Converts from bf16.
-    fn from_bf16(n: bf16) -> Option<Self> {
-        Self::from_f32(n.into())
-    }
-}
-
-impl FromPrimitiveExt for u8 {}
-
-impl FromPrimitiveExt for i8 {}
-
-impl FromPrimitiveExt for u16 {}
-
-impl FromPrimitiveExt for i16 {}
-
 impl FromPrimitiveExt for f16 {
     fn from_f16(n: f16) -> Option<Self> {
         Some(n)
@@ -116,21 +99,89 @@ impl FromPrimitiveExt for bf16 {
     }
 }
 
-impl FromPrimitiveExt for u32 {}
+/// Types with a `0` value.
+pub trait Zero: Default + Sealed {
+    /// Returns 0.
+    fn zero() -> Self {
+        Self::default()
+    }
+}
 
-impl FromPrimitiveExt for i32 {}
+macro_rules! impl_zero {
+    ($($t:ty),+) => {
+        $(
+            impl Zero for $t {}
+        )+
+    }
+}
 
-impl FromPrimitiveExt for f32 {}
+impl_zero! {u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64}
 
-impl FromPrimitiveExt for u64 {}
+/// Types with a `1` value.
+pub trait One: Sealed {
+    /// Returns `1`.
+    fn one() -> Self;
+}
 
-impl FromPrimitiveExt for i64 {}
+macro_rules! impl_one {
+    (@Int $($t:ty),+) => {
+        $(
+            impl One for $t {
+                fn one() -> Self {
+                    1
+                }
+            }
+        )+
+    };
+    (@Half $($t:ty),+) => {
+        $(
+            impl One for $t {
+                fn one() -> Self {
+                    <$t>::ONE
+                }
+            }
+        )+
+    };
+    (@Float $($t:ty),+) => {
+        $(
+            impl One for $t {
+                fn one() -> Self {
+                    1.
+                }
+            }
+        )+
+    }
+}
 
-impl FromPrimitiveExt for f64 {}
+impl_one! {@Int u8, i8, u16, i16, u32, i32, u64, i64}
+impl_one! {@Half f16, bf16}
+impl_one! {@Float f32, f64}
+
+/// Named scalar.
+///
+/// For example, u32 is "u32", bf16 is "bf16", etc.
+pub trait ScalarName: Sealed {
+    /// Returns the type name.
+    fn scalar_name() -> &'static str;
+}
+
+macro_rules! impl_scalar_name {
+    ($($t:ty),+) => {
+        $(
+            impl ScalarName for $t {
+                fn scalar_name() -> &'static str {
+                    stringify!($t)
+                }
+            }
+        )+
+    };
+}
+
+impl_scalar_name! {u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64}
 
 /// Base trait for numerical types supported in autograph.
 pub trait Scalar:
-    Default + Pod + ToPrimitiveExt + FromPrimitiveExt + Debug + PartialEq + Sealed
+    Zero + One + ScalarName + Pod + ToPrimitiveExt + FromPrimitiveExt + Debug + PartialEq + Sealed
 {
     /// The [`ScalarType`] of the scalar.
     fn scalar_type() -> ScalarType;
