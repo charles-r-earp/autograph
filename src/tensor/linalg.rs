@@ -1,5 +1,5 @@
 use super::*;
-use crate::linalg::{Dot, DotAccumulate};
+use crate::linalg::Dot;
 use bytemuck::{Pod, Zeroable};
 
 #[derive(Copy)]
@@ -119,22 +119,26 @@ fn gemm_impl<T: Scalar>(
     unsafe { builder.submit([m, n, 1]) }
 }
 
-impl<'b, T: Scalar, S: Data<Elem = T>> Dot<TensorView2<'b, T>> for TensorBase<S, Ix2> {
+impl<T: Scalar, S1: Data<Elem = T>, S2: Data<Elem = T>> Dot<TensorBase<S2, Ix2>>
+    for TensorBase<S1, Ix2>
+{
     type Output = Tensor2<T>;
-    type Bias = TensorView1<'b, T>;
-    fn dot_bias(
-        &self,
-        rhs: &TensorView2<'b, T>,
-        bias: Option<&Self::Bias>,
-    ) -> Result<Self::Output> {
+    fn dot(&self, rhs: &TensorBase<S2, Ix2>) -> Result<Self::Output> {
         let mut output = unsafe { Tensor::alloc(self.device(), [self.dim().0, rhs.dim().1])? };
-        self.dot_bias_acc(rhs, bias, &mut output)?;
+        gemm_impl(
+            &self.view(),
+            &rhs.view(),
+            None,
+            false,
+            &mut output.view_mut(),
+        )?;
         Ok(output)
     }
 }
 
+/*
 impl<'b, T: Scalar, S: Data<Elem = T>> DotAccumulate<TensorView2<'b, T>> for TensorBase<S, Ix2> {
-    fn dot_bias_acc(
+    fn dot_acc(
         &self,
         rhs: &TensorView2<'b, T>,
         bias: Option<&Self::Bias>,
@@ -143,6 +147,7 @@ impl<'b, T: Scalar, S: Data<Elem = T>> DotAccumulate<TensorView2<'b, T>> for Ten
         gemm_impl(&self.view(), rhs, bias, false, &mut output.view_mut())
     }
 }
+*/
 
 #[cfg(all(test, feature = "device_tests"))]
 mod tests {
