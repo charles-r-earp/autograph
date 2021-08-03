@@ -3,7 +3,7 @@ use hibitset::BitSet;
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use rspirv::{
-    binary::Parser,
+    binary::{Disassemble, Parser},
     dr::{Loader, Operand},
     spirv::{Decoration, ExecutionMode, ExecutionModel, Op, StorageClass, Word},
 };
@@ -93,6 +93,12 @@ impl Module {
         } else {
             None
         }
+    }
+    #[doc(hidden)]
+    pub fn disassemble(&self) -> String {
+        let mut loader = Loader::new();
+        Parser::new(&self.spirv, &mut loader).parse().unwrap();
+        loader.module().disassemble()
     }
 }
 

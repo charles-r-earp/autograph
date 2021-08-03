@@ -1,7 +1,7 @@
 use bytemuck::Pod;
 use half::{bf16, f16};
-use num_traits::{FromPrimitive, ToPrimitive};
-use std::fmt::Debug;
+use num_traits::{FromPrimitive, Num, NumCast, ToPrimitive};
+use std::fmt::{Debug, Display};
 
 mod sealed {
     use half::{bf16, f16};
@@ -98,7 +98,7 @@ impl FromPrimitiveExt for bf16 {
         Some(n)
     }
 }
-
+/*
 /// Types with a `0` value.
 pub trait Zero: Default + Sealed {
     /// Returns 0.
@@ -156,6 +156,7 @@ macro_rules! impl_one {
 impl_one! {@Int u8, i8, u16, i16, u32, i32, u64, i64}
 impl_one! {@Half f16, bf16}
 impl_one! {@Float f32, f64}
+*/
 
 /// Named scalar.
 ///
@@ -181,7 +182,17 @@ impl_scalar_name! {u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64}
 
 /// Base trait for numerical types supported in autograph.
 pub trait Scalar:
-    Zero + One + ScalarName + Pod + ToPrimitiveExt + FromPrimitiveExt + Debug + PartialEq + Sealed
+    Default
+    + Num
+    + NumCast
+    + FromPrimitiveExt
+    + ToPrimitiveExt
+    + ScalarName
+    + Pod
+    + Debug
+    + Display
+    + PartialEq
+    + Sealed
 {
     /// The [`ScalarType`] of the scalar.
     fn scalar_type() -> ScalarType;

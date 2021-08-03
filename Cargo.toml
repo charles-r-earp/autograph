@@ -31,12 +31,13 @@ full = ["host_full", "device_tests"]
 [dependencies]
 autograph_derive = { path = "autograph_derive", optional = true }
 bytemuck = { version = "1.4.1", features = ["derive"] }
-ndarray = { version = "0.14.0", features = ["approx", "serde"], optional = true }
+ndarray = { version = "0.14.0", default-features = false, features = ["serde"], optional = true }
 smol = "1.2.5"
 rspirv = "0.7.0"
 serde = { version = "1.0.126", features = ["derive", "rc"] }
 num-traits = "0.2.14"
-half = { version = "1.7.1", features=["num-traits", "bytemuck", "serde"] }
+#half = { version = "1.7.1", features = ["num-traits", "bytemuck", "serde"] }
+half = { git = "https://github.com/starkat99/half-rs", features = ["num-traits", "bytemuck", "serde"] }
 gfx-hal = "0.9.0"
 hibitset = "0.6.3"
 anyhow = "1.0.37"
@@ -69,6 +70,7 @@ gfx-backend-dx12 = "0.9.0"
 
 [dev-dependencies]
 approx = "0.4.0"
+ndarray = { version = "0.14.0", features = ["approx"] }
 tokio = { version = "1.8.1", features = ["full"] }
 
 [build-dependencies]

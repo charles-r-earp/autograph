@@ -3,7 +3,7 @@ use super::{
     WriteOnly,
 };
 use crate::{
-    glsl_shaders,
+    glsl_shaders, rust_shaders,
     scalar::{Scalar, ScalarType},
     util::{elem_type_name, size_eq, type_eq},
 };
@@ -715,9 +715,9 @@ impl<T, S: Data<Elem = T>> BufferBase<S> {
     {
         let n = self.len() as u32;
         let name = if size_eq::<T, u64>() {
-            "fill_u64"
+            "fill::fill_u64"
         } else {
-            "fill_u32"
+            "fill::fill_u32"
         };
         let builder = crate::rust_shaders::core()?
             .compute_pass(name)?
@@ -806,11 +806,7 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
     /// # Note
     /// NOOP for Buffer<T> -> Buffer<T>.
     ///
-    /// **Errors**
-    /// - Not implemented on the host.
-    /// - Not implemented for i8, f16, u64, i64, or f64.
-    /// - Potentially allocates, see [`Buffer::alloc()`](BufferBase::alloc()).
-    /// - The device paicked or disconnected.
+    /// See [`BufferBase::cast_into()`].
     pub fn cast_into<T2: Scalar>(self) -> Result<Buffer<T2>> {
         self.scale_into(T2::one())
     }
@@ -819,9 +815,7 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
     /// Returns a CowBuffer, where for T -> T, borrows the buffer.
     ///
     /// **Errors**
-    /// - Not implemented for i8, f16, u64, i64, or f64.
-    /// - Potentially allocates, see [`Buffer::alloc()`](BufferBase::alloc()).
-    /// - The device paicked or disconnected.
+    /// See [`BufferBase::scale_into()`].
     pub fn cast_to<T2: Scalar>(&self) -> Result<CowBuffer<T2>> {
         if type_eq::<T, T2>() {
             Ok(unsafe { transmute(CowBuffer::from(self.as_slice())) })
@@ -834,33 +828,56 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
     /// # Note
     /// NOOP for Buffer<T> -> Buffer<T> where alpha == 1.
     ///
+    /// # Supported Types
+    /// T: u8, u16, bf16, u32, i32, f32
+    /// T2: bf16, u32, i32, f32
+    ///
     /// **Errors**
     /// - Not implemented on the host.
-    /// - Not implemented for i8, f16, u64, i64, or f64.
+    /// - Types not implemented.
     /// - Potentially allocates, see [`Buffer::alloc()`](BufferBase::alloc()).
     /// - The device paicked or disconnected.
     pub fn scale_into<T2: Scalar>(self, alpha: T2) -> Result<Buffer<T2>> {
+        use ScalarType::*;
         if alpha == T2::one() && type_eq::<T, T2>() {
             Ok(unsafe { transmute(self.into_owned()?) })
         } else {
+            if !matches!(T::scalar_type(), U8 | U16 | BF16 | U32 | I32 | F32)
+                || !matches!(T2::scalar_type(), BF16 | U32 | I32 | F32)
             {
-                use ScalarType::*;
-                if matches!(T::scalar_type(), I8 | F16 | U64 | I64 | F64)
-                    || matches!(T2::scalar_type(), I8 | F16 | U64 | I64 | F64)
-                {
-                    bail!(
-                        "scale_into {} -> {} not implemented!",
-                        T::scalar_name(),
-                        T2::scalar_name(),
-                    )
-                }
+                bail!(
+                    "scale_into {} -> {} not implemented!",
+                    T::scalar_name(),
+                    T2::scalar_name(),
+                )
             }
-            let name = format!("scaled_cast_{}_{}", T::scalar_name(), T2::scalar_name());
-            let module = glsl_shaders::module(name)?;
             let mut output = unsafe { Buffer::alloc(self.device(), self.len())? };
             let n = self.len() as u32;
+            let (module, entry, gs) = match (T::scalar_type(), T2::scalar_type()) {
+                (U8, BF16 | F32) => {
+                    let module = rust_shaders::core()?;
+                    let entry = format!("cast::scale_{}_{}", T::scalar_name(), T2::scalar_name());
+                    (module, entry, n / 4)
+                }
+                (BF16, BF16) => {
+                    let module = rust_shaders::core()?;
+                    let entry = format!("cast::scale_{}_{}", T::scalar_name(), T2::scalar_name());
+                    (module, entry, n / 2)
+                }
+                _ => {
+                    // patch for old impl
+                    if matches!(T2::scalar_type(), BF16) {
+                        output.fill(T2::zero())?;
+                    }
+                    let name = format!("scaled_cast_{}_{}", T::scalar_name(), T2::scalar_name());
+                    let module = glsl_shaders::module(name)?;
+                    let entry = String::from("main");
+                    (module, entry, n)
+                }
+            };
+            //let mut output = Buffer::zeros(self.device(), self.len())?;
             let builder = module
-                .compute_pass("main")?
+                .compute_pass(entry)?
                 .slice(self.as_slice())?
                 .slice_mut(output.as_slice_mut())?
                 .push(n)?;
@@ -874,7 +891,7 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
                 }
             };
             unsafe {
-                builder.submit([n, 1, 1])?;
+                builder.submit([gs, 1, 1])?;
             }
             Ok(output)
         }
@@ -1122,11 +1139,7 @@ impl<T: Scalar> ArcBuffer<T> {
     /// # Note
     /// NOOP for Buffer<T> -> Buffer<T>.
     ///
-    /// **Errors**
-    /// - Not implemented on the host.
-    /// - Not implemented for i8, f16, u64, i64, or f64.
-    /// - Potentially allocates, see [`Buffer::alloc()`](BufferBase::alloc()).
-    /// - The device paicked or disconnected.
+    /// See [`BufferBase::cast_into()`].
     pub fn cast_into<T2: Scalar>(self) -> Result<Buffer<T2>> {
         match self.try_unwrap() {
             Ok(buffer) => buffer.cast_into(),
@@ -1137,11 +1150,7 @@ impl<T: Scalar> ArcBuffer<T> {
     ///
     /// Returns a CowBuffer, where for T -> T, borrows the buffer.
     ///
-    /// **Errors**
-    /// - Not implemented on the host.
-    /// - Not implemented for i8, f16, u64, i64, or f64.
-    /// - Potentially allocates, see [`Buffer::alloc()`](BufferBase::alloc()).
-    /// - The device paicked or disconnected.
+    /// See [`BufferBase::cast_into()`].
     pub fn cast_to<T2: Scalar>(&self) -> Result<CowBuffer<T2>> {
         Ok(self.as_slice().cast_into()?.into())
     }
@@ -1150,11 +1159,7 @@ impl<T: Scalar> ArcBuffer<T> {
     /// # Note
     /// NOOP for Buffer<T> -> Buffer<T> where alpha == 1.
     ///
-    /// **Errors**
-    /// - Not implemented on the host.
-    /// - Not implemented for i8, f16, u64, i64, or f64.
-    /// - Potentially allocates, see [`Buffer::alloc()`](BufferBase::alloc()).
-    /// - The device paicked or disconnected.
+    /// See [`BufferBase::scale_into()`].
     pub fn scale_into<T2: Scalar>(self, alpha: T2) -> Result<Buffer<T2>> {
         self.as_slice().scale_into(alpha)
     }
@@ -1303,14 +1308,7 @@ impl<T> From<Buffer<T>> for CowBuffer<'_, T> {
 impl<T: Scalar> CowBuffer<'_, T> {
     /// Casts the buffer into a new buffer.
     ///
-    /// # Note
-    /// NOOP for Buffer<T> -> Buffer<T>.
-    ///
-    /// **Errors**
-    /// - Not implemented on the host.
-    /// - Not implemented for i8, f16, u64, i64, or f64.
-    /// - Potentially allocates, see [`Buffer::alloc()`](BufferBase::alloc()).
-    /// - The device paicked or disconnected.
+    /// See [`BufferBase::cast_into()`].
     pub fn cast_into<T2: Scalar>(self) -> Result<Buffer<T2>> {
         match self.try_unwrap() {
             Ok(buffer) => buffer.cast_into(),
@@ -1321,22 +1319,13 @@ impl<T: Scalar> CowBuffer<'_, T> {
     ///
     /// Returns a CowBuffer, where for T -> T, borrows the buffer.
     ///
-    /// **Errors**
-    /// - Not implemented for i8, f16, u64, i64, or f64.
-    /// - Potentially allocates, see [`Buffer::alloc()`](BufferBase::alloc()).
-    /// - The device paicked or disconnected.
+    /// See [`BufferBase::cast_into()`].
     pub fn cast_to<T2: Scalar>(&self) -> Result<CowBuffer<T2>> {
         Ok(self.as_slice().cast_into()?.into())
     }
     /// Scales the buffer into a new buffer.
     ///
-    /// # Note
-    /// NOOP for Buffer<T> -> Buffer<T> where alpha == 1.
-    ///
-    /// **Errors**
-    /// - Not implemented for i8, f16, u64, i64, or f64.
-    /// - Potentially allocates, see [`Buffer::alloc()`](BufferBase::alloc()).
-    /// - The device paicked or disconnected.
+    /// See [`BufferBase::scale_into()`].
     pub fn scale_into<T2: Scalar>(self, alpha: T2) -> Result<Buffer<T2>> {
         self.as_slice().scale_into(alpha)
     }
@@ -1517,26 +1506,22 @@ mod tests {
     }
 
     #[cfg(feature = "device_tests")]
-    async fn scale<T1: Scalar, T2: Scalar>() -> Result<()> {
-        /*let alpha = T1::from_f32(-0.5)
-            .or(T1::from_i32(-1))
-            .or(T1::from_u32(1))
-            .unwrap();
-        let beta = T2::from_f32(-2.)
-            .or(T2::from_i32(-2))
-            .or(T2::from_u32(2))
-            .unwrap();*/
-        let alpha = T2::from_u8(2).unwrap();
-        let device = Device::new()?;
-        let _s = device.acquire().await;
-        for n in [10, 100] {
+    mod scale {
+        use super::{Result, Scalar};
+
+        async fn scale<T1: Scalar, T2: Scalar>(n: usize, alpha: T2) -> Result<()> {
+            use super::*;
+
+            let device = Device::new()?;
+            let _s = device.acquire().await;
             let x_vec = (0..n)
                 .into_iter()
-                .map(|x| T1::from_u8(x).unwrap())
+                .map(|x| T1::from(x).unwrap())
                 .collect::<Vec<_>>();
             let y_vec = x_vec
                 .iter()
-                .map(|x| T2::from_u8(x.to_u8().unwrap() * alpha.to_u8().unwrap()).unwrap())
+                .copied()
+                .map(|x| T2::from_f32(x.to_f32().unwrap() * alpha.to_f32().unwrap()).unwrap())
                 .collect::<Vec<_>>();
             let x_buffer = Slice::from(x_vec.as_slice())
                 .into_device(device.clone())
@@ -1544,37 +1529,169 @@ mod tests {
             let y_buffer = x_buffer.scale_into(alpha)?;
             let y_guard = y_buffer.read().await?;
             assert_eq!(y_guard.as_slice(), y_vec.as_slice());
+            Ok(())
         }
-        Ok(())
-    }
 
-    macro_rules! impl_binary_tests {
-        ($func:ident => $($t1:ident),+ | $t2s:tt) => {
-            mod $func {
-                use super::$func;
-
+        macro_rules! impl_scale_tests {
+            (($($t1:ident),+) => $t2s:tt) => {
                 $(
-                    impl_binary_tests!{@Inner $func => $t1 | $t2s}
-                )+
-            }
-        };
-        (@Inner $func:ident => $t1:ident | ($($t2:ident),+)) => {
-            mod $t1 {
-                use super::$func;
-                use crate::result::Result;
+                    mod $t1 {
+                        use super::scale;
+                        use crate::result::Result;
 
+                        impl_scale_tests!{@Inner $t1 => $t2s}
+                    }
+                )+
+            };
+            (@Inner $t1:ident => ($($t2:ident),+)) => {
                 $(
                     #[tokio::test]
                     async fn $t2() -> Result<()> {
                         #[allow(unused_imports)]
                         use half::{f16, bf16};
-                        $func::<$t1, $t2>().await
+                        use num_traits::FromPrimitive;
+
+                        for n in [10, 67] {
+                            for alpha in [2i8, -2i8, 3i8] {
+                                if let Some(alpha) = $t2::from_i8(alpha) {
+                                    scale::<$t1, _>(n, alpha).await?;
+                                }
+                            }
+                        }
+                        Ok(())
                     }
                 )+
-            }
-        };
+            };
+        }
+
+        impl_scale_tests! { (u8, u16, bf16, u32, i32, f32) => (bf16, u32, i32, f32) }
+    }
+    /*
+    #[cfg(feature = "device_tests")]
+    #[tokio::test]
+    async fn scale_u8_bf16() -> Result<()> {
+        scale::<u8, bf16>(10, 3u8.into()).await?;
+        scale::<u8, bf16>(100, bf16::from_f32(-2f32)).await?;
+        Ok(())
     }
 
     #[cfg(feature = "device_tests")]
-    impl_binary_tests! {scale => u8, u16, bf16 | (u32, i32, f32)}
+    #[tokio::test]
+    async fn scale_u8_u32() -> Result<()> {
+        scale::<u8, u32>(10, 3).await?;
+        scale::<u8, u32>(100, 17).await?;
+        Ok(())
+    }
+
+    #[cfg(feature = "device_tests")]
+    #[tokio::test]
+    async fn scale_u8_i32() -> Result<()> {
+        scale::<u8, i32>(10, -3).await?;
+        scale::<u8, i32>(100, 17).await?;
+        Ok(())
+    }
+
+    #[cfg(feature = "device_tests")]
+    #[tokio::test]
+    async fn scale_u8_f32() -> Result<()> {
+        scale::<u8, f32>(10, -3.).await?;
+        scale::<u8, f32>(100, 17.).await?;
+        Ok(())
+    }
+
+    #[cfg(feature = "device_tests")]
+    #[tokio::test]
+    async fn scale_u16_bf16() -> Result<()> {
+        scale::<u16, bf16>(10, 3u8.into()).await?;
+        scale::<u16, bf16>(100, bf16::from_f32(-2f32)).await?;
+        Ok(())
+    }
+
+    #[cfg(feature = "device_tests")]
+    #[tokio::test]
+    async fn scale_u16_u32() -> Result<()> {
+        scale::<u16, u32>(10, 3).await?;
+        scale::<u16, u32>(100, 17).await?;
+        Ok(())
+    }
+
+    #[cfg(feature = "device_tests")]
+    #[tokio::test]
+    async fn scale_u16_i32() -> Result<()> {
+        scale::<u16, i32>(10, -3).await?;
+        scale::<u16, i32>(100, 17).await?;
+        Ok(())
+    }
+
+    #[cfg(feature = "device_tests")]
+    #[tokio::test]
+    async fn scale_u16_f32() -> Result<()> {
+        scale::<u16, f32>(10, -3.).await?;
+        scale::<u16, f32>(100, 17.).await?;
+        Ok(())
+    }
+
+    #[cfg(feature = "device_tests")]
+    #[tokio::test]
+    async fn scale_u16_bf16() -> Result<()> {
+        scale::<u16, bf16>(10, 3u8.into()).await?;
+        scale::<u16, bf16>(100, bf16::from_f32(-2f32)).await?;
+        Ok(())
+    }
+
+    #[cfg(feature = "device_tests")]
+    #[tokio::test]
+    async fn scale_u16_u32() -> Result<()> {
+        scale::<u16, u32>(10, 3).await?;
+        scale::<u16, u32>(100, 17).await?;
+        Ok(())
+    }
+
+    #[cfg(feature = "device_tests")]
+    #[tokio::test]
+    async fn scale_u16_i32() -> Result<()> {
+        scale::<u16, i32>(10, -3).await?;
+        scale::<u16, i32>(100, 17).await?;
+        Ok(())
+    }
+
+    #[cfg(feature = "device_tests")]
+    #[tokio::test]
+    async fn scale_u16_f32() -> Result<()> {
+        scale::<u16, f32>(10, -3.).await?;
+        scale::<u16, f32>(100, 17.).await?;
+        Ok(())
+    }
+
+    #[cfg(feature = "device_tests")]
+    #[tokio::test]
+    async fn scale_bf16_bf16() -> Result<()> {
+        scale::<bf16, _>(10, bf16::from_f32(-3.)).await?;
+        scale::<bf16, _>(100, bf16::from_f32(17)).await?;
+        Ok(())
+    }
+
+    #[cfg(feature = "device_tests")]
+    #[tokio::test]
+    async fn scale_bf16_u32() -> Result<()> {
+        scale::<bf16, u32>(10, 3).await?;
+        scale::<bf16, u32>(100, 17).await?;
+        Ok(())
+    }
+
+    #[cfg(feature = "device_tests")]
+    #[tokio::test]
+    async fn scale_bf16_i32() -> Result<()> {
+        scale::<bf16, i32>(10, -3).await?;
+        scale::<bf16, i32>(100, 17).await?;
+        Ok(())
+    }
+
+    #[cfg(feature = "device_tests")]
+    #[tokio::test]
+    async fn scale_bf16_f32() -> Result<()> {
+        scale::<u16, f32>(10, -3.).await?;
+        scale::<u16, f32>(100, 17.).await?;
+        Ok(())
+    }*/
 }

@@ -3,7 +3,8 @@ use once_cell::sync::OnceCell;
 
 static CORE: OnceCell<Module> = OnceCell::new();
 
-pub(crate) fn core() -> Result<&'static Module> {
+#[doc(hidden)]
+pub fn core() -> Result<&'static Module> {
     Ok(CORE.get_or_try_init(|| {
         bincode::deserialize(include_bytes!(concat!(
             env!("OUT_DIR"),

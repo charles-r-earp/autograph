@@ -39,7 +39,8 @@ pub mod device;
 mod util;
 
 mod glsl_shaders;
-mod rust_shaders;
+#[doc(hidden)]
+pub mod rust_shaders;
 
 /// Float types.
 pub mod float;
