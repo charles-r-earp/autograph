@@ -854,11 +854,13 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
             let mut output = unsafe { Buffer::alloc(self.device(), self.len())? };
             let n = self.len() as u32;
             let (module, entry, gs) = match (T::scalar_type(), T2::scalar_type()) {
+                #[cfg(not(windows))]
                 (U8, BF16 | F32) => {
                     let module = rust_shaders::core()?;
                     let entry = format!("cast::scale_{}_{}", T::scalar_name(), T2::scalar_name());
                     (module, entry, n / 4)
                 }
+                #[cfg(not(windows))]
                 (BF16, BF16) => {
                     let module = rust_shaders::core()?;
                     let entry = format!("cast::scale_{}_{}", T::scalar_name(), T2::scalar_name());
