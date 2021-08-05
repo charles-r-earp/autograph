@@ -552,7 +552,9 @@ fn parse_spirv(spirv: &[u8]) -> Result<ModuleDescriptor> {
                                 _ => bail!("entry_point: {} functions[{}].blocks[{}].instructions[{}].operands[0] invalid pointer:\n{:#?}", &entry_point.name, f, b, i, &function),
                             };
                             if let Some(variable) = pointers.get(&pointer) {
-                                parameters.get_mut(variable).map(|mutable| *mutable = true);
+                                if let Some(mutable) = parameters.get_mut(variable) {
+                                    *mutable = true;
+                                }
                             }
                         }
                         _ => (),
@@ -562,7 +564,7 @@ fn parse_spirv(spirv: &[u8]) -> Result<ModuleDescriptor> {
             let mut buffers = Vec::<BufferBinding>::new();
             let mut push_constant_range = 0;
             for (variable, mutable) in parameters.iter() {
-                if let Some(&buffer) = buffer_bindings.get(&variable) {
+                if let Some(&buffer) = buffer_bindings.get(variable) {
                     if buffer.descriptor_set != 0 {
                         bail!(
                             "entry_point: {} functions[{}] descriptor set must be 0\n{:#?}",
@@ -571,7 +573,7 @@ fn parse_spirv(spirv: &[u8]) -> Result<ModuleDescriptor> {
                             &function,
                         );
                     }
-                    let mut buffer = buffer.clone();
+                    let mut buffer = buffer;
                     buffer.mutable = *mutable;
                     if buffer.mutable && nonwritable.contains(variable) {
                         bail!(
@@ -583,7 +585,7 @@ fn parse_spirv(spirv: &[u8]) -> Result<ModuleDescriptor> {
                         );
                     }
                     buffers.push(buffer);
-                } else if let Some(&push_consts) = push_constants.get(&variable) {
+                } else if let Some(&push_consts) = push_constants.get(variable) {
                     if push_constant_range > 0 {
                         bail!("entry_point: {} functions[{}] only 1 push constant block is allowed!\n{:#?}", &entry_point.name, f, &function);
                     }
