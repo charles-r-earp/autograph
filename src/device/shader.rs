@@ -479,13 +479,12 @@ fn parse_spirv(spirv: &[u8]) -> Result<ModuleDescriptor> {
                         &bindings
                     )
                 })?;
-                let mutable = !nonwritable.contains(&pointee);
                 buffer_bindings.insert(
                     variable,
                     BufferBinding {
                         descriptor_set,
                         binding,
-                        mutable,
+                        mutable: false,
                     },
                 );
             }
@@ -524,20 +523,37 @@ fn parse_spirv(spirv: &[u8]) -> Result<ModuleDescriptor> {
             continue;
         };
         if let Some(entry_point) = entry_points.get(&fn_id) {
-            let mut parameters = HashSet::<Word>::new();
+            let mut parameters = HashMap::<Word, bool>::new();
+            let mut pointers = HashMap::<Word, Word>::new();
             for (b, block) in function.blocks.iter().enumerate() {
                 for (i, inst) in block.instructions.iter().enumerate() {
                     match inst.class.opcode {
-                        Op::Load
-                        | Op::Store
-                        | Op::AccessChain
-                        | Op::InBoundsAccessChain
-                        | Op::PtrAccessChain => {
+                        Op::AccessChain | Op::InBoundsAccessChain => {
+                            let result_id = inst.result_id.ok_or_else(|| {
+                                anyhow!(
+                                    "entry_point: {} functions[{}].blocks[{}].instructions[{}].result_id found None:\n{:#?}",
+                                    &entry_point.name,
+                                    f,
+                                    b,
+                                    i,
+                                    &function)
+                            })?;
                             let variable = match inst.operands.get(0) {
                                 Some(&Operand::IdRef(variable)) => variable,
                                 _ => bail!("entry_point: {} functions[{}].blocks[{}].instructions[{}].operands[0] invalid variable:\n{:#?}", &entry_point.name, f, b, i, &function),
                             };
-                            parameters.insert(variable);
+                            parameters.entry(variable).or_default();
+                            dbg!(result_id);
+                            pointers.insert(result_id, variable);
+                        }
+                        Op::Store | Op::AtomicOr => {
+                            let pointer = match inst.operands.get(0) {
+                                Some(&Operand::IdRef(variable)) => variable,
+                                _ => bail!("entry_point: {} functions[{}].blocks[{}].instructions[{}].operands[0] invalid pointer:\n{:#?}", &entry_point.name, f, b, i, &function),
+                            };
+                            if let Some(variable) = pointers.get(&pointer) {
+                                parameters.get_mut(variable).map(|mutable| *mutable = true);
+                            }
                         }
                         _ => (),
                     }
@@ -545,13 +561,24 @@ fn parse_spirv(spirv: &[u8]) -> Result<ModuleDescriptor> {
             }
             let mut buffers = Vec::<BufferBinding>::new();
             let mut push_constant_range = 0;
-            for &variable in parameters.iter() {
+            for (variable, mutable) in parameters.iter() {
                 if let Some(&buffer) = buffer_bindings.get(&variable) {
                     if buffer.descriptor_set != 0 {
                         bail!(
                             "entry_point: {} functions[{}] descriptor set must be 0\n{:#?}",
                             &entry_point.name,
                             f,
+                            &function,
+                        );
+                    }
+                    let mut buffer = buffer.clone();
+                    buffer.mutable = *mutable;
+                    if buffer.mutable && nonwritable.contains(variable) {
+                        bail!(
+                            "entry_point: {} functions[{}] nonwritable buffer at binding {} is modified!\n{:#?}",
+                            &entry_point.name,
+                            f,
+                            buffer.binding,
                             &function,
                         );
                     }
