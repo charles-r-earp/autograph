@@ -1,7 +1,8 @@
 use crate::result::Result;
 
 /// Dot (matrix) product.
-pub(crate) trait Dot<R> {
+#[doc(hidden)]
+pub trait Dot<R> {
     /// Type of the output.
     type Output;
     /// Computes the dot product `self` * `rhs`.

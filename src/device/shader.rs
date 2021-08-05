@@ -95,10 +95,18 @@ impl Module {
         }
     }
     #[doc(hidden)]
-    pub fn disassemble(&self) -> String {
+    pub fn rspirv_module(&self) -> rspirv::dr::Module {
         let mut loader = Loader::new();
         Parser::new(&self.spirv, &mut loader).parse().unwrap();
-        loader.module().disassemble()
+        loader.module()
+    }
+    #[doc(hidden)]
+    pub fn disassemble(&self) -> String {
+        self.rspirv_module().disassemble()
+    }
+    #[doc(hidden)]
+    pub fn descriptor_to_string(&self) -> String {
+        format!("{:#?}", &self.descriptor)
     }
 }
 
@@ -129,7 +137,7 @@ pub(super) struct EntryDescriptor {
     pub(super) local_size: [u32; 3],
     pub(super) buffers: Vec<bool>,
     pub(super) push_constant_size: u8,
-    pub(super) specialization_size: u8,
+    pub(super) spec_constants: Vec<SpecConstant>,
 }
 
 impl EntryDescriptor {
@@ -137,8 +145,34 @@ impl EntryDescriptor {
         self.push_constant_size as usize
     }
     pub(super) fn specialization_size(&self) -> usize {
-        self.specialization_size as usize
+        self.spec_constants.iter().map(|x| x.spec_type.size()).sum()
     }
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub(super) enum SpecType {
+    U32,
+    I32,
+    F32,
+    U64,
+    I64,
+    F64,
+}
+
+impl SpecType {
+    pub(super) fn size(&self) -> usize {
+        use SpecType::*;
+        match self {
+            U32 | I32 | F32 => 4,
+            U64 | I64 | F64 => 8,
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
+pub(super) struct SpecConstant {
+    id: u32,
+    spec_type: SpecType,
 }
 
 #[derive(Clone, Debug)]
@@ -229,6 +263,7 @@ fn parse_spirv(spirv: &[u8]) -> Result<ModuleDescriptor> {
     let mut bindings = HashMap::<Word, u32>::new();
     let mut nonwritable = HashSet::<Word>::new();
     let mut field_offsets = HashMap::<(Word, u32), u32>::new();
+    let mut spec_ids = HashMap::<Word, Word>::new();
 
     for (i, inst) in module.annotations.iter().enumerate() {
         match inst.class.opcode {
@@ -256,6 +291,9 @@ fn parse_spirv(spirv: &[u8]) -> Result<ModuleDescriptor> {
                         }
                         Decoration::Binding => {
                             bindings.insert(id?, x?);
+                        }
+                        Decoration::SpecId => {
+                            spec_ids.insert(id?, x?);
                         }
                         _ => (),
                     }
@@ -303,6 +341,7 @@ fn parse_spirv(spirv: &[u8]) -> Result<ModuleDescriptor> {
     let mut layouts = HashMap::<Word, Layout>::new();
     let mut pointers = HashMap::<Word, (StorageClass, Word)>::new();
     let mut variables = HashMap::<Word, (StorageClass, Word)>::new();
+    let mut spec_constants = HashMap::<Word, SpecConstant>::new();
 
     for (i, inst) in module.types_global_values.iter().enumerate() {
         let result_id = inst.result_id.ok_or_else(|| {
@@ -442,6 +481,43 @@ fn parse_spirv(spirv: &[u8]) -> Result<ModuleDescriptor> {
                 })?;
                 variables.insert(result_id, (storage_class, result_type));
             }
+            Op::SpecConstant => {
+                let result_id = inst.result_id.ok_or_else(|| {
+                    anyhow!(
+                        "types_global_values[{}].result_id found None:\n{:#?}",
+                        i,
+                        &inst
+                    )
+                })?;
+                let spec_type = match inst.operands.get(0) {
+                    Some(&Operand::LiteralInt32(_)) => SpecType::U32,
+                    Some(&Operand::LiteralInt64(_)) => SpecType::U64,
+                    Some(&Operand::LiteralFloat32(_)) => SpecType::F32,
+                    Some(&Operand::LiteralFloat64(_)) => SpecType::F64,
+                    _ => {
+                        bail!(
+                            "types_global_values[{}] operands[0] Expected spec constant value, found:\n{:#?}",
+                            i,
+                            &inst
+                        );
+                    }
+                };
+                let spec_id = spec_ids.get(&result_id).ok_or_else(|| {
+                    anyhow!(
+                        "types_global_values[{}] spec_id not found for op {}:\n{:?}",
+                        i,
+                        result_id,
+                        &inst,
+                    )
+                })?;
+                spec_constants.insert(
+                    result_id,
+                    SpecConstant {
+                        id: *spec_id,
+                        spec_type,
+                    },
+                );
+            }
             _ => (),
         }
     }
@@ -525,6 +601,7 @@ fn parse_spirv(spirv: &[u8]) -> Result<ModuleDescriptor> {
         if let Some(entry_point) = entry_points.get(&fn_id) {
             let mut parameters = HashMap::<Word, bool>::new();
             let mut pointers = HashMap::<Word, Word>::new();
+            let mut specialization = HashMap::<Word, SpecConstant>::new();
             for (b, block) in function.blocks.iter().enumerate() {
                 for (i, inst) in block.instructions.iter().enumerate() {
                     match inst.class.opcode {
@@ -558,6 +635,13 @@ fn parse_spirv(spirv: &[u8]) -> Result<ModuleDescriptor> {
                             }
                         }
                         _ => (),
+                    }
+                    for operand in inst.operands.iter() {
+                        if let Operand::IdRef(result_id) = operand {
+                            if let Some(spec_constant) = spec_constants.get(result_id) {
+                                specialization.insert(*result_id, *spec_constant);
+                            }
+                        }
                     }
                 }
             }
@@ -599,6 +683,8 @@ fn parse_spirv(spirv: &[u8]) -> Result<ModuleDescriptor> {
                 }
             }
             let buffers = buffers.iter().map(|b| b.mutable).collect();
+            let mut spec_constants = specialization.values().copied().collect::<Vec<_>>();
+            spec_constants.sort_by_key(|c| c.id);
             module_descriptor.entries.insert(
                 entry_point.name.clone(),
                 EntryDescriptor {
@@ -610,7 +696,7 @@ fn parse_spirv(spirv: &[u8]) -> Result<ModuleDescriptor> {
                     local_size: entry_point.local_size,
                     buffers,
                     push_constant_size: push_constant_range,
-                    specialization_size: 0,
+                    spec_constants,
                 },
             );
         }

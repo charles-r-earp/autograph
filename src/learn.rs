@@ -1,6 +1,6 @@
 use crate::result::Result;
 #[cfg(feature = "tensor")]
-use crate::tensor::{ArcTensor1, ArcTensor2};
+use crate::{float_tensor::FloatArcTensor2, tensor::ArcTensor1};
 #[cfg(feature = "Serde")]
 use serde::{Deserialize, Serialize};
 
@@ -9,6 +9,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(feature = "tensor")]
+mod kmeans;
+
 trait Infer<X> {
     type Output;
     fn infer(&self, input: X) -> Result<Self::Output>;
@@ -16,8 +19,7 @@ trait Infer<X> {
 
 #[cfg(feature = "tensor")]
 trait Classify<X> {
-    // May change to dynamic types id FloatArcTensor2.
-    fn classify<F>(input: X) -> Result<ArcTensor2<F>>;
+    fn classify(input: X) -> Result<FloatArcTensor2>;
     #[allow(unused)]
     fn predict<U>(input: X) -> Result<ArcTensor1<U>> {
         todo!()

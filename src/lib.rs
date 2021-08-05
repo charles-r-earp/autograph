@@ -38,7 +38,8 @@ pub mod device;
 
 mod util;
 
-mod glsl_shaders;
+#[doc(hidden)]
+pub mod glsl_shaders;
 #[doc(hidden)]
 pub mod rust_shaders;
 
@@ -48,7 +49,8 @@ pub mod float;
 pub mod scalar;
 
 /// Linear Algebra.
-mod linalg;
+#[doc(hidden)]
+pub mod linalg;
 /// Numerical operations.
 mod ops;
 

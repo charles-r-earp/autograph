@@ -37,13 +37,10 @@ use autograph::{
         // entry "add"
         .compute_pass("add")?
         // buffer at binding = 0
-        // must be NonWritable
         .slice(a.as_slice())?
         // buffer at binding = 1
-        // must be NonWritable
         .slice(b.as_slice())?
         // buffer at binding = 2
-        // must not be NonWritable
         .slice_mut(y.as_slice_mut())?
         // push constant for the work size.
         // Can be chained or passed as a struct.
@@ -296,6 +293,7 @@ pub mod builders {
         args: Vec<ComputePassArg>,
         push_constants: Vec<u8>,
         specialization: Vec<u8>,
+        spec_index: usize,
         _m: PhantomData<&'b ()>,
     }
 
@@ -314,6 +312,7 @@ pub mod builders {
                 args: Vec::with_capacity(descriptor.buffers.len()),
                 push_constants: Vec::with_capacity(descriptor.push_constant_size()),
                 specialization: Vec::with_capacity(descriptor.specialization_size()),
+                spec_index: 0,
                 _m: PhantomData::default(),
             })
         }
@@ -322,7 +321,7 @@ pub mod builders {
         /// **Errors**
         /// - The slice is on the host.
         /// - The slice is not on the same device as previous arguments.
-        /// - The slice was declared mutable (not NonWritable).
+        /// - The slice is modified in the shader.
         /// - There are no more arguments to be bound.
         ///
         /// # Note
@@ -343,12 +342,10 @@ pub mod builders {
         /// **Errors**
         /// - The slice is on the host.
         /// - The slice is not on the same device as previous arguments.
-        /// - The slice was declared immutable (non_writable).
         /// - There are no more arguments to be bound.
         ///
         /// # Note
         /// - Does not check the numerical type of the buffer.
-        /// - No special behavior for `non_readable`.
         pub fn slice_mut<'b2, T>(
             self,
             slice: SliceMut<'b2, T>,
@@ -384,16 +381,10 @@ pub mod builders {
                 self.device.replace(device.clone());
             }
             let declared_mutable = *self.descriptor.buffers.get(self.args.len()).unwrap();
-            if mutable != declared_mutable {
+            if mutable && !declared_mutable {
                 bail!(
-                    "Provided {} at binding {}, but it is declared {} in {:?} entry {:?}!",
-                    if mutable { "mutable slice" } else { "slice" },
+                    "Provided slice at binding {}, but it is modified in {:?} entry {:?}!",
                     self.args.len(),
-                    if declared_mutable {
-                        "mutable (not non_writable)"
-                    } else {
-                        "immutable (non_writable)"
-                    },
                     self.module,
                     &self.entry,
                 )
@@ -410,6 +401,7 @@ pub mod builders {
                 args: self.args,
                 push_constants: self.push_constants,
                 specialization: self.specialization,
+                spec_index: self.spec_index,
                 _m: PhantomData::default(),
             })
         }
@@ -492,20 +484,19 @@ pub mod builders {
             self.specialization.extend_from_slice(bytes);
             Ok(self)
         }*/
-        fn check_specialization_size(&self, size: usize, finished: bool) -> Result<()> {
-            let declared_size = self.descriptor.specialization_size();
-            if size > declared_size || (finished && size != declared_size) {
-                Err(anyhow!(
-                    "Provided specialization size {} B does not match declared size {} B in {:?} entry {:?}!",
-                    size,
-                    declared_size,
+        /*fn check_specialization_size(&self) -> Result<()> {
+            if self.spec_index != self.descriptor.spec_constants.len() {
+                bail!(
+                    "Provided specialization {:?}, declared {:?} in {:?} entry {:?}!",
+                    &self.descriptor.spec_constants[..self.spec_index],
+                    &self.descriptor.spec_constants,
                     self.module,
                     self.entry,
-                ))
-            } else {
-                Ok(())
+                );
             }
-        }
+            debug_assert_eq!(self.specialization.len(), self.descriptor.specialization_size());
+            Ok(())
+        }*/
         /// Submits the compute pass to the device with the given `global_size`.
         ///
         /// The compute pass will be executed with enough "work groups" such that for each dimension GLOBAL_SIZE >= WORK_GROUPS * LOCAL_SIZE.
@@ -515,7 +506,7 @@ pub mod builders {
         ///
         /// # Safety
         /// The caller must ensure:
-        /// 1. The type `T` of each slice argument is valid. For example `Slice<u8>` can be bound to shader buffer that is a uint or u32, or any arbitrary type. The only constraint that is enforced is that the mutability matches, where buffers declared `NonWritable` are immutable, and buffers not declared `NonWritable` are mutable.
+        /// 1. The type `T` of each slice argument is valid. For example `Slice<u8>` can be bound to shader buffer that is a uint or u32, or any arbitrary type.
         /// 2. The type(s) of the push constants are valid. Only the size (in bytes) is checked, the shader can interpret the bytes arbitrarily.
         /// 3. The `global_size` is valid. If too large, the shader may perform out of bounds reads or writes, which is undefined behavior. If too small, the shader may not fully compute the output(s). Note that the shader will be executed with potentially more invocations than `global_size`, in blocks of the `local_size` declared in the shader. Typically the actual work size (ie the length of the buffer(s)) is passed as a push constant.
         /// 4. The shader is valid. Executing a compute shader is essentially a foreign function call, and is inherently unsafe.
@@ -543,7 +534,7 @@ pub mod builders {
             }
             self.check_args_size(self.args.len(), true)?;
             self.check_push_constant_size(self.push_constants.len(), true)?;
-            self.check_specialization_size(self.specialization.len(), true)?;
+            //self.check_specialization_size()?;
             let work_groups = work_groups(global_size, self.descriptor.local_size);
             let compute_pass = ComputePass {
                 module: self.module.id,
@@ -561,7 +552,7 @@ pub mod builders {
     }
 
     impl Module {
-        /// Returns a ['ComputePassBuilder`] used to setup and submit a compute shader.
+        /// Returns a [`ComputePassBuilder`] used to setup and submit a compute shader.
         ///
         /// **Errors**
         /// - The `entry` was not found in the module.

@@ -2,13 +2,9 @@
 
 #include "buffer_macros.comp"
 
-// Saw about a 2x speedup reducing from 32 to 16
-// Tuning these per device in order to maximize occupancy
-// is probably the main way to improve performance
-// Non square tiles are bugged
-#define M_TILE 16
-#define K_TILE 16
-#define N_TILE 16
+#define M_TILE 8
+#define K_TILE 8
+#define N_TILE 8
 
 layout(local_size_x = M_TILE, local_size_y = N_TILE) in;
 

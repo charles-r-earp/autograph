@@ -48,6 +48,10 @@ fn gemm_impl<T: Scalar>(
         c.as_raw_slice_mut().fill(T::default())?;
     }
 
+    let (m, k) = a.dim();
+    let (k2, n) = b.dim();
+    let (m2, n2) = c.dim();
+
     let name = format!(
         "gemm{}_{}",
         if bias.is_some() { "_bias_" } else { "" },
@@ -55,10 +59,6 @@ fn gemm_impl<T: Scalar>(
     );
 
     let module = crate::glsl_shaders::module(name)?;
-
-    let (m, k) = a.dim();
-    let (k2, n) = b.dim();
-    let (m2, n2) = c.dim();
 
     if m != m2 {
         bail!("a_rows != c_rows, {} != {}", m, m2);
@@ -116,6 +116,7 @@ fn gemm_impl<T: Scalar>(
         builder
     };
     let builder = builder.slice_mut(c.as_raw_slice_mut())?.push(push_consts)?;
+
     unsafe { builder.submit([m, n, 1]) }
 }
 
@@ -317,7 +318,7 @@ mod tests {
                             N => b.view(),
                             T => b.t()
                         };
-                        for _ in 0 .. 10 {
+                        for _ in 0 .. 100 {
                             a.view().dot(&b.view()).unwrap();
                             smol::block_on(device.sync()).unwrap();
                         }

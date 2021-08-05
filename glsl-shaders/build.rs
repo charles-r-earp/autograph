@@ -1,6 +1,6 @@
 use shaderc::{CompileOptions, Compiler, ShaderKind, SourceLanguage, IncludeType, ResolvedInclude, IncludeCallbackResult};
 use std::path::PathBuf;
-use std::{env, fs};
+use std::fs;
 use std::iter::once;
 
 type Result<T, E = Box<dyn std::error::Error>> = std::result::Result<T, E>;
