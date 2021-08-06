@@ -1,17 +1,77 @@
-use super::{
-    Axis, Data, Dimension, Num, RemoveAxis, Result, Tensor, TensorBase, TensorView, TensorViewMut,
-};
-use crate::util::type_eq;
-use anyhow::ensure;
-use half::bf16;
+use super::{Data, Scalar, Tensor, TensorBase, TensorView, TensorViewMut};
+use crate::{glsl_shaders, result::Result, util::size_eq};
+use anyhow::bail;
+use ndarray::{Axis, Dimension, RemoveAxis};
 
-impl<T: Num, S: Data<Elem = T>, D: RemoveAxis> TensorBase<S, D> {
-    /// Computes the index of the max value along the given axis\
-    pub fn sum(&self, axis: Axis) -> Result<Tensor<T, D::Smaller>> {
-        ensure!(axis.0 < self.shape().len());
-        let mut output = unsafe {
-            Tensor::<T, D::Smaller>::uninitialized(&self.device(), self.dim.remove_axis(axis))?
-        };
+#[allow(unused)]
+#[derive(Debug, Copy, Clone)]
+enum Reduction {
+    Sum,
+    Mean,
+    Min,
+    Max,
+    Argmin,
+    Argmax,
+}
+
+impl Reduction {
+    fn as_str(&self) -> &'static str {
+        use Reduction::*;
+        match self {
+            Sum => "sum",
+            Mean => "mean",
+            Min => "min",
+            Max => "max",
+            Argmin => "argmin",
+            Argmax => "argmax",
+        }
+    }
+}
+
+fn reduce<T1, T2, D>(
+    input: &TensorView<T1, D>,
+    output: &mut TensorViewMut<T2, D::Smaller>,
+    axis: Axis,
+    reduction: Reduction,
+    accumulate: bool,
+) -> Result<()>
+where
+    T1: Scalar,
+    T2: Scalar,
+    D: Dimension,
+{
+    if size_eq::<T2, u16>() && !accumulate {
+        output.as_raw_slice_mut().fill(T2::zero())?;
+    }
+    let name = format!("reduce_{}_final_{}", reduction.as_str(), T1::scalar_name());
+    let module = glsl_shaders::module(name)?;
+    let batch_size = output.len() as u32;
+    let stride_x = if axis.0 > 0 {
+        input.strides()[axis.0 - 1] as u32
+    } else {
+        1
+    };
+    let n = input.shape()[axis.0] as u32;
+    let stride_y = input.strides()[axis.0] as u32;
+    let accumulate = accumulate as u32;
+    let builder = module
+        .compute_pass("main")?
+        .slice(input.as_raw_slice())?
+        .slice_mut(output.as_raw_slice_mut())?
+        .push([batch_size, stride_x, n, stride_y, accumulate])?;
+    unsafe { builder.submit([batch_size, 1, 1]) }
+}
+
+/// Reductions
+impl<T: Scalar, S: Data<Elem = T>, D: RemoveAxis> TensorBase<S, D> {
+    /// Computes the index of the max value along the given axis
+    #[allow(unused)]
+    pub(crate) fn sum(&self, axis: Axis) -> Result<Tensor<T, D::Smaller>> {
+        if axis.0 >= self.shape().len() {
+            bail!("Axis {:?} out of range for shape {:?}!", axis, self.shape());
+        }
+        let mut output =
+            unsafe { Tensor::<T, D::Smaller>::alloc(self.device(), self.dim.remove_axis(axis))? };
         reduce(
             &self.view(),
             &mut output.view_mut(),
@@ -21,13 +81,23 @@ impl<T: Num, S: Data<Elem = T>, D: RemoveAxis> TensorBase<S, D> {
         )?;
         Ok(output)
     }
+    #[allow(unused)]
     pub(crate) fn sum_with(
         &self,
         axis: Axis,
         output: &mut TensorViewMut<T, D::Smaller>,
     ) -> Result<()> {
-        ensure!(axis.0 < self.shape().len());
-        ensure!(output.dim == self.dim.remove_axis(axis));
+        if axis.0 >= self.shape().len() {
+            bail!("Axis {:?} out of range for shape {:?}!", axis, self.shape());
+        }
+        let output_dim = self.dim.remove_axis(axis);
+        if output.raw_dim() != output_dim {
+            bail!(
+                "Output dim {:?} != input dim remove_axis {:?}!",
+                output.shape(),
+                output_dim.slice()
+            );
+        }
         reduce(
             &self.view(),
             &mut output.view_mut(),
@@ -37,17 +107,16 @@ impl<T: Num, S: Data<Elem = T>, D: RemoveAxis> TensorBase<S, D> {
         )?;
         Ok(())
     }
-}
-
-impl<T: Num, S: Data<Elem = T>, D: RemoveAxis> TensorBase<S, D> {
-    /// Computes the index of the min value along the given axis\
+    /// Computes the index of the min value along the given axis.
     ///
-    /// For multiple max values, the first will be selected. NaN values are ignored, returns 0 if all values are NaN.
-    pub fn argmin(&self, axis: Axis) -> Result<Tensor<u32, D::Smaller>> {
-        ensure!(axis.0 < self.shape().len());
-        let mut output = unsafe {
-            Tensor::<u32, D::Smaller>::uninitialized(&self.device(), self.dim.remove_axis(axis))?
-        };
+    /// For multiple min values, the first will be selected. NaN values are ignored, returns 0 if all values are NaN.
+    #[allow(unused)]
+    pub(crate) fn argmin(&self, axis: Axis) -> Result<Tensor<u32, D::Smaller>> {
+        if axis.0 >= self.shape().len() {
+            bail!("Axis {:?} out of range for shape {:?}!", axis, self.shape());
+        }
+        let mut output =
+            unsafe { Tensor::<u32, D::Smaller>::alloc(self.device(), self.dim.remove_axis(axis))? };
         reduce(
             &self.view(),
             &mut output.view_mut(),
@@ -57,17 +126,16 @@ impl<T: Num, S: Data<Elem = T>, D: RemoveAxis> TensorBase<S, D> {
         )?;
         Ok(output)
     }
-}
-
-impl<T: Num, S: Data<Elem = T>, D: RemoveAxis> TensorBase<S, D> {
-    /// Computes the index of the max value along the given axis\
+    /// Computes the index of the max value along the given axis.
     ///
     /// For multiple max values, the first will be selected. NaN values are ignored, returns 0 if all values are NaN.
-    pub fn argmax(&self, axis: Axis) -> Result<Tensor<u32, D::Smaller>> {
-        ensure!(axis.0 < self.shape().len());
-        let mut output = unsafe {
-            Tensor::<u32, D::Smaller>::uninitialized(&self.device(), self.dim.remove_axis(axis))?
-        };
+    #[allow(unused)]
+    pub(crate) fn argmax(&self, axis: Axis) -> Result<Tensor<u32, D::Smaller>> {
+        if axis.0 >= self.shape().len() {
+            bail!("Axis {:?} out of range for shape {:?}!", axis, self.shape());
+        }
+        let mut output =
+            unsafe { Tensor::<u32, D::Smaller>::alloc(self.device(), self.dim.remove_axis(axis))? };
         reduce(
             &self.view(),
             &mut output.view_mut(),
@@ -79,128 +147,294 @@ impl<T: Num, S: Data<Elem = T>, D: RemoveAxis> TensorBase<S, D> {
     }
 }
 
-#[allow(unused)]
-enum Reduction {
-    Sum,
-    Mean,
-    Min,
-    Max,
-    Argmin,
-    Argmax,
-}
+#[cfg(all(test, feature = "device_tests"))]
+mod tests {
+    use super::*;
+    use crate::device::Device;
+    use approx::assert_relative_eq;
+    use half::bf16;
+    use ndarray::{Array, ArrayView, IntoDimension};
+    use num_traits::Bounded;
+    use std::convert::TryFrom;
 
-fn reduce<T1, T2, D>(
-    input: &TensorView<T1, D>,
-    output: &mut TensorViewMut<T2, D::Smaller>,
-    axis: Axis,
-    reduction: Reduction,
-    accumulate: bool,
-) -> Result<()>
-where
-    T1: Num,
-    T2: Num,
-    D: Dimension,
-{
-    let device = input.device();
-    let src = {
-        use Reduction::*;
-        match reduction {
-            Sum => {
-                if type_eq::<T1, bf16>() {
-                    include_shader!("glsl/reduce_sum_final_bf16.spv")
-                } else if type_eq::<T1, u32>() {
-                    include_shader!("glsl/reduce_sum_final_u32.spv")
-                } else if type_eq::<T1, i32>() {
-                    include_shader!("glsl/reduce_sum_final_i32.spv")
-                } else if type_eq::<T1, f32>() {
-                    include_shader!("glsl/reduce_sum_final_f32.spv")
-                } else {
-                    unreachable!()
-                }
-            }
-            Mean => {
-                if type_eq::<T1, bf16>() {
-                    include_shader!("glsl/reduce_mean_final_bf16.spv")
-                } else if type_eq::<T1, u32>() {
-                    include_shader!("glsl/reduce_mean_final_u32.spv")
-                } else if type_eq::<T1, i32>() {
-                    include_shader!("glsl/reduce_mean_final_i32.spv")
-                } else if type_eq::<T1, f32>() {
-                    include_shader!("glsl/reduce_mean_final_f32.spv")
-                } else {
-                    unreachable!()
-                }
-            }
-            Min => {
-                if type_eq::<T1, bf16>() {
-                    include_shader!("glsl/reduce_min_final_bf16.spv")
-                } else if type_eq::<T1, u32>() {
-                    include_shader!("glsl/reduce_min_final_u32.spv")
-                } else if type_eq::<T1, i32>() {
-                    include_shader!("glsl/reduce_min_final_i32.spv")
-                } else if type_eq::<T1, f32>() {
-                    include_shader!("glsl/reduce_min_final_f32.spv")
-                } else {
-                    unreachable!()
-                }
-            }
-            Max => {
-                if type_eq::<T1, bf16>() {
-                    include_shader!("glsl/reduce_max_final_bf16.spv")
-                } else if type_eq::<T1, u32>() {
-                    include_shader!("glsl/reduce_max_final_u32.spv")
-                } else if type_eq::<T1, i32>() {
-                    include_shader!("glsl/reduce_max_final_i32.spv")
-                } else if type_eq::<T1, f32>() {
-                    include_shader!("glsl/reduce_max_final_f32.spv")
-                } else {
-                    unreachable!()
-                }
-            }
-            Argmin => {
-                if type_eq::<T1, bf16>() {
-                    include_shader!("glsl/reduce_argmin_final_bf16.spv")
-                } else if type_eq::<T1, u32>() {
-                    include_shader!("glsl/reduce_argmin_final_u32.spv")
-                } else if type_eq::<T1, i32>() {
-                    include_shader!("glsl/reduce_argmin_final_i32.spv")
-                } else if type_eq::<T1, f32>() {
-                    include_shader!("glsl/reduce_argmin_final_f32.spv")
-                } else {
-                    unreachable!()
-                }
-            }
-            Argmax => {
-                if type_eq::<T1, bf16>() {
-                    include_shader!("glsl/reduce_argmax_final_bf16.spv")
-                } else if type_eq::<T1, u32>() {
-                    include_shader!("glsl/reduce_argmax_final_u32.spv")
-                } else if type_eq::<T1, i32>() {
-                    include_shader!("glsl/reduce_argmax_final_i32.spv")
-                } else if type_eq::<T1, f32>() {
-                    include_shader!("glsl/reduce_argmax_final_f32.spv")
-                } else {
-                    unreachable!()
+    fn array_argmin<T: PartialOrd + Copy + Bounded, D: RemoveAxis>(
+        input: &ArrayView<T, D>,
+        axis: Axis,
+    ) -> Array<u32, D::Smaller> {
+        let mut indices = Array::zeros(input.raw_dim().remove_axis(axis));
+        let mut values = Array::from_elem(input.raw_dim().remove_axis(axis), T::max_value());
+        for (u, x) in input.axis_iter(axis).enumerate() {
+            for (x, (i, v)) in x.iter().zip(indices.iter_mut().zip(values.iter_mut())) {
+                if x < v {
+                    *i = u as u32;
+                    *v = *x;
                 }
             }
         }
-    };
-    let batch_size = output.len() as u32;
-    let stride_x = if axis.0 > 0 {
-        input.strides()[axis.0 - 1] as u32
-    } else {
-        1
-    };
-    let n = input.shape()[axis.0] as u32;
-    let stride_y = input.strides()[axis.0] as u32;
-    let accumulate = accumulate as u32;
-    device
-        .compute_pass(src, "main")?
-        .buffer_slice(input.as_unordered_buffer_slice())?
-        .buffer_slice_mut(output.as_buffer_slice_mut().unwrap())?
-        .push_constants(bytemuck::cast_slice(&[
-            batch_size, stride_x, n, stride_y, accumulate,
-        ]))?
-        .global_size([batch_size, 1, 1])
-        .enqueue()
+        indices
+    }
+
+    fn array_argmax<T: PartialOrd + Copy + Bounded, D: RemoveAxis>(
+        input: &ArrayView<T, D>,
+        axis: Axis,
+    ) -> Array<u32, D::Smaller> {
+        let mut indices = Array::zeros(input.raw_dim().remove_axis(axis));
+        let mut values = Array::from_elem(input.raw_dim().remove_axis(axis), T::min_value());
+        for (u, x) in input.axis_iter(axis).enumerate() {
+            for (x, (i, v)) in x.iter().zip(indices.iter_mut().zip(values.iter_mut())) {
+                if x > v {
+                    *i = u as u32;
+                    *v = *x;
+                }
+            }
+        }
+        indices
+    }
+
+    fn gen_array<T: From<u8>, D: Dimension>(dim: D) -> Result<Array<T, D>> {
+        let v1 = (1..=100)
+            .cycle()
+            .step_by(21)
+            .take(dim.size())
+            .map(T::from)
+            .collect();
+        Ok(Array::from_shape_vec(dim, v1)?)
+    }
+
+    fn tensor_sum<T: Scalar + From<u8> + num_traits::Zero, D: IntoDimension>(
+        dim: D,
+        axis: Axis,
+    ) -> Result<()>
+    where
+        D::Dim: RemoveAxis,
+    {
+        smol::block_on(async {
+            let a1 = gen_array::<T, _>(dim.into_dimension())?;
+            let y_true = a1.sum_axis(axis);
+            let device = Device::new()?;
+            let _s = device.acquire().await;
+            let t1 = TensorView::try_from(a1.view())?.into_device(device).await?;
+            let t2 = t1.sum(axis)?;
+            let y = t2.read().await?;
+            assert_eq!(&y.as_array(), &y_true.view());
+            Ok(())
+        })
+    }
+
+    fn tensor_sum_bf16<D: IntoDimension>(dim: D, axis: Axis) -> Result<()>
+    where
+        D::Dim: RemoveAxis,
+    {
+        smol::block_on(async {
+            let dim = dim.into_dimension();
+            let a1_bf16 = gen_array::<bf16, _>(dim.clone())?;
+            let a1_f32 = gen_array::<f32, _>(dim)?;
+            let y_true = a1_f32.sum_axis(axis);
+            let device = Device::new()?;
+            let _s = device.acquire().await;
+            let t1 = Tensor::from(a1_bf16).into_device(device).await?;
+            let t2 = t1.sum(axis)?;
+            let y = t2.read().await?.as_array().map(|x| x.to_f32());
+            assert_relative_eq!(&y, &y_true, epsilon = 0.01, max_relative = 0.01);
+            Ok(())
+        })
+    }
+
+    fn tensor_argmin<T: Scalar + From<u8> + PartialOrd + Bounded, D: IntoDimension>(
+        dim: D,
+        axis: Axis,
+    ) -> Result<()>
+    where
+        D::Dim: RemoveAxis,
+    {
+        smol::block_on(async {
+            let a1 = gen_array::<T, _>(dim.into_dimension())?;
+            let y_true = array_argmin(&a1.view(), axis);
+            let device = Device::new()?;
+            let _s = device.acquire().await;
+            let t1 = TensorView::try_from(a1.view())?.into_device(device).await?;
+            let t2 = t1.argmin(axis)?;
+            let y = t2.read().await?;
+            assert_eq!(&y.as_array(), &y_true.view());
+            Ok(())
+        })
+    }
+
+    fn tensor_argmin_bf16<D: IntoDimension>(dim: D, axis: Axis) -> Result<()>
+    where
+        D::Dim: RemoveAxis,
+    {
+        smol::block_on(async {
+            let a1 = gen_array::<f32, _>(dim.into_dimension())?;
+            let y_true = array_argmin(&a1.view(), axis);
+            let device = Device::new()?;
+            let _s = device.acquire().await;
+            let t1 = Tensor::from(a1.view().map(|x| bf16::from_f32(*x)))
+                .into_device(device)
+                .await?;
+            let t2 = t1.argmin(axis)?;
+            let y = t2.read().await?;
+            assert_eq!(&y.as_array(), &y_true.view());
+            Ok(())
+        })
+    }
+
+    fn tensor_argmax<T: Scalar + From<u8> + PartialOrd + Bounded, D: IntoDimension>(
+        dim: D,
+        axis: Axis,
+    ) -> Result<()>
+    where
+        D::Dim: RemoveAxis,
+    {
+        smol::block_on(async {
+            let a1 = gen_array::<T, _>(dim.into_dimension())?;
+            let y_true = array_argmax(&a1.view(), axis);
+            let device = Device::new()?;
+            let _s = device.acquire().await;
+            let t1 = TensorView::try_from(a1.view())?.into_device(device).await?;
+            let t2 = t1.argmax(axis)?;
+            let y = t2.read().await?;
+            assert_eq!(&y.as_array(), &y_true.view());
+            Ok(())
+        })
+    }
+
+    fn tensor_argmax_bf16<D: IntoDimension>(dim: D, axis: Axis) -> Result<()>
+    where
+        D::Dim: RemoveAxis,
+    {
+        smol::block_on(async {
+            let a1 = gen_array::<f32, _>(dim.into_dimension())?;
+            let y_true = array_argmax(&a1.view(), axis);
+            let device = Device::new()?;
+            let _s = device.acquire().await;
+            let t1 = Tensor::from(a1.view().map(|x| bf16::from_f32(*x)))
+                .into_device(device)
+                .await?;
+            let t2 = t1.argmax(axis)?;
+            let y = t2.read().await?;
+            assert_eq!(&y.as_array(), &y_true.view());
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn tensor_sum_bf16_11x12_axis0() -> Result<()> {
+        tensor_sum_bf16([11, 12], Axis(0))
+    }
+
+    #[test]
+    fn tensor_sum_bf16_22x23_axis1() -> Result<()> {
+        tensor_sum_bf16([22, 23], Axis(1))
+    }
+
+    #[test]
+    fn tensor_sum_u32_11x12_axis0() -> Result<()> {
+        tensor_sum::<u32, _>([11, 12], Axis(0))
+    }
+
+    #[test]
+    fn tensor_sum_u32_22x23_axis1() -> Result<()> {
+        tensor_sum::<u32, _>([22, 23], Axis(1))
+    }
+
+    #[test]
+    fn tensor_sum_i32_11x12_axis0() -> Result<()> {
+        tensor_sum::<i32, _>([11, 12], Axis(0))
+    }
+
+    #[test]
+    fn tensor_sum_i32_22x23_axis1() -> Result<()> {
+        tensor_sum::<i32, _>([22, 23], Axis(1))
+    }
+
+    #[test]
+    fn tensor_sum_f32_11x12_axis0() -> Result<()> {
+        tensor_sum::<f32, _>([11, 12], Axis(0))
+    }
+
+    #[test]
+    fn tensor_sum_f32_22x23_axis1() -> Result<()> {
+        tensor_sum::<f32, _>([22, 23], Axis(1))
+    }
+
+    #[test]
+    fn tensor_argmin_bf16_11x12_axis0() -> Result<()> {
+        tensor_argmin_bf16([11, 12], Axis(0))
+    }
+
+    #[test]
+    fn tensor_argmin_bf16_22x23_axis1() -> Result<()> {
+        tensor_argmin_bf16([22, 23], Axis(1))
+    }
+
+    #[test]
+    fn tensor_argmin_u32_11x12_axis0() -> Result<()> {
+        tensor_argmin::<u32, _>([11, 12], Axis(0))
+    }
+
+    #[test]
+    fn tensor_argmin_u32_22x23_axis1() -> Result<()> {
+        tensor_argmin::<u32, _>([22, 23], Axis(1))
+    }
+
+    #[test]
+    fn tensor_argmin_i32_11x12_axis0() -> Result<()> {
+        tensor_argmin::<i32, _>([11, 12], Axis(0))
+    }
+
+    #[test]
+    fn tensor_argmin_i32_22x23_axis1() -> Result<()> {
+        tensor_argmin::<i32, _>([22, 23], Axis(1))
+    }
+
+    #[test]
+    fn tensor_argmin_f32_11x12_axis0() -> Result<()> {
+        tensor_argmin::<f32, _>([11, 12], Axis(0))
+    }
+
+    #[test]
+    fn tensor_argmin_f32_22x23_axis1() -> Result<()> {
+        tensor_argmin::<f32, _>([22, 23], Axis(1))
+    }
+
+    #[test]
+    fn tensor_argmax_bf16_11x12_axis0() -> Result<()> {
+        tensor_argmax_bf16([11, 12], Axis(0))
+    }
+
+    #[test]
+    fn tensor_argmax_bf16_22x23_axis1() -> Result<()> {
+        tensor_argmax_bf16([22, 23], Axis(1))
+    }
+
+    #[test]
+    fn tensor_argmax_u32_11x12_axis0() -> Result<()> {
+        tensor_argmax::<u32, _>([11, 12], Axis(0))
+    }
+
+    #[test]
+    fn tensor_argmax_u32_22x23_axis1() -> Result<()> {
+        tensor_argmax::<u32, _>([22, 23], Axis(1))
+    }
+
+    #[test]
+    fn tensor_argmax_i32_11x12_axis0() -> Result<()> {
+        tensor_argmax::<i32, _>([11, 12], Axis(0))
+    }
+
+    #[test]
+    fn tensor_argmax_i32_22x23_axis1() -> Result<()> {
+        tensor_argmax::<i32, _>([22, 23], Axis(1))
+    }
+
+    #[test]
+    fn tensor_argmax_f32_11x12_axis0() -> Result<()> {
+        tensor_argmax::<f32, _>([11, 12], Axis(0))
+    }
+
+    #[test]
+    fn tensor_argmax_f32_22x23_axis1() -> Result<()> {
+        tensor_argmax::<f32, _>([22, 23], Axis(1))
+    }
 }

@@ -1048,6 +1048,27 @@ impl<T> ArcBuffer<T> {
             Err(self)
         }
     }
+    #[allow(unused)]
+    pub(crate) fn get_mut(&mut self) -> Option<SliceMut<T>> {
+        if self.offset == 0 && self.len == self.buffer.len() {
+            Arc::get_mut(&mut self.buffer).map(Buffer::as_slice_mut)
+        } else {
+            None
+        }
+    }
+    #[allow(unused)]
+    pub(crate) fn make_mut(&mut self) -> Result<SliceMut<T>>
+    where
+        T: Copy,
+    {
+        if let Some(slice) = self.get_mut() {
+            return Ok(unsafe { transmute(slice) });
+        }
+        let buffer = self.to_owned()?;
+        self.buffer = Arc::new(buffer);
+        let buffer = unsafe { &mut *(Arc::as_ptr(&self.buffer) as *mut Buffer<T>) };
+        Ok(unsafe { transmute(buffer.as_slice_mut()) })
+    }
     /// Converts into a [`Buffer`].
     ///
     /// **Errors**
@@ -1227,11 +1248,34 @@ impl<T> CowBuffer<'_, T> {
             Self::Buffer(buffer) => buffer.as_slice(),
         }
     }
-    #[allow(unused)]
     pub(crate) fn try_unwrap(self) -> Result<Buffer<T>, Self> {
         match self {
             Self::Buffer(buffer) => Ok(buffer),
             slice => Err(slice),
+        }
+    }
+    #[allow(unused)]
+    pub(crate) fn get_mut(&mut self) -> Option<SliceMut<T>> {
+        match self {
+            Self::Slice(_) => None,
+            Self::Buffer(buffer) => Some(buffer.as_slice_mut()),
+        }
+    }
+    #[allow(unused)]
+    pub(crate) fn make_mut(&mut self) -> Result<SliceMut<T>>
+    where
+        T: Copy,
+    {
+        match self {
+            Self::Slice(slice) => {
+                let buffer = slice.to_owned()?;
+                *self = Self::Buffer(buffer);
+                match self {
+                    Self::Slice(_) => unreachable!(),
+                    Self::Buffer(buffer) => Ok(buffer.as_slice_mut()),
+                }
+            }
+            Self::Buffer(buffer) => Ok(buffer.as_slice_mut()),
         }
     }
     /// Transfers the buffer into the `device`.

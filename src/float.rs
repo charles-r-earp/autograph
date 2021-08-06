@@ -1,6 +1,7 @@
 use crate::{
     device::{
         buffer::{ArcBuffer, Buffer, CowBuffer, Slice, SliceMut},
+        builders::ComputePassBuilder,
         Device,
     },
     result::Result,
@@ -61,10 +62,6 @@ macro_rules! map_float_buffer {
     );
     ($self:ident, $x:ident => $e:expr) => (
         map_float_buffer!($self: Self, $x => $e)
-        /*match $self {
-            Self::BF16($x) => $e,
-            Self::F32($x) => $e,
-        }*/
     );
 }
 
@@ -101,6 +98,13 @@ macro_rules! impl_float_buffer {
                 pub fn is_empty(&self) -> bool {
                     map_float_buffer!(self, buffer => buffer.is_empty())
                 }
+                /// The [`FloatType`] of the buffer.
+                pub fn float_type(&self) -> FloatType {
+                    match &self {
+                        Self::BF16(_) => FloatType::BF16,
+                        Self::F32(_) => FloatType::F32,
+                    }
+                }
                 /// Borrows the buffer as a slice.
                 pub fn as_slice(&self) -> FloatSlice {
                     map_float_buffer!(self, buffer => buffer.as_slice().into())
@@ -125,6 +129,43 @@ macro_rules! impl_float_buffer {
                 pub async fn into_device(self, device: Device) -> Result<FloatBuffer>
                 {
                     map_float_buffer!(self, buffer => Ok(buffer.into_device(device).await?.into()))
+                }
+            }
+
+
+            /// Casts
+            impl<$($a,)?> $float_buffer $(<$a>)? {
+                /// Casts the buffer into a new buffer.
+                ///
+                /// See [`BufferBase::cast_into()`].
+                #[allow(unused)]
+                pub(crate) fn cast_into<T2: Scalar>(self) -> Result<Buffer<T2>> {
+                    map_float_buffer!(self, buffer => buffer.cast_into())
+                }
+                /// Casts the buffer into a new buffer.
+                ///
+                /// Returns a CowBuffer, where for T -> T, borrows the buffer.
+                ///
+                /// See [`BufferBase::cast_into()`].
+                #[allow(unused)]
+                pub(crate) fn cast_to<T2: Scalar>(&self) -> Result<CowBuffer<T2>> {
+                    map_float_buffer!(self, buffer => buffer.cast_to())
+                }
+                /// Scales the buffer into a new buffer.
+                ///
+                /// See [`BufferBase::scale_into()`].
+                #[allow(unused)]
+                pub(crate) fn scale_into<T2: Scalar>(self, alpha: T2) -> Result<Buffer<T2>> {
+                    map_float_buffer!(self, buffer => buffer.scale_into(alpha))
+                }
+
+                #[allow(unused)]
+                pub(crate) fn downcast<T: Float>(self) -> Result<$buffer <$($b,)? T>, Self>  {
+                    use FloatType::*;
+                    match (self, T::float_type()) {
+                        (Self::BF16(buffer), BF16)  => Ok(unsafe { transmute(buffer) }),
+                        _ => todo!()
+                    }
                 }
             }
         )+
@@ -248,6 +289,16 @@ macro_rules! impl_float_buffer_try_mut {
                 pub(crate) fn try_unwrap(self) -> Result<FloatBuffer, Self> {
                     map_float_buffer!(self, buffer => buffer.try_unwrap().map(Into::into).map_err(Into::into))
                 }
+                #[allow(unused)]
+                #[cfg(feature = "tensor")]
+                pub(crate) fn get_mut(&mut self) -> Option<FloatSliceMut> {
+                    map_float_buffer!(self, buffer => buffer.get_mut().map(Into::into))
+                }
+                #[allow(unused)]
+                #[cfg(feature = "tensor")]
+                pub(crate) fn make_mut(&mut self) -> Result<FloatSliceMut> {
+                    map_float_buffer!(self, buffer => buffer.make_mut().map(Into::into))
+                }
             }
         )+
     }
@@ -256,4 +307,25 @@ macro_rules! impl_float_buffer_try_mut {
 impl_float_buffer_try_mut! {
     (FloatArcBuffer, ArcBuffer),
     (FloatCowBuffer<'a>, CowBuffer<'a>),
+}
+
+/// Float methods.
+///
+/// See [`float`](crate::float).
+impl<'m, 'b> ComputePassBuilder<'m, 'b> {
+    /// Adds a float slice as an argument to the shader at the next binding.
+    ///
+    /// See [`.slice()`](ComputePassBuilder::slice())
+    pub fn float_slice<'b2>(self, slice: FloatSlice<'b2>) -> Result<ComputePassBuilder<'m, 'b2>> {
+        map_float_buffer!(slice: FloatSlice, slice => self.slice(slice))
+    }
+    /// Adds a mutable float slice as an argument to the shader at the next binding.
+    ///
+    /// See [`.slice_mut()`](ComputePassBuilder::slice_mut())
+    pub fn float_slice_mut<'b2>(
+        self,
+        slice: FloatSliceMut<'b2>,
+    ) -> Result<ComputePassBuilder<'m, 'b2>> {
+        map_float_buffer!(slice: FloatSliceMut, slice => self.slice_mut(slice))
+    }
 }

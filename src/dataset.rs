@@ -1,8 +1,10 @@
 use crate::result::Result;
-#[cfg(feature = "ndarray")]
+#[cfg(feature = "tensor")]
+use crate::tensor::ArcTensor;
+#[cfg(feature = "tensor")]
 use anyhow::bail;
-#[cfg(feature = "ndarray")]
-use ndarray::{ArcArray, Array, ArrayBase, Axis, Data as ArrayData, RemoveAxis};
+#[cfg(feature = "tensor")]
+use ndarray::{Array, ArrayBase, Axis, Data as ArrayData, RemoveAxis};
 #[cfg(feature = "rand")]
 use rand::seq::SliceRandom as _;
 use std::ops::Range;
@@ -67,6 +69,19 @@ pub trait Dataset {
     /// Returns whether the dataset is empty.
     fn is_empty(&self) -> bool {
         self.size() == 0
+    }
+}
+
+impl<A: Dataset> Dataset for &A {
+    type Item = A::Item;
+    fn sample<I>(&self, indices: I) -> Result<Self::Item>
+    where
+        I: IntoIterator<Item = usize>,
+    {
+        A::sample(self, indices)
+    }
+    fn size(&self) -> usize {
+        A::size(self)
     }
 }
 
@@ -179,9 +194,9 @@ impl<A: Dataset, B: Dataset> Dataset for Zip<A, B> {
     }
 }
 
-#[cfg(feature = "ndarray")]
+#[cfg(feature = "tensor")]
 impl<T: Default + Copy, S: ArrayData<Elem = T>, D: RemoveAxis> Dataset for ArrayBase<S, D> {
-    type Item = ArcArray<T, D>;
+    type Item = ArcTensor<T, D>;
     fn sample<I>(&self, indices: I) -> Result<Self::Item>
     where
         I: IntoIterator<Item = usize>,
@@ -197,23 +212,9 @@ impl<T: Default + Copy, S: ArrayData<Elem = T>, D: RemoveAxis> Dataset for Array
         for (mut y, i) in output.outer_iter_mut().zip(indices) {
             y.assign(&self.index_axis(Axis(0), i));
         }
-        Ok(output.into_shared())
+        Ok(ArcTensor::from(output))
     }
     fn size(&self) -> usize {
         self.shape().first().map_or(0, |x| *x)
-    }
-}
-
-#[cfg(feature = "ndarray")]
-impl<T: Default + Copy, S: ArrayData<Elem = T>, D: RemoveAxis> Dataset for &ArrayBase<S, D> {
-    type Item = ArcArray<T, D>;
-    fn sample<I>(&self, indices: I) -> Result<Self::Item>
-    where
-        I: IntoIterator<Item = usize>,
-    {
-        ArrayBase::sample(self, indices)
-    }
-    fn size(&self) -> usize {
-        ArrayBase::size(self)
     }
 }

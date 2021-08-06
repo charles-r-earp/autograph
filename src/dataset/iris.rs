@@ -76,6 +76,8 @@ Summary Statistics:
 use super::Dataset;
 use crate::result::Result;
 use ndarray::{ArcArray, ArcArray1, ArcArray2};
+#[cfg(feature = "tensor")]
+use crate::tensor::{ArcTensor1, ArcTensor2};
 
 // Data from http://archive.ics.uci.edu/ml/machine-learning-databases/iris/iris.data
 
@@ -337,8 +339,9 @@ impl Default for Iris {
     }
 }
 
+#[cfg(feature = "tensor")]
 impl Dataset for Iris {
-    type Item = (ArcArray2<f32>, ArcArray1<u8>);
+    type Item = (ArcTensor2<f32>, ArcTensor1<u8>);
     fn sample<I>(&self, indices: I) -> Result<Self::Item>
     where
         I: IntoIterator<Item = usize>,

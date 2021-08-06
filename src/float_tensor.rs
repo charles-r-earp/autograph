@@ -1,13 +1,23 @@
 use crate::{
-    device::Device,
+    device::{CowBuffer, Device},
     float::{
         Float, FloatArcBuffer, FloatBuffer, FloatCowBuffer, FloatSlice, FloatSliceMut, FloatType,
     },
     result::Result,
-    tensor::{dim_strides_from_shape, into_dimensionality, into_shape, DataBase},
+    scalar::Scalar,
+    tensor::{
+        dim_strides_from_shape, into_dimensionality, into_shape, ArcRepr, ArcTensor, CowRepr,
+        CowTensor, DataBase, OwnedRepr, Tensor, TensorBase, TensorView, TensorViewMut, ViewMutRepr,
+        ViewRepr,
+    },
 };
+use half::bf16;
+use std::mem::transmute;
 
-use ndarray::{Dimension, IntoDimension, Ix0, Ix1, Ix2, Ix3, Ix4, Ix5, Ix6, IxDyn, ShapeBuilder};
+use ndarray::{
+    Axis, Dimension, IntoDimension, Ix0, Ix1, Ix2, Ix3, Ix4, Ix5, Ix6, IxDyn, RemoveAxis,
+    ShapeBuilder,
+};
 use serde::{Deserialize, Serialize};
 
 //mod linalg;
@@ -60,6 +70,10 @@ pub trait FloatData: Sized + DataBase {
     }
     #[doc(hidden)]
     fn as_slice(&self) -> FloatSlice;
+    #[doc(hidden)]
+    fn float_type(&self) -> FloatType {
+        self.as_slice().float_type()
+    }
 }
 
 /// Marker trait for owned float tensors [`FloatTensor`] / [`FloatArcTensor`] / [`FloatCowTensor`].
@@ -72,6 +86,15 @@ pub trait FloatDataOwned: FloatData {
 pub trait FloatDataMut: FloatData {
     #[doc(hidden)]
     fn as_slice_mut(&mut self) -> FloatSliceMut;
+}
+
+#[doc(hidden)]
+/// Marker trait for potentially mutable float tensors [`FloatArcTensor`] / ['FloatCowTensor`].
+pub trait FloatDataTryMut: FloatData {
+    #[doc(hidden)]
+    fn get_slice_mut(&mut self) -> Option<FloatSliceMut>;
+    #[doc(hidden)]
+    fn make_slice_mut(&mut self) -> Result<FloatSliceMut>;
 }
 
 /// FloatTensor representation.
@@ -118,6 +141,15 @@ impl FloatData for FloatArcRepr {
 impl FloatDataOwned for FloatArcRepr {
     fn from_buffer(buffer: FloatBuffer) -> Self {
         Self(buffer.into())
+    }
+}
+
+impl FloatDataTryMut for FloatArcRepr {
+    fn get_slice_mut(&mut self) -> Option<FloatSliceMut> {
+        self.0.get_mut()
+    }
+    fn make_slice_mut(&mut self) -> Result<FloatSliceMut> {
+        self.0.make_mut()
     }
 }
 
@@ -388,6 +420,10 @@ impl<S: FloatData, D: Dimension> FloatTensorBase<S, D> {
     pub fn ndim(&self) -> usize {
         self.dim.ndim()
     }
+    /// The [`FloatType`] of the tensor.
+    pub fn float_type(&self) -> FloatType {
+        self.data.float_type()
+    }
     /// Converts the tensor into dimension `D2`.
     ///
     /// Typically this is used to downcast from [`IxDyn`](type@ndarray::IxDyn) to a static dimensionality. For conversions to [`IxDyn`](type@ndarray::IxDyn), use [`.into_dyn()`](TensorBase::into_dyn()).
@@ -489,6 +525,12 @@ impl<S: FloatData, D: Dimension> FloatTensorBase<S, D> {
     {
         self.data.as_slice_mut()
     }
+    pub(crate) fn make_slice_mut(&mut self) -> Result<FloatSliceMut>
+    where
+        S: FloatDataTryMut,
+    {
+        self.data.make_slice_mut()
+    }
     /// Transfers the tensor into the `device`.
     ///
     /// **Errors**
@@ -529,5 +571,187 @@ impl<S: FloatDataOwned> From<FloatBuffer> for FloatTensorBase<S, Ix1> {
         let strides = dim.default_strides();
         let data = S::from_buffer(buffer);
         Self { dim, strides, data }
+    }
+}
+
+impl<T: Float, D: Dimension> From<Tensor<T, D>> for FloatTensor<D> {
+    fn from(tensor: Tensor<T, D>) -> Self {
+        let data = FloatOwnedRepr(tensor.data.0.into());
+        Self {
+            dim: tensor.dim,
+            strides: tensor.strides,
+            data,
+        }
+    }
+}
+
+impl<T: Float, D: Dimension> From<ArcTensor<T, D>> for FloatArcTensor<D> {
+    fn from(tensor: ArcTensor<T, D>) -> Self {
+        let data = FloatArcRepr(tensor.data.0.into());
+        Self {
+            dim: tensor.dim,
+            strides: tensor.strides,
+            data,
+        }
+    }
+}
+
+impl<'a, T: Float, D: Dimension> From<TensorView<'a, T, D>> for FloatTensorView<'a, D> {
+    fn from(tensor: TensorView<'a, T, D>) -> Self {
+        let data = FloatViewRepr(tensor.data.0.into());
+        Self {
+            dim: tensor.dim,
+            strides: tensor.strides,
+            data,
+        }
+    }
+}
+
+impl<'a, T: Float, D: Dimension> From<TensorViewMut<'a, T, D>> for FloatTensorViewMut<'a, D> {
+    fn from(tensor: TensorViewMut<'a, T, D>) -> Self {
+        let data = FloatViewMutRepr(tensor.data.0.into());
+        Self {
+            dim: tensor.dim,
+            strides: tensor.strides,
+            data,
+        }
+    }
+}
+
+impl<'a, T: Float, D: Dimension> From<CowTensor<'a, T, D>> for FloatCowTensor<'a, D> {
+    fn from(tensor: CowTensor<'a, T, D>) -> Self {
+        let data = FloatCowRepr(tensor.data.0.into());
+        Self {
+            dim: tensor.dim,
+            strides: tensor.strides,
+            data,
+        }
+    }
+}
+
+macro_rules! impl_downcast {
+    ($($float_tensor:ident | $float_data:ident $(<$a:lifetime>)? => $tensor:ident | $data:ident,)+) => {
+        $(
+            impl<$($a,)? D: Dimension> $float_tensor<$($a,)? D> {
+                #[allow(unused)]
+                pub(crate) fn downcast<T: Float>(self) -> Result<$tensor<$($a,)? T, D>, Self> {
+                    match self.data.0.downcast() {
+                        Ok(buffer) => Ok(TensorBase {
+                            dim: self.dim,
+                            strides: self.strides,
+                            data: $data(buffer)
+                        }),
+                        Err(buffer) => Err(FloatTensorBase {
+                            dim: self.dim,
+                            strides: self.strides,
+                            data: $float_data(buffer)
+                        })
+                    }
+                }
+            }
+        )+
+    };
+}
+
+impl_downcast! {
+    FloatTensor | FloatOwnedRepr => Tensor | OwnedRepr,
+    FloatArcTensor | FloatArcRepr => ArcTensor | ArcRepr,
+    FloatTensorView | FloatViewRepr<'a> => TensorView | ViewRepr,
+    FloatTensorViewMut | FloatViewMutRepr<'a> => TensorViewMut | ViewMutRepr,
+    FloatCowTensor | FloatCowRepr<'a> => CowTensor | CowRepr,
+}
+
+/// Casts
+#[allow(unused)]
+impl<S: FloatData, D: Dimension> FloatTensorBase<S, D> {
+    pub(crate) fn cast_into<T2: Scalar>(self) -> Result<Tensor<T2, D>> {
+        let buffer = match self.data.try_into_buffer() {
+            Ok(buffer) => buffer.cast_into()?,
+            Err(data) => data.as_slice().cast_into()?,
+        };
+        Ok(TensorBase {
+            dim: self.dim,
+            strides: self.strides,
+            data: OwnedRepr(buffer),
+        })
+    }
+    pub(crate) fn cast_to<T2: Scalar>(&self) -> Result<CowTensor<T2, D>> {
+        let slice = self.data.as_slice();
+        let buffer: CowBuffer<T2> = slice.cast_to::<T2>()?;
+        Ok(TensorBase {
+            dim: self.dim.clone(),
+            strides: self.strides.clone(),
+            data: CowRepr(unsafe { transmute(buffer) }),
+        })
+    }
+    pub(crate) fn scale_into<T2: Scalar>(self, alpha: T2) -> Result<Tensor<T2, D>> {
+        let buffer = match self.data.try_into_buffer() {
+            Ok(buffer) => buffer.scale_into(alpha)?,
+            Err(data) => data.as_slice().scale_into(alpha)?,
+        };
+        Ok(TensorBase {
+            dim: self.dim,
+            strides: self.strides,
+            data: OwnedRepr(buffer),
+        })
+    }
+    pub(crate) fn downcast_ref<T: Float>(&self) -> Option<TensorView<T, D>> {
+        self.view().downcast().ok()
+    }
+    pub(crate) fn downcast_mut<T: Float>(&mut self) -> Option<TensorViewMut<T, D>>
+    where
+        S: FloatDataMut,
+    {
+        self.view_mut().downcast().ok()
+    }
+}
+
+macro_rules! map_float_tensor {
+    (ref $tensor:ident, $x:ident => $e:expr) => {
+        map_float_tensor! {$tensor, $x => downcast_ref $e}
+    };
+    (mut $tensor:ident, $x:ident => $e:expr) => {
+        map_float_tensor! {$tensor, $x => downcast_mut { let mut $x = $x; $e }}
+    };
+    ($tensor:ident, $x:ident => $downcast:ident $e:expr) => {{
+        use FloatType::*;
+        match $tensor.float_type() {
+            BF16 => {
+                let $x = $tensor.$downcast::<bf16>().unwrap();
+                $e
+            }
+            F32 => {
+                let $x = $tensor.$downcast::<f32>().unwrap();
+                $e
+            }
+        }
+    }};
+}
+
+/// Reductions
+#[allow(unused)]
+impl<S: FloatData, D: RemoveAxis> FloatTensorBase<S, D> {
+    /// Computes the index of the max value along the given axis
+    pub(crate) fn sum(&self, axis: Axis) -> Result<FloatTensor<D::Smaller>> {
+        map_float_tensor!(ref self, tensor => Ok(tensor.sum(axis)?.into()))
+    }
+    pub(crate) fn sum_with(
+        &self,
+        axis: Axis,
+        output: &mut FloatTensorViewMut<D::Smaller>,
+    ) -> Result<()> {
+        map_float_tensor!(mut output, output => self.cast_to()?.sum_with(axis, &mut output))
+    }
+    /// Computes the index of the min value along the given axis.
+    ///
+    /// For multiple min values, the first will be selected. NaN values are ignored, returns 0 if all values are NaN.
+    pub(crate) fn argmin(&self, axis: Axis) -> Result<Tensor<u32, D::Smaller>> {
+        map_float_tensor!(ref self, tensor => tensor.argmin(axis))
+    }
+    /// Computes the index of the max value along the given axis.
+    ///
+    /// For multiple max values, the first will be selected. NaN values are ignored, returns 0 if all values are NaN.
+    pub(crate) fn argmax(&self, axis: Axis) -> Result<Tensor<u32, D::Smaller>> {
+        map_float_tensor!(ref self, tensor => tensor.argmax(axis))
     }
 }

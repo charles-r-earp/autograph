@@ -24,6 +24,7 @@ use std::{
 };
 
 mod linalg;
+mod reduce;
 
 mod sealed {
     use super::Device;
@@ -126,7 +127,7 @@ pub trait DataTryMut: Data {
     serialize = "T: Pod + Serialize",
     deserialize = "T: Pod + Deserialize<'de>"
 ))]
-pub struct OwnedRepr<T>(Buffer<T>);
+pub struct OwnedRepr<T>(pub(crate) Buffer<T>); // pub for FloatTensor
 
 impl<T> Data for OwnedRepr<T> {
     type Elem = T;
@@ -157,7 +158,7 @@ impl<T> DataMut for OwnedRepr<T> {
     serialize = "T: Pod + Serialize",
     deserialize = "T: Pod + Deserialize<'de>"
 ))]
-pub struct ArcRepr<T>(ArcBuffer<T>);
+pub struct ArcRepr<T>(pub(crate) ArcBuffer<T>);
 
 impl<T> Data for ArcRepr<T> {
     type Elem = T;
@@ -181,7 +182,7 @@ impl<T> DataOwned for ArcRepr<T> {
 /// TensorView representation.
 #[derive(Debug, Clone, Serialize)]
 #[serde(bound = "T: Pod + Serialize")]
-pub struct ViewRepr<'a, T>(Slice<'a, T>);
+pub struct ViewRepr<'a, T>(pub(crate) Slice<'a, T>);
 
 impl<T> Data for ViewRepr<'_, T> {
     type Elem = T;
@@ -193,7 +194,7 @@ impl<T> Data for ViewRepr<'_, T> {
 /// TensorView representation.
 #[derive(Debug, Serialize)]
 #[serde(bound = "T: Pod + Serialize")]
-pub struct ViewMutRepr<'a, T>(SliceMut<'a, T>);
+pub struct ViewMutRepr<'a, T>(pub(crate) SliceMut<'a, T>);
 
 impl<T> Data for ViewMutRepr<'_, T> {
     type Elem = T;
@@ -210,7 +211,7 @@ impl<T> DataMut for ViewMutRepr<'_, T> {
 
 /// CowTensor representation.
 #[derive(Debug)]
-pub struct CowRepr<'a, T>(CowBuffer<'a, T>);
+pub struct CowRepr<'a, T>(pub(crate) CowBuffer<'a, T>);
 
 impl<T> Data for CowRepr<'_, T> {
     type Elem = T;

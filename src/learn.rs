@@ -10,7 +10,8 @@ use std::{
 };
 
 #[cfg(feature = "tensor")]
-mod kmeans;
+/// KMeans classifier.
+pub mod kmeans;
 
 trait Infer<X> {
     type Output;
@@ -92,8 +93,8 @@ pub trait Train<X> {
     /// Returns an error if training / testing could not be performed. The trainer may be modified even when returning an error.
     fn train_test<I1, I2>(&mut self, train_iter: I1, test_iter: I2) -> Result<(Stats, Stats)>
     where
-        I1: IntoIterator<Item = X>,
-        I2: IntoIterator<Item = X>;
+        I1: IntoIterator<Item = Result<X>>,
+        I2: IntoIterator<Item = Result<X>>;
     /// Trains the model with the training set.
     ///
     /// Returns the training stats.
@@ -102,7 +103,7 @@ pub trait Train<X> {
     /// Returns an error if training could not be performed. The trainer may be modified even when returning an error.
     fn train<I>(&mut self, train_iter: I) -> Result<Stats>
     where
-        I: IntoIterator<Item = X>,
+        I: IntoIterator<Item = Result<X>>,
     {
         Ok(self.train_test(train_iter, empty())?.0)
     }
@@ -122,5 +123,5 @@ pub trait Test<X> {
     /// Returns an error if testing could not be performed.
     fn test<I>(&self, test_iter: I) -> Result<Stats>
     where
-        I: IntoIterator<Item = X>;
+        I: IntoIterator<Item = Result<X>>;
 }
