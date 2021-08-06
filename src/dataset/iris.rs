@@ -75,9 +75,9 @@ Summary Statistics:
 
 use super::Dataset;
 use crate::result::Result;
-use ndarray::{ArcArray, ArcArray1, ArcArray2};
 #[cfg(feature = "tensor")]
 use crate::tensor::{ArcTensor1, ArcTensor2};
+use ndarray::{ArcArray, ArcArray1, ArcArray2};
 
 // Data from http://archive.ics.uci.edu/ml/machine-learning-databases/iris/iris.data
 
