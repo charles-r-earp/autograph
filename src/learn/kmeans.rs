@@ -1,6 +1,6 @@
 use super::{Infer, Stats, Summarize, Summary, Test, Train};
 use crate::{
-    float::FloatSlice,
+    float::{FloatSlice, FloatType},
     float_tensor::{
         FloatArcTensor2, FloatData, FloatTensor, FloatTensor2, FloatTensorBase, FloatTensorD,
         FloatTensorView2, FloatTensorViewMut2,
@@ -59,7 +59,12 @@ impl KMeans {
         if ndims != _ndims {
             bail!("Input ndim {:?} != Centroid ndim {:?}!", ndims, _ndims);
         }
-        let mut output = unsafe { FloatTensor::alloc(float_type, device, (batch_size, nclasses))? };
+        let mut output = match float_type {
+            FloatType::BF16 => FloatTensor::zeros(float_type, device, (batch_size, nclasses))?,
+            FloatType::F32 => unsafe {
+                FloatTensor::alloc(float_type, device, (batch_size, nclasses))?
+            },
+        };
         let batch_size = batch_size as u32;
         let nclasses = nclasses as u32;
         let ndims = ndims as u32;
@@ -358,12 +363,12 @@ mod tests {
         }
         Ok(())
     }
-    /*
+
     #[tokio::test]
     async fn compute_distances_bf16_m11_k5_n13() -> Result<()> {
         compute_distances::<bf16>(11, 5, 13).await
     }
-    */
+
     #[tokio::test]
     async fn compute_distances_f32_m11_k5_n13() -> Result<()> {
         compute_distances::<f32>(11, 5, 13).await
