@@ -4,7 +4,7 @@ version = "0.1.0"
 authors = ["Charles R Earp <charles.r.earp@gmail.com>"]
 edition = "2018"
 license = "MIT/Apache-2.0"
-description = "Deep Neural Network Library for Rust"
+description = "A machine learning library for Rust."
 homepage = "https://github.com/charles-r-earp/autograph"
 repository = "https://github.com/charles-r-earp/autograph"
 keywords = ["neural-networks", "machine-learning", "deep-learning", "autograd", "gpu"]
@@ -23,15 +23,15 @@ bench = []
 tensor = ["ndarray"]
 # iris dataset
 iris = ["ndarray"]
-# all features except device tests
-host_full = ["tensor", "iris", "derive"]
+# all features except device tests (used for CI testing).
+host_full = ["tensor", "iris", "derive", "rand"]
 # all features
 full = ["host_full", "device_tests"]
 
 [dependencies]
 autograph_derive = { path = "autograph_derive", optional = true }
 bytemuck = { version = "1.4.1", features = ["derive"] }
-ndarray = { version = "0.14.0", default-features = false, features = ["serde"], optional = true }
+ndarray = { version = "0.15.3", default-features = false, features = ["serde"], optional = true }
 smol = "1.2.5"
 rspirv = "0.7.0"
 serde = { version = "1.0.126", features = ["derive", "rc"] }
@@ -44,18 +44,12 @@ anyhow = "1.0.37"
 thiserror = "1.0.23"
 derive_more = "0.99.11"
 rand = { version = "0.8.2", optional = true }
-#rand_distr = "0.4.0"
-#flate2 = "1.0.20"
-#byteorder = "1.4.3"
-#bincode = "1.3.3"
-#futures-core = "0.3.15"
 crossbeam-utils = "0.8.5"
 once_cell = "1.8.0"
 parking_lot = "0.11.1"
 crossbeam-channel = "0.5.1"
 tinyvec = "1.2.0"
 bincode = "1.3.3"
-tokio = { version = "1.8.1", features = ["full"] }
 
 [target."cfg(all(unix, not(target_os = \"ios\"), not(target_os = \"macos\")))".dependencies]
 gfx-backend-vulkan = "0.9.0"
@@ -70,7 +64,7 @@ gfx-backend-dx12 = "0.9.0"
 
 [dev-dependencies]
 approx = "0.4.0"
-ndarray = { version = "0.14.0", features = ["approx"] }
+ndarray = { version = "0.15.3", features = ["approx"] }
 tokio = { version = "1.8.1", features = ["full"] }
 
 [build-dependencies]

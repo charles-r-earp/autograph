@@ -30,6 +30,7 @@ fn generate_modules() -> Result<()> {
         let module = Module::from_spirv(fs::read(spirv_path)?)?.with_name(name);
         glsl_modules.insert(name.to_string(), module);
     }
+    //panic!("{:#?}", glsl_modules.keys().collect::<Vec<_>>());
     let glsl_modules_path = out_dir
         .join("shaders")
         .join("glsl")

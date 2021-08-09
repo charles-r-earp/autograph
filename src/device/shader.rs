@@ -620,7 +620,6 @@ fn parse_spirv(spirv: &[u8]) -> Result<ModuleDescriptor> {
                                 _ => bail!("entry_point: {} functions[{}].blocks[{}].instructions[{}].operands[0] invalid variable:\n{:#?}", &entry_point.name, f, b, i, &function),
                             };
                             parameters.entry(variable).or_default();
-                            dbg!(result_id);
                             pointers.insert(result_id, variable);
                         }
                         Op::Store | Op::AtomicOr => {

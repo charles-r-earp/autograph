@@ -73,10 +73,6 @@ Summary Statistics:
 9. Class Distribution: 33.3% for each of 3 classes.
 */
 
-use super::Dataset;
-use crate::result::Result;
-#[cfg(feature = "tensor")]
-use crate::tensor::{ArcTensor1, ArcTensor2};
 use ndarray::{ArcArray, ArcArray1, ArcArray2};
 
 // Data from http://archive.ics.uci.edu/ml/machine-learning-databases/iris/iris.data
@@ -336,19 +332,5 @@ impl Iris {
 impl Default for Iris {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-#[cfg(feature = "tensor")]
-impl Dataset for Iris {
-    type Item = (ArcTensor2<f32>, ArcTensor1<u8>);
-    fn sample<I>(&self, indices: I) -> Result<Self::Item>
-    where
-        I: IntoIterator<Item = usize>,
-    {
-        self.dimensions().zip(self.classes()).sample(indices)
-    }
-    fn size(&self) -> usize {
-        150
     }
 }

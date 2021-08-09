@@ -1,4 +1,4 @@
-use crate::result::Result;
+/*use crate::result::Result;
 #[cfg(feature = "tensor")]
 use crate::tensor::ArcTensor;
 #[cfg(feature = "tensor")]
@@ -10,11 +10,11 @@ use rand::seq::SliceRandom as _;
 use std::ops::Range;
 #[cfg(feature = "rand")]
 use std::vec::IntoIter as VecIntoIter;
-
+*/
 /// The Iris dataset.
 #[cfg(feature = "iris")]
 pub mod iris;
-
+/*
 /// A dataset that can be sampled.
 pub trait Dataset {
     /// The type of each sample / batch.
@@ -218,3 +218,4 @@ impl<T: Default + Copy, S: ArrayData<Elem = T>, D: RemoveAxis> Dataset for Array
         self.shape().first().map_or(0, |x| *x)
     }
 }
+*/

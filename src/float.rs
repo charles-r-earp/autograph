@@ -21,6 +21,17 @@ pub enum FloatType {
     F32,
 }
 
+impl FloatType {
+    /// Returns the type name (ie "f32").
+    pub fn as_str(&self) -> &'static str {
+        use FloatType::*;
+        match self {
+            BF16 => "bf16",
+            F32 => "f32",
+        }
+    }
+}
+
 /// Base trait for float scalar types.
 pub trait Float: Scalar {
     /// The float type.
@@ -35,23 +46,9 @@ impl Float for bf16 {
 
 impl Float for f32 {
     fn float_type() -> FloatType {
-        FloatType::BF16
+        FloatType::F32
     }
 }
-
-/*
-macro_rules! float_buffer_methods {
-    ($($vis:vis fn $fn:ident $(<$($gen:tt),+>)? (& $($a:lifetime)? $self:ident $(, $arg:ident : $arg_ty:ty)*) $(-> $ret:ty)? $(where $($gen2:ident : $bound:tt),+)? { $this:ident => $body:expr })*) => (
-        $(
-            fn $fn $(<$($gen),+>)? (& $($a)? $self $(, $arg : $arg_ty)*) $(-> $ret)? $(where $($gen2 : $bound),+)? {
-                match $self {
-                    Self::BF16($this) => $body,
-                    Self::F32($this) => $body,
-                }
-            }
-        )*
-    )
-}*/
 
 macro_rules! map_float_buffer {
     ($buffer:ident: $t:ident, $x:ident => $e:expr) => (
@@ -164,7 +161,8 @@ macro_rules! impl_float_buffer {
                     use FloatType::*;
                     match (self, T::float_type()) {
                         (Self::BF16(buffer), BF16)  => Ok(unsafe { transmute(buffer) }),
-                        _ => todo!()
+                        (Self::F32(buffer), F32)  => Ok(unsafe { transmute(buffer) }),
+                        (buffer, _) => Err(buffer),
                     }
                 }
             }

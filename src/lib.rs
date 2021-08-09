@@ -38,19 +38,18 @@ pub mod device;
 
 mod util;
 
-#[doc(hidden)]
-pub mod glsl_shaders;
-#[doc(hidden)]
-pub mod rust_shaders;
+mod glsl_shaders;
+mod rust_shaders;
 
 /// Float types.
 pub mod float;
 /// Scalar types.
 pub mod scalar;
+/// Uint types.
+pub mod uint;
 
-/// Linear Algebra.
-#[doc(hidden)]
-pub mod linalg;
+// Linear Algebra.
+mod linalg;
 /// Numerical operations.
 mod ops;
 
@@ -66,4 +65,5 @@ pub mod float_tensor;
 pub mod dataset;
 
 /// Machine Learning.
+#[cfg(feature = "tensor")]
 pub mod learn;

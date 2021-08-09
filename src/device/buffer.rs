@@ -1344,9 +1344,21 @@ impl<'a, T> From<Slice<'a, T>> for CowBuffer<'a, T> {
     }
 }
 
+impl<'a, T> From<&'a [T]> for CowBuffer<'a, T> {
+    fn from(slice: &'a [T]) -> Self {
+        Self::Slice(slice.into())
+    }
+}
+
 impl<T> From<Buffer<T>> for CowBuffer<'_, T> {
     fn from(buffer: Buffer<T>) -> Self {
         Self::Buffer(buffer)
+    }
+}
+
+impl<T> From<Vec<T>> for CowBuffer<'_, T> {
+    fn from(vec: Vec<T>) -> Self {
+        Self::Buffer(vec.into())
     }
 }
 

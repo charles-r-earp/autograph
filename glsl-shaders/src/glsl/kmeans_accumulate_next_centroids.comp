@@ -33,7 +33,7 @@ void main() {
     float tmp;
     if (global_x < nclasses && global_y < ndim) {
         for (uint i = 0; i < batch_size; ++i) {
-            class_index == c[i];
+            class_index = c[i];
             if (class_index == global_x) {
                 if (global_y == 0) {
                     u[class_index] += 1;

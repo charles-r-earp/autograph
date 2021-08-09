@@ -10,6 +10,7 @@ use crate::{
         CowTensor, DataBase, OwnedRepr, Tensor, TensorBase, TensorView, TensorViewMut, ViewMutRepr,
         ViewRepr,
     },
+    uint::Uint,
 };
 use half::bf16;
 use std::mem::transmute;
@@ -377,6 +378,7 @@ impl<S: FloatData, D: Dimension> FloatTensorBase<S, D> {
     /// Creates a float tensor of type `float_type` on `device` with `shape` filled with 0's.
     ///
     /// **Errors**
+    ///
     /// See [`Buffer::alloc()`](crate::device::buffer::BufferBase::alloc()).
     pub fn zeros<Sh>(float_type: FloatType, device: Device, shape: Sh) -> Result<Self>
     where
@@ -429,6 +431,7 @@ impl<S: FloatData, D: Dimension> FloatTensorBase<S, D> {
     /// Typically this is used to downcast from [`IxDyn`](type@ndarray::IxDyn) to a static dimensionality. For conversions to [`IxDyn`](type@ndarray::IxDyn), use [`.into_dyn()`](TensorBase::into_dyn()).
     ///
     /// **Errors**
+    ///
     /// The number of axes of `D2` must be the same as `D`.
     pub fn into_dimensionality<D2>(self) -> Result<FloatTensorBase<S, D2>>
     where
@@ -444,6 +447,7 @@ impl<S: FloatData, D: Dimension> FloatTensorBase<S, D> {
     /// Returns the tensor with dim `shape`.
     ///
     /// **Errors**
+    ///
     /// The tensor must be contiguous, with default strides.
     pub fn into_shape<E>(self, shape: E) -> Result<FloatTensorBase<S, E::Dim>>
     where
@@ -455,6 +459,11 @@ impl<S: FloatData, D: Dimension> FloatTensorBase<S, D> {
             strides,
             data: self.data,
         })
+    }
+    pub(crate) fn flatten(self) -> Result<FloatTensorBase<S, Ix2>> {
+        let batch_size = self.shape()[0];
+        let n = self.shape()[1..].iter().product();
+        self.into_shape([batch_size, n])
     }
     /// Converts the dimensionality of the tensor to [`IxDyn`](type@ndarray::IxDyn).
     pub fn into_dyn(self) -> FloatTensorBase<S, IxDyn> {
@@ -515,7 +524,7 @@ impl<S: FloatData, D: Dimension> FloatTensorBase<S, D> {
     pub fn as_raw_slice(&self) -> FloatSlice {
         self.data.as_slice()
     }
-    /// Mutably borrows the tensor as a [`SliceMut`].
+    /// Mutably borrows the tensor as a [`FloatSliceMut`].
     ///
     /// # Note
     /// If the tensor is not standard layout (C or RowMajor), this may not be what you want.
@@ -525,15 +534,20 @@ impl<S: FloatData, D: Dimension> FloatTensorBase<S, D> {
     {
         self.data.as_slice_mut()
     }
-    pub(crate) fn make_slice_mut(&mut self) -> Result<FloatSliceMut>
+    pub(crate) fn make_mut(&mut self) -> Result<FloatTensorViewMut<D>>
     where
         S: FloatDataTryMut,
     {
-        self.data.make_slice_mut()
+        Ok(FloatTensorViewMut {
+            dim: self.dim.clone(),
+            strides: self.strides.clone(),
+            data: FloatViewMutRepr(self.data.make_slice_mut()?),
+        })
     }
     /// Transfers the tensor into the `device`.
     ///
     /// **Errors**
+    ///
     /// See [`Buffer::into_device()`](crate::device::buffer::BufferBase::into_device()).
     pub async fn into_device(self, device: Device) -> Result<FloatTensor<D>> {
         if device == self.device() {
@@ -554,6 +568,10 @@ impl<S: FloatData, D: Dimension> FloatTensorBase<S, D> {
             strides: self.strides,
             data: self.data.into_owned()?,
         })
+    }
+    /// Converts to a [`FloatTensor`].
+    pub fn to_owned(self) -> Result<FloatTensor<D>> {
+        self.view().into_owned()
     }
     /// Converts into an [`ArcTensor`].
     pub fn into_shared(self) -> Result<FloatArcTensor<D>> {
@@ -587,6 +605,17 @@ impl<T: Float, D: Dimension> From<Tensor<T, D>> for FloatTensor<D> {
 
 impl<T: Float, D: Dimension> From<ArcTensor<T, D>> for FloatArcTensor<D> {
     fn from(tensor: ArcTensor<T, D>) -> Self {
+        let data = FloatArcRepr(tensor.data.0.into());
+        Self {
+            dim: tensor.dim,
+            strides: tensor.strides,
+            data,
+        }
+    }
+}
+
+impl<D: Dimension> From<FloatTensor<D>> for FloatArcTensor<D> {
+    fn from(tensor: FloatTensor<D>) -> Self {
         let data = FloatArcRepr(tensor.data.0.into());
         Self {
             dim: tensor.dim,
@@ -675,7 +704,8 @@ impl<S: FloatData, D: Dimension> FloatTensorBase<S, D> {
             data: OwnedRepr(buffer),
         })
     }
-    pub(crate) fn cast_to<T2: Scalar>(&self) -> Result<CowTensor<T2, D>> {
+    #[doc(hidden)]
+    pub fn cast_to<T2: Scalar>(&self) -> Result<CowTensor<T2, D>> {
         let slice = self.data.as_slice();
         let buffer: CowBuffer<T2> = slice.cast_to::<T2>()?;
         Ok(TensorBase {
@@ -732,26 +762,38 @@ macro_rules! map_float_tensor {
 #[allow(unused)]
 impl<S: FloatData, D: RemoveAxis> FloatTensorBase<S, D> {
     /// Computes the index of the max value along the given axis
-    pub(crate) fn sum(&self, axis: Axis) -> Result<FloatTensor<D::Smaller>> {
-        map_float_tensor!(ref self, tensor => Ok(tensor.sum(axis)?.into()))
+    pub(crate) fn sum_axis(&self, axis: Axis) -> Result<FloatTensor<D::Smaller>> {
+        map_float_tensor!(ref self, tensor => Ok(tensor.sum_axis(axis)?.into()))
     }
-    pub(crate) fn sum_with(
+    pub(crate) fn sum_axis_with(
         &self,
         axis: Axis,
         output: &mut FloatTensorViewMut<D::Smaller>,
     ) -> Result<()> {
-        map_float_tensor!(mut output, output => self.cast_to()?.sum_with(axis, &mut output))
+        map_float_tensor!(mut output, output => self.cast_to()?.sum_axis_with(axis, &mut output))
     }
     /// Computes the index of the min value along the given axis.
     ///
     /// For multiple min values, the first will be selected. NaN values are ignored, returns 0 if all values are NaN.
-    pub(crate) fn argmin(&self, axis: Axis) -> Result<Tensor<u32, D::Smaller>> {
-        map_float_tensor!(ref self, tensor => tensor.argmin(axis))
+    pub(crate) fn argmin_axis<U: Uint>(&self, axis: Axis) -> Result<Tensor<U, D::Smaller>> {
+        map_float_tensor!(ref self, tensor => tensor.argmin_axis(axis))
     }
     /// Computes the index of the max value along the given axis.
     ///
     /// For multiple max values, the first will be selected. NaN values are ignored, returns 0 if all values are NaN.
-    pub(crate) fn argmax(&self, axis: Axis) -> Result<Tensor<u32, D::Smaller>> {
-        map_float_tensor!(ref self, tensor => tensor.argmax(axis))
+    pub(crate) fn argmax_axis<U: Uint>(&self, axis: Axis) -> Result<Tensor<U, D::Smaller>> {
+        map_float_tensor!(ref self, tensor => tensor.argmax_axis(axis))
+    }
+    /// Indexes an `axis` with `indices`.
+    ///
+    /// **Errors**
+    /// - The `axis` is out of range.
+    /// - The operation could not be performed.
+    pub(crate) fn index_select(
+        &self,
+        axis: Axis,
+        indices: &TensorView<u32, D::Smaller>,
+    ) -> Result<FloatTensor<D::Smaller>> {
+        map_float_tensor!(ref self, tensor => tensor.index_select(axis, indices).map(Into::into))
     }
 }

@@ -30,7 +30,34 @@ autograph = { git = https://github.com/charles-r-earp/autograph }
 - Run all the tests with `cargo test --features full`.
 
 # Custom Shader Code
-You can write your own shaders and execute them with **autograph**. See the [Hello Compute](examples/hello-compute/README.md) example.
+You can write your own shaders and execute them with **autograph**. See the [Hello Compute](examples/hello-compute) example.
+
+# Machine Learning
+## KMeans
+![Plot](examples/kmeans-iris/output.png)
+```rust
+// Create the KMeans model.
+let kmeans = KMeans::from_centroids(centroids.into());
+// For small datasets, we can load the entire dataset into the device.
+// For larger datasets, the data can be streamed as an iterator.
+let x = CowTensor::from(x_array.view())
+    .into_device(device)
+    // Note that despite the await this will resolve immediately.
+    // Host -> Device transfers are batched with other operations
+    // asynchronously on the device thread.
+    .await?;
+// Construct a trainer.
+let mut trainer = KMeansTrainer::from(kmeans);
+// Train the model (1 epoch).
+trainer.train(once(Ok(x.view().into())))?;
+// Get the model back.
+let kmeans = KMeans::from(trainer);
+// Get the predicted classes.
+let pred = kmeans.predict(&x.view().into())?
+    .read()
+    .await?;
+```
+See the [KMeans Iris](examples/kmeans-iris) example.
 
 # Help Wanted!
 Lots of things are under construction. Ideas for contributions:

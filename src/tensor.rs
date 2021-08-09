@@ -667,6 +667,13 @@ impl<T, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
             data: self.data.into_owned()?,
         })
     }
+    /// Converts to a [`Tensor`].
+    pub fn to_owned(&self) -> Result<Tensor<T, D>>
+    where
+        T: Copy,
+    {
+        self.view().into_owned()
+    }
     /// Converts into an [`ArcTensor`].
     pub fn into_shared(self) -> Result<ArcTensor<T, D>>
     where
@@ -708,6 +715,21 @@ impl<T, S: DataOwned<Elem = T>, D: Dimension> From<Array<T, D>> for TensorBase<S
     }
 }
 
+impl<'a, T: Clone, D: Dimension> From<ArrayView<'a, T, D>> for CowTensor<'a, T, D> {
+    fn from(array: ArrayView<'a, T, D>) -> Self {
+        if let Some(slice) = array.as_slice_memory_order() {
+            // We want to return 'a, not a new borrow.
+            let slice = unsafe { std::slice::from_raw_parts(slice.as_ptr(), slice.len()) };
+            let dim = array.raw_dim();
+            let strides = strides_from_array(&array);
+            let data = CowRepr(slice.into());
+            Self { dim, strides, data }
+        } else {
+            Self::from(array.to_owned())
+        }
+    }
+}
+
 impl<'a, T, D: Dimension> TryFrom<ArrayView<'a, T, D>> for TensorView<'a, T, D> {
     type Error = Error;
     fn try_from(array: ArrayView<'a, T, D>) -> Result<Self> {
@@ -720,6 +742,42 @@ impl<'a, T, D: Dimension> TryFrom<ArrayView<'a, T, D>> for TensorView<'a, T, D> 
         let strides = strides_from_array(&array);
         let data = ViewRepr(slice.into());
         Ok(Self { dim, strides, data })
+    }
+}
+
+/// Casts
+#[allow(unused)]
+impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
+    pub(crate) fn cast_into<T2: Scalar>(self) -> Result<Tensor<T2, D>> {
+        let buffer = match self.data.try_into_buffer() {
+            Ok(buffer) => buffer.cast_into()?,
+            Err(data) => data.as_slice().cast_into()?,
+        };
+        Ok(TensorBase {
+            dim: self.dim,
+            strides: self.strides,
+            data: OwnedRepr(buffer),
+        })
+    }
+    pub(crate) fn cast_to<T2: Scalar>(&self) -> Result<CowTensor<T2, D>> {
+        let slice = self.data.as_slice();
+        let buffer: CowBuffer<T2> = slice.cast_to::<T2>()?;
+        Ok(TensorBase {
+            dim: self.dim.clone(),
+            strides: self.strides.clone(),
+            data: CowRepr(unsafe { transmute(buffer) }),
+        })
+    }
+    pub(crate) fn scale_into<T2: Scalar>(self, alpha: T2) -> Result<Tensor<T2, D>> {
+        let buffer = match self.data.try_into_buffer() {
+            Ok(buffer) => buffer.scale_into(alpha)?,
+            Err(data) => data.as_slice().scale_into(alpha)?,
+        };
+        Ok(TensorBase {
+            dim: self.dim,
+            strides: self.strides,
+            data: OwnedRepr(buffer),
+        })
     }
 }
 

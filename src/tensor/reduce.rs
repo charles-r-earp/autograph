@@ -1,5 +1,5 @@
 use super::{Data, Scalar, Tensor, TensorBase, TensorView, TensorViewMut};
-use crate::{glsl_shaders, result::Result, util::size_eq};
+use crate::{glsl_shaders, result::Result, uint::Uint, util::size_eq};
 use anyhow::bail;
 use ndarray::{Axis, Dimension, RemoveAxis};
 
@@ -63,10 +63,10 @@ where
 }
 
 /// Reductions
+#[allow(unused)]
 impl<T: Scalar, S: Data<Elem = T>, D: RemoveAxis> TensorBase<S, D> {
     /// Computes the index of the max value along the given axis
-    #[allow(unused)]
-    pub(crate) fn sum(&self, axis: Axis) -> Result<Tensor<T, D::Smaller>> {
+    pub(crate) fn sum_axis(&self, axis: Axis) -> Result<Tensor<T, D::Smaller>> {
         if axis.0 >= self.shape().len() {
             bail!("Axis {:?} out of range for shape {:?}!", axis, self.shape());
         }
@@ -81,8 +81,7 @@ impl<T: Scalar, S: Data<Elem = T>, D: RemoveAxis> TensorBase<S, D> {
         )?;
         Ok(output)
     }
-    #[allow(unused)]
-    pub(crate) fn sum_with(
+    pub(crate) fn sum_axis_with(
         &self,
         axis: Axis,
         output: &mut TensorViewMut<T, D::Smaller>,
@@ -110,8 +109,7 @@ impl<T: Scalar, S: Data<Elem = T>, D: RemoveAxis> TensorBase<S, D> {
     /// Computes the index of the min value along the given axis.
     ///
     /// For multiple min values, the first will be selected. NaN values are ignored, returns 0 if all values are NaN.
-    #[allow(unused)]
-    pub(crate) fn argmin(&self, axis: Axis) -> Result<Tensor<u32, D::Smaller>> {
+    pub(crate) fn argmin_axis<U: Uint>(&self, axis: Axis) -> Result<Tensor<U, D::Smaller>> {
         if axis.0 >= self.shape().len() {
             bail!("Axis {:?} out of range for shape {:?}!", axis, self.shape());
         }
@@ -124,13 +122,12 @@ impl<T: Scalar, S: Data<Elem = T>, D: RemoveAxis> TensorBase<S, D> {
             Reduction::Argmin,
             false,
         )?;
-        Ok(output)
+        output.cast_into()
     }
     /// Computes the index of the max value along the given axis.
     ///
     /// For multiple max values, the first will be selected. NaN values are ignored, returns 0 if all values are NaN.
-    #[allow(unused)]
-    pub(crate) fn argmax(&self, axis: Axis) -> Result<Tensor<u32, D::Smaller>> {
+    pub(crate) fn argmax_axis<U: Uint>(&self, axis: Axis) -> Result<Tensor<U, D::Smaller>> {
         if axis.0 >= self.shape().len() {
             bail!("Axis {:?} out of range for shape {:?}!", axis, self.shape());
         }
@@ -143,6 +140,46 @@ impl<T: Scalar, S: Data<Elem = T>, D: RemoveAxis> TensorBase<S, D> {
             Reduction::Argmax,
             false,
         )?;
+        output.cast_into()
+    }
+    /// Indexes an `axis` with `indices`.
+    ///
+    /// **Errors**
+    /// - The `axis` is out of range.
+    /// - The operation could not be performed.
+    pub(crate) fn index_select(
+        &self,
+        axis: Axis,
+        indices: &TensorView<u32, D::Smaller>,
+    ) -> Result<Tensor<T, D::Smaller>> {
+        if axis.0 >= self.shape().len() {
+            bail!("Axis {:?} out of range for shape {:?}!", axis, self.shape());
+        }
+        let output_dim = self.dim.remove_axis(axis);
+        if indices.raw_dim() != output_dim {
+            bail!(
+                "Indices shape {:?} != input dim remove_axis {:?}!",
+                indices.shape(),
+                output_dim.slice()
+            );
+        }
+        let mut output = unsafe { Tensor::alloc(self.device(), output_dim)? };
+        if size_eq::<T, u16>() {
+            output.as_raw_slice_mut().fill(T::zero())?;
+        }
+        let name = format!("index_select_{}", T::scalar_name());
+        let module = glsl_shaders::module(name)?;
+        let batch_size = indices.dim.size() as u32;
+        let n = self.dim[axis.0] as u32;
+        let builder = module
+            .compute_pass("main")?
+            .slice(self.to_slice()?.as_slice())?
+            .slice(indices.to_slice()?.as_slice())?
+            .slice_mut(output.as_raw_slice_mut())?
+            .push([batch_size, n])?;
+        unsafe {
+            builder.submit([batch_size, 1, 1])?;
+        }
         Ok(output)
     }
 }
@@ -214,7 +251,7 @@ mod tests {
             let device = Device::new()?;
             let _s = device.acquire().await;
             let t1 = TensorView::try_from(a1.view())?.into_device(device).await?;
-            let t2 = t1.sum(axis)?;
+            let t2 = t1.sum_axis(axis)?;
             let y = t2.read().await?;
             assert_eq!(&y.as_array(), &y_true.view());
             Ok(())
@@ -233,7 +270,7 @@ mod tests {
             let device = Device::new()?;
             let _s = device.acquire().await;
             let t1 = Tensor::from(a1_bf16).into_device(device).await?;
-            let t2 = t1.sum(axis)?;
+            let t2 = t1.sum_axis(axis)?;
             let y = t2.read().await?.as_array().map(|x| x.to_f32());
             assert_relative_eq!(&y, &y_true, epsilon = 0.01, max_relative = 0.01);
             Ok(())
@@ -253,7 +290,7 @@ mod tests {
             let device = Device::new()?;
             let _s = device.acquire().await;
             let t1 = TensorView::try_from(a1.view())?.into_device(device).await?;
-            let t2 = t1.argmin(axis)?;
+            let t2 = t1.argmin_axis::<u32>(axis)?;
             let y = t2.read().await?;
             assert_eq!(&y.as_array(), &y_true.view());
             Ok(())
@@ -272,7 +309,7 @@ mod tests {
             let t1 = Tensor::from(a1.view().map(|x| bf16::from_f32(*x)))
                 .into_device(device)
                 .await?;
-            let t2 = t1.argmin(axis)?;
+            let t2 = t1.argmin_axis::<u32>(axis)?;
             let y = t2.read().await?;
             assert_eq!(&y.as_array(), &y_true.view());
             Ok(())
@@ -292,7 +329,7 @@ mod tests {
             let device = Device::new()?;
             let _s = device.acquire().await;
             let t1 = TensorView::try_from(a1.view())?.into_device(device).await?;
-            let t2 = t1.argmax(axis)?;
+            let t2 = t1.argmax_axis::<u32>(axis)?;
             let y = t2.read().await?;
             assert_eq!(&y.as_array(), &y_true.view());
             Ok(())
@@ -311,7 +348,7 @@ mod tests {
             let t1 = Tensor::from(a1.view().map(|x| bf16::from_f32(*x)))
                 .into_device(device)
                 .await?;
-            let t2 = t1.argmax(axis)?;
+            let t2 = t1.argmax_axis::<u32>(axis)?;
             let y = t2.read().await?;
             assert_eq!(&y.as_array(), &y_true.view());
             Ok(())

@@ -19,6 +19,7 @@ glsl-shaders/Cargo.lock
 
 src/main.rs
 *target*
+*plot.png*
 /_examples
 
 #**/*.rs.bk
