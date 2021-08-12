@@ -29,30 +29,58 @@ pub trait Test<X> {
 }
 
 /// Training / Testing statistics.
+#[non_exhaustive]
 #[derive(Default, Clone, Copy, Debug)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Stats {
-    count: usize,
-    loss: Option<f32>,
-    correct: Option<usize>,
+    /// The number of samples.
+    pub count: usize,
+    /// The mean loss.
+    pub loss: Option<f32>,
+    /// The number of correct predictions.
+    pub correct: Option<usize>,
 }
 
 /// Summary of training.
-#[allow(missing_docs)]
+#[non_exhaustive]
 #[derive(Default, Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Summary {
+    /// The current epoch (starting at 0).
     pub epoch: usize,
+    /// The run time for initialization.
+    pub init_time: Duration,
+    /// The run time for the current epoch.
     pub epoch_time: Duration,
+    /// The total run time.
     pub total_time: Duration,
+    /// The training stats.
     pub train_stats: Stats,
+    /// The testing stats.
     pub test_stats: Stats,
 }
 
 impl Summary {
     /// Runs an epoch with `f`.
     ///
-    /// Times `f`. If `f` returns `Ok((train_stats, test_stats))`, updates the stats and epoch time, and accumulates the total time and the epoch. Otherwise returns the error.
+    /// - Initializes (resets to Self::default()).
+    /// - Times `f`.
+    /// - If `f` returns `Ok`, updates the epoch time, and accumulates the total time. Otherwise returns the error.
+    pub fn run_init<F>(&mut self, f: F) -> Result<()>
+    where
+        F: FnOnce(&Self) -> Result<()>,
+    {
+        *self = Self::default();
+        let start = Instant::now();
+        f(self)?;
+        self.init_time = start.elapsed();
+        self.total_time += self.epoch_time;
+        Ok(())
+    }
+    /// Runs an epoch with `f`.
+    ///
+    /// - Times `f`.
+    /// - If `f` returns `Ok((train_stats, test_stats))`, updates the stats and epoch time, and accumulates the total time and the epoch. Otherwise returns the error.
     pub fn run_epoch<F>(&mut self, f: F) -> Result<(Stats, Stats)>
     where
         F: FnOnce(&Self) -> Result<(Stats, Stats)>,

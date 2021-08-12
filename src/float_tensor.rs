@@ -761,7 +761,7 @@ macro_rules! map_float_tensor {
 /// Reductions
 #[allow(unused)]
 impl<S: FloatData, D: RemoveAxis> FloatTensorBase<S, D> {
-    /// Computes the index of the max value along the given axis
+    /// Computes the sum along the given axis
     pub(crate) fn sum_axis(&self, axis: Axis) -> Result<FloatTensor<D::Smaller>> {
         map_float_tensor!(ref self, tensor => Ok(tensor.sum_axis(axis)?.into()))
     }
@@ -771,6 +771,10 @@ impl<S: FloatData, D: RemoveAxis> FloatTensorBase<S, D> {
         output: &mut FloatTensorViewMut<D::Smaller>,
     ) -> Result<()> {
         map_float_tensor!(mut output, output => self.cast_to()?.sum_axis_with(axis, &mut output))
+    }
+    /// Computes the min value along the given axis
+    pub(crate) fn min_axis(&self, axis: Axis) -> Result<FloatTensor<D::Smaller>> {
+        map_float_tensor!(ref self, tensor => Ok(tensor.min_axis(axis)?.into()))
     }
     /// Computes the index of the min value along the given axis.
     ///

@@ -1,16 +1,12 @@
 use autograph::{
     result::Result,
     device::Device,
-    tensor::{Tensor, CowTensor},
-    float_tensor::FloatArcTensor,
+    tensor::CowTensor,
     dataset::iris::Iris,
-    learn::{Train, Predict, kmeans::{KMeans, KMeansTrainer}},
+    learn::{Train, Infer, kmeans::{KMeans, KMeansTrainer}},
 };
-use ndarray::{Array, s, ArrayView1, ArrayView2};
-use std::{
-    iter::once,
-    convert::TryFrom,
-};
+use ndarray::{s, ArrayView1, ArrayView2};
+use std::iter::once;
 
 fn plot(x: &ArrayView2<f32>, y: &ArrayView1<u32>, y_pred: &ArrayView1<u32>, centroids: &ArrayView2<f32>) -> Result<()> {
     use plotters::prelude::*;
@@ -41,29 +37,29 @@ fn plot(x: &ArrayView2<f32>, y: &ArrayView1<u32>, y_pred: &ArrayView1<u32>, cent
         x.outer_iter()
             .zip(y.iter())
             .map(|(x, y)| {
-                Circle::new((x[0], x[1]), 1, colors[*y as usize].filled())
+                Circle::new((x[0], x[1]), 2, colors[*y as usize].filled())
             })
     )?
     .label("Data")
-    .legend(|(x, y)| Circle::new((x, y), 1, BLACK.filled()));
+    .legend(|(x, y)| Circle::new((x, y), 2, BLACK.filled()));
     chart.draw_series(
         centroids.outer_iter()
             .enumerate()
             .map(|(i, x)| {
-                Cross::new((x[0], x[1]), 6, colors[i])
+                Cross::new((x[0], x[1]), 8, colors[i])
             })
     )?
     .label("Centroids")
-    .legend(|(x, y)| Cross::new((x, y), 6, &BLACK));
+    .legend(|(x, y)| Cross::new((x, y), 8, &BLACK));
     chart.draw_series(
         x.outer_iter()
             .zip(y_pred.iter())
             .map(|(x, y)| {
-                Circle::new((x[0], x[1]), 4, colors[*y as usize])
+                Circle::new((x[0], x[1]), 6, colors[*y as usize])
             })
     )?
     .label("Prediction")
-    .legend(|(x, y)| Circle::new((x, y), 4, &BLACK));
+    .legend(|(x, y)| Circle::new((x, y), 6, &BLACK));
     chart.configure_series_labels().border_style(&BLACK).draw()?;
     root.present()?;
     println!("Plot saved to {:?}.", fpath);
@@ -82,26 +78,10 @@ async fn main() -> Result<()> {
     // Select only Petal Length + Petal Height
     // These are the primary dimensions and it makes plotting easier.
     let x_array = x_array.slice(&s![.., 2..]);
-    // For now initialize with the first item of each type.
-    let indices = [0, 50, 100];
-    let init_centroids = x_array.outer_iter()
-        .into_iter()
-        .enumerate()
-        .filter_map(|(i, x)| if indices.contains(&i) {
-            Some(x)
-        } else {
-            None
-        })
-        .flatten()
-        .copied()
-        .collect::<Array<_, _>>()
-        .into_shape([3, 2])?;
-    // Load the centroids into the device.
-    let centroids = Tensor::from(init_centroids)
+    // Create the KMeans model.
+    let kmeans = KMeans::new(iris.class_names().len())
         .into_device(device.clone())
         .await?;
-    // Create the KMeans model.
-    let kmeans = KMeans::from_centroids(centroids.into());
     // For small datasets, we can load the entire dataset into the device.
     // For larger datasets, the data can be streamed as an iterator.
     let x = CowTensor::from(x_array.view())
@@ -112,6 +92,10 @@ async fn main() -> Result<()> {
         .await?;
     // Construct a trainer.
     let mut trainer = KMeansTrainer::from(kmeans);
+    // Intialize the model (KMeans++).
+    // Here we provide an iterator of n iterators, such that the trainer can
+    // visit the data n times. In this case, once for each centroid.
+    trainer.init(|n| std::iter::from_fn(|| Some(once(Ok(x.view().into())))).take(n))?;
     // Train the model (1 epoch).
     trainer.train(once(Ok(x.view().into())))?;
     // Get the model back.
@@ -125,6 +109,7 @@ async fn main() -> Result<()> {
         .read();
     // Get the predicted classes.
     let pred = kmeans.predict(&x.view().into())?
+        .into_dimensionality()?
         .read()
     // Here we wait on all previous operations, including centroids_fut.
         .await?;
@@ -133,6 +118,8 @@ async fn main() -> Result<()> {
     // Get the flower classes from the dataset.
     let classes = iris.classes().map(|c| *c as u32);
     // Plot the results to "plot.png".
+    // Note that since KMeans is an unsupervised method the predicted classes will be arbitrary and
+    // not align to the order of the true classes (ie the colors won't be the same in the plot).
     plot(&x_array.view(), &classes.view(), &pred.as_array(), &centroids.as_array())?;
     Ok(())
 }

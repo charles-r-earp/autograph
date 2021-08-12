@@ -34,10 +34,20 @@ You can write your own shaders and execute them with **autograph**. See the [Hel
 
 # Machine Learning
 ## KMeans
-![Plot](examples/kmeans-iris/output.png)
 ```rust
+// Create the device.
+let device = Device::new()?;
+// Create the dataset.
+let iris = Iris::new();
+// The flower dimensions are the inputs to the model.
+let x_array = iris.dimensions();
+// Select only Petal Length + Petal Height
+// These are the primary dimensions and it makes plotting easier.
+let x_array = x_array.slice(&s![.., 2..]);
 // Create the KMeans model.
-let kmeans = KMeans::from_centroids(centroids.into());
+let kmeans = KMeans::new(iris.class_names().len())
+    .into_device(device.clone())
+    .await?;
 // For small datasets, we can load the entire dataset into the device.
 // For larger datasets, the data can be streamed as an iterator.
 let x = CowTensor::from(x_array.view())
@@ -48,15 +58,37 @@ let x = CowTensor::from(x_array.view())
     .await?;
 // Construct a trainer.
 let mut trainer = KMeansTrainer::from(kmeans);
+// Intialize the model (KMeans++).
+// Here we provide an iterator of n iterators, such that the trainer can
+// visit the data n times. In this case, once for each centroid.
+trainer.init(|n| std::iter::from_fn(|| Some(once(Ok(x.view().into())))).take(n))?;
 // Train the model (1 epoch).
 trainer.train(once(Ok(x.view().into())))?;
 // Get the model back.
 let kmeans = KMeans::from(trainer);
+// Get the trained centroids.
+// For multiple reads, batch them by getting the futures first.
+let centroids_fut = kmeans.centroids()
+    // The centroids are in a FloatArcTensor, which can either be f32 or bf16.
+    // This will convert to f32 if necessary.
+    .cast_to::<f32>()?
+    .read();
 // Get the predicted classes.
 let pred = kmeans.predict(&x.view().into())?
+    .into_dimensionality()?
     .read()
+// Here we wait on all previous operations, including centroids_fut.
     .await?;
+// This will resolve immediately.
+let centroids = centroids_fut.await?;
+// Get the flower classes from the dataset.
+let classes = iris.classes().map(|c| *c as u32);
+// Plot the results to "plot.png".
+// Note that since KMeans is an unsupervised method the predicted classes will be arbitrary and
+// not align to the order of the true classes (ie the colors won't be the same in the plot).
+plot(&x_array.view(), &classes.view(), &pred.as_array(), &centroids.as_array())?;
 ```
+![Plot](examples/kmeans-iris/sample-plot.png)
 See the [KMeans Iris](examples/kmeans-iris) example.
 
 # Help Wanted!

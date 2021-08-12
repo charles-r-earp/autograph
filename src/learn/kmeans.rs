@@ -1,5 +1,6 @@
 use super::{Infer, Stats, Summarize, Summary, Test, Train};
 use crate::{
+    device::Device,
     float::{FloatSlice, FloatType},
     float_tensor::{
         FloatArcTensor2, FloatData, FloatTensor, FloatTensor2, FloatTensorBase, FloatTensorD,
@@ -7,12 +8,14 @@ use crate::{
     },
     glsl_shaders,
     result::Result,
-    tensor::TensorD,
-    tensor::{Tensor, TensorView1, TensorViewMut1},
+    tensor::{CowTensor, TensorD},
+    tensor::{Tensor, Tensor2, TensorView1, TensorViewMut1},
     uint::Uint,
 };
 use anyhow::bail;
-use ndarray::{Axis, Dimension};
+use ndarray::{s, Array, Array2, ArrayView2, Axis, Dimension};
+#[cfg(feature = "rand")]
+use rand::distributions::{Distribution, Uniform};
 use std::future::Future;
 
 async fn read_loss(count: usize, loss: FloatSlice<'_>) -> Result<f32> {
@@ -27,6 +30,84 @@ async fn read_loss(count: usize, loss: FloatSlice<'_>) -> Result<f32> {
     }
 }
 
+fn compute_distances(
+    centroids: &FloatTensorView2,
+    input: &FloatTensorView2,
+) -> Result<FloatTensor2> {
+    let device = centroids.device();
+    let float_type = centroids.float_type();
+    let name = format!("kmeans_distance_{}", float_type.as_str());
+    let module = glsl_shaders::module(name)?;
+    let (batch_size, ndims) = input.dim();
+    let (nclasses, _ndims) = centroids.dim();
+    if ndims != _ndims {
+        bail!("Input ndim {:?} != Centroid ndim {:?}!", ndims, _ndims);
+    }
+    let mut output = match float_type {
+        FloatType::BF16 => FloatTensor::zeros(float_type, device, (batch_size, nclasses))?,
+        FloatType::F32 => unsafe {
+            FloatTensor::alloc(float_type, device, (batch_size, nclasses))?
+        },
+    };
+    let batch_size = batch_size as u32;
+    let nclasses = nclasses as u32;
+    let ndims = ndims as u32;
+    let builder = module
+        .compute_pass("main")?
+        .float_slice(input.to_slice()?.as_slice())?
+        .float_slice(centroids.to_slice()?.as_slice())?
+        .float_slice_mut(output.as_raw_slice_mut())?
+        .push([batch_size, nclasses, ndims])?;
+    unsafe {
+        builder.submit([batch_size, nclasses, 1])?;
+    }
+    Ok(output)
+}
+
+fn array_compute_distances(x: &ArrayView2<f32>, c: &ArrayView2<f32>) -> Array2<f32> {
+    let mut y = Array::zeros([x.dim().0, c.dim().0]);
+    for (x, mut y) in x.outer_iter().zip(y.outer_iter_mut()) {
+        for (c, y) in c.outer_iter().zip(y.iter_mut()) {
+            *y = x.iter().zip(c.iter()).map(|(x, c)| (x - c) * (x - c)).sum();
+        }
+    }
+    y
+}
+
+// TODO: impl tests
+#[allow(unused)]
+fn array_init_kplus_plus(k: usize, input: &ArrayView2<f32>) -> Array2<f32> {
+    let mut centroids = Array2::zeros([k, input.dim().1]);
+    let index = Uniform::new(0, input.dim().0).sample(&mut rand::thread_rng());
+    centroids
+        .index_axis_mut(Axis(0), 0)
+        .assign(&input.index_axis(Axis(0), index));
+    for i in 1..centroids.dim().0 {
+        let centroids_slice = centroids.slice(s![..i, ..]);
+        let distances = array_compute_distances(input, &centroids_slice).map_axis(Axis(1), |x| {
+            x.iter().fold(*x.first().unwrap(), |acc, x| acc.min(*x))
+        });
+        let distance_value = Uniform::new(0f32, distances.sum()).sample(&mut rand::thread_rng());
+        let mut distance_counter = 0f32;
+        let index = distances
+            .iter()
+            .enumerate()
+            .find_map(|(u, d)| {
+                if *d > 0f32 && distance_counter + *d >= distance_value {
+                    Some(u)
+                } else {
+                    distance_counter += *d;
+                    None
+                }
+            })
+            .unwrap_or_else(|| distances.len());
+        centroids
+            .index_axis_mut(Axis(0), i)
+            .assign(&input.index_axis(Axis(0), index));
+    }
+    centroids
+}
+
 /// KMeans Classifier
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -35,49 +116,149 @@ pub struct KMeans {
 }
 
 impl KMeans {
+    /// Creates a new KMeans with `k` means.
+    ///
+    /// # Note
+    /// The model is unitialized. Use [`KMeansTrainer`] with [`Train`] to initialize and train the classifier.
+    pub fn new(k: usize) -> Self {
+        let centroids = FloatTensor::zeros(FloatType::F32, Device::host(), [k, 0]).unwrap();
+        Self::from_centroids(centroids.into())
+    }
+    /// Transfers the model to `device`.
+    ///
+    /// See [`Tensor::into_device()`](crate::tensor::TensorBase::into_device()).
+    pub async fn into_device(self, device: Device) -> Result<Self> {
+        // TODO: impl into_device_shared
+        Ok(Self::from_centroids(
+            self.centroids.into_device(device).await?.into_shared()?,
+        ))
+    }
     /// Constructs a new [`KMeans`] from `centroids`.
     ///
     /// # Centroids
     /// - Should be standard layout.
     /// - Shape = [k, c], with k means of c dimensional points.
-    pub fn from_centroids(centroids: FloatTensor2) -> Self {
-        Self {
-            centroids: centroids.into(),
-        }
+    pub fn from_centroids(centroids: FloatArcTensor2) -> Self {
+        Self { centroids }
     }
     /// The centroids of the model.
     pub fn centroids(&self) -> &FloatArcTensor2 {
         &self.centroids
     }
-    fn compute_distances(&self, input: &FloatTensorView2) -> Result<FloatTensor2> {
+    #[allow(clippy::many_single_char_names)]
+    #[cfg(feature = "rand")]
+    async fn init_kplus_plus<S, D, F, I>(&mut self, f: F) -> Result<()>
+    where
+        S: FloatData,
+        D: Dimension,
+        F: FnOnce(usize) -> I,
+        I: IntoIterator,
+        <I as IntoIterator>::Item: IntoIterator<Item = Result<FloatTensorBase<S, D>>>,
+    {
+        // TODO: impl fully on device.
+        use half::bf16;
+        let k = self.centroids.dim().0;
         let device = self.centroids.device();
         let float_type = self.centroids.float_type();
-        let name = format!("kmeans_distance_{}", float_type.as_str());
-        let module = glsl_shaders::module(name)?;
-        let (batch_size, ndims) = input.dim();
-        let (nclasses, _ndims) = self.centroids.dim();
-        if ndims != _ndims {
-            bail!("Input ndim {:?} != Centroid ndim {:?}!", ndims, _ndims);
+        let mut c = 0;
+        let mut centroids = Tensor2::<f32>::zeros(device.clone(), [k, c])?;
+        let mut iters = f(2 * k).into_iter();
+        let mut n_samples = 0;
+        for x in iters.next().unwrap() {
+            let x = x?.flatten()?;
+            if c == 0 {
+                c = x.dim().1;
+            }
+            n_samples += x.dim().0;
         }
-        let mut output = match float_type {
-            FloatType::BF16 => FloatTensor::zeros(float_type, device, (batch_size, nclasses))?,
-            FloatType::F32 => unsafe {
-                FloatTensor::alloc(float_type, device, (batch_size, nclasses))?
-            },
-        };
-        let batch_size = batch_size as u32;
-        let nclasses = nclasses as u32;
-        let ndims = ndims as u32;
-        let builder = module
-            .compute_pass("main")?
-            .float_slice(input.to_slice()?.as_slice())?
-            .float_slice(self.centroids.to_slice()?.as_slice())?
-            .float_slice_mut(output.as_raw_slice_mut())?
-            .push([batch_size, nclasses, ndims])?;
-        unsafe {
-            builder.submit([batch_size, nclasses, 1])?;
+        let index = Uniform::new(0, n_samples).sample(&mut rand::thread_rng());
+        let mut index_counter = 0;
+        for x in iters.next().unwrap() {
+            let x = x?.flatten()?;
+            let batch_size = x.dim().0;
+            if index_counter + batch_size >= index {
+                let centroid = x.cast_to::<f32>()?;
+                let centroid = centroid.read().await?;
+                let centroid = centroid.as_array();
+                let centroid = centroid
+                    .index_axis(Axis(0), index - index_counter)
+                    .into_shape([1, c])?;
+                centroids = CowTensor::from(centroid)
+                    .into_device(device.clone())
+                    .await?;
+                break;
+            }
+            index_counter += batch_size;
         }
-        Ok(output)
+        for _ in 1..k {
+            let mut total_distance = FloatTensor::zeros(float_type, device.clone(), ())?;
+            for x in iters.next().unwrap() {
+                let x = x?.flatten()?;
+                let distances =
+                    compute_distances(&centroids.view().into(), &x.view())?.min_axis(Axis(1))?;
+                let n = distances.len();
+                distances
+                    .into_shape(n)?
+                    .sum_axis_with(Axis(0), &mut total_distance.view_mut())?;
+            }
+            let total_distance = total_distance.cast_to::<f32>()?;
+            let total_distance = total_distance.as_raw_slice().read().await?[0];
+            let distance_value = Uniform::new(0f32, total_distance).sample(&mut rand::thread_rng());
+            let mut distance_counter = 0f32;
+            for x in iters.next().unwrap() {
+                let x = x?.flatten()?;
+                let distances =
+                    compute_distances(&centroids.view().into(), &x.view())?.min_axis(Axis(1))?;
+                let n = distances.len();
+                let distance_fut = distances
+                    .view()
+                    .into_shape(n)?
+                    .sum_axis(Axis(0))?
+                    .cast_into::<f32>()?
+                    .read();
+                let distances = distances.cast_into::<f32>()?.read().await?;
+                let distance = distance_fut.await?.as_array().as_slice().unwrap()[0];
+                let distances = distances.as_array();
+                if distance_counter + distance > distance_value {
+                    let mut index = 0;
+                    let mut distance_counter = distance_counter;
+                    for (u, d) in distances.iter().enumerate() {
+                        if *d > 0f32 && distance_counter + *d > distance_value {
+                            index = u;
+                            break;
+                        }
+                        distance_counter += d;
+                    }
+                    let x = x.cast_to::<f32>()?;
+                    let x_array_fut = x.read();
+                    let array_centroids = centroids.read().await?;
+                    let x_array = x_array_fut.await?;
+                    let x_array = x_array.as_array();
+                    let centroid = x_array.index_axis(Axis(0), index).into_shape([1, c])?;
+                    let array_centroids =
+                        ndarray::concatenate(Axis(0), &[array_centroids.as_array(), centroid])?;
+                    centroids = CowTensor::from(array_centroids)
+                        .into_device(device.clone())
+                        .await?;
+                    break;
+                } else {
+                    distance_counter += distance;
+                }
+            }
+        }
+        match self.centroids.float_type() {
+            FloatType::BF16 => {
+                self.centroids = centroids.cast_into::<bf16>()?.into_shared()?.into();
+            }
+            FloatType::F32 => {
+                self.centroids = centroids.into_shared()?.into();
+            }
+        }
+        Ok(())
+    }
+
+    fn compute_distances(&self, input: &FloatTensorView2) -> Result<FloatTensor2> {
+        compute_distances(&self.centroids.view(), input)
     }
     fn update_centroids(
         &mut self,
@@ -207,10 +388,10 @@ impl<S: FloatData, D: Dimension> Infer<FloatTensorBase<S, D>> for KMeans {
     fn predict<U: Uint>(&self, input: &FloatTensorBase<S, D>) -> Result<TensorD<U>> {
         let mut shape = input.shape();
         if shape.len() > 1 {
-            shape = &shape[1..];
+            shape = &shape[..shape.len() - 1];
         }
         self.compute_distances(&input.view().flatten()?)?
-            .argmax_axis(Axis(1))?
+            .argmin_axis(Axis(1))?
             .into_shape(shape)
     }
 }
@@ -260,13 +441,15 @@ impl Summarize for KMeansTrainer {
 }
 
 impl<S: FloatData, D: Dimension> Train<FloatTensorBase<S, D>> for KMeansTrainer {
-    fn init<F, I>(&mut self, _f: F) -> Result<()>
+    fn init<F, I>(&mut self, f: F) -> Result<()>
     where
         F: FnOnce(usize) -> I,
         I: IntoIterator,
         <I as IntoIterator>::Item: IntoIterator<Item = Result<FloatTensorBase<S, D>>>,
     {
-        todo!()
+        let kmeans = &mut self.kmeans;
+        self.summary
+            .run_init(|_| smol::block_on(kmeans.init_kplus_plus(f)))
     }
     fn train_test<I1, I2>(&mut self, train_iter: I1, test_iter: I2) -> Result<(Stats, Stats)>
     where
@@ -346,9 +529,9 @@ mod tests {
         let t1 = FloatTensor::from(t1);
         let t2 = TensorView::try_from(a2.view())?
             .into_device(device.clone())
-            .await?;
-        let t2 = FloatTensor::from(t2);
-        let kmeans = KMeans::from_centroids(t2);
+            .await?
+            .into_shared()?;
+        let kmeans = KMeans::from_centroids(t2.into());
         let y = kmeans
             .compute_distances(&t1.view())?
             .cast_into::<f32>()?

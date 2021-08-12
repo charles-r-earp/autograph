@@ -65,7 +65,7 @@ where
 /// Reductions
 #[allow(unused)]
 impl<T: Scalar, S: Data<Elem = T>, D: RemoveAxis> TensorBase<S, D> {
-    /// Computes the index of the max value along the given axis
+    /// Computes the sum along the given axis
     pub(crate) fn sum_axis(&self, axis: Axis) -> Result<Tensor<T, D::Smaller>> {
         if axis.0 >= self.shape().len() {
             bail!("Axis {:?} out of range for shape {:?}!", axis, self.shape());
@@ -105,6 +105,22 @@ impl<T: Scalar, S: Data<Elem = T>, D: RemoveAxis> TensorBase<S, D> {
             true,
         )?;
         Ok(())
+    }
+    /// Computes the min value along the given axis
+    pub(crate) fn min_axis(&self, axis: Axis) -> Result<Tensor<T, D::Smaller>> {
+        if axis.0 >= self.shape().len() {
+            bail!("Axis {:?} out of range for shape {:?}!", axis, self.shape());
+        }
+        let mut output =
+            unsafe { Tensor::<T, D::Smaller>::alloc(self.device(), self.dim.remove_axis(axis))? };
+        reduce(
+            &self.view(),
+            &mut output.view_mut(),
+            axis,
+            Reduction::Min,
+            false,
+        )?;
+        Ok(output)
     }
     /// Computes the index of the min value along the given axis.
     ///

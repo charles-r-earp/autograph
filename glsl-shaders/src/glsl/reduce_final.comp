@@ -14,9 +14,9 @@
     #define T_MIN -2147483648
 #endif
 
-#ifdef ARGMIN
+#if defined MIN || defined ARGMIN
     #define INITIAL_VALUE T_MAX
-#elif defined ARGMAX
+#elif defined MAX || defined ARGMAX 
     #define INITIAL_VALUE T_MIN
 #else
     #define INITIAL_VALUE 0
