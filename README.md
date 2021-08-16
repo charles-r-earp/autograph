@@ -88,7 +88,7 @@ let classes = iris.classes().map(|c| *c as u32);
 // not align to the order of the true classes (ie the colors won't be the same in the plot).
 plot(&x_array.view(), &classes.view(), &pred.as_array(), &centroids.as_array())?;
 ```
-![Plot](examples/kmeans-iris/sample-plot.png)
+![Plot](examples/kmeans-iris/sample.png)
 See the [KMeans Iris](examples/kmeans-iris) example.
 
 ## Neural Networks
