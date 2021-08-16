@@ -1,9 +1,9 @@
 use autograph::{
-    result::Result,
     learn::neural_network::{
-        layer::{Layer, Forward},
-        autograd::{VariableD, ParameterD},
+        autograd::{ParameterD, VariableD},
+        layer::{Forward, Layer},
     },
+    result::Result,
 };
 
 #[derive(Layer)]
@@ -25,5 +25,5 @@ struct SeqLayer {
     #[autograph(layer)]
     dense1: DenseLayer,
     #[autograph(optional_layer)]
-    dense2: Option<DenseLayer>
+    dense2: Option<DenseLayer>,
 }
