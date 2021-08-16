@@ -14,7 +14,6 @@ use crate::{
 };
 use anyhow::bail;
 use ndarray::{s, Array, Array2, ArrayView2, Axis, Dimension};
-#[cfg(feature = "rand")]
 use rand::distributions::{Distribution, Uniform};
 use std::future::Future;
 
@@ -146,7 +145,6 @@ impl KMeans {
         &self.centroids
     }
     #[allow(clippy::many_single_char_names)]
-    #[cfg(feature = "rand")]
     async fn init_kplus_plus<S, D, F, I>(&mut self, f: F) -> Result<()>
     where
         S: FloatData,

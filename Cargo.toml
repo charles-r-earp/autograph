@@ -23,8 +23,12 @@ bench = []
 tensor = ["ndarray"]
 # iris dataset
 iris = ["ndarray"]
+# kmeans
+kmeans = ["tensor", "rand"]
+# neural_networks
+neural_network = ["tensor", "rand", "async-trait", "derive"]
 # all features except device tests (used for CI testing).
-host_full = ["tensor", "iris", "derive", "rand"]
+host_full = ["iris", "kmeans", "neural_network"]
 # all features
 full = ["host_full", "device_tests"]
 
@@ -50,6 +54,7 @@ parking_lot = "0.11.1"
 crossbeam-channel = "0.5.1"
 tinyvec = "1.2.0"
 bincode = "1.3.3"
+async-trait = { version = "0.1.51", optional = true }
 
 [target."cfg(all(unix, not(target_os = \"ios\"), not(target_os = \"macos\")))".dependencies]
 gfx-backend-vulkan = "0.9.0"

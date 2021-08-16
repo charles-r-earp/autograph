@@ -127,6 +127,13 @@ macro_rules! impl_float_buffer {
                 {
                     map_float_buffer!(self, buffer => Ok(buffer.into_device(device).await?.into()))
                 }
+                /// Transfers the buffer into the `device` as a FloatArcBuffer.
+                ///
+                /// See [`Buffer::into_device()`](crate::device::buffer::BufferBase::into_device()).
+                pub async fn into_device_shared(self, device: Device) -> Result<FloatArcBuffer>
+                {
+                    map_float_buffer!(self, buffer => Ok(buffer.into_device_shared(device).await?.into()))
+                }
             }
 
 
@@ -221,6 +228,19 @@ macro_rules! impl_float_buffer_owned {
                     match float_type {
                         FloatType::BF16 => Ok(Self::BF16($buffer::zeros(device, len)?)),
                         FloatType::F32 => Ok(Self::F32($buffer::zeros(device, len)?)),
+                    }
+                }
+                /// Creates a buffer with length `len` filled with 0's.
+                ///
+                /// **Errors**
+                /// - AllocationTooLarge: Device allocations are limited to 256 MB per Buffer.
+                /// - OutOfDeviceMemory: Device memory is exhausted.
+                /// - DeviceLost: The device panicked or disconnected.
+                #[allow(unused)]
+                pub(crate) fn ones(float_type: FloatType, device: Device, len: usize) -> Result<Self> {
+                    match float_type {
+                        FloatType::BF16 => Ok(Self::BF16($buffer::from_elem(device, len, bf16::ONE)?)),
+                        FloatType::F32 => Ok(Self::F32($buffer::from_elem(device, len, 1f32)?)),
                     }
                 }
             }

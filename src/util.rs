@@ -1,4 +1,9 @@
-use std::{any::TypeId, hint::unreachable_unchecked, mem::size_of};
+use std::{
+    any::TypeId,
+    hash::{BuildHasher, Hasher},
+    hint::unreachable_unchecked,
+    mem::size_of,
+};
 
 pub(crate) fn elem_type_name<T>() -> &'static str {
     let name = std::any::type_name::<T>();
@@ -28,6 +33,28 @@ impl<T> UnwrapUnchecked for Option<T> {
             Some(x) => x,
             None => unreachable_unchecked(),
         }
+    }
+}
+
+#[derive(Default, Clone, Copy, Debug)]
+pub(crate) struct U32Hasher(u32);
+
+impl Hasher for U32Hasher {
+    fn finish(&self) -> u64 {
+        self.0 as u64
+    }
+    fn write(&mut self, _: &[u8]) {
+        unreachable!()
+    }
+    fn write_u32(&mut self, i: u32) {
+        self.0 = i;
+    }
+}
+
+impl BuildHasher for U32Hasher {
+    type Hasher = Self;
+    fn build_hasher(&self) -> Self {
+        *self
     }
 }
 

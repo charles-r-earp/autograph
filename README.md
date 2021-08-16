@@ -91,6 +91,38 @@ plot(&x_array.view(), &classes.view(), &pred.as_array(), &centroids.as_array())?
 ![Plot](examples/kmeans-iris/sample-plot.png)
 See the [KMeans Iris](examples/kmeans-iris) example.
 
+## Neural Networks
+**Currently under construction**
+```rust
+use autograph::learn::neural_network::layer::{Layer, Forward, Conv, Dense, Relu, MeanPool};
+
+#[derive(Layer, Forward)]
+struct Lenet5 {
+    #[autograph(layer)]
+    conv1: Conv,
+    #[autograph(layer)]
+    relu1: Relu,
+    #[autograph(layer)]
+    pool1: MeanPool,
+    #[autograph(layer)]
+    conv2: Conv,
+    #[autograph(layer)]
+    relu2: Relu,
+    #[autograph(layer)]
+    pool2: MeanPool,
+    #[autograph(layer)]
+    dense1: Dense,
+    #[autograph(layer)]
+    relu3: Relu,
+    #[autograph(layer)]
+    dense2: Dense,
+    #[autograph(layer)]
+    relu4: Relu,
+    #[autograph(layer)]
+    dense3: Dense,
+}
+```
+
 # Help Wanted!
 Lots of things are under construction. Ideas for contributions:
 - Easy

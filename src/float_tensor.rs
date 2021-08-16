@@ -41,7 +41,7 @@ macro_rules! impl_data_base {
     };
 }
 
-impl_data_base! {FloatOwnedRepr, FloatArcRepr, FloatArcMutRepr<'_>, FloatViewRepr<'_>, FloatViewMutRepr<'_>, FloatCowRepr<'_>}
+impl_data_base! {FloatOwnedRepr, FloatArcRepr, FloatViewRepr<'_>, FloatViewMutRepr<'_>, FloatCowRepr<'_>}
 
 /// Marker trait for FloatTensorBase representation.
 ///
@@ -70,6 +70,10 @@ pub trait FloatData: Sized + DataBase {
         }
     }
     #[doc(hidden)]
+    fn to_shared(&self) -> Result<FloatArcRepr> {
+        Ok(FloatArcRepr(self.as_slice().to_owned()?.into()))
+    }
+    #[doc(hidden)]
     fn as_slice(&self) -> FloatSlice;
     #[doc(hidden)]
     fn float_type(&self) -> FloatType {
@@ -83,7 +87,7 @@ pub trait FloatDataOwned: FloatData {
     fn from_buffer(buffer: FloatBuffer) -> Self;
 }
 
-/// Marker trait for mutable float tensors [`FloatTensor`] / [`FloatTensorViewMut`] / [`FloatArcTensorMut`].
+/// Marker trait for mutable float tensors [`FloatTensor`] / [`FloatTensorViewMut`]
 pub trait FloatDataMut: FloatData {
     #[doc(hidden)]
     fn as_slice_mut(&mut self) -> FloatSliceMut;
@@ -134,6 +138,9 @@ impl FloatData for FloatArcRepr {
     fn try_into_arc_buffer(self) -> Result<FloatArcBuffer, Self> {
         Ok(self.0)
     }
+    fn to_shared(&self) -> Result<FloatArcRepr> {
+        Ok(self.clone())
+    }
     fn as_slice(&self) -> FloatSlice {
         self.0.as_slice()
     }
@@ -151,16 +158,6 @@ impl FloatDataTryMut for FloatArcRepr {
     }
     fn make_slice_mut(&mut self) -> Result<FloatSliceMut> {
         self.0.make_mut()
-    }
-}
-
-/// FloatArcTensorMut representation.
-#[derive(Debug)]
-pub struct FloatArcMutRepr<'a>(&'a mut FloatArcBuffer);
-
-impl FloatData for FloatArcMutRepr<'_> {
-    fn as_slice(&self) -> FloatSlice {
-        self.0.as_slice()
     }
 }
 
@@ -258,27 +255,6 @@ pub type FloatArcTensor5 = FloatArcTensor<Ix5>;
 pub type FloatArcTensor6 = FloatArcTensor<Ix6>;
 /// FloatArcTensor with dynamic dimensions
 pub type FloatArcTensorD = FloatArcTensor<IxDyn>;
-
-/// Mutably borrowed ArcFloatTensor
-///
-/// See [`FloatTensorBase`].
-pub type FloatArcTensorMut<D> = FloatTensorBase<FloatArcRepr, D>;
-/// FloatArcTensorMut with 1 element
-pub type FloatArcTensorMut0 = FloatArcTensorMut<Ix0>;
-/// FloatArcTensorMut with 1 dimension
-pub type FloatArcTensorMut1 = FloatArcTensorMut<Ix1>;
-/// FloatArcTensorMut with 2 dimensions
-pub type FloatArcTensorMut2 = FloatArcTensorMut<Ix2>;
-/// FloatArcTensorMut with 3 dimensions
-pub type FloatArcTensorMut3 = FloatArcTensorMut<Ix3>;
-/// FloatArcTensorMut with 4 dimensions
-pub type FloatArcTensorMut4 = FloatArcTensorMut<Ix4>;
-/// FloatArcTensorMut with 5 dimensions
-pub type FloatArcTensorMut5 = FloatArcTensorMut<Ix5>;
-/// FloatArcTensorMut with 6 dimensions
-pub type FloatArcTensorMut6 = FloatArcTensorMut<Ix6>;
-/// FloatArcTensorMut with dynamic dimensions
-pub type FloatArcTensorMutD = FloatArcTensorMut<IxDyn>;
 
 /// Borrowed FloatTensor
 ///
@@ -387,6 +363,20 @@ impl<S: FloatData, D: Dimension> FloatTensorBase<S, D> {
     {
         let (dim, strides) = dim_strides_from_shape(shape.into_shape());
         let data = S::from_buffer(FloatBuffer::zeros(float_type, device, dim.size())?);
+        Ok(Self { dim, strides, data })
+    }
+    /// Creates a float tensor of type `float_type` on `device` with `shape` filled with 0's.
+    ///
+    /// **Errors**
+    ///
+    /// See [`Buffer::alloc()`](crate::device::buffer::BufferBase::alloc()).
+    pub fn ones<Sh>(float_type: FloatType, device: Device, shape: Sh) -> Result<Self>
+    where
+        S: FloatDataOwned,
+        Sh: ShapeBuilder<Dim = D>,
+    {
+        let (dim, strides) = dim_strides_from_shape(shape.into_shape());
+        let data = S::from_buffer(FloatBuffer::ones(float_type, device, dim.size())?);
         Ok(Self { dim, strides, data })
     }
     /// The device of the tensor.
@@ -534,6 +524,18 @@ impl<S: FloatData, D: Dimension> FloatTensorBase<S, D> {
     {
         self.data.as_slice_mut()
     }
+    #[allow(unused)]
+    pub(crate) fn get_mut(&mut self) -> Option<FloatTensorViewMut<D>>
+    where
+        S: FloatDataTryMut,
+    {
+        Some(FloatTensorViewMut {
+            dim: self.dim.clone(),
+            strides: self.strides.clone(),
+            data: FloatViewMutRepr(self.data.get_slice_mut()?),
+        })
+    }
+    #[allow(unused)]
     pub(crate) fn make_mut(&mut self) -> Result<FloatTensorViewMut<D>>
     where
         S: FloatDataTryMut,
@@ -561,6 +563,35 @@ impl<S: FloatData, D: Dimension> FloatTensorBase<S, D> {
             })
         }
     }
+    /// Transfers the tensor into the `device`.
+    ///
+    /// **Errors**
+    ///
+    /// See [`Buffer::into_device()`](crate::device::buffer::BufferBase::into_device()).
+    pub async fn into_device_shared(self, device: Device) -> Result<FloatArcTensor<D>> {
+        if device == self.device() {
+            self.into_shared()
+        } else {
+            match self.data.try_into_arc_buffer() {
+                Ok(buffer) => {
+                    let buffer = buffer.into_device_shared(device).await?;
+                    Ok(FloatArcTensor {
+                        dim: self.dim,
+                        strides: self.strides,
+                        data: FloatArcRepr(buffer),
+                    })
+                }
+                Err(data) => Self {
+                    dim: self.dim,
+                    strides: self.strides,
+                    data,
+                }
+                .into_device(device)
+                .await?
+                .into_shared(),
+            }
+        }
+    }
     /// Converts into a [`FloatTensor`].
     pub fn into_owned(self) -> Result<FloatTensor<D>> {
         Ok(FloatTensor {
@@ -573,12 +604,20 @@ impl<S: FloatData, D: Dimension> FloatTensorBase<S, D> {
     pub fn to_owned(self) -> Result<FloatTensor<D>> {
         self.view().into_owned()
     }
-    /// Converts into an [`ArcTensor`].
+    /// Converts into an [`FloatArcTensor`].
     pub fn into_shared(self) -> Result<FloatArcTensor<D>> {
         Ok(FloatArcTensor {
             dim: self.dim,
             strides: self.strides,
             data: self.data.into_shared()?,
+        })
+    }
+    /// Converts to an [`FloatArcTensor`].
+    pub fn to_shared(&self) -> Result<FloatArcTensor<D>> {
+        Ok(FloatArcTensor {
+            dim: self.dim.clone(),
+            strides: self.strides.clone(),
+            data: self.data.to_shared()?,
         })
     }
 }
@@ -588,6 +627,24 @@ impl<S: FloatDataOwned> From<FloatBuffer> for FloatTensorBase<S, Ix1> {
         let dim = buffer.len().into_dimension();
         let strides = dim.default_strides();
         let data = S::from_buffer(buffer);
+        Self { dim, strides, data }
+    }
+}
+
+impl<'a> From<FloatSlice<'a>> for FloatTensorView<'a, Ix1> {
+    fn from(slice: FloatSlice<'a>) -> Self {
+        let dim = slice.len().into_dimension();
+        let strides = dim.default_strides();
+        let data = FloatViewRepr(slice);
+        Self { dim, strides, data }
+    }
+}
+
+impl<'a> From<FloatSliceMut<'a>> for FloatTensorViewMut<'a, Ix1> {
+    fn from(slice: FloatSliceMut<'a>) -> Self {
+        let dim = slice.len().into_dimension();
+        let strides = dim.default_strides();
+        let data = FloatViewMutRepr(slice);
         Self { dim, strides, data }
     }
 }

@@ -1,34 +1,29 @@
 use autograph::{
-    neural_network::{
-        autograd::{Parameter1, Parameter2, VariableD},
-        Dense, Forward, Identity, Network,
+    result::Result,
+    learn::neural_network::{
+        layer::{Layer, Forward},
+        autograd::{VariableD, ParameterD},
     },
-    Result,
 };
 
-#[derive(Network)]
-struct Net1 {
+#[derive(Layer)]
+struct DenseLayer {
     #[autograph(parameter)]
-    weight: Parameter2,
+    weight: ParameterD,
     #[autograph(optional_parameter)]
-    bias: Option<Parameter1>,
-    #[autograph(layer)]
-    dense1: Dense,
-    #[autograph(optional_layer)]
-    dense2: Option<Dense<Identity>>,
+    bias: Option<ParameterD>,
 }
 
-impl Forward for Net1 {
+impl Forward for DenseLayer {
     fn forward(&self, _input: VariableD) -> Result<VariableD> {
         unimplemented!()
     }
 }
 
-#[derive(Network, Forward)]
-struct Net2 {
+#[derive(Layer, Forward)]
+struct SeqLayer {
     #[autograph(layer)]
-    dense1: Dense,
+    dense1: DenseLayer,
     #[autograph(optional_layer)]
-    dense2: Option<Dense<Identity>>,
-    _name: String,
+    dense2: Option<DenseLayer>
 }

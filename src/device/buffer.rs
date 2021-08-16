@@ -563,6 +563,13 @@ impl<T, S: Data<Elem = T>> BufferBase<S> {
             }
         }
     }
+    /// Transfers the buffer into the `device` as an [`ArcBuffer`].
+    pub async fn into_device_shared(self, device: Device) -> Result<ArcBuffer<T>>
+    where
+        T: Pod,
+    {
+        Ok(self.into_device(device).await?.into())
+    }
     /// Reads a buffer asynchronously.
     ///
     /// # Host
@@ -666,6 +673,16 @@ impl<T, S: Data<Elem = T>> BufferBase<S> {
             DynBufferBase::Host(buffer) => Ok(buffer.to_owned().into()),
             DynBufferBase::Device(buffer) => Ok(buffer.to_owned()?.into()),
         }
+    }
+    /// Converts into a [`ArcBuffer`].
+    ///
+    /// **Errors**
+    /// - Potentially allocates the buffer [`Buffer::alloc`](BufferBase::alloc).
+    pub fn into_shared(self) -> Result<ArcBuffer<T>>
+    where
+        T: Copy,
+    {
+        Ok(self.into_owned()?.into())
     }
     /// The device of the buffer.
     pub fn device(&self) -> Device {
@@ -1095,6 +1112,7 @@ impl<T> ArcBuffer<T> {
     /// Transfers the buffer into the `device`.
     ///
     /// **Errors**
+    ///
     /// See [`Buffer::into_device()`](BufferBase::into_device()).
     pub async fn into_device(self, device: Device) -> Result<Buffer<T>>
     where
@@ -1104,6 +1122,23 @@ impl<T> ArcBuffer<T> {
             self.into_owned()
         } else {
             self.as_slice().into_device(device).await
+        }
+    }
+    /// Transfers the buffer into the `device` as an [`ArcBuffer`].
+    ///
+    /// NOOP if the buffer is on `device`.
+    ///
+    /// **Errors**
+    ///
+    /// See [`Buffer::into_device()`](BufferBase::into_device()).
+    pub async fn into_device_shared(self, device: Device) -> Result<Self>
+    where
+        T: Pod,
+    {
+        if self.device() == device {
+            Ok(self)
+        } else {
+            Ok(self.into_device(device).await?.into())
         }
     }
     /// The device of the buffer.
@@ -1292,6 +1327,21 @@ impl<T> CowBuffer<'_, T> {
             self.as_slice().into_device(device).await
         }
     }
+    /// Transfers the buffer into the `device` as an [`ArcBuffer`].
+    ///
+    /// **Errors**
+    ///
+    /// See [`Buffer::into_device()`](BufferBase::into_device()).
+    pub async fn into_device_shared(self, device: Device) -> Result<ArcBuffer<T>>
+    where
+        T: Pod,
+    {
+        if self.device() == device {
+            self.into_shared()
+        } else {
+            Ok(self.into_device(device).await?.into())
+        }
+    }
     /// Converts into a [`Buffer`].
     ///
     /// **Errors**
@@ -1317,6 +1367,16 @@ impl<T> CowBuffer<'_, T> {
             Self::Slice(slice) => slice.to_owned(),
             Self::Buffer(buffer) => buffer.to_owned(),
         }
+    }
+    /// Converts into a [`ArcBuffer`].
+    ///
+    /// **Errors**
+    /// - Potentially allocates the buffer [`Buffer::alloc`](BufferBase::alloc).
+    pub fn into_shared(self) -> Result<ArcBuffer<T>>
+    where
+        T: Copy,
+    {
+        Ok(self.into_owned()?.into())
     }
     /// The device of the buffer.
     pub fn device(&self) -> Device {

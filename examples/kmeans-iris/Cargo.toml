@@ -11,7 +11,7 @@ publish = false
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-autograph = { path = "../../", features = ["tensor", "iris", "rand"] }
+autograph = { path = "../../", features = ["iris", "kmeans"] }
 ndarray = "0.15.3"
 plotters = "0.3.1"
 tokio = { version = "1.9.0", features = ["full"] }

@@ -38,6 +38,9 @@ impl ModuleId {
     fn deserialize_create<'de, D: Deserializer<'de>>(_: D) -> Result<Self, D::Error> {
         Self::create().map_err(D::Error::custom)
     }
+    fn destroy(self) {
+        MODULE_IDS.lock().remove(self.0);
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -117,6 +120,12 @@ impl Debug for Module {
         } else {
             f.debug_tuple("Module").field(&self.id.0).finish()
         }
+    }
+}
+
+impl Drop for Module {
+    fn drop(&mut self) {
+        self.id.destroy()
     }
 }
 

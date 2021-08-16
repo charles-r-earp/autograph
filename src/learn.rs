@@ -9,7 +9,12 @@ use std::{
 };
 
 /// KMeans classifier.
+#[cfg(feature = "kmeans")]
 pub mod kmeans;
+
+/// Neural Networks
+#[cfg(feature = "neural_network")]
+pub mod neural_network;
 
 /// Testing / Evaluation.
 ///
@@ -112,7 +117,7 @@ pub trait Summarize {
 ///
 /// Trainers should implement [`Infer`] where appropriate, by deferring to the model implementation.
 ///
-/// # serde
+/// # [`serde`]
 /// Implement [`Serialize`](serde::Serialize) and [`Deserialize`](serde::Deserialize) for saving and loading checkpoints.
 pub trait Train<X>: Test<X> + Summarize {
     /// Initializes the model / trainer.
@@ -162,7 +167,7 @@ pub trait Train<X>: Test<X> + Summarize {
 /// # serde
 /// Implement [`Serialize`](serde::Serialize) and [`Deserialize`](serde::Deserialize) for saving and loading the model.
 #[allow(missing_docs)]
-pub trait Infer<X>: Test<X> {
+pub trait Infer<X> {
     fn infer(&self, input: &X) -> Result<FloatTensorD>;
     /*fn classify<F: Float>(&self, input: &X) -> Result<TensorD<F>> {
         todo!() //self.infer(input)?.softmax_axis(Axis(1))
