@@ -2,7 +2,7 @@
 /*!
 # Examples
 A [LeNet-5](<http://yann.lecun.com/exdb/lenet/>) network might look like this:
-```
+```no_run
 use autograph::learn::neural_network::layer::{Layer, Forward, Conv, Dense, Relu, MeanPool};
 
 #[derive(Layer, Forward)]
