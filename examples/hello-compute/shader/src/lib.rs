@@ -37,13 +37,14 @@ pub fn add(
     // This tells the invocation what index to compute.
     #[spirv(global_invocation_id)] global_id: UVec3,
     // Buffer `a`. As of now, `storage_buffer, descriptor_set, binding, non_writable` must all be
-    // specified. `non_writable` corresponds to immutable ie `Slice`.
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 0, non_writable)] a: &[u32],
+    // specified.
+    // Because this is not modified, it can be bound to a `Slice`.
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] a: &[u32],
     // Buffer `b`.
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 1, non_writable)] b: &[u32],
-    // Buffer `y`, the output. Here `non_readable` is added for clarity, but likely has no affect.
-    // Because this is not `non_writable`, it can be bound to a `SliceMut`.
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 2, non_readable)] y: &mut [u32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] b: &[u32],
+    // Buffer `y`, the output.
+    // This can only be bound to a `SliceMut`.
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] y: &mut [u32],
     // Push constants, ie additional arguments passed at runtime.
     #[spirv(push_constant)] push_consts: &PushConsts,
 ) {

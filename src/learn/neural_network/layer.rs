@@ -2,16 +2,23 @@ use super::{
     autograd::{Parameter, ParameterD, VariableD},
     optimizer::Optimizer,
 };
-use crate::{device::Device, float::FloatType, result::Result};
+use crate::{
+    device::{Buffer, Device},
+    float::FloatBuffer,
+    float_tensor::FloatArcTensor,
+    result::Result,
+    util::type_eq,
+};
 use anyhow::bail;
 #[doc(hidden)]
 pub use async_trait::async_trait;
 #[doc(hidden)]
 pub use autograph_derive::*;
 use ndarray::{Dimension, IntoDimension, IxDyn};
+use rand::distributions::{Distribution, Standard, Uniform};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
-use std::any::Any;
+use std::fmt::{self, Debug};
 
 mod sealed {
     pub trait PoolKindBase {}
@@ -31,7 +38,7 @@ use sealed::PoolKindBase;
 /// # serde
 /// Implement [`Serialize`](serde::Serialize) and [`Deserialize`](serde::Deserialize) for saving and loading the layer. This can generally be [derived](<https://serde.rs/derive.html>).
 #[async_trait]
-pub trait Layer: Forward + Send + Sync + Any + 'static {
+pub trait Layer: Forward + Send + Sync + 'static {
     /// The number of parameters.
     ///
     /// This is the length of [`.parameters()`](Self::parameters()).
@@ -60,7 +67,7 @@ pub trait Layer: Forward + Send + Sync + Any + 'static {
     fn layers(&self) -> Vec<&dyn Layer> {
         Vec::new()
     }
-    /// Enumerates mutable references immediate child layers of the layer.
+    /// Enumerates mutable references to the immediate child layers of the layer.
     fn layers_mut(&mut self) -> Vec<&mut dyn Layer> {
         Vec::new()
     }
@@ -118,6 +125,19 @@ pub trait Forward {
     fn forward(&self, input: VariableD) -> Result<VariableD>;
 }
 
+fn xavier(inputs: usize, outputs: usize) -> Uniform<f32> {
+    let a = (6. / (inputs as f32 * outputs as f32)).sqrt();
+    Uniform::new(-a, a)
+}
+
+fn he_normal(mut inputs: usize) -> impl Distribution<f32> {
+    if inputs == 0 {
+        inputs = 1;
+    }
+    let a = (2. / inputs as f32).sqrt();
+    Standard.map(move |x: f32| x * a)
+}
+
 /// Convolutional layer.
 #[derive(Layer, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -132,48 +152,51 @@ pub struct Conv {
 }
 
 impl Conv {
-    /// Creates a new [`Conv`] for input `shape` with `outputs` and `kernel`.
+    /// Creates a new [`Conv`] for 'inputs`, `outputs`, and `kernel`.
     ///
     /// Defaults:
     /// - strides: 1
     /// - padding: 0
+    /// - bias: None
     ///
-    /// # Note
-    /// Only 4D inputs and 2D convolutions are currently supported.
-    /// - input `shape` is [batch_size, inputs, height, width]
+    /// The kernel is initialized with a uniform distribution of (-a, a) where a = sqrt(6 / (inputs * outputs)).
     ///
-    /// **Errors**
-    ///
-    /// The input `shape` and 'kernel` are unsupported.
-    pub fn from_shape_outputs_kernel<E1, E2>(shape: E1, outputs: usize, kernel: E2) -> Result<Self>
+    /// # Example
+    /*
+    ```
+    # use autograph::{result::Result, learn::neural_network::layer::Conv};
+    # fn main() -> Result() {
+    let conv = Conv::from_inputs_outputs_kernel(1, 64, [3, 3])
+        .with_padding(1)?
+        .with_bias(true)?;
+    # Ok(())
+    # }
+    ```
+    */
+    pub fn from_inputs_outputs_kernel<E>(inputs: usize, outputs: usize, kernel: E) -> Self
     where
-        E1: IntoDimension,
-        E2: IntoDimension,
+        E: IntoDimension,
     {
-        let shape = shape.into_dimension();
-        let kernel = kernel.into_dimension().into_dyn();
-        let kernel = match (shape.slice(), kernel.slice()) {
-            ([_bs, inputs, _ih, _iw], [kh, kw]) => {
-                [*inputs, outputs, *kh, *kw].as_ref().into_dimension()
-            }
-            (shape, kernel) => {
-                bail!(
-                    "Input shape {:?} and kernel {:?} not supported!",
-                    shape,
-                    kernel
-                );
-            }
-        };
-        // TODO: impl xavier init
-        let kernel = Parameter::zeros(FloatType::F32, Device::host(), kernel)?;
+        let kernel_size = kernel.into_dimension();
+        let mut kernel_dim = IxDyn::zeros(kernel_size.ndim() + 2);
+        let mut kernel_dim_array = kernel_dim.as_array_view_mut();
+        let kernel_dim_slice = kernel_dim_array.as_slice_mut().unwrap();
+        kernel_dim_slice[..2].copy_from_slice([inputs, outputs].as_ref());
+        kernel_dim_slice[2..].copy_from_slice(kernel_size.slice());
+        let data = xavier(inputs, outputs)
+            .sample_iter(&mut rand::thread_rng())
+            .take(kernel_dim.size())
+            .collect::<Vec<_>>();
+        let buffer = FloatBuffer::from(Buffer::from(data));
+        let kernel = Parameter::from(FloatArcTensor::from(buffer).into_shape(kernel_dim).unwrap());
         let strides = vec![1; kernel.ndim()].into_dimension();
         let padding = IxDyn::zeros(kernel.ndim());
-        Ok(Self {
+        Self {
             kernel,
             bias: None,
             strides,
             padding,
-        })
+        }
     }
     /// Adds `strides`.
     ///
@@ -250,6 +273,23 @@ impl Conv {
     }
 }
 
+impl Debug for Conv {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let mut builder = f.debug_struct("Conv");
+        builder.field("kernel", &self.kernel);
+        if let Some(bias) = self.bias.as_ref() {
+            builder.field("bias", bias);
+        }
+        if self.strides.slice().iter().any(|x| *x != 1) {
+            builder.field("strides", &self.strides.slice());
+        }
+        if self.padding.slice().iter().any(|x| *x != 0) {
+            builder.field("padding", &self.padding.slice());
+        }
+        builder.finish()
+    }
+}
+
 impl Forward for Conv {
     #[allow(unused)]
     fn forward(&self, input: VariableD) -> Result<VariableD> {
@@ -258,7 +298,7 @@ impl Forward for Conv {
 }
 
 /// Dense / fully connected layer.
-#[derive(Layer, Clone)]
+#[derive(Layer, Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[autograph(crate)]
 pub struct Dense {
@@ -269,27 +309,20 @@ pub struct Dense {
 }
 
 impl Dense {
-    /// Creates a new [`Dense`] for the input `shape` with `outputs`.
+    /// Creates a new [`Dense`] for `inputs` and `outputs`.
     ///
-    /// The input `shape` may or may not include the batch dimension, and may be higher dimensional.
-    /// - [] => 1
-    /// - inputs => inputs
-    /// - [batch_size, .. /* inner dimensions */] => product of inner dimensions
-    ///
-    /// The weight is of shape [`outputs`, `inputs`].
-    pub fn from_shape_outputs<E>(shape: E, outputs: usize) -> Self
-    where
-        E: IntoDimension,
-    {
-        let shape = shape.into_dimension();
-        let inputs = match shape.slice() {
-            [] => 1,
-            [inputs] => *inputs,
-            slice @ [_, ..] => slice[1..].iter().product(),
-        };
-        // TODO: Replace this with he init
-        let weight =
-            Parameter::zeros(FloatType::F32, Device::host(), [outputs, inputs].as_ref()).unwrap();
+    /// The weight is initialized with a normal distribution with std_dev = sqrt(2 / inputs).
+    pub fn from_inputs_outputs(inputs: usize, outputs: usize) -> Self {
+        let data = he_normal(inputs)
+            .sample_iter(&mut rand::thread_rng())
+            .take(inputs * outputs)
+            .collect::<Vec<_>>();
+        let buffer = FloatBuffer::from(Buffer::from(data));
+        let weight = Parameter::from(
+            FloatArcTensor::from(buffer)
+                .into_shape([inputs, outputs].as_ref())
+                .unwrap(),
+        );
         Self { weight, bias: None }
     }
     /// Adds a bias to the layer.
@@ -321,7 +354,7 @@ impl Forward for Dense {
 }
 
 /// ReLU activation.
-#[derive(Default, Layer, Clone)]
+#[derive(Default, Layer, Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[autograph(crate)]
 pub struct Relu {}
@@ -336,7 +369,7 @@ impl Forward for Relu {
 /// Marker trait for [`PoolBase`].
 pub trait PoolKind: Default + Send + Sync + 'static + PoolKindBase {}
 
-/// Marker for MaxPool
+/// Marker for [`MaxPool`].
 #[derive(Default, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct PoolMax {}
@@ -345,7 +378,7 @@ impl PoolKindBase for PoolMax {}
 
 impl PoolKind for PoolMax {}
 
-/// Marker for MeanPool
+/// Marker for [`MeanPool`].
 #[derive(Default, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct PoolMean {}
@@ -365,9 +398,13 @@ pub struct PoolBase<K: PoolKind> {
 }
 
 /// MaxPool
+///
+/// See [`PoolBase`].
 pub type MaxPool = PoolBase<PoolMax>;
 
 /// MeanPool
+///
+/// See [`PoolBase`].
 pub type MeanPool = PoolBase<PoolMean>;
 
 impl<K: PoolKind> PoolBase<K> {
@@ -441,6 +478,27 @@ impl<K: PoolKind> PoolBase<K> {
         }
         self.padding = padding;
         Ok(self)
+    }
+}
+
+impl<K: PoolKind> Debug for PoolBase<K> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let ty = if type_eq::<K, PoolMax>() {
+            "MaxPool"
+        } else if type_eq::<K, PoolMean>() {
+            "MeanPool"
+        } else {
+            unreachable!()
+        };
+        let mut builder = f.debug_struct(ty);
+        builder.field("kernel", &self.kernel.slice());
+        if self.strides.slice().iter().any(|x| *x != 1) {
+            builder.field("strides", &self.strides.slice());
+        }
+        if self.padding.slice().iter().any(|x| *x != 0) {
+            builder.field("padding", &self.padding.slice());
+        }
+        builder.finish()
     }
 }
 

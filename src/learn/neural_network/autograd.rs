@@ -13,6 +13,7 @@ use ndarray::{Dimension, IntoDimension, Ix2, IxDyn, ShapeBuilder};
 use parking_lot::{Mutex, MutexGuard};
 use std::{
     convert::{TryFrom, TryInto},
+    fmt::{self, Debug},
     iter::once,
     mem::take,
     sync::Arc,
@@ -505,6 +506,26 @@ impl<D: Dimension, N: Node + Default> From<FloatTensor<D>> for VertexBase<D, N> 
             grad: None,
             node: N::default(),
         }
+    }
+}
+
+impl<D: Dimension, N: Node> Debug for VertexBase<D, N> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let ty = if self.node.clone().try_into_variable().is_ok() {
+            "Variable"
+        } else {
+            "Parameter"
+        };
+        let mut builder = f.debug_struct(ty);
+        builder
+            .field("float_type", &self.float_type())
+            .field("device", &self.device())
+            .field("shape", &self.shape());
+        let strides = self.strides();
+        if strides != bytemuck::cast_slice(self.raw_dim().default_strides().slice()) {
+            builder.field("strides", &strides);
+        }
+        builder.finish()
     }
 }
 

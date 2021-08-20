@@ -94,22 +94,20 @@ See the [KMeans Iris](examples/kmeans-iris) example.
 ## Neural Networks
 **Currently under construction**
 ```rust
-use autograph::learn::neural_network::layer::{Layer, Forward, Conv, Dense, Relu, MeanPool};
-
-#[derive(Layer, Forward)]
+#[derive(Layer, Forward, Clone, Debug)]
 struct Lenet5 {
     #[autograph(layer)]
     conv1: Conv,
     #[autograph(layer)]
     relu1: Relu,
     #[autograph(layer)]
-    pool1: MeanPool,
+    pool1: MaxPool,
     #[autograph(layer)]
     conv2: Conv,
     #[autograph(layer)]
     relu2: Relu,
     #[autograph(layer)]
-    pool2: MeanPool,
+    pool2: MaxPool,
     #[autograph(layer)]
     dense1: Dense,
     #[autograph(layer)]
@@ -121,20 +119,39 @@ struct Lenet5 {
     #[autograph(layer)]
     dense3: Dense,
 }
-```
 
-# Help Wanted!
-Lots of things are under construction. Ideas for contributions:
-- Easy
-    - Add a dataset. See the iris dataset for an example. Larger datasets like MNIST should load from a directory, the user can download the files themselves.
-- Medium
-    - Add a new method or algorithm. Neural Networks are in maintenance. May start with KMeans, just needs to be brought up-to-date.
-        - Need full implementations for casts, elementwise ops, etc.
-        - Softmax
-    - Improve the shader parser, better error messages? Need to implement specialization constants, they are implemented in the engine but not in `Module`.
-- Hard
-    - Improve the performance of the GEMM / Dot implementation. Ideally implement it in Rust. This will likely require specialization constants, and those aren't available in rust-gpu yet.
-    - Add larger datasets, that will be loaded dynamically, potentially using async io. Also need pre-processing ops like crops / normalization.
+impl Lenet5 {
+    fn new() -> Result<Self> {
+        let conv1 = Conv::from_inputs_outputs_kernel(1, 6, [5, 5]);
+        let relu1 = Relu::default();
+        let pool1 = MaxPool::from_kernel([2, 2])
+            .with_strides(2)?;
+        let conv2 = Conv::from_inputs_outputs_kernel(6, 16, [5, 5]);
+        let relu2 = Relu::default();
+        let pool2 = MaxPool::from_kernel([2, 2])
+            .with_strides(2)?;
+        let dense1 = Dense::from_inputs_outputs(256, 120);
+        let relu3 = Relu::default();
+        let dense2 = Dense::from_inputs_outputs(120, 84);
+        let relu4 = Relu::default();
+        let dense3 = Dense::from_inputs_outputs(84, 10)
+            .with_bias(true)?;
+        Ok(Self {
+            conv1,
+            relu1,
+            pool1,
+            conv2,
+            relu2,
+            pool2,
+            dense1,
+            relu3,
+            dense2,
+            relu4,
+            dense3,
+        })
+    }
+}
+```
 
 # Developement Platforms
 1. Ubuntu 18.04 | (Vulkan) NVidia GeForce GTX 1060 with Max-Q Design
