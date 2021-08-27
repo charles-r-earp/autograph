@@ -1,15 +1,19 @@
 #[cfg(doc)]
-use crate::float_tensor::FloatTensorBase;
+use crate::tensor::float::FloatTensorBase;
 use crate::{
+    buffer::float::FloatBuffer,
     device::Device,
-    float::{FloatBuffer, FloatType},
-    float_tensor::{
-        FloatArcTensor, FloatTensor, FloatTensorD, FloatTensorView, FloatTensorViewMut,
-    },
+    glsl_shaders,
+    linalg::{Dot, DotAcc, DotBias},
     result::Result,
+    scalar::FloatType,
+    tensor::float::{
+        FloatArcTensor, FloatTensor, FloatTensor2, FloatTensorD, FloatTensorView, FloatTensorView0,
+        FloatTensorView2, FloatTensorViewMut, FloatTensorViewMut1, FloatTensorViewMut2,
+    },
 };
 use anyhow::{anyhow, bail, Context};
-use ndarray::{Dimension, IntoDimension, Ix2, IxDyn, ShapeBuilder};
+use ndarray::{Dimension, IntoDimension, Ix0, Ix1, Ix2, IxDyn, ShapeBuilder};
 use parking_lot::{Mutex, MutexGuard};
 use std::{
     convert::{TryFrom, TryInto},
@@ -186,21 +190,29 @@ pub struct VertexBase<D: Dimension, N: Node> {
 
 /// A dynamically typed vertex [`Variable`] / [`Parameter`].
 pub type Vertex<D> = VertexBase<D, VertexNode>;
-/// A dynamic dimensional vertex.
+/// A dynamic dimensional vertex
 pub type VertexD = Vertex<IxDyn>;
 
 /// A variable of a network.
 ///
 /// Inputs to the network are wrapped in variables, which potentially construct the graph of backward ops as the forward pass is computed. Use the [`.backward()`](VertexBase::backward()) method to execute the backward pass, computing the gradients.
 pub type Variable<D> = VertexBase<D, VariableNode>;
-/// A dynamic dimensional variable.
+/// A variable with 1 element
+pub type Variable0 = Variable<Ix0>;
+/// A variable with 2 dimensions
+pub type Variable2 = Variable<Ix2>;
+/// A dynamic dimensional variable
 pub type VariableD = Variable<IxDyn>;
 
 /// A parameter of a network.
 ///
 /// The parameters are [updated](super::layer::Layer::update()) after one or more forward + backward passes, training the network.
 pub type Parameter<D> = VertexBase<D, ParameterNode>;
-/// A dynamic dimensional parameter.
+/// A parameter with 1 dimension
+pub type Parameter1 = Parameter<Ix1>;
+/// A parameter with 2 dimensions
+pub type Parameter2 = Parameter<Ix2>;
+/// A dynamic dimensional parameter
 pub type ParameterD = Parameter<IxDyn>;
 
 impl<D: Dimension, N: Node> VertexBase<D, N> {
@@ -292,6 +304,15 @@ impl<D: Dimension, N: Node> VertexBase<D, N> {
             node: self.node,
         })
     }
+    /// Reverses (transposes) the axes of the vertex.
+    pub fn reversed_axes(mut self) -> Self {
+        self.value = self.value.reversed_axes();
+        self
+    }
+    /// Clones self with reversed (transposed) axes.
+    pub fn t(&self) -> Self {
+        self.clone().reversed_axes()
+    }
     #[allow(unused)]
     pub(crate) fn flatten(self) -> Result<VertexBase<Ix2, N>> {
         Ok(VertexBase {
@@ -306,6 +327,14 @@ impl<D: Dimension, N: Node> VertexBase<D, N> {
             value: self.value.into_dyn(),
             grad: self.grad,
             node: self.node,
+        }
+    }
+    /// Converts into a [`Vertex`].
+    pub fn into_vertex(self) -> Vertex<D> {
+        Vertex {
+            value: self.value,
+            grad: self.grad,
+            node: self.node.into(),
         }
     }
     /// Potentially adds a gradient to the vertex.
@@ -407,8 +436,7 @@ impl<D: Dimension, N: Node> VertexBase<D, N> {
                     let mut output = variable
                         .into_builder()
                         .backward(|vertices, output_grad| {
-                            let [mut x] =
-                                vertices.try_into_array().ok().expect("Expected 1 vertex!");
+                            let [mut x] = vertices.try_into_array().expect("Expected 1 vertex!");
                             if let Some(grad) = x.grad.as_deref_mut() {
                                 let output_grad = smol::block_on(
                                     output_grad.to_slice()?.into_device(x.value.device()),
@@ -587,7 +615,7 @@ impl<D: Dimension> Variable<D> {
         while let Some(mut var) = stack.pop() {
             if let Some(output_grad) = var.take_grad() {
                 let node = var.node;
-                let name = node.name;
+                let name = &node.name;
                 if let Some(Ok(base)) = node.base.map(Arc::try_unwrap) {
                     if let Some(backward) = base.backward {
                         let guards = base.vertices.iter().map(Vertex::lock).collect();
@@ -625,6 +653,7 @@ impl Graph {
 */
 
 /// A guard for [`Vertex`], with a value and a locked gradient.
+#[derive(Debug)]
 pub struct VertexGuard<'a, D: Dimension> {
     value: FloatTensorView<'a, D>,
     grad: Option<MutexGuard<'a, Option<FloatBuffer>>>,
@@ -686,17 +715,31 @@ impl<'a, D: Dimension> VertexGuard<'a, D> {
                 let len = self.value.len();
                 grad.replace(FloatBuffer::zeros(float_type, device, len)?);
             }
-            Ok(Some(
-                FloatTensorViewMut::from(grad.as_mut().unwrap().as_slice_mut())
-                    .into_shape(self.value.dim())?,
-            ))
+            Ok(Some({
+                let tensor = FloatTensorViewMut::from(grad.as_mut().unwrap().as_slice_mut())
+                    .into_shape(self.value.dim())?;
+                unsafe { tensor.with_raw_strides(self.value.raw_strides()) }
+            }))
         } else {
             Ok(None)
         }
     }
+    /// Converts the guard into dimension `D2`.
+    ///
+    /// See [`FloatTensor::into_dimensionality()`](FloatTensorBase::into_dimensionality()).
+    pub fn into_dimensionality<D2>(self) -> Result<VertexGuard<'a, D2>>
+    where
+        D2: Dimension,
+    {
+        Ok(VertexGuard {
+            value: self.value.into_dimensionality()?,
+            grad: self.grad,
+        })
+    }
 }
 
 /// A vec of [`VertexGuard`]'s.
+#[derive(Debug)]
 pub struct VertexGuardDVec<'a>(Vec<VertexGuardD<'a>>);
 
 impl<'a> VertexGuardDVec<'a> {
@@ -736,7 +779,7 @@ impl VariableBuilder {
     fn my_func(x: VariableD, w: ParameterD) -> Result<VariableD> {
         VariableBuilder::from_vertices([x.clone().into(), w.clone().into()])
             .backward(|vertex_guards, output_grad| {
-            let [mut x, mut w] = vertex_guards.try_into_array().ok().expect("Expected 2 vertices!");
+            let [mut x, mut w] = vertex_guards.try_into_array().expect("Expected 2 vertices!");
             # #[allow(unused_mut)]
             if let Some(mut x_grad) = x.grad_zeroed_mut()? {
                 // accumulate the input grad
@@ -860,5 +903,350 @@ impl VariableBuilder {
             grad,
             node,
         })
+    }
+}
+
+// linalg
+impl<N1: Node, N2: Node> Dot<VertexBase<Ix2, N2>> for VertexBase<Ix2, N1> {
+    type Output = Variable2;
+    fn dot(&self, rhs: &VertexBase<Ix2, N2>) -> Result<Variable2> {
+        let vertices = [
+            self.clone().into_dyn().into_vertex(),
+            rhs.clone().into_dyn().into_vertex(),
+        ];
+        VariableBuilder::from_vertices(vertices)
+            .backward(|vertices, dy| {
+                let dy = dy.into_dimensionality()?;
+                let [x, w] = vertices.try_into_array().unwrap();
+                let mut x = x.into_dimensionality()?;
+                let mut w = w.into_dimensionality()?;
+                if let Some(mut dx) = x.grad_zeroed_mut()? {
+                    dy.dot_acc(&w.value(), &mut dx)?;
+                }
+                if let Some(mut dw) = w.grad_zeroed_mut()? {
+                    dy.t().dot_acc(&x.value(), &mut dw)?;
+                }
+                Ok(())
+            })
+            .build(|| self.value().dot(rhs.value()).map(Into::into))?
+            .with_name("dot")
+    }
+}
+
+fn bias_backward(
+    bias_grad: &mut FloatTensorViewMut1,
+    output_grad: &FloatTensorView2,
+) -> Result<()> {
+    let (n, c) = output_grad.dim();
+    if bias_grad.dim() != c {
+        bail!(
+            "bias_grad dim {:?} (expected {:?}) not valid for output_grad dim {:?}!",
+            bias_grad.shape(),
+            [c],
+            output_grad.shape(),
+        );
+    }
+    if bias_grad.float_type() != output_grad.float_type() {
+        bail!(
+            "bias_grad float_type {:?} != output_grad float_type {:?}!",
+            bias_grad.float_type(),
+            output_grad.float_type(),
+        );
+    }
+    let output_grad_slice = output_grad.to_slice()?;
+    let builder = glsl_shaders::module(&format!(
+        "bias_backward_{}",
+        bias_grad.float_type().as_str()
+    ))?
+    .compute_pass("main")?
+    .float_slice_mut(bias_grad.as_raw_slice_mut())?
+    .float_slice(output_grad_slice.as_slice())?
+    .push([n as u32, c as u32])?;
+    unsafe { builder.submit([c as u32, 1, 1]) }
+}
+
+impl<N1: Node, N2: Node, N3: Node> DotBias<VertexBase<Ix2, N2>, VertexBase<Ix1, N3>>
+    for VertexBase<Ix2, N1>
+{
+    fn dot_bias(
+        &self,
+        rhs: &VertexBase<Ix2, N2>,
+        bias: Option<&VertexBase<Ix1, N3>>,
+    ) -> Result<Variable2> {
+        if let Some(bias) = bias {
+            let vertices = [
+                self.clone().into_dyn().into_vertex(),
+                rhs.clone().into_dyn().into_vertex(),
+                bias.clone().into_dyn().into_vertex(),
+            ];
+            VariableBuilder::from_vertices(vertices)
+                .backward(|vertices, dy| {
+                    let dy = dy.into_dimensionality()?;
+                    let [x, w, b] = vertices.try_into_array().unwrap();
+                    let mut x = x.into_dimensionality()?;
+                    let mut w = w.into_dimensionality()?;
+                    let mut b = b.into_dimensionality()?;
+                    if let Some(mut dx) = x.grad_zeroed_mut()? {
+                        dy.dot_acc(&w.value(), &mut dx)?;
+                    }
+                    if let Some(mut dw) = w.grad_zeroed_mut()? {
+                        x.value().t().dot_acc(&dy.view(), &mut dw)?;
+                    }
+                    if let Some(mut db) = b.grad_zeroed_mut()? {
+                        bias_backward(&mut db.view_mut(), &dy.view())?;
+                    }
+                    Ok(())
+                })
+                .build(|| self.value().dot(rhs.value()).map(Into::into))?
+                .with_name("dot_bias")
+        } else {
+            self.dot(rhs)
+        }
+    }
+}
+/*
+impl Variable2 {
+    pub(crate) fn dense(&self, rhs: &Parameter2, bias: Option<&Parameter1>) -> Result<Variable2> {
+        if let Some(bias) = bias {
+            let vertices = [
+                self.clone().into_dyn().into_vertex(),
+                rhs.clone().into_dyn().into_vertex(),
+                bias.clone().into_dyn().into_vertex(),
+            ];
+            VariableBuilder::from_vertices(vertices)
+                .backward(|vertices, dy| {
+                    let dy = dy.into_dimensionality()?;
+                    let [x, w, b] = vertices.try_into_array().unwrap();
+                    let mut x = x.into_dimensionality()?;
+                    let mut w = w.into_dimensionality()?;
+                    let mut b = b.into_dimensionality()?;
+                    if let Some(mut dx) = x.grad_zeroed_mut()? {
+                        dy.dot_acc(&w.value(), &mut dx)?;
+                    }
+                    if let Some(mut dw) = w.grad_zeroed_mut()? {
+                        dy.t().dot_acc(&x.value(), &mut dw)?;
+                    }
+                    if let Some(mut db) = b.grad_zeroed_mut()? {
+                        bias_backward(&mut db.view_mut(), &dy.view())?;
+                    }
+                    Ok(())
+                })
+                .build(|| self.value().dot(&rhs.value().t()).map(Into::into))?
+                .with_name("dot_bias")
+        } else {
+            todo!()
+        }
+    }
+}
+*/
+#[allow(unused_variables)]
+fn cross_entropy_loss(input: &FloatTensorView2, target: &FloatTensorView2) -> Result<FloatTensor2> {
+    if input.shape() != target.shape() {
+        bail!(
+            "input shape {:?} != target shape {:?}!",
+            input.shape(),
+            target.shape(),
+        );
+    }
+    if input.float_type() != target.float_type() {
+        bail!(
+            "input float_type {:?} != target float_type {:?}!",
+            input.float_type(),
+            target.float_type(),
+        )
+    }
+    let device = input.device();
+    let (n, nclasses) = input.dim();
+    let float_type = input.float_type();
+    let mut output = match float_type {
+        FloatType::BF16 => FloatTensor::zeros(float_type, device, [n, nclasses])?,
+        FloatType::F32 => unsafe { FloatTensor::alloc(float_type, device, [n, nclasses])? },
+    };
+    let nclasses_str = if nclasses <= 64 {
+        "64"
+    } else if nclasses <= 256 {
+        "256"
+    } else if nclasses <= 1024 {
+        "1024"
+    } else {
+        bail!("nclasses > 1024 unimplemented!");
+    };
+    let input_slice = input.to_slice()?;
+    let target_slice = target.to_slice()?;
+    let builder = glsl_shaders::module(&format!(
+        "cross_entropy_loss_{}_{}",
+        float_type.as_str(),
+        nclasses_str
+    ))?
+    .compute_pass("main")?
+    .float_slice(input_slice.as_slice())?
+    .float_slice(target_slice.as_slice())?
+    .float_slice_mut(output.as_raw_slice_mut())?
+    .push([n as u32, nclasses as u32])?;
+    unsafe {
+        builder.submit([n as u32, 1, 1])?;
+    }
+    Ok(output)
+}
+
+fn cross_entropy_loss_backward(
+    input: &FloatTensorView2,
+    input_grad: &mut FloatTensorViewMut2,
+    target: &FloatTensorView2,
+    output_grad: &FloatTensorView0,
+) -> Result<()> {
+    let n = input.dim().0 as u32;
+    let float_type = input.float_type();
+    let input_slice = input.to_slice()?;
+    let target_slice = target.to_slice()?;
+    let output_grad_slice = output_grad.to_slice()?;
+    let builder = glsl_shaders::module(&format!(
+        "cross_entropy_loss_backward_{}",
+        float_type.as_str()
+    ))?
+    .compute_pass("main")?
+    .float_slice(input_slice.as_slice())?
+    .float_slice_mut(input_grad.as_raw_slice_mut())?
+    .float_slice(target_slice.as_slice())?
+    .float_slice(output_grad_slice.as_slice())?
+    .push(n)?;
+    unsafe { builder.submit([n, 1, 1]) }
+}
+
+impl<D: Dimension> Variable<D> {
+    pub(super) fn cross_entropy_loss(&self, target: FloatArcTensor<D>) -> Result<Variable0> {
+        let target = target.into_dimensionality()?;
+        let output =
+            cross_entropy_loss(&self.value().view().into_dimensionality()?, &target.view())?
+                .sum()?
+                .into_shared()?;
+        let target = Variable::from(target).into_dyn().with_name("target")?;
+        self.builder()
+            .with_vertices(once(target.into_vertex()))
+            .backward(|vertices, dy| {
+                let dy = dy.into_dimensionality()?;
+                let [x, t] = vertices.try_into_array().unwrap();
+                let mut x = x.into_dimensionality()?;
+                let t = t.into_dimensionality()?;
+                let x_value = x.value();
+                if let Some(mut dx) = x.grad_zeroed_mut()? {
+                    cross_entropy_loss_backward(&x_value.view(), &mut dx, &t.value(), &dy.view())?;
+                }
+                Ok(())
+            })
+            .build(|| Ok(output))?
+            .with_name("cross_entropy_loss")
+    }
+}
+
+#[cfg(all(test, feature = "device_tests"))]
+mod tests {
+    use super::*;
+    use crate::{scalar::Float, tensor::CowTensor, util::type_eq};
+    use approx::assert_relative_eq;
+    use half::bf16;
+    use ndarray::{Array, Array2, ArrayView2, ArrayViewMut1, Axis};
+    use num_traits::FromPrimitive;
+
+    fn array_bias_backward<T: Copy + Into<f32> + FromPrimitive>(
+        db: &mut ArrayViewMut1<T>,
+        dy: &ArrayView2<T>,
+    ) {
+        for (db, dy) in db.iter_mut().zip(dy.axis_iter(Axis(1))) {
+            let acc: f32 = dy.iter().copied().map(Into::into).sum();
+            *db = T::from_f32((*db).into() + acc).unwrap();
+        }
+    }
+
+    async fn test_bias_backward<T: Float + From<u8> + Into<f32> + FromPrimitive>() -> Result<()> {
+        let batch_size = 3;
+        let units = 7;
+        let data = (0..batch_size * units)
+            .into_iter()
+            .map(|x| (x as u8).into())
+            .collect();
+        let dy_array = Array::from_shape_vec([batch_size, units], data)?;
+        let mut db_true = Array::from_elem(units, T::one());
+        array_bias_backward(&mut db_true.view_mut(), &dy_array.view());
+        let device = Device::new()?;
+        let _s = device.acquire().await;
+        let dy = CowTensor::from(dy_array.view())
+            .into_device(device.clone())
+            .await?
+            .into_float();
+        let mut db = FloatTensor::ones(T::float_type(), device, units)?;
+        bias_backward(&mut db.view_mut(), &dy.view())?;
+        let db_array = db.cast_into::<T>()?.read().await?;
+        assert_eq!(db_array.as_array(), db_true.view());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn bias_backward_bf16() -> Result<()> {
+        test_bias_backward::<bf16>().await
+    }
+
+    #[tokio::test]
+    async fn bias_backward_f32() -> Result<()> {
+        test_bias_backward::<f32>().await
+    }
+
+    fn array_cross_entropy_loss(x: &ArrayView2<f32>, t: &ArrayView2<f32>) -> Array2<f32> {
+        let mut y = Array::zeros(x.raw_dim());
+        for (mut y, (x, t)) in y.outer_iter_mut().zip(x.outer_iter().zip(t.outer_iter())) {
+            let m = x
+                .iter()
+                .copied()
+                .fold(x[0], |m, x| if x > m { x } else { m });
+            let x = x.map(|x| x - m);
+            let s: f32 = x.iter().map(|x| x.exp()).sum();
+            for (y, (x, t)) in y.iter_mut().zip(x.iter().copied().zip(t.iter().copied())) {
+                *y = (s.ln() - x) * t;
+            }
+        }
+        y
+    }
+
+    async fn test_cross_entropy_loss<T: Float + From<u8> + FromPrimitive>() -> Result<()> {
+        let n = 67;
+        let c = 9;
+        let x_data: Vec<T> = (0..n * c).into_iter().map(|x| (x as u8).into()).collect();
+        let t_data: Vec<T> = x_data.iter().copied().rev().collect();
+        let x_array = Array::from_shape_vec([n, c], x_data)?;
+        let t_array = Array::from_shape_vec([n, c], t_data)?;
+        let y_true = {
+            let x_array = x_array.map(|x| x.to_f32().unwrap());
+            let t_array = t_array.map(|t| t.to_f32().unwrap());
+            array_cross_entropy_loss(&x_array.view(), &t_array.view())
+        };
+        let device = Device::new()?;
+        let _s = device.acquire().await;
+        let x = CowTensor::from(x_array.view())
+            .into_device(device.clone())
+            .await?
+            .into_float();
+        let t = CowTensor::from(t_array.view())
+            .into_device(device.clone())
+            .await?
+            .into_float();
+        let y = cross_entropy_loss(&x.view(), &t.view())?;
+        let y_array = y.cast_into::<T>()?.read().await?;
+        let y_array = y_array.as_array().map(|x| x.to_f32().unwrap());
+        if type_eq::<T, bf16>() {
+            assert_relative_eq!(y_array, y_true, epsilon = 0.01, max_relative = 0.01);
+        } else {
+            assert_relative_eq!(y_array, y_true, max_relative = 0.000_1);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cross_entropy_loss_bf16() -> Result<()> {
+        test_cross_entropy_loss::<bf16>().await
+    }
+
+    #[tokio::test]
+    async fn cross_entropy_loss_f32() -> Result<()> {
+        test_cross_entropy_loss::<f32>().await
     }
 }

@@ -152,6 +152,7 @@ impl Lenet5 {
     }
 }
 ```
+See the [Neural Network MNIST](examples/neural-network-mnist) example.
 
 # Developement Platforms
 1. Ubuntu 18.04 | (Vulkan) NVidia GeForce GTX 1060 with Max-Q Design

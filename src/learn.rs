@@ -4,6 +4,7 @@ use ndarray::Axis;
 use serde::{Deserialize, Serialize};
 
 use std::{
+    fmt::{self, Debug},
     iter::empty,
     time::{Duration, Instant},
 };
@@ -35,7 +36,7 @@ pub trait Test<X> {
 
 /// Training / Testing statistics.
 #[non_exhaustive]
-#[derive(Default, Clone, Copy, Debug)]
+#[derive(Default, Clone, Copy)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Stats {
     /// The number of samples.
@@ -44,6 +45,31 @@ pub struct Stats {
     pub loss: Option<f32>,
     /// The number of correct predictions.
     pub correct: Option<usize>,
+}
+
+impl Stats {
+    /// The accuracy as a ratio between 0. and 1.
+    ///
+    /// If correct is Some, correct / count, else None.
+    pub fn accuracy(&self) -> Option<f32> {
+        self.correct
+            .map(|correct| correct as f32 / self.count as f32)
+    }
+}
+
+impl Debug for Stats {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let mut builder = f.debug_struct("Stats");
+        builder.field("count", &self.count);
+        if let Some(loss) = self.loss.as_ref() {
+            builder.field("loss", loss);
+        }
+        if let Some(correct) = self.correct.as_ref() {
+            builder.field("correct", correct);
+            builder.field("accuracy", &(*correct as f32 / self.count as f32));
+        }
+        builder.finish()
+    }
 }
 
 /// Summary of training.

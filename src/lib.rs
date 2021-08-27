@@ -33,7 +33,7 @@ pub mod result {
 pub mod error {
     pub use anyhow::Error;
 }
-/// Device level backend.
+/// Devices.
 pub mod device;
 
 mod util;
@@ -41,25 +41,37 @@ mod util;
 mod glsl_shaders;
 mod rust_shaders;
 
-/// Float types.
-pub mod float;
 /// Scalar types.
 pub mod scalar;
-/// Uint types.
-pub mod uint;
+
+#[doc(hidden)]
+pub mod float {
+    pub use crate::{
+        buffer::float::*,
+        scalar::{Float, FloatType},
+    };
+}
+
+mod uint {
+    #[allow(unused)]
+    pub(crate) use crate::scalar::Uint;
+}
 
 // Linear Algebra.
 mod linalg;
 /// Numerical operations.
 mod ops;
 
+/// Buffers.
+pub mod buffer;
+
 /// Tensors.
 #[cfg(feature = "tensor")]
 pub mod tensor;
 
-/// Float Tensors.
+#[doc(hidden)]
 #[cfg(feature = "tensor")]
-pub mod float_tensor;
+pub use tensor::float as float_tensor;
 
 /// Datasets.
 pub mod dataset;

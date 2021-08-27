@@ -6,8 +6,9 @@ use crate::{
         Device,
     },
     error::Error,
+    glsl_shaders,
     result::Result,
-    scalar::{Scalar, ScalarType},
+    scalar::{Scalar, ScalarType, Uint},
     util::{elem_type_name, size_eq},
 };
 use anyhow::{anyhow, bail};
@@ -20,11 +21,16 @@ use serde::{Deserialize, Serialize};
 use std::{
     convert::{TryFrom, TryInto},
     fmt::{self, Debug},
-    mem::transmute,
+    mem::{size_of, transmute},
 };
 
+mod accuracy;
 mod linalg;
+mod ops;
 mod reduce;
+
+/// Float tensors.
+pub mod float;
 
 mod sealed {
     use super::Device;
@@ -242,15 +248,14 @@ where
     strides
 }
 
-// pub(crate) for FloatTensor
-pub(crate) fn dim_strides_from_shape<D: Dimension>(shape: impl Into<StrideShape<D>>) -> (D, D) {
+fn dim_strides_from_shape<D: Dimension>(shape: impl Into<StrideShape<D>>) -> (D, D) {
     let array = unsafe { RawArrayView::from_shape_ptr(shape, &()) };
     let dim = array.raw_dim();
     let strides = strides_from_array(&array);
     (dim, strides)
 }
 
-pub(crate) fn into_dimensionality<D1, D2>(dim: &D1, strides: &D1) -> Result<(D2, D2)>
+fn into_dimensionality<D1, D2>(dim: &D1, strides: &D1) -> Result<(D2, D2)>
 where
     D1: Dimension,
     D2: Dimension,
@@ -268,7 +273,7 @@ where
         })
 }
 
-pub(crate) fn into_shape<D1, E>(dim: &D1, strides: &D1, shape: E) -> Result<(E::Dim, E::Dim)>
+fn into_shape<D1, E>(dim: &D1, strides: &D1, shape: E) -> Result<(E::Dim, E::Dim)>
 where
     D1: Dimension,
     E: IntoDimension,
@@ -282,7 +287,7 @@ where
         Err(anyhow!(
             "Incompatible Shapes! {:?} {:?} => {:?}",
             dim.slice(),
-            strides,
+            strides.slice(),
             shape.slice()
         ))
     }
@@ -291,10 +296,9 @@ where
 /// Multi-dimensional matrix
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TensorBase<S: Data, D: Dimension> {
-    // pub(crate) here for easy conversions to / from FloatTensorBase
-    pub(crate) dim: D,
-    pub(crate) strides: D,
-    pub(crate) data: S,
+    dim: D,
+    strides: D,
+    data: S,
 }
 
 /// Owned Tensor
@@ -569,7 +573,7 @@ impl<T, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
             data: ViewMutRepr(self.data.as_slice_mut()),
         }
     }
-    /// Reverses (transposes) the axes of the array.
+    /// Reverses (transposes) the axes of the tensor.
     pub fn reversed_axes(mut self) -> Self {
         self.dim.slice_mut().reverse();
         self.strides.slice_mut().reverse();
@@ -685,6 +689,26 @@ impl<T, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
             data: self.data.into_shared()?,
         })
     }
+    /// Converts into a [`FloatTensorBase`]
+    #[doc(hidden)]
+    pub fn into_float<S2: float::FloatData>(self) -> float::FloatTensorBase<S2, D>
+    where
+        Self: Into<float::FloatTensorBase<S2, D>>,
+    {
+        self.into()
+    }
+    /// Fills the tensor with `elem`.
+    ///
+    /// **Errors**
+    ///
+    /// See [`BufferBase::fill()`].
+    pub fn fill(&mut self, elem: T) -> Result<()>
+    where
+        T: Scalar,
+        S: DataMut,
+    {
+        self.data.as_slice_mut().fill(elem)
+    }
 }
 
 impl<T, S: DataOwned<Elem = T>> From<Buffer<T>> for TensorBase<S, Ix1> {
@@ -748,7 +772,8 @@ impl<'a, T, D: Dimension> TryFrom<ArrayView<'a, T, D>> for TensorView<'a, T, D> 
 /// Casts
 #[allow(unused)]
 impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
-    pub(crate) fn cast_into<T2: Scalar>(self) -> Result<Tensor<T2, D>> {
+    #[doc(hidden)]
+    pub fn cast_into<T2: Scalar>(self) -> Result<Tensor<T2, D>> {
         let buffer = match self.data.try_into_buffer() {
             Ok(buffer) => buffer.cast_into()?,
             Err(data) => data.as_slice().cast_into()?,
@@ -768,7 +793,8 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
             data: CowRepr(unsafe { transmute(buffer) }),
         })
     }
-    pub(crate) fn scale_into<T2: Scalar>(self, alpha: T2) -> Result<Tensor<T2, D>> {
+    #[doc(hidden)]
+    pub fn scale_into<T2: Scalar>(self, alpha: T2) -> Result<Tensor<T2, D>> {
         let buffer = match self.data.try_into_buffer() {
             Ok(buffer) => buffer.scale_into(alpha)?,
             Err(data) => data.as_slice().scale_into(alpha)?,
@@ -778,6 +804,29 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
             strides: self.strides,
             data: OwnedRepr(buffer),
         })
+    }
+}
+
+impl<T: Uint, S: Data<Elem = T>> TensorBase<S, Ix1> {
+    pub(crate) fn to_one_hot<T2: Scalar>(&self, nclasses: usize) -> Result<Tensor2<T2>> {
+        let n = self.dim();
+        let mut output = unsafe { Tensor::alloc(self.device(), [n, nclasses])? };
+        if size_of::<T2>() < 4 {
+            output.fill(T2::zero())?;
+        }
+        let builder = glsl_shaders::module(&format!(
+            "one_hot_{}_{}",
+            T::scalar_name(),
+            T2::scalar_name()
+        ))?
+        .compute_pass("main")?
+        .slice(self.as_raw_slice())?
+        .slice_mut(output.as_raw_slice_mut())?
+        .push([n as u32, nclasses as u32])?;
+        unsafe {
+            builder.submit([n as u32, 1, 1])?;
+        }
+        Ok(output)
     }
 }
 
@@ -840,6 +889,10 @@ impl<T: Pod + Debug, S: Data<Elem = T>, D: Dimension> Debug for ReadGuard<S, D> 
 mod tests {
     #[allow(unused)]
     use super::*;
+    #[cfg(feature = "device_tests")]
+    use half::bf16;
+    #[cfg(feature = "device_tests")]
+    use ndarray::{Array1, Array2};
 
     async fn tensor_from_array<D: Dimension>(x: Array<u32, D>) -> Result<()> {
         let y = TensorView::try_from(x.view())?.read().await?;
@@ -936,5 +989,259 @@ mod tests {
         let device = Device::new()?;
         let _s = device.acquire().await;
         tensor_serde(device).await
+    }
+
+    /*
+    use autograph::{
+        backend::Device,
+        tensor::{Num, Scalar, Tensor, Unsigned},
+        Result,
+    };
+    use half::bf16;
+    use ndarray::{Array, Array1, Array2};
+    use num_traits::{FromPrimitive, ToPrimitive};
+    */
+
+    #[cfg(feature = "device_tests")]
+    fn array_scaled_cast<T1: Scalar, T2: Scalar>(x: &Array1<T1>, alpha: f64) -> Array1<T2> {
+        x.iter()
+            .map(|x| T2::from_f64(x.to_f64().unwrap() * alpha).unwrap())
+            .collect()
+    }
+
+    #[cfg(feature = "device_tests")]
+    async fn scaled_cast<T1: Scalar + From<u8>, T2: Scalar + From<u8>>() -> Result<()> {
+        let n = 100;
+        let alpha = 2;
+        let data: Vec<T1> = (0..n as u8).into_iter().map(Into::into).collect();
+        let x_array = Array::from(data);
+        let y_true = array_scaled_cast(&x_array, alpha.into());
+        let device = Device::new()?;
+        let _s = device.acquire().await;
+        let x = CowTensor::from(x_array.view()).into_device(device).await?;
+        let y = x.scale_into::<T2>((alpha as u8).into())?;
+        let y_array = y.read().await?;
+        assert_eq!(y_array.as_array(), y_true.view());
+        Ok(())
+    }
+
+    #[cfg(feature = "device_tests")]
+    #[tokio::test]
+    async fn scaled_cast_u8_bf16() -> Result<()> {
+        scaled_cast::<u8, bf16>().await
+    }
+
+    #[cfg(feature = "device_tests")]
+    #[tokio::test]
+    async fn scaled_cast_u8_u32() -> Result<()> {
+        scaled_cast::<u8, u32>().await
+    }
+
+    #[cfg(feature = "device_tests")]
+    #[tokio::test]
+    async fn scaled_cast_u8_i32() -> Result<()> {
+        scaled_cast::<u8, i32>().await
+    }
+
+    #[cfg(feature = "device_tests")]
+    #[tokio::test]
+    async fn scaled_cast_u8_f32() -> Result<()> {
+        scaled_cast::<u8, f32>().await
+    }
+
+    #[cfg(feature = "device_tests")]
+    #[tokio::test]
+    async fn scaled_cast_u16_bf16() -> Result<()> {
+        scaled_cast::<u16, bf16>().await
+    }
+
+    #[cfg(feature = "device_tests")]
+    #[tokio::test]
+    async fn scaled_cast_u16_u32() -> Result<()> {
+        scaled_cast::<u16, u32>().await
+    }
+
+    #[cfg(feature = "device_tests")]
+    #[tokio::test]
+    async fn scaled_cast_u16_i32() -> Result<()> {
+        scaled_cast::<u16, i32>().await
+    }
+
+    #[cfg(feature = "device_tests")]
+    #[tokio::test]
+    async fn scaled_cast_u16_f32() -> Result<()> {
+        scaled_cast::<u16, f32>().await
+    }
+
+    #[cfg(feature = "device_tests")]
+    #[tokio::test]
+    async fn scaled_cast_bf16_bf16() -> Result<()> {
+        scaled_cast::<bf16, bf16>().await
+    }
+
+    #[cfg(feature = "device_tests")]
+    #[tokio::test]
+    async fn scaled_cast_bf16_u32() -> Result<()> {
+        scaled_cast::<bf16, u32>().await
+    }
+
+    #[cfg(feature = "device_tests")]
+    #[tokio::test]
+    async fn scaled_cast_bf16_i32() -> Result<()> {
+        scaled_cast::<bf16, i32>().await
+    }
+
+    #[cfg(feature = "device_tests")]
+    #[tokio::test]
+    async fn scaled_cast_bf16_f32() -> Result<()> {
+        scaled_cast::<bf16, f32>().await
+    }
+
+    #[cfg(feature = "device_tests")]
+    #[tokio::test]
+    async fn scaled_cast_u32_bf16() -> Result<()> {
+        scaled_cast::<u32, bf16>().await
+    }
+
+    #[cfg(feature = "device_tests")]
+    #[tokio::test]
+    async fn scaled_cast_u32_u32() -> Result<()> {
+        scaled_cast::<u32, u32>().await
+    }
+
+    #[cfg(feature = "device_tests")]
+    #[tokio::test]
+    async fn scaled_cast_u32_i32() -> Result<()> {
+        scaled_cast::<u32, i32>().await
+    }
+
+    #[cfg(feature = "device_tests")]
+    #[tokio::test]
+    async fn scaled_cast_u32_f32() -> Result<()> {
+        scaled_cast::<u32, f32>().await
+    }
+
+    #[cfg(feature = "device_tests")]
+    #[tokio::test]
+    async fn scaled_cast_i32_bf16() -> Result<()> {
+        scaled_cast::<i32, bf16>().await
+    }
+
+    #[cfg(feature = "device_tests")]
+    #[tokio::test]
+    async fn scaled_cast_i32_u32() -> Result<()> {
+        scaled_cast::<i32, u32>().await
+    }
+
+    #[cfg(feature = "device_tests")]
+    #[tokio::test]
+    async fn scaled_cast_i32_i32() -> Result<()> {
+        scaled_cast::<i32, i32>().await
+    }
+
+    #[cfg(feature = "device_tests")]
+    #[tokio::test]
+    async fn scaled_cast_i32_f32() -> Result<()> {
+        scaled_cast::<i32, f32>().await
+    }
+
+    fn to_one_hot<U: Uint, T: Scalar>(x: &Array1<U>, nclasses: usize) -> Array2<T> {
+        let mut y = Array::from_elem([x.len(), nclasses], T::zero());
+        for (mut y, x) in y.outer_iter_mut().zip(x.iter().copied()) {
+            y[x.to_usize().unwrap()] = T::one();
+        }
+        y
+    }
+
+    async fn one_hot<U: Uint + Into<u64> + From<u8>, T: Scalar>() -> Result<()> {
+        let batch_size = 100;
+        let nclasses = 10;
+        let data: Vec<U> = (0..nclasses as u8)
+            .into_iter()
+            .cycle()
+            .take(batch_size)
+            .map(Into::into)
+            .collect();
+        let x_array = Array::from(data.clone());
+        let y_true = to_one_hot(&x_array, nclasses);
+        let device = Device::new()?;
+        let _s = device.acquire().await;
+        let x = CowTensor::from(x_array.view()).into_device(device).await?;
+        let y = x.to_one_hot::<T>(nclasses)?;
+        let y_array = y.read().await?;
+        assert_eq!(y_array.as_array(), y_true.view());
+        Ok(())
+    }
+
+    #[cfg(feature = "device_tests")]
+    #[tokio::test]
+    async fn one_hot_u8_bf16() -> Result<()> {
+        one_hot::<u8, bf16>().await
+    }
+
+    #[cfg(feature = "device_tests")]
+    #[tokio::test]
+    async fn one_hot_u16_bf16() -> Result<()> {
+        one_hot::<u16, bf16>().await
+    }
+
+    #[cfg(feature = "device_tests")]
+    #[tokio::test]
+    async fn one_hot_u32_bf16() -> Result<()> {
+        one_hot::<u32, bf16>().await
+    }
+
+    #[cfg(feature = "device_tests")]
+    #[tokio::test]
+    async fn one_hot_u8_u32() -> Result<()> {
+        one_hot::<u8, u32>().await
+    }
+
+    #[cfg(feature = "device_tests")]
+    #[tokio::test]
+    async fn one_hot_u16_u32() -> Result<()> {
+        one_hot::<u16, u32>().await
+    }
+
+    #[cfg(feature = "device_tests")]
+    #[tokio::test]
+    async fn one_hot_u32_u32() -> Result<()> {
+        one_hot::<u32, u32>().await
+    }
+
+    #[cfg(feature = "device_tests")]
+    #[tokio::test]
+    async fn one_hot_u8_i32() -> Result<()> {
+        one_hot::<u8, i32>().await
+    }
+
+    #[cfg(feature = "device_tests")]
+    #[tokio::test]
+    async fn one_hot_u16_i32() -> Result<()> {
+        one_hot::<u16, i32>().await
+    }
+
+    #[cfg(feature = "device_tests")]
+    #[tokio::test]
+    async fn one_hot_u32_i32() -> Result<()> {
+        one_hot::<u32, i32>().await
+    }
+
+    #[cfg(feature = "device_tests")]
+    #[tokio::test]
+    async fn one_hot_u8_f32() -> Result<()> {
+        one_hot::<u8, f32>().await
+    }
+
+    #[cfg(feature = "device_tests")]
+    #[tokio::test]
+    async fn one_hot_u16_f32() -> Result<()> {
+        one_hot::<u16, f32>().await
+    }
+
+    #[cfg(feature = "device_tests")]
+    #[tokio::test]
+    async fn one_hot_u32_f32() -> Result<()> {
+        one_hot::<u32, f32>().await
     }
 }

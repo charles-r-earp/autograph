@@ -3,16 +3,19 @@ use crate::{
     float::{
         Float, FloatArcBuffer, FloatBuffer, FloatCowBuffer, FloatSlice, FloatSliceMut, FloatType,
     },
+    linalg::{Dot, DotAcc, DotBias},
+    ops::{AddAssign, ScaledAdd},
     result::Result,
     scalar::Scalar,
     tensor::{
         dim_strides_from_shape, into_dimensionality, into_shape, ArcRepr, ArcTensor, CowRepr,
-        CowTensor, DataBase, OwnedRepr, Tensor, TensorBase, TensorView, TensorViewMut, ViewMutRepr,
-        ViewRepr,
+        CowTensor, Data, DataBase, OwnedRepr, Tensor, TensorBase, TensorView, TensorViewMut,
+        ViewMutRepr, ViewRepr,
     },
     uint::Uint,
 };
 use half::bf16;
+use num_traits::NumCast;
 use std::mem::transmute;
 
 use ndarray::{
@@ -399,6 +402,12 @@ impl<S: FloatData, D: Dimension> FloatTensorBase<S, D> {
     pub fn strides(&self) -> &[isize] {
         bytemuck::cast_slice(self.strides.slice())
     }
+    pub(crate) fn raw_strides(&self) -> D {
+        self.strides.clone()
+    }
+    pub(crate) unsafe fn with_raw_strides(self, strides: D) -> Self {
+        Self { strides, ..self }
+    }
     /// The length of the tensor.
     pub fn len(&self) -> usize {
         debug_assert_eq!(self.data.len(), self.dim.size());
@@ -450,6 +459,7 @@ impl<S: FloatData, D: Dimension> FloatTensorBase<S, D> {
             data: self.data,
         })
     }
+    #[allow(unused)]
     pub(crate) fn flatten(self) -> Result<FloatTensorBase<S, Ix2>> {
         let batch_size = self.shape()[0];
         let n = self.shape()[1..].iter().product();
@@ -482,7 +492,7 @@ impl<S: FloatData, D: Dimension> FloatTensorBase<S, D> {
             data: FloatViewMutRepr(self.data.as_slice_mut()),
         }
     }
-    /// Reverses (transposes) the axes of the array.
+    /// Reverses (transposes) the axes of the tensor.
     pub fn reversed_axes(mut self) -> Self {
         self.dim.slice_mut().reverse();
         self.strides.slice_mut().reverse();
@@ -793,6 +803,19 @@ impl<S: FloatData, D: Dimension> FloatTensorBase<S, D> {
     }
 }
 
+impl<T: Uint, S: Data<Elem = T>> TensorBase<S, Ix1> {
+    pub(crate) fn to_one_hot_float(
+        &self,
+        float_type: FloatType,
+        nclasses: usize,
+    ) -> Result<FloatTensor2> {
+        match float_type {
+            FloatType::BF16 => Ok(self.to_one_hot::<bf16>(nclasses)?.into()),
+            FloatType::F32 => Ok(self.to_one_hot::<f32>(nclasses)?.into()),
+        }
+    }
+}
+
 macro_rules! map_float_tensor {
     (ref $tensor:ident, $x:ident => $e:expr) => {
         map_float_tensor! {$tensor, $x => downcast_ref $e}
@@ -817,32 +840,53 @@ macro_rules! map_float_tensor {
 
 /// Reductions
 #[allow(unused)]
-impl<S: FloatData, D: RemoveAxis> FloatTensorBase<S, D> {
+impl<S: FloatData, D: Dimension> FloatTensorBase<S, D> {
+    pub(crate) fn sum(&self) -> Result<FloatTensor0> {
+        map_float_tensor!(ref self, tensor => Ok(tensor.sum()?.into()))
+    }
     /// Computes the sum along the given axis
-    pub(crate) fn sum_axis(&self, axis: Axis) -> Result<FloatTensor<D::Smaller>> {
+    pub(crate) fn sum_axis(&self, axis: Axis) -> Result<FloatTensor<D::Smaller>>
+    where
+        D: RemoveAxis,
+    {
         map_float_tensor!(ref self, tensor => Ok(tensor.sum_axis(axis)?.into()))
+    }
+    pub(crate) fn sum_with(&self, output: &mut FloatTensorViewMut0) -> Result<()> {
+        map_float_tensor!(mut output, output => self.cast_to()?.sum_with(&mut output))
     }
     pub(crate) fn sum_axis_with(
         &self,
         axis: Axis,
         output: &mut FloatTensorViewMut<D::Smaller>,
-    ) -> Result<()> {
+    ) -> Result<()>
+    where
+        D: RemoveAxis,
+    {
         map_float_tensor!(mut output, output => self.cast_to()?.sum_axis_with(axis, &mut output))
     }
     /// Computes the min value along the given axis
-    pub(crate) fn min_axis(&self, axis: Axis) -> Result<FloatTensor<D::Smaller>> {
+    pub(crate) fn min_axis(&self, axis: Axis) -> Result<FloatTensor<D::Smaller>>
+    where
+        D: RemoveAxis,
+    {
         map_float_tensor!(ref self, tensor => Ok(tensor.min_axis(axis)?.into()))
     }
     /// Computes the index of the min value along the given axis.
     ///
     /// For multiple min values, the first will be selected. NaN values are ignored, returns 0 if all values are NaN.
-    pub(crate) fn argmin_axis<U: Uint>(&self, axis: Axis) -> Result<Tensor<U, D::Smaller>> {
+    pub(crate) fn argmin_axis<U: Uint>(&self, axis: Axis) -> Result<Tensor<U, D::Smaller>>
+    where
+        D: RemoveAxis,
+    {
         map_float_tensor!(ref self, tensor => tensor.argmin_axis(axis))
     }
     /// Computes the index of the max value along the given axis.
     ///
     /// For multiple max values, the first will be selected. NaN values are ignored, returns 0 if all values are NaN.
-    pub(crate) fn argmax_axis<U: Uint>(&self, axis: Axis) -> Result<Tensor<U, D::Smaller>> {
+    pub(crate) fn argmax_axis<U: Uint>(&self, axis: Axis) -> Result<Tensor<U, D::Smaller>>
+    where
+        D: RemoveAxis,
+    {
         map_float_tensor!(ref self, tensor => tensor.argmax_axis(axis))
     }
     /// Indexes an `axis` with `indices`.
@@ -854,7 +898,68 @@ impl<S: FloatData, D: RemoveAxis> FloatTensorBase<S, D> {
         &self,
         axis: Axis,
         indices: &TensorView<u32, D::Smaller>,
-    ) -> Result<FloatTensor<D::Smaller>> {
+    ) -> Result<FloatTensor<D::Smaller>>
+    where
+        D: RemoveAxis,
+    {
         map_float_tensor!(ref self, tensor => tensor.index_select(axis, indices).map(Into::into))
+    }
+}
+
+// ops
+
+impl<S1: FloatDataMut, S2: FloatData, D: Dimension> AddAssign<FloatTensorBase<S2, D>>
+    for FloatTensorBase<S1, D>
+{
+    fn add_assign(&mut self, rhs: &FloatTensorBase<S2, D>) -> Result<()> {
+        self.scaled_add(1f32, rhs)
+    }
+}
+
+impl<T: Float, S1: FloatDataMut, S2: FloatData, D: Dimension> ScaledAdd<T, FloatTensorBase<S2, D>>
+    for FloatTensorBase<S1, D>
+{
+    fn scaled_add(&mut self, alpha: T, rhs: &FloatTensorBase<S2, D>) -> Result<()> {
+        map_float_tensor!(mut self, tensor => tensor.scaled_add(NumCast::from(alpha).unwrap(), &rhs.cast_to()?))
+    }
+}
+
+// linalg
+
+impl<S1: FloatData, S2: FloatData> Dot<FloatTensorBase<S2, Ix2>> for FloatTensorBase<S1, Ix2> {
+    type Output = FloatTensor2;
+    fn dot(&self, rhs: &FloatTensorBase<S2, Ix2>) -> Result<Self::Output> {
+        map_float_tensor!(ref self, lhs => Ok(lhs.dot(&rhs.cast_to()?)?.into()))
+    }
+}
+
+impl<S1: FloatData, S2: FloatData, S3: FloatData>
+    DotBias<FloatTensorBase<S2, Ix2>, FloatTensorBase<S3, Ix1>> for FloatTensorBase<S1, Ix2>
+{
+    fn dot_bias(
+        &self,
+        rhs: &FloatTensorBase<S2, Ix2>,
+        bias: Option<&FloatTensorBase<S3, Ix1>>,
+    ) -> Result<Self::Output> {
+        map_float_tensor!(ref self, lhs => {
+            let bias = if let Some(bias) = bias {
+                Some(bias.cast_to()?)
+            } else {
+                None
+            };
+            Ok(lhs.dot_bias(&rhs.cast_to()?, bias.as_ref())?.into())
+        })
+    }
+}
+
+impl<S1: FloatData, S2: FloatData, S3: FloatDataMut>
+    DotAcc<FloatTensorBase<S2, Ix2>, FloatTensorBase<S3, Ix2>> for FloatTensorBase<S1, Ix2>
+{
+    fn dot_acc(
+        &self,
+        rhs: &FloatTensorBase<S2, Ix2>,
+        output: &mut FloatTensorBase<S3, Ix2>,
+    ) -> Result<()> {
+        map_float_tensor!(mut output, output => self.cast_to()?.dot_acc(&rhs.cast_to()?, &mut output))
     }
 }

@@ -3,10 +3,11 @@ use super::{
     optimizer::Optimizer,
 };
 use crate::{
-    device::{Buffer, Device},
-    float::FloatBuffer,
-    float_tensor::FloatArcTensor,
+    buffer::{float::FloatBuffer, Buffer},
+    device::Device,
+    linalg::DotBias,
     result::Result,
+    tensor::float::FloatArcTensor,
     util::type_eq,
 };
 use anyhow::bail;
@@ -320,7 +321,7 @@ impl Dense {
         let buffer = FloatBuffer::from(Buffer::from(data));
         let weight = Parameter::from(
             FloatArcTensor::from(buffer)
-                .into_shape([inputs, outputs].as_ref())
+                .into_shape([outputs, inputs].as_ref())
                 .unwrap(),
         );
         Self { weight, bias: None }
@@ -347,9 +348,17 @@ impl Dense {
 }
 
 impl Forward for Dense {
-    #[allow(unused)]
     fn forward(&self, input: VariableD) -> Result<VariableD> {
-        todo!()
+        let input = smol::block_on(input.into_device(self.weight.device()))?.flatten()?;
+        // TODO: convert to float type of weight
+        let weight = self.weight.clone().into_dimensionality()?;
+        let bias = if let Some(bias) = self.bias.as_ref().map(Parameter::clone) {
+            Some(bias.into_dimensionality()?)
+        } else {
+            None
+        };
+        Ok(input.dot_bias(&weight.t(), bias.as_ref())?.into_dyn())
+        //Ok(input.dense(&weight, bias.as_ref())?.into_dyn())
     }
 }
 

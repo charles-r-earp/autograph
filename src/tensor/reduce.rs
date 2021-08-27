@@ -1,4 +1,4 @@
-use super::{Data, Scalar, Tensor, TensorBase, TensorView, TensorViewMut};
+use super::{Data, Scalar, Tensor, Tensor0, TensorBase, TensorView, TensorViewMut, TensorViewMut0};
 use crate::{glsl_shaders, result::Result, uint::Uint, util::size_eq};
 use anyhow::bail;
 use ndarray::{Axis, Dimension, RemoveAxis};
@@ -64,9 +64,15 @@ where
 
 /// Reductions
 #[allow(unused)]
-impl<T: Scalar, S: Data<Elem = T>, D: RemoveAxis> TensorBase<S, D> {
+impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
+    pub(crate) fn sum(&self) -> Result<Tensor0<T>> {
+        self.view().into_shape(self.len())?.sum_axis(Axis(0))
+    }
     /// Computes the sum along the given axis
-    pub(crate) fn sum_axis(&self, axis: Axis) -> Result<Tensor<T, D::Smaller>> {
+    pub(crate) fn sum_axis(&self, axis: Axis) -> Result<Tensor<T, D::Smaller>>
+    where
+        D: RemoveAxis,
+    {
         if axis.0 >= self.shape().len() {
             bail!("Axis {:?} out of range for shape {:?}!", axis, self.shape());
         }
@@ -81,11 +87,19 @@ impl<T: Scalar, S: Data<Elem = T>, D: RemoveAxis> TensorBase<S, D> {
         )?;
         Ok(output)
     }
+    pub(crate) fn sum_with(&self, output: &mut TensorViewMut0<T>) -> Result<()> {
+        self.view()
+            .into_shape(self.len())?
+            .sum_axis_with(Axis(0), output)
+    }
     pub(crate) fn sum_axis_with(
         &self,
         axis: Axis,
         output: &mut TensorViewMut<T, D::Smaller>,
-    ) -> Result<()> {
+    ) -> Result<()>
+    where
+        D: RemoveAxis,
+    {
         if axis.0 >= self.shape().len() {
             bail!("Axis {:?} out of range for shape {:?}!", axis, self.shape());
         }
@@ -107,7 +121,10 @@ impl<T: Scalar, S: Data<Elem = T>, D: RemoveAxis> TensorBase<S, D> {
         Ok(())
     }
     /// Computes the min value along the given axis
-    pub(crate) fn min_axis(&self, axis: Axis) -> Result<Tensor<T, D::Smaller>> {
+    pub(crate) fn min_axis(&self, axis: Axis) -> Result<Tensor<T, D::Smaller>>
+    where
+        D: RemoveAxis,
+    {
         if axis.0 >= self.shape().len() {
             bail!("Axis {:?} out of range for shape {:?}!", axis, self.shape());
         }
@@ -125,7 +142,10 @@ impl<T: Scalar, S: Data<Elem = T>, D: RemoveAxis> TensorBase<S, D> {
     /// Computes the index of the min value along the given axis.
     ///
     /// For multiple min values, the first will be selected. NaN values are ignored, returns 0 if all values are NaN.
-    pub(crate) fn argmin_axis<U: Uint>(&self, axis: Axis) -> Result<Tensor<U, D::Smaller>> {
+    pub(crate) fn argmin_axis<U: Uint>(&self, axis: Axis) -> Result<Tensor<U, D::Smaller>>
+    where
+        D: RemoveAxis,
+    {
         if axis.0 >= self.shape().len() {
             bail!("Axis {:?} out of range for shape {:?}!", axis, self.shape());
         }
@@ -143,7 +163,10 @@ impl<T: Scalar, S: Data<Elem = T>, D: RemoveAxis> TensorBase<S, D> {
     /// Computes the index of the max value along the given axis.
     ///
     /// For multiple max values, the first will be selected. NaN values are ignored, returns 0 if all values are NaN.
-    pub(crate) fn argmax_axis<U: Uint>(&self, axis: Axis) -> Result<Tensor<U, D::Smaller>> {
+    pub(crate) fn argmax_axis<U: Uint>(&self, axis: Axis) -> Result<Tensor<U, D::Smaller>>
+    where
+        D: RemoveAxis,
+    {
         if axis.0 >= self.shape().len() {
             bail!("Axis {:?} out of range for shape {:?}!", axis, self.shape());
         }
@@ -167,7 +190,10 @@ impl<T: Scalar, S: Data<Elem = T>, D: RemoveAxis> TensorBase<S, D> {
         &self,
         axis: Axis,
         indices: &TensorView<u32, D::Smaller>,
-    ) -> Result<Tensor<T, D::Smaller>> {
+    ) -> Result<Tensor<T, D::Smaller>>
+    where
+        D: RemoveAxis,
+    {
         if axis.0 >= self.shape().len() {
             bail!("Axis {:?} out of range for shape {:?}!", axis, self.shape());
         }

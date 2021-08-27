@@ -98,65 +98,6 @@ impl FromPrimitiveExt for bf16 {
         Some(n)
     }
 }
-/*
-/// Types with a `0` value.
-pub trait Zero: Default + Sealed {
-    /// Returns 0.
-    fn zero() -> Self {
-        Self::default()
-    }
-}
-
-macro_rules! impl_zero {
-    ($($t:ty),+) => {
-        $(
-            impl Zero for $t {}
-        )+
-    }
-}
-
-impl_zero! {u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64}
-
-/// Types with a `1` value.
-pub trait One: Sealed {
-    /// Returns `1`.
-    fn one() -> Self;
-}
-
-macro_rules! impl_one {
-    (@Int $($t:ty),+) => {
-        $(
-            impl One for $t {
-                fn one() -> Self {
-                    1
-                }
-            }
-        )+
-    };
-    (@Half $($t:ty),+) => {
-        $(
-            impl One for $t {
-                fn one() -> Self {
-                    <$t>::ONE
-                }
-            }
-        )+
-    };
-    (@Float $($t:ty),+) => {
-        $(
-            impl One for $t {
-                fn one() -> Self {
-                    1.
-                }
-            }
-        )+
-    }
-}
-
-impl_one! {@Int u8, i8, u16, i16, u32, i32, u64, i64}
-impl_one! {@Half f16, bf16}
-impl_one! {@Float f32, f64}
-*/
 
 /// Named scalar.
 ///
@@ -269,3 +210,50 @@ impl Scalar for f64 {
         ScalarType::F64
     }
 }
+
+/// Float types.
+#[allow(missing_docs)]
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FloatType {
+    BF16,
+    F32,
+}
+
+impl FloatType {
+    /// Returns the type name (ie "f32").
+    pub fn as_str(&self) -> &'static str {
+        use FloatType::*;
+        match self {
+            BF16 => "bf16",
+            F32 => "f32",
+        }
+    }
+}
+
+/// Base trait for float scalar types.
+pub trait Float: Scalar {
+    /// The float type.
+    fn float_type() -> FloatType;
+}
+
+impl Float for bf16 {
+    fn float_type() -> FloatType {
+        FloatType::BF16
+    }
+}
+
+impl Float for f32 {
+    fn float_type() -> FloatType {
+        FloatType::F32
+    }
+}
+
+/// Marker trait for Uint types
+pub trait Uint: Scalar + Into<u32> {}
+
+impl Uint for u8 {}
+
+impl Uint for u16 {}
+
+impl Uint for u32 {}

@@ -47,7 +47,7 @@ use std::{
     panic::{catch_unwind, UnwindSafe},
     ptr::NonNull,
     sync::{
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
         Arc, Weak,
     },
     time::Duration,
@@ -847,13 +847,11 @@ impl<B: Backend> Default for StorageChunk<B> {
     }
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 enum MapKind {
     Write,
     Read,
 }
-
-use std::sync::atomic::AtomicU32;
 
 #[derive(Debug)]
 struct MappingBlocks {
@@ -879,8 +877,9 @@ impl MappingBlocks {
         if self.state.load() == OpState::Ready && self.offset.load(Ordering::SeqCst) + len <= BLOCKS
         {
             let block = self.offset.fetch_add(len, Ordering::SeqCst);
+            // TODO: Fix issue with multiple readers
             if block == 0
-            /* block + len <= BLOCKS*/
+            /*|| (kind == MapKind::Write && block + len <= BLOCKS)*/
             {
                 match kind {
                     MapKind::Write => {
@@ -902,8 +901,9 @@ impl MappingBlocks {
         self.alloc_impl(len, MapKind::Read)
     }
     fn submit(&self) {
-        self.state.store(OpState::Pending);
+        assert_eq!(self.state.load(), OpState::Ready);
         self.offset.store(BLOCKS, Ordering::SeqCst);
+        self.state.store(OpState::Pending);
         while self.writers.load(Ordering::SeqCst) > 0 {
             std::thread::sleep(Duration::from_nanos(100));
         }
@@ -1280,7 +1280,7 @@ impl<B: Backend> Allocator<B> {
     ) -> DeviceResult<(StorageSlice<B>, WriteGuardBase<B>)> {
         let (storage_chunk_id, storage_range) = id.unpack();
         // TODO: check in bounds
-        for chunk in self.mapping_chunks.iter() {
+        for chunk in self.mapping_chunks.iter().step_by(2) {
             if let Some(write_guard) = chunk.alloc_write(context, self.mapping_ids(), len)? {
                 let storage_slice = unsafe {
                     self.storage_chunks
@@ -1303,7 +1303,7 @@ impl<B: Backend> Allocator<B> {
     ) -> DeviceResult<(StorageSlice<B>, ReadFuture<B>)> {
         let (storage_chunk_id, storage_range) = id.unpack();
         // TODO: check in bounds
-        for chunk in self.mapping_chunks.iter() {
+        for chunk in self.mapping_chunks.iter().skip(1).step_by(2) {
             if let Some(read_fut) =
                 chunk.alloc_read(context, worker_result, self.mapping_ids(), len)?
             {
