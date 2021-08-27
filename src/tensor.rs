@@ -1145,6 +1145,7 @@ mod tests {
         scaled_cast::<i32, f32>().await
     }
 
+    #[cfg(feature = "device_tests")]
     fn to_one_hot<U: Uint, T: Scalar>(x: &Array1<U>, nclasses: usize) -> Array2<T> {
         let mut y = Array::from_elem([x.len(), nclasses], T::zero());
         for (mut y, x) in y.outer_iter_mut().zip(x.iter().copied()) {
@@ -1153,6 +1154,7 @@ mod tests {
         y
     }
 
+    #[cfg(feature = "device_tests")]
     async fn one_hot<U: Uint + Into<u64> + From<u8>, T: Scalar>() -> Result<()> {
         let batch_size = 100;
         let nclasses = 10;
