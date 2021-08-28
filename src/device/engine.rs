@@ -878,8 +878,7 @@ impl MappingBlocks {
         {
             let block = self.offset.fetch_add(len, Ordering::SeqCst);
             // TODO: Fix issue with multiple readers
-            if block == 0
-            /*|| (kind == MapKind::Write && block + len <= BLOCKS)*/
+            if block == 0 || (kind == MapKind::Write && block + len <= BLOCKS)
             {
                 match kind {
                     MapKind::Write => {
@@ -901,7 +900,6 @@ impl MappingBlocks {
         self.alloc_impl(len, MapKind::Read)
     }
     fn submit(&self) {
-        assert_eq!(self.state.load(), OpState::Ready);
         self.offset.store(BLOCKS, Ordering::SeqCst);
         self.state.store(OpState::Pending);
         while self.writers.load(Ordering::SeqCst) > 0 {
