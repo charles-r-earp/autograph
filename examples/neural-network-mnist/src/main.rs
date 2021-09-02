@@ -1,6 +1,6 @@
 use autograph::{
     dataset::mnist::Mnist,
-    device::Device,
+    device::{Device, Api, DeviceType},
     learn::{
         neural_network::{
             layer::{Dense, Layer},
@@ -18,6 +18,8 @@ use std::convert::TryFrom;
 async fn main() -> Result<()> {
     // Create a device.
     let device = Device::new()?;
+    dbg!(device.info());
+    
     // Define the model.
     let dense = Dense::from_inputs_outputs(28 * 28, 10)
         .with_bias(true)?
@@ -32,6 +34,7 @@ async fn main() -> Result<()> {
 
     // Construct a trainer to train the model.
     let mut trainer = NetworkTrainer::from(network);
+    dbg!(&trainer);
 
     // Load the dataset.
     println!("Loading dataset...");

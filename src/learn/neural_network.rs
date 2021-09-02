@@ -98,6 +98,7 @@ use optimizer::{Optimizer, Sgd};
 /// A neural network.
 ///
 /// Provides an [`Infer`] implementation for [`Layer`]'s.
+#[derive(Debug, Clone)]
 pub struct Network<L>(L);
 
 impl<L> Network<L> {
@@ -146,6 +147,7 @@ impl<L: Layer, S: FloatData, D: Dimension> Infer<FloatTensorBase<S, D>> for Netw
 }
 
 /// A neural network trainer.
+#[derive(Debug)]
 pub struct NetworkTrainer<L, C = CrossEntropyLoss, O = Sgd> {
     network: Network<L>,
     criterion: C,

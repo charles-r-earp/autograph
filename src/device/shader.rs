@@ -631,7 +631,7 @@ fn parse_spirv(spirv: &[u8]) -> Result<ModuleDescriptor> {
                             parameters.entry(variable).or_default();
                             pointers.insert(result_id, variable);
                         }
-                        Op::Store | Op::AtomicOr => {
+                        Op::Store | Op::AtomicOr | Op::AtomicIAdd => {
                             let pointer = match inst.operands.get(0) {
                                 Some(&Operand::IdRef(variable)) => variable,
                                 _ => bail!("entry_point: {} functions[{}].blocks[{}].instructions[{}].operands[0] invalid pointer:\n{:#?}", &entry_point.name, f, b, i, &function),

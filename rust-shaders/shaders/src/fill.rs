@@ -11,7 +11,7 @@ pub struct FillPushConstsU32 {
 pub fn fill_u32(
     #[spirv(global_invocation_id)]
     global_id: UVec3,
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 0, non_readable)] y: &mut [u32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] y: &mut [u32],
     #[spirv(push_constant)]
     push_consts: &FillPushConstsU32,
 ) {
@@ -31,7 +31,7 @@ pub struct FillPushConstsU64 {
 pub fn fill_u64(
     #[spirv(global_invocation_id)]
     global_id: UVec3,
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 0, non_readable)] y: &mut [u32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] y: &mut [u32],
     #[spirv(push_constant)]
     push_consts: &FillPushConstsU64,
 ) {

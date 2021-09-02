@@ -558,7 +558,7 @@ engine_methods! {
         let descriptor = &module.descriptor;
         let entries = descriptor.entries.iter()
             .map(|(k, v)| (k.clone(), v.clone()));
-        let shader_module = ShaderModule::new(self.context.clone(), &module.spirv)?
+        let shader_module = ShaderModule::new(self.context.clone(), module)?
             .with_entries(entries)?;
         let op = Op::Module {
             id: module.id,
@@ -1689,20 +1689,23 @@ struct ShaderModule<B: Backend> {
     context: Arc<Context<B>>,
     module: ManuallyDrop<B::ShaderModule>,
     shaders: Vec<Shader<B>>,
+    name: Option<String>,
 }
 
 impl<B: Backend> ShaderModule<B> {
-    fn new(context: Arc<Context<B>>, spirv: &[u8]) -> DeviceResult<Self> {
+    fn new(context: Arc<Context<B>>, module: &Module) -> DeviceResult<Self> {
+        let name = module.name().map(Into::into);
         let module = unsafe {
             context
                 .device()
-                .create_shader_module(bytemuck::cast_slice(spirv))
+                .create_shader_module(bytemuck::cast_slice(&module.spirv))
                 .unwrap()
         };
         Ok(Self {
             context,
             module: ManuallyDrop::new(module),
             shaders: Vec::new(),
+            name,
         })
     }
     fn device(&self) -> &B::Device {
@@ -1730,8 +1733,14 @@ impl<B: Backend> ShaderModule<B> {
     }
     fn pipeline(&mut self, entry: EntryId, specialization: &[u8]) -> DeviceResult<PipelineRef<B>> {
         let context = &self.context;
+        let name = &self.name;
         let shader = unsafe { self.shaders.get_unchecked_mut(entry.0 as usize) };
-        shader.pipeline(context.device(), &*self.module, specialization)
+        shader
+            .pipeline(context.device(), &*self.module, specialization)
+            .map_err(|e| {
+                dbg!(name);
+                e
+            })
     }
 }
 
@@ -1840,6 +1849,7 @@ impl<B: Backend> Shader<B> {
                         }
                         _ => {
                             if cfg!(debug_assertions) {
+                                dbg!(&self.entry);
                                 dbg!(e);
                             }
                             return Err(DeviceError::ShaderCompilationFailed);

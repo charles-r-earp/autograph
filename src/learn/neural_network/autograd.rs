@@ -924,7 +924,7 @@ impl<N1: Node, N2: Node> Dot<VertexBase<Ix2, N2>> for VertexBase<Ix2, N1> {
                     dy.dot_acc(&w.value(), &mut dx)?;
                 }
                 if let Some(mut dw) = w.grad_zeroed_mut()? {
-                    dy.t().dot_acc(&x.value(), &mut dw)?;
+                    x.value().t().dot_acc(&dy.view(), &mut dw)?;
                 }
                 Ok(())
             })
@@ -997,7 +997,11 @@ impl<N1: Node, N2: Node, N3: Node> DotBias<VertexBase<Ix2, N2>, VertexBase<Ix1, 
                     }
                     Ok(())
                 })
-                .build(|| self.value().dot(rhs.value()).map(Into::into))?
+                .build(|| {
+                    self.value()
+                        .dot_bias(rhs.value(), Some(bias.value()))
+                        .map(Into::into)
+                })?
                 .with_name("dot_bias")
         } else {
             self.dot(rhs)
@@ -1073,16 +1077,17 @@ fn cross_entropy_loss(input: &FloatTensorView2, target: &FloatTensorView2) -> Re
     };
     let input_slice = input.to_slice()?;
     let target_slice = target.to_slice()?;
-    let builder = glsl_shaders::module(&format!(
+    let name = format!(
         "cross_entropy_loss_{}_{}",
         float_type.as_str(),
         nclasses_str
-    ))?
-    .compute_pass("main")?
-    .float_slice(input_slice.as_slice())?
-    .float_slice(target_slice.as_slice())?
-    .float_slice_mut(output.as_raw_slice_mut())?
-    .push([n as u32, nclasses as u32])?;
+    );
+    let builder = glsl_shaders::module(&name)?
+        .compute_pass("main")?
+        .float_slice(input_slice.as_slice())?
+        .float_slice(target_slice.as_slice())?
+        .float_slice_mut(output.as_raw_slice_mut())?
+        .push([n as u32, nclasses as u32])?;
     unsafe {
         builder.submit([n as u32, 1, 1])?;
     }

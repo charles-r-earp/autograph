@@ -54,7 +54,7 @@ fn gemm_impl<T: Scalar>(
 
     let name = format!(
         "gemm{}_{}",
-        if bias.is_some() { "_bias_" } else { "" },
+        if bias.is_some() { "_bias" } else { "" },
         elem_type_name::<T>(),
     );
 

@@ -1,6 +1,6 @@
 use super::{
-    len_checked, Api, BufferHandle, BufferId, Device, DeviceBase, ReadGuard as RawReadGuard,
-    Result, WriteOnly,
+    len_checked, BufferHandle, BufferId, Device, DeviceBase, ReadGuard as RawReadGuard, Result,
+    WriteOnly,
 };
 use crate::{
     glsl_shaders, rust_shaders,
@@ -871,14 +871,14 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
             let mut output = unsafe { Buffer::alloc(self.device(), self.len())? };
             let n = self.len() as u32;
             // TODO: DX12 not working
-            let api = self.device().info().map_or(Api::Vulkan, |i| i.api());
-            let (module, entry, gs) = match (api, T::scalar_type(), T2::scalar_type()) {
-                (Api::Vulkan | Api::Metal, U8, BF16 | F32) => {
+            //let api = self.device().info().map_or(Api::Vulkan, |i| i.api());
+            let (module, entry, gs) = match (T::scalar_type(), T2::scalar_type()) {
+                (U8, BF16 | F32) => {
                     let module = rust_shaders::core()?;
                     let entry = format!("cast::scale_{}_{}", T::scalar_name(), T2::scalar_name());
                     (module, entry, n / 4)
                 }
-                (Api::Vulkan | Api::Metal, BF16, BF16) => {
+                (BF16, BF16) => {
                     let module = rust_shaders::core()?;
                     let entry = format!("cast::scale_{}_{}", T::scalar_name(), T2::scalar_name());
                     (module, entry, n / 2)

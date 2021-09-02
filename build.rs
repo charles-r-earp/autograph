@@ -47,7 +47,16 @@ fn generate_modules() -> Result<()> {
         let module_path = out_dir
             .join(spirv_path.strip_prefix("src")?)
             .with_extension("bincode");
-        let module = Module::from_spirv(fs::read(spirv_path)?)?;
+        let name: &str = spirv_path
+            .components()
+            .last()
+            .unwrap()
+            .as_os_str()
+            .to_str()
+            .unwrap()
+            .strip_suffix(".spv")
+            .unwrap();
+        let module = Module::from_spirv(fs::read(spirv_path)?)?.with_name(name);
         fs::write(module_path, bincode::serialize(&module)?)?;
     }
     Ok(())
