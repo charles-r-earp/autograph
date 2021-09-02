@@ -8,9 +8,7 @@
 
 use spirv_std::glam::UVec3;
 
-// Declare the push constants. These can potentially be shared with the runtime crate, but that
-// may require a separate `shared` crate. There is a limit in autograph of 64 B of push constants,
-// and the size must be a multiple of 4 bytes (ie a u32). Use `#[repr(C)]` to ensure that fields
+// Declare the push constants. Use `#[repr(C)]` to ensure that fields
 // are not reordered.
 #[repr(C)]
 pub struct PushConsts {
@@ -36,11 +34,12 @@ pub fn add(
     // This is the unique id of the invocation, and is 3D (x, y, z) even though we are just using x.
     // This tells the invocation what index to compute.
     #[spirv(global_invocation_id)] global_id: UVec3,
-    // Buffer `a`. As of now, `storage_buffer, descriptor_set, binding, non_writable` must all be
+    // Buffer `a`. As of now, `storage_buffer`, `descriptor_set`, and `binding` must all be
     // specified.
     // Because this is not modified, it can be bound to a `Slice`.
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] a: &[u32],
     // Buffer `b`.
+    // Because this is not modified, it can be bound to a `Slice`.
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] b: &[u32],
     // Buffer `y`, the output.
     // This can only be bound to a `SliceMut`.

@@ -30,7 +30,111 @@ autograph = { git = https://github.com/charles-r-earp/autograph }
 - Run all the tests with `cargo test --features full`.
 
 # Custom Shader Code
-You can write your own shaders and execute them with **autograph**. See the [Hello Compute](examples/hello-compute) example.
+You can write your own shaders and execute them with **autograph**.
+```rust
+// shader/src/lib.rs
+
+// Declare the push constants. Use `#[repr(C)]` to ensure that fields
+// are not reordered.
+#[repr(C)]
+pub struct PushConsts {
+    n: u32,
+}
+
+/// Computes `y' = `a` + `b`
+///
+/// `threads` can be up to 3 dimensions (x, y, z). This is the size of the `WorkGroup`. Generally
+/// this should be a multiple of the hardware specific size, NVidia refers to this as the
+/// `warp size`, which for NVidia is often 32 but sometimes 64. For AMD this is generally 64. 64
+/// is a good default. Note that autograph will automatically choose the number of work groups to
+/// execute given the global size, so it is not necessary for the function submitting the shader
+/// to know the work group size.
+///
+/// # Note
+/// autograph does check the size of the push constants, as well as the mutability of buffers. It
+/// DOES NOT check their types. For example, a buffer can be declared like `&[u32]` but bound to a
+/// `Slice<u8>`.
+#[allow(unused)]
+#[spirv(compute(threads(64)))]
+pub fn add(
+    // This is the unique id of the invocation, and is 3D (x, y, z) even though we are just using x.
+    // This tells the invocation what index to compute.
+    #[spirv(global_invocation_id)] global_id: UVec3,
+    // Buffer `a`. As of now, `storage_buffer`, `descriptor_set`, and `binding` must all be
+    // specified.
+    // Because this is not modified, it can be bound to a `Slice`.
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] a: &[u32],
+    // Buffer `b`.
+    // Because this is not modified, it can be bound to a `Slice`.
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] b: &[u32],
+    // Buffer `y`, the output.
+    // This can only be bound to a `SliceMut`.
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] y: &mut [u32],
+    // Push constants, ie additional arguments passed at runtime.
+    #[spirv(push_constant)] push_consts: &PushConsts,
+) {
+    let gid = global_id.x as usize;
+    // Only process up to n, which is the length of the buffers.
+    if global_id.x < push_consts.n {
+        // The indexing operation is implemented by rust-gpu, and is the only way to access
+        // the data, ie using `[T]::get()` and dereferencing &T or *const T will fail to compile.
+        y[gid] = a[gid] + b[gid];
+    }
+}
+
+// main.rs
+
+/// Adds `a` to `b`.
+fn add(a: Slice<u32>, b: Slice<u32>) -> Result<Buffer<u32>> {
+    if a.len() != b.len() {
+        return Err(anyhow!("{} != {}", a.len(), b.len()));
+    }
+    // Typically use `Buffer::alloc` here but it's unsafe.
+    // `zeros()` runs a shader to fill the buffer, so it's unnecessary if it will be overwritten.
+    let mut y = Buffer::zeros(a.device(), a.len())?;
+    // The shader executes in "WorkGroups", which in the shader is defined to be [64, 1, 1]. This
+    // means that even though we have just 1 item to process, it will actually run 64 invocations
+    // aka threads. We have to pass `n` to prevent the extra invocations from writing outside of
+    // the buffer.
+    let n = y.len() as u32;
+    let builder = module()?
+        .compute_pass("add")?
+        // `storage_buffer` at binding 0, must not be modified in the shader.
+        .slice(a)?
+        // `storage_buffer` at binding 1, must not be modified in the shader.
+        .slice(b)?
+        // `storage_buffer` at binding 2
+        .slice_mut(y.as_slice_mut())?
+        .push(n)?;
+    unsafe {
+        // Enqueues the shader with global size [n, 1, 1].
+        // This method validates the arguments, and compiles the module for the device on first
+        // use. Otherwise, this doesn't block, the internal device thread will submit work to the
+        // device driver when it is ready.
+        builder.submit([n, 1, 1])?;
+    }
+    Ok(y)
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let device = Device::new()?;
+    let x_in = [2];
+    // Here we create a Slice<u32> from a &[u32].
+    // We could also create a Buffer from a Vec, without copying.
+    let x = Slice::from(x_in.as_ref())
+        // Note that Host -> Device transfers are non-blocking, not async.
+        .into_device(device.clone())
+        .await?;
+    /// Get the result of the addition.
+    let y = add(x.as_slice(), x.as_slice())?;
+    // Print out the result!
+    println!("{:?} + {:?} = {:?}", x_in, x_in, y.read().await?.as_slice());
+    Ok(())
+}
+```
+
+See the [Hello Compute](examples/hello-compute) example.
 
 # Machine Learning
 ## KMeans

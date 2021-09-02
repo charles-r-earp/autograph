@@ -1,13 +1,12 @@
 use super::*;
 
 impl<S: Data<Elem = u32>, D: Dimension> TensorBase<S, D> {
-    /*
     pub(crate) fn accuracy<U: Uint>(&self, target: &TensorView<U, D>) -> Result<Tensor0<u32>> {
         let device = self.device();
         let mut output = Tensor::zeros(device, ())?;
         self.accuracy_with(target, &mut output.view_mut())?;
         Ok(output)
-    }*/
+    }
     pub(crate) fn accuracy_with<U2: Uint>(
         &self,
         target: &TensorView<U2, D>,

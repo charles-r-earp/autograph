@@ -1,6 +1,7 @@
 use autograph::{
     result::Result,
-    device::{Device, buffer::{Buffer, Slice}, shader::Module},
+    device::{Device, shader::Module},
+    buffer::{Buffer, Slice},
 };
 use once_cell::sync::OnceCell;
 use anyhow::anyhow;
@@ -32,20 +33,22 @@ fn add(a: Slice<u32>, b: Slice<u32>) -> Result<Buffer<u32>> {
     // aka threads. We have to pass `n` to prevent the extra invocations from writing outside of
     // the buffer.
     let n = y.len() as u32;
-    module()?
+    let builder = module()?
         .compute_pass("add")?
-        // `storage_buffer` at binding 0, must be `non_writable`.
+        // `storage_buffer` at binding 0, must not be modified in the shader.
         .slice(a)?
-        // `storage_buffer` at binding 1, must be `non_writable`.
+        // `storage_buffer` at binding 1, must not be modified in the shader.
         .slice(b)?
-        // `storage_buffer` at binding 2, must not be `non_writable`.
+        // `storage_buffer` at binding 2
         .slice_mut(y.as_slice_mut())?
-        .push(n)?
+        .push(n)?;
+    unsafe {
         // Enqueues the shader with global size [n, 1, 1].
         // This method validates the arguments, and compiles the module for the device on first
         // use. Otherwise, this doesn't block, the internal device thread will submit work to the
         // device driver when it is ready.
-        .submit([n, 1, 1])?;
+        builder.submit([n, 1, 1])?;
+    }
     Ok(y)
 }
 

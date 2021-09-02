@@ -1,4 +1,8 @@
-use crate::{float_tensor::FloatTensorD, result::Result, tensor::TensorD, uint::Uint};
+use crate::{
+    result::Result,
+    scalar::Uint,
+    tensor::{float::FloatTensorD, TensorD},
+};
 use ndarray::Axis;
 #[cfg(feature = "Serde")]
 use serde::{Deserialize, Serialize};
@@ -8,6 +12,9 @@ use std::{
     iter::empty,
     time::{Duration, Instant},
 };
+
+/// Criterions
+pub mod criterion;
 
 /// KMeans classifier.
 #[cfg(feature = "kmeans")]

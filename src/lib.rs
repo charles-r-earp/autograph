@@ -44,6 +44,7 @@ mod rust_shaders;
 /// Scalar types.
 pub mod scalar;
 
+/*
 #[doc(hidden)]
 pub mod float {
     pub use crate::{
@@ -55,7 +56,7 @@ pub mod float {
 mod uint {
     #[allow(unused)]
     pub(crate) use crate::scalar::Uint;
-}
+}*/
 
 // Linear Algebra.
 mod linalg;

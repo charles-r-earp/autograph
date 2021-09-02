@@ -279,9 +279,12 @@ where
     E: IntoDimension,
 {
     let shape = shape.into_dimension();
-    // TODO potentially handle Fotran layout
-    if shape.size() == dim.size() && strides == &dim.default_strides() {
+    let zero_strides = strides.slice().iter().any(|s| *s == 0);
+    if shape.size() == dim.size() && (zero_strides || strides == &dim.default_strides()) {
         let strides = shape.default_strides();
+        Ok((shape, strides))
+    } else if dim.ndim() > 1 && (zero_strides || strides == &dim.fortran_strides()) {
+        let strides = shape.fortran_strides();
         Ok((shape, strides))
     } else {
         Err(anyhow!(
@@ -772,7 +775,9 @@ impl<'a, T, D: Dimension> TryFrom<ArrayView<'a, T, D>> for TensorView<'a, T, D> 
 /// Casts
 #[allow(unused)]
 impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
-    #[doc(hidden)]
+    /// Casts the tensor into a new tensor.
+    ///
+    /// See [`BufferBase::cast_into()`].
     pub fn cast_into<T2: Scalar>(self) -> Result<Tensor<T2, D>> {
         let buffer = match self.data.try_into_buffer() {
             Ok(buffer) => buffer.cast_into()?,
@@ -784,7 +789,10 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
             data: OwnedRepr(buffer),
         })
     }
-    pub(crate) fn cast_to<T2: Scalar>(&self) -> Result<CowTensor<T2, D>> {
+    /// Casts the tensor to a new tensor.
+    ///
+    /// See [`BufferBase::cast_to()`].
+    pub fn cast_to<T2: Scalar>(&self) -> Result<CowTensor<T2, D>> {
         let slice = self.data.as_slice();
         let buffer: CowBuffer<T2> = slice.cast_to::<T2>()?;
         Ok(TensorBase {
@@ -793,7 +801,9 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
             data: CowRepr(unsafe { transmute(buffer) }),
         })
     }
-    #[doc(hidden)]
+    /// Scales the tensor into a new tensor.
+    ///
+    /// See [`BufferBase::scale_into()`].
     pub fn scale_into<T2: Scalar>(self, alpha: T2) -> Result<Tensor<T2, D>> {
         let buffer = match self.data.try_into_buffer() {
             Ok(buffer) => buffer.scale_into(alpha)?,

@@ -1,16 +1,17 @@
 use super::{Infer, Stats, Summarize, Summary, Test, Train};
 use crate::{
+    buffer::float::FloatSlice,
     device::Device,
-    float::{FloatSlice, FloatType},
-    float_tensor::{
-        FloatArcTensor2, FloatData, FloatTensor, FloatTensor2, FloatTensorBase, FloatTensorD,
-        FloatTensorView2, FloatTensorViewMut2,
-    },
     glsl_shaders,
     result::Result,
-    tensor::{CowTensor, TensorD},
-    tensor::{Tensor, Tensor2, TensorView1, TensorViewMut1},
-    uint::Uint,
+    scalar::{FloatType, Uint},
+    tensor::{
+        float::{
+            FloatArcTensor2, FloatData, FloatTensor, FloatTensor2, FloatTensorBase, FloatTensorD,
+            FloatTensorView2, FloatTensorViewMut2,
+        },
+        CowTensor, Tensor, Tensor2, TensorD, TensorView1, TensorViewMut1,
+    },
 };
 use anyhow::bail;
 use ndarray::{s, Array, Array2, ArrayView2, Axis, Dimension};
@@ -479,7 +480,7 @@ impl<S: FloatData, D: Dimension> Train<FloatTensorBase<S, D>> for KMeansTrainer 
 #[cfg(all(test, feature = "device_tests"))]
 mod tests {
     use super::*;
-    use crate::{device::Device, float::Float, tensor::TensorView, util::type_eq};
+    use crate::{device::Device, scalar::Float, tensor::TensorView, util::type_eq};
     use approx::assert_relative_eq;
     use half::bf16;
     use ndarray::{Array, Array2, ArrayView2};

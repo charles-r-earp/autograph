@@ -1,18 +1,18 @@
 use crate::{
-    device::{CowBuffer, Device},
-    float::{
-        Float, FloatArcBuffer, FloatBuffer, FloatCowBuffer, FloatSlice, FloatSliceMut, FloatType,
+    buffer::{
+        float::{FloatArcBuffer, FloatBuffer, FloatCowBuffer, FloatSlice, FloatSliceMut},
+        CowBuffer,
     },
+    device::Device,
     linalg::{Dot, DotAcc, DotBias},
     ops::{AddAssign, ScaledAdd},
     result::Result,
-    scalar::Scalar,
+    scalar::{Float, FloatType, Scalar, Uint},
     tensor::{
         dim_strides_from_shape, into_dimensionality, into_shape, ArcRepr, ArcTensor, CowRepr,
         CowTensor, Data, DataBase, OwnedRepr, Tensor, TensorBase, TensorView, TensorViewMut,
         ViewMutRepr, ViewRepr,
     },
-    uint::Uint,
 };
 use half::bf16;
 use num_traits::NumCast;
@@ -23,8 +23,6 @@ use ndarray::{
     ShapeBuilder,
 };
 use serde::{Deserialize, Serialize};
-
-//mod linalg;
 
 macro_rules! impl_data_base {
     ($($data:ident $(<$a:lifetime>)?),+) => {
@@ -760,7 +758,10 @@ impl_downcast! {
 /// Casts
 #[allow(unused)]
 impl<S: FloatData, D: Dimension> FloatTensorBase<S, D> {
-    pub(crate) fn cast_into<T2: Scalar>(self) -> Result<Tensor<T2, D>> {
+    /// Casts the tensor into a new tensor.
+    ///
+    /// See [`TensorBase::cast_into()`].
+    pub fn cast_into<T2: Scalar>(self) -> Result<Tensor<T2, D>> {
         let buffer = match self.data.try_into_buffer() {
             Ok(buffer) => buffer.cast_into()?,
             Err(data) => data.as_slice().cast_into()?,
@@ -771,7 +772,9 @@ impl<S: FloatData, D: Dimension> FloatTensorBase<S, D> {
             data: OwnedRepr(buffer),
         })
     }
-    #[doc(hidden)]
+    /// Casts the tensor into a new tensor.
+    ///
+    /// See [`TensorBase::cast_to()`].
     pub fn cast_to<T2: Scalar>(&self) -> Result<CowTensor<T2, D>> {
         let slice = self.data.as_slice();
         let buffer: CowBuffer<T2> = slice.cast_to::<T2>()?;
@@ -781,7 +784,10 @@ impl<S: FloatData, D: Dimension> FloatTensorBase<S, D> {
             data: CowRepr(unsafe { transmute(buffer) }),
         })
     }
-    pub(crate) fn scale_into<T2: Scalar>(self, alpha: T2) -> Result<Tensor<T2, D>> {
+    /// Scales the tensor into a new tensor.
+    ///
+    /// See [`TensorBase::scale_into()`].
+    pub fn scale_into<T2: Scalar>(self, alpha: T2) -> Result<Tensor<T2, D>> {
         let buffer = match self.data.try_into_buffer() {
             Ok(buffer) => buffer.scale_into(alpha)?,
             Err(data) => data.as_slice().scale_into(alpha)?,

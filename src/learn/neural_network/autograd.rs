@@ -826,7 +826,7 @@ impl VariableBuilder {
     /// # Example
     /**
     ```no_run
-    # use autograph::{result::Result, device::Device, float::FloatType, learn::neural_network::autograd::Variable};
+    # use autograph::{result::Result, device::Device, scalar::FloatType, learn::neural_network::autograd::Variable};
     # fn main() -> Result<()> {
     # let device = Device::new()?;
     # let x = Variable::zeros(FloatType::F32, device, 1)?;

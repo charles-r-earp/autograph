@@ -1,5 +1,4 @@
-use super::{Data, Scalar, Tensor, Tensor0, TensorBase, TensorView, TensorViewMut, TensorViewMut0};
-use crate::{glsl_shaders, result::Result, uint::Uint, util::size_eq};
+use super::*;
 use anyhow::bail;
 use ndarray::{Axis, Dimension, RemoveAxis};
 
