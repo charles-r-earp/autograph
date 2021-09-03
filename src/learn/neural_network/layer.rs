@@ -7,7 +7,11 @@ use crate::{
     device::Device,
     linalg::DotBias,
     result::Result,
-    tensor::float::FloatArcTensor,
+    rust_shaders,
+    scalar::FloatType,
+    tensor::float::{
+        FloatArcTensor, FloatTensor, FloatTensorD, FloatTensorViewD, FloatTensorViewMutD,
+    },
     util::type_eq,
 };
 use anyhow::bail;
@@ -364,10 +368,82 @@ impl Forward for Dense {
 #[autograph(crate)]
 pub struct Relu {}
 
+fn relu(input: &FloatTensorViewD) -> Result<FloatTensorD> {
+    let float_type = input.float_type();
+    let device = input.device();
+    let dim = input.raw_dim();
+    let mut output = match float_type {
+        FloatType::BF16 => FloatTensor::zeros(float_type, device, dim)?,
+        FloatType::F32 => unsafe { FloatTensor::alloc(float_type, device, dim)? },
+    };
+    let n = input.len() as u32;
+    let ws = match float_type {
+        FloatType::BF16 => {
+            if n % 2 == 0 {
+                n / 2
+            } else {
+                n / 2 + 1
+            }
+        }
+        FloatType::F32 => n,
+    };
+    let builder = rust_shaders::core()?
+        .compute_pass(&format!("activation::relu_{}", float_type.as_str()))?
+        .float_slice(input.to_slice()?.as_slice())?
+        .float_slice_mut(output.as_raw_slice_mut())?
+        .push(n)?;
+    unsafe {
+        builder.submit([ws, 1, 1])?;
+    }
+    Ok(output)
+}
+
+fn relu_backward(
+    input: &FloatTensorViewD,
+    input_grad: &mut FloatTensorViewMutD,
+    output_grad: &FloatTensorViewD,
+) -> Result<()> {
+    debug_assert_eq!(input.shape(), input_grad.shape());
+    debug_assert_eq!(input.shape(), output_grad.shape());
+    let float_type = input.float_type();
+    let n = input.len() as u32;
+    let ws = match float_type {
+        FloatType::BF16 => {
+            if n % 2 == 0 {
+                n / 2
+            } else {
+                n / 2 + 1
+            }
+        }
+        FloatType::F32 => n,
+    };
+    let output_grad_slice = output_grad.to_slice()?;
+    let builder = rust_shaders::core()?
+        .compute_pass(&format!(
+            "activation::relu_backward_{}",
+            float_type.as_str()
+        ))?
+        .float_slice(input.to_slice()?.as_slice())?
+        .float_slice_mut(input_grad.as_raw_slice_mut())?
+        .float_slice(output_grad_slice.as_slice())?
+        .push(n)?;
+    unsafe { builder.submit([ws, 1, 1]) }
+}
+
 impl Forward for Relu {
-    #[allow(unused)]
     fn forward(&self, input: VariableD) -> Result<VariableD> {
-        todo!()
+        input
+            .builder()
+            .backward(|vertices, dy| {
+                let [mut x] = vertices.try_into_array().unwrap();
+                let x_value = x.value();
+                if let Some(mut dx) = x.grad_zeroed_mut()? {
+                    relu_backward(&x_value, &mut dx, &dy.view())?;
+                }
+                Ok(())
+            })
+            .build(|| relu(&input.value().view()).map(Into::into))?
+            .with_name("relu")
     }
 }
 
@@ -511,5 +587,120 @@ impl<K: PoolKind> Forward for PoolBase<K> {
     #[allow(unused)]
     fn forward(&self, input: VariableD) -> Result<VariableD> {
         todo!()
+    }
+}
+
+#[cfg(all(test, feature = "device_tests"))]
+mod tests {
+    use super::*;
+    use crate::{
+        scalar::{Float, Scalar},
+        tensor::TensorView,
+    };
+    use half::bf16;
+    use std::convert::TryFrom;
+
+    use ndarray::{azip, Array1, ArrayView1, ArrayViewMut1};
+
+    fn array_relu<T: Scalar>(input: &ArrayView1<T>) -> Array1<T> {
+        input.map(|x| {
+            if x.to_f32().unwrap() > 0. {
+                *x
+            } else {
+                T::zero()
+            }
+        })
+    }
+
+    async fn relu<T: Float>() -> Result<()> {
+        let x_array = (-5..5)
+            .into_iter()
+            .map(|x| T::from_f32(x as f32).unwrap())
+            .collect::<Array1<_>>();
+        let y_array = array_relu(&x_array.view());
+        let device = Device::new()?;
+        let _s = device.acquire().await;
+        let x = TensorView::try_from(x_array.view())?
+            .into_device(device)
+            .await?;
+        let y_guard = super::relu(&x.into_float().view().into_dyn())?
+            .into_dimensionality()?
+            .cast_into::<T>()?
+            .read()
+            .await?;
+        assert_eq!(y_guard.as_array(), y_array.view());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn relu_bf16() -> Result<()> {
+        relu::<bf16>().await
+    }
+
+    #[tokio::test]
+    async fn relu_f32() -> Result<()> {
+        relu::<f32>().await
+    }
+
+    fn array_relu_backward<T: Scalar>(
+        input: &ArrayView1<T>,
+        input_grad: &mut ArrayViewMut1<T>,
+        output_grad: &ArrayView1<T>,
+    ) {
+        azip!((x in input, dx in input_grad, dy in output_grad) {
+            if x.to_f32().unwrap() > 0. {
+                *dx = T::from_f32(dx.to_f32().unwrap() + dy.to_f32().unwrap()).unwrap();
+            }
+        });
+    }
+
+    async fn relu_backward<T: Float>() -> Result<()> {
+        let x_array = (-5..5)
+            .into_iter()
+            .map(|x| T::from_f32(x as f32).unwrap())
+            .collect::<Array1<_>>();
+        let dx_array_in = (-2..8)
+            .into_iter()
+            .map(|x| T::from_f32(x as f32).unwrap())
+            .collect::<Array1<_>>();
+        let dy_array = (-3..7)
+            .into_iter()
+            .map(|x| T::from_f32(x as f32).unwrap())
+            .collect::<Array1<_>>();
+        let mut dx_array_out = dx_array_in.clone();
+        array_relu_backward(
+            &x_array.view(),
+            &mut dx_array_out.view_mut(),
+            &dy_array.view(),
+        );
+        let device = Device::new()?;
+        let _s = device.acquire().await;
+        let x = TensorView::try_from(x_array.view())?
+            .into_device(device.clone())
+            .await?;
+        let mut dx = TensorView::try_from(dx_array_in.view())?
+            .into_device(device.clone())
+            .await?;
+        let dy = TensorView::try_from(dy_array.view())?
+            .into_device(device)
+            .await?;
+        super::relu_backward(
+            &x.view().into_dyn().into_float(),
+            &mut dx.view_mut().into_dyn().into_float(),
+            &dy.view().into_dyn().into_float(),
+        )?;
+        let dx_guard = dx.read().await?;
+        assert_eq!(dx_guard.as_array(), dx_array_out.view());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn relu_backward_bf16() -> Result<()> {
+        relu_backward::<bf16>().await
+    }
+
+    #[tokio::test]
+    async fn relu_backward_f32() -> Result<()> {
+        relu_backward::<f32>().await
     }
 }
