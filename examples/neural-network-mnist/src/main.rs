@@ -1,6 +1,6 @@
 use autograph::{
     dataset::mnist::Mnist,
-    device::{Device, Api, DeviceType},
+    device::Device,
     learn::{
         neural_network::{
             layer::{Dense, Layer},
@@ -19,7 +19,7 @@ async fn main() -> Result<()> {
     // Create a device.
     let device = Device::new()?;
     dbg!(device.info());
-    
+
     // Define the model.
     let dense = Dense::from_inputs_outputs(28 * 28, 10)
         .with_bias(true)?

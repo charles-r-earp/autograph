@@ -7,8 +7,9 @@ use autograph::{
     result::Result,
     learn::neural_network::layer::{Layer, Forward, Conv, Dense, Relu, MaxPool}
 };
+use serde::{Serialize, Deserialize};
 
-#[derive(Layer, Forward, Clone, Debug)]
+#[derive(Layer, Forward, Clone, Serialize, Deserialize, Debug)]
 struct Lenet5 {
     #[autograph(layer)]
     conv1: Conv,
@@ -79,6 +80,7 @@ use crate::{
     },
 };
 use ndarray::{Axis, Dimension};
+use serde::{Deserialize, Serialize};
 use std::ops::{Deref, DerefMut};
 
 /// Variables and Parameters
@@ -98,7 +100,7 @@ use optimizer::{Optimizer, Sgd};
 /// A neural network.
 ///
 /// Provides an [`Infer`] implementation for [`Layer`]'s.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Network<L>(L);
 
 impl<L> Network<L> {
@@ -147,7 +149,7 @@ impl<L: Layer, S: FloatData, D: Dimension> Infer<FloatTensorBase<S, D>> for Netw
 }
 
 /// A neural network trainer.
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct NetworkTrainer<L, C = CrossEntropyLoss, O = Sgd> {
     network: Network<L>,
     criterion: C,
@@ -232,7 +234,7 @@ impl<
                 } else {
                     correct.replace(pred.accuracy(&t.view())?);
                 };
-                let batch_loss = self.criterion.loss(y.into_dimensionality()?, t)?;
+                let batch_loss = self.criterion.eval(y.into_dimensionality()?, t)?;
                 if let Some(loss) = loss.as_mut() {
                     loss.add_assign(batch_loss.value())?;
                 } else {
@@ -315,7 +317,7 @@ impl<
                     } else {
                         train_correct.replace(pred.accuracy(&t.view())?);
                     };
-                    let mut batch_loss = criterion.loss(y.into_dimensionality()?, t)?;
+                    let mut batch_loss = criterion.eval(y.into_dimensionality()?, t)?;
                     if let Some(train_loss) = train_loss.as_mut() {
                         train_loss.add_assign(batch_loss.value())?;
                     } else {
@@ -338,7 +340,7 @@ impl<
                     } else {
                         test_correct.replace(pred.accuracy(&t.view())?);
                     };
-                    let batch_loss = criterion.loss(y.into_dimensionality()?, t)?;
+                    let batch_loss = criterion.eval(y.into_dimensionality()?, t)?;
                     if let Some(test_loss) = test_loss.as_mut() {
                         test_loss.add_assign(batch_loss.value())?;
                     } else {

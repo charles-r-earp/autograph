@@ -15,6 +15,7 @@ use crate::{
 use anyhow::{anyhow, bail, Context};
 use ndarray::{Dimension, IntoDimension, Ix0, Ix1, Ix2, IxDyn, ShapeBuilder};
 use parking_lot::{Mutex, MutexGuard};
+use serde::{Deserialize, Serialize};
 use std::{
     convert::{TryFrom, TryInto},
     fmt::{self, Debug},
@@ -181,10 +182,12 @@ impl Node for VertexNode {
 /// A vertex for autograd ops.
 ///
 /// [`Variable`] and [`Parameter`] are vertices, convertible into [`Vertex`]. In the forward pass, a graph is built connecting outputs to inputs, storing backward ops. In the backward pass, the graph is traversed from the loss to the inputs, computing the gradients of variables and parameters in order.
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct VertexBase<D: Dimension, N: Node> {
     value: FloatArcTensor<D>,
+    #[serde(skip)]
     grad: Option<Arc<Mutex<Option<FloatBuffer>>>>,
+    #[serde(skip)]
     node: N,
 }
 

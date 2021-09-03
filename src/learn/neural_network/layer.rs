@@ -17,7 +17,6 @@ pub use async_trait::async_trait;
 pub use autograph_derive::*;
 use ndarray::{Dimension, IntoDimension, IxDyn};
 use rand::distributions::{Distribution, Standard, Uniform};
-#[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 use std::fmt::{self, Debug};
 
@@ -140,8 +139,7 @@ fn he_normal(mut inputs: usize) -> impl Distribution<f32> {
 }
 
 /// Convolutional layer.
-#[derive(Layer, Clone)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[derive(Layer, Clone, Serialize, Deserialize)]
 #[autograph(crate)]
 pub struct Conv {
     #[autograph(parameter)]
@@ -299,8 +297,7 @@ impl Forward for Conv {
 }
 
 /// Dense / fully connected layer.
-#[derive(Layer, Clone, Debug)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[derive(Layer, Clone, Debug, Serialize, Deserialize)]
 #[autograph(crate)]
 pub struct Dense {
     #[autograph(parameter)]
@@ -363,8 +360,7 @@ impl Forward for Dense {
 }
 
 /// ReLU activation.
-#[derive(Default, Layer, Clone, Debug)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[derive(Default, Layer, Clone, Debug, Serialize, Deserialize)]
 #[autograph(crate)]
 pub struct Relu {}
 
@@ -379,8 +375,7 @@ impl Forward for Relu {
 pub trait PoolKind: Default + Send + Sync + 'static + PoolKindBase {}
 
 /// Marker for [`MaxPool`].
-#[derive(Default, Clone)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[derive(Default, Clone, Serialize, Deserialize)]
 pub struct PoolMax {}
 
 impl PoolKindBase for PoolMax {}
@@ -388,8 +383,7 @@ impl PoolKindBase for PoolMax {}
 impl PoolKind for PoolMax {}
 
 /// Marker for [`MeanPool`].
-#[derive(Default, Clone)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[derive(Default, Clone, Serialize, Deserialize)]
 pub struct PoolMean {}
 
 impl PoolKindBase for PoolMean {}
@@ -397,8 +391,7 @@ impl PoolKindBase for PoolMean {}
 impl PoolKind for PoolMean {}
 
 /// Pooling layer.
-#[derive(Clone)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct PoolBase<K: PoolKind> {
     kernel: IxDyn,
     strides: IxDyn,

@@ -4,7 +4,6 @@ use crate::{
     tensor::{float::FloatTensorD, TensorD},
 };
 use ndarray::Axis;
-#[cfg(feature = "Serde")]
 use serde::{Deserialize, Serialize};
 
 use std::{
@@ -43,8 +42,7 @@ pub trait Test<X> {
 
 /// Training / Testing statistics.
 #[non_exhaustive]
-#[derive(Default, Clone, Copy)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[derive(Default, Clone, Copy, Serialize, Deserialize)]
 pub struct Stats {
     /// The number of samples.
     pub count: usize,
@@ -81,8 +79,7 @@ impl Debug for Stats {
 
 /// Summary of training.
 #[non_exhaustive]
-#[derive(Default, Clone, Debug)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[derive(Default, Clone, Debug, Serialize, Deserialize)]
 pub struct Summary {
     /// The current epoch (starting at 0).
     pub epoch: usize,
@@ -195,16 +192,25 @@ pub trait Train<X>: Test<X> + Summarize {
 
 /// Inference
 ///
-/// [`Infer`] is a trait for models (and trainers).
+/// [`Infer`] is a trait for models that take one or more inputs and produce an output.
 ///
 /// # serde
 /// Implement [`Serialize`](serde::Serialize) and [`Deserialize`](serde::Deserialize) for saving and loading the model.
-#[allow(missing_docs)]
 pub trait Infer<X> {
+    /// Performs inference.
+    ///
+    /// **Errors**
+    ///
+    /// Returns an error if the operation cannot be performed.
     fn infer(&self, input: &X) -> Result<FloatTensorD>;
     /*fn classify<F: Float>(&self, input: &X) -> Result<TensorD<F>> {
         todo!() //self.infer(input)?.softmax_axis(Axis(1))
     }*/
+    /// Predicts the class.
+    ///
+    /// **Errors**
+    ///
+    /// Returns an error if the operation cannot be performed.
     fn predict<U: Uint>(&self, input: &X) -> Result<TensorD<U>> {
         self.infer(input)?.argmax_axis(Axis(1))
     }

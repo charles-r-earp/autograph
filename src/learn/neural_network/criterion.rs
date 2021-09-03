@@ -12,7 +12,7 @@ impl<T: Uint, S: Data<Elem = T>, D: RemoveAxis> Criterion<Variable<D>, TensorBas
     for CrossEntropyLoss
 {
     type Output = Variable0;
-    fn loss(
+    fn eval(
         &self,
         prediction: Variable<D>,
         target: TensorBase<S, D::Smaller>,

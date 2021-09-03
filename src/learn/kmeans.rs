@@ -7,8 +7,8 @@ use crate::{
     scalar::{FloatType, Uint},
     tensor::{
         float::{
-            FloatArcTensor2, FloatData, FloatTensor, FloatTensor2, FloatTensorBase, FloatTensorD,
-            FloatTensorView2, FloatTensorViewMut2,
+            FloatArcTensor, FloatArcTensor2, FloatData, FloatTensor, FloatTensor2, FloatTensorBase,
+            FloatTensorD, FloatTensorView2, FloatTensorViewMut2,
         },
         CowTensor, Tensor, Tensor2, TensorD, TensorView1, TensorViewMut1,
     },
@@ -16,6 +16,7 @@ use crate::{
 use anyhow::bail;
 use ndarray::{s, Array, Array2, ArrayView2, Axis, Dimension};
 use rand::distributions::{Distribution, Uniform};
+use serde::{Deserialize, Serialize};
 use std::future::Future;
 
 async fn read_loss(count: usize, loss: FloatSlice<'_>) -> Result<f32> {
@@ -109,8 +110,7 @@ fn array_init_kplus_plus(k: usize, input: &ArrayView2<f32>) -> Array2<f32> {
 }
 
 /// KMeans Classifier
-#[derive(Debug, Clone)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KMeans {
     centroids: FloatArcTensor2,
 }
@@ -121,25 +121,32 @@ impl KMeans {
     /// # Note
     /// The model is unitialized. Use [`KMeansTrainer`] with [`Train`] to initialize and train the classifier.
     pub fn new(k: usize) -> Self {
-        let centroids = FloatTensor::zeros(FloatType::F32, Device::host(), [k, 0]).unwrap();
-        Self::from_centroids(centroids.into())
+        let centroids = FloatArcTensor::zeros(FloatType::F32, Device::host(), [k, 0]).unwrap();
+        Self { centroids }
     }
     /// Transfers the model to `device`.
     ///
     /// See [`Tensor::into_device()`](crate::tensor::TensorBase::into_device()).
     pub async fn into_device(self, device: Device) -> Result<Self> {
-        // TODO: impl into_device_shared
-        Ok(Self::from_centroids(
-            self.centroids.into_device(device).await?.into_shared()?,
-        ))
+        Ok(Self {
+            centroids: self.centroids.into_device_shared(device).await?,
+        })
     }
     /// Constructs a new [`KMeans`] from `centroids`.
     ///
     /// # Centroids
-    /// - Should be standard layout.
-    /// - Shape = [k, c], with k means of c dimensional points.
-    pub fn from_centroids(centroids: FloatArcTensor2) -> Self {
-        Self { centroids }
+    /// - Shape = \[k, c\], with k means of c dimensional points.
+    ///
+    /// **Errors**
+    ///
+    /// Centroids must be standard layout.
+    pub fn from_centroids(centroids: FloatArcTensor2) -> Result<Self> {
+        if centroids.strides()
+            != bytemuck::cast_slice(centroids.raw_dim().default_strides().slice())
+        {
+            bail!("Centroids must be standard layout! {:?}", &centroids);
+        }
+        Ok(Self { centroids })
     }
     /// The centroids of the model.
     pub fn centroids(&self) -> &FloatArcTensor2 {
@@ -401,9 +408,8 @@ impl From<KMeansTrainer> for KMeans {
     }
 }
 
-#[doc(hidden)]
-#[derive(Debug)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+/// KMeans trainer.
+#[derive(Debug, Serialize, Deserialize)]
 pub struct KMeansTrainer {
     kmeans: KMeans,
     summary: Summary,
@@ -530,7 +536,7 @@ mod tests {
             .into_device(device.clone())
             .await?
             .into_shared()?;
-        let kmeans = KMeans::from_centroids(t2.into());
+        let kmeans = KMeans::from_centroids(t2.into())?;
         let y = kmeans
             .compute_distances(&t1.view())?
             .cast_into::<f32>()?
