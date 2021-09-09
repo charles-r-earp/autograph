@@ -12,6 +12,7 @@ use crate::{
     tensor::float::{
         FloatArcTensor, FloatTensor, FloatTensorD, FloatTensorViewD, FloatTensorViewMutD,
     },
+    //ops::{KernelKind, KernelArgs, Im2Col},
     util::type_eq,
 };
 use anyhow::bail;
@@ -19,7 +20,7 @@ use anyhow::bail;
 pub use async_trait::async_trait;
 #[doc(hidden)]
 pub use autograph_derive::*;
-use ndarray::{Dimension, IntoDimension, IxDyn};
+use ndarray::{Dimension, IntoDimension, IxDyn /*Dim*/};
 use rand::distributions::{Distribution, Standard, Uniform};
 use serde::{Deserialize, Serialize};
 use std::fmt::{self, Debug};
@@ -147,11 +148,12 @@ fn he_normal(mut inputs: usize) -> impl Distribution<f32> {
 #[autograph(crate)]
 pub struct Conv {
     #[autograph(parameter)]
-    kernel: ParameterD,
+    weight: ParameterD,
     #[autograph(optional_parameter)]
     bias: Option<ParameterD>,
     strides: IxDyn,
     padding: IxDyn,
+    dilation: IxDyn,
 }
 
 impl Conv {
@@ -160,9 +162,10 @@ impl Conv {
     /// Defaults:
     /// - strides: 1
     /// - padding: 0
+    /// - dilation: 1,
     /// - bias: None
     ///
-    /// The kernel is initialized with a uniform distribution of (-a, a) where a = sqrt(6 / (inputs * outputs)).
+    /// The weight is initialized with a uniform distribution of (-a, a) where a = sqrt(6 / (inputs * outputs)).
     ///
     /// # Example
     /*
@@ -180,25 +183,27 @@ impl Conv {
     where
         E: IntoDimension,
     {
-        let kernel_size = kernel.into_dimension();
-        let mut kernel_dim = IxDyn::zeros(kernel_size.ndim() + 2);
+        let kernel = kernel.into_dimension();
+        let mut kernel_dim = IxDyn::zeros(kernel.ndim() + 2);
         let mut kernel_dim_array = kernel_dim.as_array_view_mut();
         let kernel_dim_slice = kernel_dim_array.as_slice_mut().unwrap();
         kernel_dim_slice[..2].copy_from_slice([inputs, outputs].as_ref());
-        kernel_dim_slice[2..].copy_from_slice(kernel_size.slice());
+        kernel_dim_slice[2..].copy_from_slice(kernel.slice());
         let data = xavier(inputs, outputs)
             .sample_iter(&mut rand::thread_rng())
             .take(kernel_dim.size())
             .collect::<Vec<_>>();
         let buffer = FloatBuffer::from(Buffer::from(data));
-        let kernel = Parameter::from(FloatArcTensor::from(buffer).into_shape(kernel_dim).unwrap());
+        let weight = Parameter::from(FloatArcTensor::from(buffer).into_shape(kernel_dim).unwrap());
         let strides = vec![1; kernel.ndim()].into_dimension();
         let padding = IxDyn::zeros(kernel.ndim());
+        let dilation = vec![1; kernel.ndim()].into_dimension();
         Self {
-            kernel,
+            weight,
             bias: None,
             strides,
             padding,
+            dilation,
         }
     }
     /// Adds `strides`.
@@ -213,7 +218,7 @@ impl Conv {
         E: IntoDimension,
     {
         let mut strides = strides.into_dimension().into_dyn();
-        let kernel = &self.kernel.shape()[2..];
+        let kernel = &self.weight.shape()[2..];
         if strides.ndim() != kernel.len() {
             if strides.ndim() == 1 {
                 strides = vec![1; kernel.len()].into_dimension();
@@ -240,7 +245,7 @@ impl Conv {
         E: IntoDimension,
     {
         let mut padding = padding.into_dimension().into_dyn();
-        let kernel = &self.kernel.shape()[2..];
+        let kernel = &self.weight.shape()[2..];
         if padding.ndim() != kernel.len() {
             if padding.ndim() == 1 {
                 padding = vec![1; kernel.len()].into_dimension();
@@ -264,9 +269,9 @@ impl Conv {
     /// Allocates the bias on the device of the kernel (cannot fail on host). See [`Parameter::zeros()`](super::autograd::VertexBase::zeros()).
     pub fn with_bias(mut self, bias: bool) -> Result<Self> {
         if bias {
-            let float_type = self.kernel.float_type();
-            let device = self.kernel.device();
-            let outputs = self.kernel.shape()[0];
+            let float_type = self.weight.float_type();
+            let device = self.weight.device();
+            let outputs = self.weight.shape()[0];
             self.bias
                 .replace(Parameter::zeros(float_type, device, [outputs].as_ref())?);
         } else {
@@ -279,7 +284,7 @@ impl Conv {
 impl Debug for Conv {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let mut builder = f.debug_struct("Conv");
-        builder.field("kernel", &self.kernel);
+        builder.field("weight", &self.weight);
         if let Some(bias) = self.bias.as_ref() {
             builder.field("bias", bias);
         }
@@ -289,6 +294,9 @@ impl Debug for Conv {
         if self.padding.slice().iter().any(|x| *x != 0) {
             builder.field("padding", &self.padding.slice());
         }
+        if self.dilation.slice().iter().any(|x| *x != 1) {
+            builder.field("dilation", &self.dilation.slice());
+        }
         builder.finish()
     }
 }
@@ -297,6 +305,31 @@ impl Forward for Conv {
     #[allow(unused)]
     fn forward(&self, input: VariableD) -> Result<VariableD> {
         todo!()
+        /*
+        let input = input.into_dimensionality()?;
+        let (bs, ic, ih, iw) = input.dim();
+        let weight = self.weight.clone().into_dimensionality()?;
+        let (_ic, oc, kh, kw) = weight.dim();
+        debug_assert_eq!(_ic, ic);
+        let bias = self.bias.clone().map(Parameter::into_dimensionality).transpose()?;
+        let kernel = [kh, kw].into_dimension();
+        let args = KernelArgs {
+            strides: Dim::from_dimension(&self.strides).unwrap(),
+            padding: Dim::from_dimension(&self.padding).unwrap(),
+            dilation: Dim::from_dimension(&self.dilation).unwrap(),
+        };
+        let input = smol::block_on(input.into_device(weight.device()))?;
+        let input = input.im2col(&kernel, KernelKind::Convolution, &args)?;
+        let (bs, _, oh, ow) = input.dim();
+        let input = input.into_shape([bs, ic * kh * kw, oh * ow])?;
+        input.dot_bias(&weight, bias.as_ref())?
+            .into_shape([bs, oc, oh, ow])
+        // [bs, ic * kh *kw, oh * ow]
+        // [ic, oc, kh, kw]
+        // [bs, oc, oh, ow]
+        //
+        // [bs * ow * ow, ic * kh * kw] [ic * kh * kw, oc] [bs * oh * ow, oc]
+        */
     }
 }
 

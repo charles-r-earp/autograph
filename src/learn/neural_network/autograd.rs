@@ -11,9 +11,10 @@ use crate::{
         FloatArcTensor, FloatTensor, FloatTensor2, FloatTensorD, FloatTensorView, FloatTensorView0,
         FloatTensorView2, FloatTensorViewMut, FloatTensorViewMut1, FloatTensorViewMut2,
     },
+    //ops::{KernelKind, KernelArgs, Im2Col},
 };
 use anyhow::{anyhow, bail, Context};
-use ndarray::{Dimension, IntoDimension, Ix0, Ix1, Ix2, IxDyn, ShapeBuilder};
+use ndarray::{Dimension, IntoDimension, Ix0, Ix1, Ix2, Ix3, Ix4, IxDyn, ShapeBuilder};
 use parking_lot::{Mutex, MutexGuard};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -204,6 +205,10 @@ pub type Variable<D> = VertexBase<D, VariableNode>;
 pub type Variable0 = Variable<Ix0>;
 /// A variable with 2 dimensions
 pub type Variable2 = Variable<Ix2>;
+/// A variable with 3 dimensions
+pub type Variable3 = Variable<Ix3>;
+/// A variable with 4 dimensions
+pub type Variable4 = Variable<Ix4>;
 /// A dynamic dimensional variable
 pub type VariableD = Variable<IxDyn>;
 
@@ -1011,41 +1016,18 @@ impl<N1: Node, N2: Node, N3: Node> DotBias<VertexBase<Ix2, N2>, VertexBase<Ix1, 
         }
     }
 }
+
 /*
-impl Variable2 {
-    pub(crate) fn dense(&self, rhs: &Parameter2, bias: Option<&Parameter1>) -> Result<Variable2> {
-        if let Some(bias) = bias {
-            let vertices = [
-                self.clone().into_dyn().into_vertex(),
-                rhs.clone().into_dyn().into_vertex(),
-                bias.clone().into_dyn().into_vertex(),
-            ];
-            VariableBuilder::from_vertices(vertices)
-                .backward(|vertices, dy| {
-                    let dy = dy.into_dimensionality()?;
-                    let [x, w, b] = vertices.try_into_array().unwrap();
-                    let mut x = x.into_dimensionality()?;
-                    let mut w = w.into_dimensionality()?;
-                    let mut b = b.into_dimensionality()?;
-                    if let Some(mut dx) = x.grad_zeroed_mut()? {
-                        dy.dot_acc(&w.value(), &mut dx)?;
-                    }
-                    if let Some(mut dw) = w.grad_zeroed_mut()? {
-                        dy.t().dot_acc(&x.value(), &mut dw)?;
-                    }
-                    if let Some(mut db) = b.grad_zeroed_mut()? {
-                        bias_backward(&mut db.view_mut(), &dy.view())?;
-                    }
-                    Ok(())
-                })
-                .build(|| self.value().dot(&rhs.value().t()).map(Into::into))?
-                .with_name("dot_bias")
-        } else {
-            todo!()
-        }
+impl Im2Col<Ix2> for Variable4 {
+    type Output = Variable3;
+    fn im2col(&self, kernel: &Ix2, kind: KernelKind, args: &KernelArgs<Ix2>) -> Result<Self::Output> {
+        self.builder()
+            .build(|| self.value().im2col(kernel, kind, args).map(Into::into))?
+            .with_name("im2col")
     }
 }
 */
+
 #[allow(unused_variables)]
 fn cross_entropy_loss(input: &FloatTensorView2, target: &FloatTensorView2) -> Result<FloatTensor2> {
     if input.shape() != target.shape() {

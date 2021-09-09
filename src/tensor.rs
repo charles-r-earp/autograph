@@ -601,7 +601,9 @@ impl<T, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
         if self.strides == self.dim.default_strides() {
             Ok(self.data.as_slice().into())
         } else {
-            Ok(self.data.as_slice().to_owned()?.into())
+            Err(anyhow!(
+                "Tensor is not standard layout! Not yet implemented!"
+            ))
         }
     }
     /// Borrows the tensor as a [`Slice`].

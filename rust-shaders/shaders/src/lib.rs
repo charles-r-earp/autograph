@@ -11,3 +11,4 @@ mod half;
 pub mod fill;
 pub mod cast;
 pub mod activation;
+pub mod kernel;

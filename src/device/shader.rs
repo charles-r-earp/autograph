@@ -6,6 +6,7 @@ use rspirv::{
     binary::{Disassemble, Parser},
     dr::{Loader, Operand},
     spirv::{Decoration, ExecutionMode, ExecutionModel, Op, StorageClass, Word},
+    sr::Constant,
 };
 use serde::{de::Error as _, Deserialize, Deserializer, Serialize};
 use std::{
@@ -158,6 +159,12 @@ impl EntryDescriptor {
     }
 }
 
+#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
+pub(super) struct SpecConstant {
+    id: u32,
+    spec_type: SpecType,
+}
+
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub(super) enum SpecType {
     U32,
@@ -176,12 +183,6 @@ impl SpecType {
             U64 | I64 | F64 => 8,
         }
     }
-}
-
-#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
-pub(super) struct SpecConstant {
-    id: u32,
-    spec_type: SpecType,
 }
 
 #[derive(Clone, Debug)]
@@ -350,6 +351,7 @@ fn parse_spirv(spirv: &[u8]) -> Result<ModuleDescriptor> {
     let mut layouts = HashMap::<Word, Layout>::new();
     let mut pointers = HashMap::<Word, (StorageClass, Word)>::new();
     let mut variables = HashMap::<Word, (StorageClass, Word)>::new();
+    let mut constants = HashMap::<Word, Constant>::new();
     let mut spec_constants = HashMap::<Word, SpecConstant>::new();
 
     for (i, inst) in module.types_global_values.iter().enumerate() {
@@ -412,7 +414,7 @@ fn parse_spirv(spirv: &[u8]) -> Result<ModuleDescriptor> {
                     layouts.insert(result_id, layout);
                 }
             }
-            Op::TypeVector => {
+            Op::TypeVector | Op::TypeArray => {
                 let elem = match inst.operands.get(0) {
                     Some(&Operand::IdRef(elem)) => elem,
                     _ => bail!(
@@ -423,8 +425,21 @@ fn parse_spirv(spirv: &[u8]) -> Result<ModuleDescriptor> {
                 };
                 let n = match inst.operands.get(1) {
                     Some(&Operand::LiteralInt32(n)) => n,
+                    Some(Operand::IdRef(id)) => {
+                        let constant = constants
+                            .get(id)
+                            .ok_or_else(|| anyhow!("(internal error) constant not found!"))?;
+                        match constant {
+                            Constant::UInt(n) => *n,
+                            _ => bail!(
+                                "types_global_values[{}] operands[0] invalid array len:\n{:#?}",
+                                i,
+                                &inst
+                            ),
+                        }
+                    }
                     _ => bail!(
-                        "types_global_values[{}] operands[0] invalid vector len:\n{:#?}",
+                        "types_global_values[{}] operands[0] invalid len:\n{:#?}",
                         i,
                         &inst
                     ),
@@ -489,6 +504,22 @@ fn parse_spirv(spirv: &[u8]) -> Result<ModuleDescriptor> {
                     )
                 })?;
                 variables.insert(result_id, (storage_class, result_type));
+            }
+            Op::Constant => {
+                let result_id = inst.result_id.ok_or_else(|| {
+                    anyhow!(
+                        "types_global_values[{}].result_id found None:\n{:#?}",
+                        i,
+                        &inst
+                    )
+                })?;
+                if let Some(constant) = match inst.operands.get(0) {
+                    Some(&Operand::LiteralInt32(x)) => Some(Constant::UInt(x)),
+                    Some(&Operand::LiteralFloat32(x)) => Some(Constant::Float(x)),
+                    _ => None,
+                } {
+                    constants.insert(result_id, constant);
+                }
             }
             Op::SpecConstant => {
                 let result_id = inst.result_id.ok_or_else(|| {

@@ -5,7 +5,7 @@ use crate::{
     },
     device::Device,
     linalg::{Dot, DotAcc, DotBias},
-    ops::{AddAssign, ScaledAdd},
+    ops::{AddAssign, Im2Col, KernelArgs, KernelKind, ScaledAdd},
     result::Result,
     scalar::{Float, FloatType, Scalar, Uint},
     tensor::{
@@ -967,5 +967,18 @@ impl<S1: FloatData, S2: FloatData, S3: FloatDataMut>
         output: &mut FloatTensorBase<S3, Ix2>,
     ) -> Result<()> {
         map_float_tensor!(mut output, output => self.cast_to()?.dot_acc(&rhs.cast_to()?, &mut output))
+    }
+}
+
+/// Conv
+impl<S: FloatData> Im2Col<Ix2> for FloatTensorBase<S, Ix4> {
+    type Output = FloatTensor4;
+    fn im2col(
+        &self,
+        kernel: &Ix2,
+        kind: KernelKind,
+        args: &KernelArgs<Ix2>,
+    ) -> Result<Self::Output> {
+        map_float_tensor!(ref self, x => x.im2col(kernel, kind, args).map(Into::into))
     }
 }
