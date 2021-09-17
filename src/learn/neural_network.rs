@@ -317,7 +317,7 @@ impl<
                     } else {
                         train_correct.replace(pred.accuracy(&t.view())?);
                     };
-                    let mut batch_loss = criterion.eval(y.into_dimensionality()?, t)?;
+                    let batch_loss = criterion.eval(y.into_dimensionality()?, t)?;
                     if let Some(train_loss) = train_loss.as_mut() {
                         train_loss.add_assign(batch_loss.value())?;
                     } else {

@@ -600,6 +600,9 @@ impl<S: FloatData, D: Dimension> FloatTensorBase<S, D> {
             }
         }
     }
+    pub(crate) fn into_raw_buffer(self) -> Result<FloatBuffer> {
+        Ok(self.data.into_owned()?.0)
+    }
     /// Converts into a [`FloatTensor`].
     pub fn into_owned(self) -> Result<FloatTensor<D>> {
         Ok(FloatTensor {

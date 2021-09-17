@@ -1,5 +1,5 @@
 use super::{
-    autograd::{Parameter, ParameterD, VariableD},
+    autograd::{Autograd, Backward, Parameter, ParameterD, Variable, VariableD, VariableGradientD},
     optimizer::Optimizer,
 };
 use crate::{
@@ -10,7 +10,8 @@ use crate::{
     rust_shaders,
     scalar::FloatType,
     tensor::float::{
-        FloatArcTensor, FloatTensor, FloatTensorD, FloatTensorViewD, FloatTensorViewMutD,
+        FloatArcTensor, FloatArcTensorD, FloatTensor, FloatTensorD, FloatTensorViewD,
+        FloatTensorViewMutD,
     },
     //ops::{KernelKind, KernelArgs, Im2Col},
     util::type_eq,
@@ -463,20 +464,40 @@ fn relu_backward(
     unsafe { builder.submit([ws, 1, 1]) }
 }
 
+#[derive(Autograd)]
+#[autograph(crate)]
+struct ReluBackward {
+    #[autograph(gradient)]
+    input_grad: VariableGradientD,
+    output: FloatArcTensorD,
+}
+
+impl Backward for ReluBackward {
+    fn backward(&self, output_grad: FloatTensorD) -> Result<()> {
+        // TODO: implace impl
+        let mut dx = self.input_grad.lock();
+        relu_backward(
+            &self.output.view(),
+            &mut dx.zeroed_mut()?,
+            &output_grad.view(),
+        )?;
+        Ok(())
+    }
+}
+
 impl Forward for Relu {
     fn forward(&self, input: VariableD) -> Result<VariableD> {
-        input
-            .builder()
-            .backward(|vertices, dy| {
-                let [mut x] = vertices.try_into_array().unwrap();
-                let x_value = x.value();
-                if let Some(mut dx) = x.grad_zeroed_mut()? {
-                    relu_backward(&x_value, &mut dx, &dy.view())?;
-                }
-                Ok(())
-            })
-            .build(|| relu(&input.value().view()).map(Into::into))?
-            .with_name("relu")
+        // TODO: inplace impl
+        let mut output =
+            Variable::from(relu(&input.value().view())?).with_training(input.training());
+        if let Some(input_grad) = input.grad() {
+            let output_value = output.value().clone();
+            output = output.with_backward(ReluBackward {
+                input_grad,
+                output: output_value,
+            });
+        }
+        Ok(output)
     }
 }
 

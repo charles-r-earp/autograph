@@ -80,6 +80,10 @@ enum FieldKind {
     OptionalParameter,
     Layer,
     OptionalLayer,
+    Vertex,
+    OptionalVertex,
+    Gradient,
+    OptionalGradient,
 }
 
 impl FieldKind {
@@ -101,6 +105,18 @@ impl FieldKind {
                             }
                             "optional_layer" => {
                                 return Some(Self::OptionalLayer);
+                            }
+                            "vertex" => {
+                                return Some(Self::Vertex);
+                            }
+                            "optional_vertex" => {
+                                return Some(Self::OptionalVertex);
+                            }
+                            "gradient" => {
+                                return Some(Self::Gradient);
+                            }
+                            "optional_gradient" => {
+                                return Some(Self::OptionalGradient);
                             }
                             _ => (),
                         }
@@ -211,6 +227,7 @@ fn derive_layer_struct(input: &DeriveInput, data_struct: &DataStruct) -> TokenSt
                         self. #ident .as_mut().map(|layer| layer as &mut dyn Layer)
                     });
                 }
+                _ => (),
             }
         }
         parameters_len_impl = quote! {
@@ -300,6 +317,7 @@ fn derive_forward_struct(input: &DeriveInput, data_struct: &DataStruct) -> Token
                     compile_error!("Cannot derive Forward with Parameters!");
                 });
             }
+            _ => (),
         }
     }
     let autograph_path = autograph_path(&input.attrs);
@@ -322,6 +340,74 @@ pub fn derive_forward(input: TokenStream) -> TokenStream {
 
     match &input.data {
         Data::Struct(data_struct) => derive_forward_struct(&input, data_struct),
+        Data::Enum(_data_enum) => TokenStream::from(quote! {
+            compile_error!("Not yet implemented!")
+        }),
+        Data::Union(_) => TokenStream::from(quote! {
+            compile_error!("Unions unsupported!")
+        }),
+    }
+}
+
+fn derive_autograd_struct(input: &DeriveInput, data_struct: &DataStruct) -> TokenStream {
+    let autograph_path = autograph_path(&input.attrs);
+    let fields = get_struct_fields(data_struct);
+    let mut grads_inner = Vec::<TokenStream2>::new();
+    if !fields.is_empty() {
+        for (ident, kind) in fields.iter() {
+            match kind {
+                FieldKind::Vertex | FieldKind::Parameter => {
+                    grads_inner.push(quote! {
+                        self.#ident .grad().map(|grad| grad.into_gradient().into_dyn())
+                    });
+                }
+                FieldKind::OptionalVertex | FieldKind::OptionalParameter => {
+                    grads_inner.push(quote! {
+                        self.#ident .as_ref().map(|v| v.grad()).flatten().map(|grad| grad.into_gradient().into_dyn())
+                    });
+                }
+                FieldKind::Gradient => {
+                    grads_inner.push(quote! {
+                        ::core::iter::once(self.#ident .clone().into_gradient().into_dyn())
+                    });
+                }
+                FieldKind::OptionalGradient => {
+                    grads_inner.push(quote! {
+                        self.#ident .as_ref().map(|grad| grad.clone().into_gradient().into_dyn()).into_iter()
+                    });
+                }
+                _ => (),
+            }
+        }
+    }
+    let ident = &input.ident;
+    let name_impl = quote! {
+        fn name(&self) -> ::std::borrow::Cow<'static, str> {
+            stringify!(#ident).into()
+        }
+    };
+    let grads_impl = quote! {
+        fn grads(&self) -> Vec<#autograph_path::learn::neural_network::autograd::GradientD> {
+            ::core::iter::empty::<#autograph_path::learn::neural_network::autograd::GradientD>()
+                #(.chain(#grads_inner))*
+                .collect()
+        }
+    };
+    TokenStream::from(quote! {
+        #[automatically_derived]
+        impl Autograd for #ident {
+            #name_impl
+            #grads_impl
+        }
+    })
+}
+
+#[proc_macro_derive(Autograd, attributes(autograph))]
+pub fn derive_autograd(input: TokenStream) -> TokenStream {
+    let input: DeriveInput = syn::parse(input).unwrap();
+
+    match &input.data {
+        Data::Struct(data_struct) => derive_autograd_struct(&input, data_struct),
         Data::Enum(_data_enum) => TokenStream::from(quote! {
             compile_error!("Not yet implemented!")
         }),

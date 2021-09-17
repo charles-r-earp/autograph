@@ -1,142 +1,164 @@
-#[cfg(doc)]
-use crate::tensor::float::FloatTensorBase;
 use crate::{
     buffer::float::FloatBuffer,
     device::Device,
     glsl_shaders,
     linalg::{Dot, DotAcc, DotBias},
+    ops::AddAssign,
     result::Result,
     scalar::FloatType,
     tensor::float::{
-        FloatArcTensor, FloatTensor, FloatTensor2, FloatTensorD, FloatTensorView, FloatTensorView0,
-        FloatTensorView2, FloatTensorViewMut, FloatTensorViewMut1, FloatTensorViewMut2,
+        FloatArcTensor, FloatArcTensor2, FloatData, FloatTensor, FloatTensor2, FloatTensorBase,
+        FloatTensorD, FloatTensorView0, FloatTensorView2, FloatTensorViewMut, FloatTensorViewMut1,
+        FloatTensorViewMut2,
     },
     //ops::{KernelKind, KernelArgs, Im2Col},
+    util::type_eq,
 };
-use anyhow::{anyhow, bail, Context};
+use anyhow::{anyhow, bail};
+#[doc(hidden)]
+pub use autograph_derive::*;
 use ndarray::{Dimension, IntoDimension, Ix0, Ix1, Ix2, Ix3, Ix4, IxDyn, ShapeBuilder};
 use parking_lot::{Mutex, MutexGuard};
 use serde::{Deserialize, Serialize};
 use std::{
-    convert::{TryFrom, TryInto},
+    borrow::Cow,
+    collections::VecDeque,
     fmt::{self, Debug},
-    iter::once,
-    mem::take,
     sync::Arc,
 };
 
 mod sealed {
+    /// Sealed base trait for [`Node`](super::Node).
     pub trait NodeBase {}
 }
 use sealed::NodeBase;
 
-trait Backward: Send + Sync + 'static {
-    fn backward(&self, vertices: VertexGuardDVec, output_grad: FloatTensorD) -> Result<()>;
+/// A reflection trait for backward ops.
+///
+/// [`Autograd`] can an should be [derived](autograph_derive). See [`Backward`].
+pub trait Autograd: Send + Sync + 'static {
+    /// A name for the the operation. The derive implementation uses the raw type name without path prefix or generics.
+    fn name(&self) -> Cow<'static, str>;
+    /// Returns the input gradients.
+    fn grads(&self) -> Vec<GradientD>;
 }
 
-impl<F: Send + Sync + 'static> Backward for F
-where
-    F: Fn(VertexGuardDVec, FloatTensorD) -> Result<()>,
-{
-    fn backward(&self, vertices: VertexGuardDVec, output_grad: FloatTensorD) -> Result<()> {
-        self(vertices, output_grad)
-    }
+/// A trait for backward ops.
+///
+/// Backward is not called directly, instead it is provided via [`Variable::with_backward()`](VertexBase::backward()), and executed in [`Variable::backward()`](VertexBase::backward()), which runs the backward pass. Each variable gradient is computed before [`.backward()`](Backward::backward()) is called with that gradient to propagate the gradients through the graph. [`.backward()`](Backward::backward()) is called only once per [`Variable`] during the execution of the backward pass.
+pub trait Backward: Autograd {
+    /// Computes input gradients given the output gradient.
+    ///
+    /// **Errors**
+    ///
+    /// Returns an error if the operation cannot be performed. May return an error even if the input gradients are modified.
+    fn backward(&self, output_grad: FloatTensorD) -> Result<()>;
 }
 
 /// Marker trait for [`VertexBase`] nodes.
-pub trait Node: Into<VertexNode> + Clone + NodeBase {
+pub trait Node: Default + Clone + Send + Sync + 'static + NodeBase {
     #[doc(hidden)]
-    fn name(&self) -> Option<&str>;
+    fn is_variable(&self) -> bool {
+        false
+    }
     #[doc(hidden)]
-    fn set_name(&mut self, name: String) -> Result<()>;
+    fn is_parameter(&self) -> bool {
+        !self.is_variable()
+    }
+    #[doc(hidden)]
+    fn into_vertex(self) -> VertexNode;
     #[doc(hidden)]
     fn try_into_variable(self) -> Result<VariableNode, Self> {
         Err(self)
     }
     #[doc(hidden)]
-    fn try_from_variable(node: VariableNode) -> Result<Self, VariableNode> {
-        Err(node)
+    fn as_variable(&self) -> Option<&VariableNode> {
+        None
+    }
+    #[doc(hidden)]
+    fn as_variable_mut(&mut self) -> Option<&mut VariableNode> {
+        None
     }
 }
 
-struct VariableNodeBase {
-    vertices: Vec<VertexD>,
-    backward: Option<Box<dyn Backward>>,
-}
-
 /// A [`Variable`] node.
-#[derive(Clone, Default)]
+#[derive(Default, Clone)]
 pub struct VariableNode {
-    base: Option<Arc<VariableNodeBase>>,
-    name: Option<Arc<String>>,
+    backward: Option<Arc<dyn Backward>>,
     training: bool,
-    graph: bool,
 }
 
 impl NodeBase for VariableNode {}
 
 impl Node for VariableNode {
-    fn name(&self) -> Option<&str> {
-        self.name.as_deref().map(String::as_str)
+    fn is_variable(&self) -> bool {
+        true
     }
-    fn set_name(&mut self, name: String) -> Result<()> {
-        if let Some(_name) = self.name.as_mut() {
-            let _name = Arc::get_mut(_name).ok_or_else(|| anyhow!("Variable not exclusive!"))?;
-            *_name = name;
-        } else {
-            self.name.replace(name.into());
-        }
-        Ok(())
+    fn into_vertex(self) -> VertexNode {
+        self.into()
     }
-    fn try_into_variable(self) -> Result<VariableNode, Self> {
+    fn try_into_variable(self) -> Result<Self, Self> {
         Ok(self)
     }
-    fn try_from_variable(node: Self) -> Result<Self, Self> {
-        Ok(node)
+    fn as_variable(&self) -> Option<&Self> {
+        Some(self)
+    }
+    fn as_variable_mut(&mut self) -> Option<&mut Self> {
+        Some(self)
     }
 }
 
 /// A [`Parameter`] node.
-#[derive(Clone, Default)]
-pub struct ParameterNode {
-    name: Option<Arc<String>>,
-}
+#[derive(Default, Clone)]
+pub struct ParameterNode {}
 
 impl NodeBase for ParameterNode {}
 
 impl Node for ParameterNode {
-    fn name(&self) -> Option<&str> {
-        self.name.as_deref().map(String::as_str)
-    }
-    fn set_name(&mut self, name: String) -> Result<()> {
-        if let Some(_name) = self.name.as_mut() {
-            let _name = Arc::get_mut(_name).ok_or_else(|| anyhow!("Parameter not exclusive!"))?;
-            *_name = name;
-        } else {
-            self.name.replace(name.into());
-        }
-        Ok(())
+    fn into_vertex(self) -> VertexNode {
+        self.into()
     }
 }
 
-/// A [`Vertex`] node.
-#[allow(missing_docs)]
+/// A variable or parameter node.
 #[derive(Clone)]
 pub enum VertexNode {
+    /// VariableNode
     Variable(VariableNode),
+    /// ParameterNode
     Parameter(ParameterNode),
 }
 
-impl VertexNode {
-    fn as_variable_node(&self) -> Option<&VariableNode> {
+impl Default for VertexNode {
+    fn default() -> Self {
+        Self::Variable(VariableNode::default())
+    }
+}
+
+impl NodeBase for VertexNode {}
+
+impl Node for VertexNode {
+    fn is_variable(&self) -> bool {
+        matches!(self, Self::Variable(_))
+    }
+    fn into_vertex(self) -> Self {
+        self
+    }
+    fn try_into_variable(self) -> Result<VariableNode, Self> {
+        match self {
+            Self::Variable(node) => Ok(node),
+            this => Err(this),
+        }
+    }
+    fn as_variable(&self) -> Option<&VariableNode> {
         match self {
             Self::Variable(node) => Some(node),
             _ => None,
         }
     }
-    fn as_parameter_node(&self) -> Option<&ParameterNode> {
+    fn as_variable_mut(&mut self) -> Option<&mut VariableNode> {
         match self {
-            Self::Parameter(node) => Some(node),
+            Self::Variable(node) => Some(node),
             _ => None,
         }
     }
@@ -154,29 +176,258 @@ impl From<ParameterNode> for VertexNode {
     }
 }
 
-impl NodeBase for VertexNode {}
+#[derive(Clone, Debug)]
+struct FloatTensorDesc<D> {
+    float_type: FloatType,
+    device: Device,
+    dim: D,
+    strides: D,
+}
 
-impl Node for VertexNode {
-    fn name(&self) -> Option<&str> {
-        match self {
-            Self::Variable(node) => node.name(),
-            Self::Parameter(node) => node.name(),
+impl<D: Dimension> FloatTensorDesc<D> {
+    fn into_dyn(self) -> FloatTensorDesc<IxDyn> {
+        FloatTensorDesc {
+            float_type: self.float_type,
+            device: self.device,
+            dim: self.dim.into_dyn(),
+            strides: self.strides.into_dyn(),
         }
     }
-    fn set_name(&mut self, name: String) -> Result<()> {
-        match self {
-            Self::Variable(node) => node.set_name(name),
-            Self::Parameter(node) => node.set_name(name),
+}
+
+impl<S: FloatData, D: Dimension> From<&'_ FloatTensorBase<S, D>> for FloatTensorDesc<D> {
+    fn from(tensor: &FloatTensorBase<S, D>) -> Self {
+        Self {
+            float_type: tensor.float_type(),
+            device: tensor.device(),
+            dim: tensor.raw_dim(),
+            strides: tensor.raw_strides(),
         }
     }
-    fn try_into_variable(self) -> Result<VariableNode, Self> {
-        match self {
-            Self::Variable(node) => Ok(node),
-            _ => Err(self),
+}
+
+/// A gradient.
+#[derive(Clone)]
+pub struct GradientBase<D: Dimension, N: Node> {
+    desc: FloatTensorDesc<D>,
+    grad: Arc<Mutex<Option<FloatBuffer>>>,
+    node: N,
+}
+
+/// A gradient.
+pub type Gradient<D> = GradientBase<D, VertexNode>;
+/// A gradient with 2 dimensions.
+pub type Gradient2 = Gradient<Ix2>;
+/// A dynamically dimensional gradient.
+pub type GradientD = Gradient<IxDyn>;
+
+/// A Variable gradient.
+pub type VariableGradient<D> = GradientBase<D, VariableNode>;
+/// A dynamically dimensional variable gradient.
+pub type VariableGradientD = VariableGradient<IxDyn>;
+
+impl<D: Dimension, N: Node> GradientBase<D, N> {
+    fn new(
+        desc: impl Into<FloatTensorDesc<D>>,
+        grad: Arc<Mutex<Option<FloatBuffer>>>,
+        node: N,
+    ) -> Self {
+        Self {
+            desc: desc.into(),
+            grad,
+            node,
         }
     }
-    fn try_from_variable(node: VariableNode) -> Result<Self, VariableNode> {
-        Ok(node.into())
+    /// Converts into a dynamically dimensioned gradient.
+    pub fn into_dyn(self) -> GradientBase<IxDyn, N> {
+        GradientBase {
+            desc: self.desc.into_dyn(),
+            grad: self.grad,
+            node: self.node,
+        }
+    }
+    /// Converts into a [`Gradient`].
+    pub fn into_gradient(self) -> Gradient<D> {
+        Gradient {
+            desc: self.desc,
+            grad: self.grad,
+            node: self.node.into_vertex(),
+        }
+    }
+    /// Locks the gradient, returning a guard.
+    ///
+    /// The gradient is protected by a [`Mutex`], and the guard ensures exclusive access. Use this method in [`Backward::backward()`] to compute the gradients of the inputs / parameters of a function.
+    pub fn lock(&self) -> GradientGuard<D> {
+        GradientGuard {
+            desc: self.desc.clone(),
+            guard: self.grad.lock(),
+        }
+    }
+    fn try_into_variable(self) -> Result<VariableGradient<D>, Self> {
+        match self.node.try_into_variable() {
+            Ok(node) => Ok(GradientBase {
+                desc: self.desc,
+                grad: self.grad,
+                node,
+            }),
+            Err(node) => Err(GradientBase {
+                desc: self.desc,
+                grad: self.grad,
+                node,
+            }),
+        }
+    }
+    /// The device of the gradient.
+    pub fn device(&self) -> Device {
+        self.desc.device.clone()
+    }
+    /// The dimensions of the gradient in pattern form.
+    pub fn dim(&self) -> D::Pattern {
+        self.desc.dim.clone().into_pattern()
+    }
+    /// The dimensions of the gradient.
+    pub fn raw_dim(&self) -> D {
+        self.desc.dim.clone()
+    }
+    /// The dimensions of the vertex as a slice.
+    pub fn shape(&self) -> &[usize] {
+        self.desc.dim.slice()
+    }
+    /// The strides of the vertex as a slice.
+    #[allow(unused)]
+    pub(crate) fn strides(&self) -> &[isize] {
+        bytemuck::cast_slice(self.desc.strides.slice())
+    }
+    /// The length of the gradient.
+    pub fn len(&self) -> usize {
+        self.desc.dim.size()
+    }
+    /// Whether the gradient is empty.
+    pub fn is_empty(&self) -> bool {
+        self.desc.dim.slice().iter().any(|x| *x == 0)
+    }
+    /// The dimensionality of the gradient.
+    pub fn ndim(&self) -> usize {
+        self.desc.dim.ndim()
+    }
+    /// The [`FloatType`] of the gradient.
+    pub fn float_type(&self) -> FloatType {
+        self.desc.float_type
+    }
+}
+
+impl VariableGradientD {
+    fn into_grad_node(self) -> Option<(FloatTensorD, VariableNode)> {
+        // TODO: with strides?
+        let grad = FloatTensor::from(Arc::try_unwrap(self.grad).ok()?.into_inner()?)
+            .into_shape(self.desc.dim)
+            .unwrap();
+        let grad = unsafe { grad.with_raw_strides(self.desc.strides) };
+        Some((grad, self.node))
+    }
+}
+
+/// Gradient guard.
+///
+/// See [`GradientBase::lock()`].
+pub struct GradientGuard<'a, D: Dimension> {
+    desc: FloatTensorDesc<D>,
+    guard: MutexGuard<'a, Option<FloatBuffer>>,
+}
+
+impl<D: Dimension> GradientGuard<'_, D> {
+    pub(crate) fn view_mut(&mut self) -> Option<FloatTensorViewMut<D>> {
+        if let Some(buffer) = self.guard.as_mut() {
+            let view = FloatTensorViewMut::from(buffer.as_slice_mut())
+                .into_shape(self.desc.dim.clone())
+                .unwrap();
+            let view = unsafe { view.with_raw_strides(self.desc.strides.clone()) };
+            Some(view)
+        } else {
+            None
+        }
+    }
+    /// Returns a mutable view, zeroing if necessary.
+    ///
+    /// If the gradient has not been computed, it is initialized with 0's.
+    ///
+    /// **Errors**
+    ///
+    /// See [`FloatTensor::zeros`](FloatTensorBase::zeros).
+    pub fn zeroed_mut(&mut self) -> Result<FloatTensorViewMut<D>> {
+        if self.guard.is_none() {
+            self.guard.replace(FloatBuffer::zeros(
+                self.desc.float_type,
+                self.desc.device.clone(),
+                self.desc.dim.size(),
+            )?);
+        }
+        Ok(self.view_mut().unwrap())
+    }
+    /// Accumulates the gradient with `tensor`.
+    ///
+    /// If the gradient has not been computed, stores `tensor`. Otherwise accumulates the gradient.
+    pub(crate) fn add_assign<S2: FloatData>(
+        &mut self,
+        tensor: FloatTensorBase<S2, D>,
+    ) -> Result<()> {
+        if self.desc.dim.slice() == tensor.shape() {
+            bail!(
+                "Shape does not match gradient! {:?} != {:?}",
+                self.desc.dim.slice(),
+                tensor.shape()
+            );
+        }
+        if self.desc.device != tensor.device() {
+            bail!(
+                "Device does not match gradient! {:?} != {:?}",
+                self.desc.device,
+                tensor.device()
+            );
+        }
+        if self.guard.is_some() || self.desc.strides != tensor.raw_strides() {
+            self.zeroed_mut()?.add_assign(&tensor)?;
+        } else {
+            self.guard.replace(tensor.into_raw_buffer()?);
+        }
+        Ok(())
+    }
+    /// The device of the gradient.
+    pub fn device(&self) -> Device {
+        self.desc.device.clone()
+    }
+    /// The dimensions of the gradient in pattern form.
+    pub fn dim(&self) -> D::Pattern {
+        self.desc.dim.clone().into_pattern()
+    }
+    /// The dimensions of the gradient.
+    pub fn raw_dim(&self) -> D {
+        self.desc.dim.clone()
+    }
+    /// The dimensions of the vertex as a slice.
+    pub fn shape(&self) -> &[usize] {
+        self.desc.dim.slice()
+    }
+    /// The strides of the vertex as a slice.
+    #[allow(unused)]
+    pub(crate) fn strides(&self) -> &[isize] {
+        bytemuck::cast_slice(self.desc.strides.slice())
+    }
+    /// The length of the gradient.
+    pub fn len(&self) -> usize {
+        self.desc.dim.size()
+    }
+    /// Whether the gradient is empty.
+    pub fn is_empty(&self) -> bool {
+        self.desc.dim.slice().iter().any(|x| *x == 0)
+    }
+    /// The dimensionality of the gradient.
+    pub fn ndim(&self) -> usize {
+        self.desc.dim.ndim()
+    }
+    /// The [`FloatType`] of the gradient.
+    pub fn float_type(&self) -> FloatType {
+        self.desc.float_type
     }
 }
 
@@ -192,17 +443,14 @@ pub struct VertexBase<D: Dimension, N: Node> {
     node: N,
 }
 
-/// A dynamically typed vertex [`Variable`] / [`Parameter`].
-pub type Vertex<D> = VertexBase<D, VertexNode>;
-/// A dynamic dimensional vertex
-pub type VertexD = Vertex<IxDyn>;
-
 /// A variable of a network.
 ///
 /// Inputs to the network are wrapped in variables, which potentially construct the graph of backward ops as the forward pass is computed. Use the [`.backward()`](VertexBase::backward()) method to execute the backward pass, computing the gradients.
 pub type Variable<D> = VertexBase<D, VariableNode>;
 /// A variable with 1 element
 pub type Variable0 = Variable<Ix0>;
+/// A variable with 1 dimensions
+pub type Variable1 = Variable<Ix1>;
 /// A variable with 2 dimensions
 pub type Variable2 = Variable<Ix2>;
 /// A variable with 3 dimensions
@@ -220,8 +468,29 @@ pub type Parameter<D> = VertexBase<D, ParameterNode>;
 pub type Parameter1 = Parameter<Ix1>;
 /// A parameter with 2 dimensions
 pub type Parameter2 = Parameter<Ix2>;
+/// A parameter with 3 dimensions
+pub type Parameter3 = Parameter<Ix3>;
+/// A parameter with 4 dimensions
+pub type Parameter4 = Parameter<Ix4>;
 /// A dynamic dimensional parameter
 pub type ParameterD = Parameter<IxDyn>;
+
+/// A vertex of a network.
+///
+/// [`Vertex`] can be either a [`Variable`] or [`Parameter`].
+pub type Vertex<D> = VertexBase<D, VertexNode>;
+/// A vertex with 1 element
+pub type Vertex0 = Vertex<Ix0>;
+/// A vertex with 1 dimension
+pub type Vertex1 = Vertex<Ix1>;
+/// A vertex with 2 dimensions
+pub type Vertex2 = Vertex<Ix2>;
+/// A vertex with 3 dimensions
+pub type Vertex3 = Vertex<Ix3>;
+/// A vertex with 4 dimensions
+pub type Vertex4 = Vertex<Ix4>;
+/// A dynamic dimensional vertex
+pub type VertexD = Vertex<IxDyn>;
 
 impl<D: Dimension, N: Node> VertexBase<D, N> {
     /// Returns a reference to the value of the vertex.
@@ -242,7 +511,6 @@ impl<D: Dimension, N: Node> VertexBase<D, N> {
     pub fn zeros<Sh>(float_type: FloatType, device: Device, shape: Sh) -> Result<Self>
     where
         Sh: ShapeBuilder<Dim = D>,
-        N: Default,
     {
         Ok(Self {
             value: FloatArcTensor::zeros(float_type, device, shape)?,
@@ -285,6 +553,24 @@ impl<D: Dimension, N: Node> VertexBase<D, N> {
     /// The [`FloatType`] of the vertex.
     pub fn float_type(&self) -> FloatType {
         self.value.float_type()
+    }
+    pub(super) fn is_variable(&self) -> bool {
+        self.node.is_variable()
+    }
+    pub(super) fn is_parameter(&self) -> bool {
+        self.node.is_parameter()
+    }
+    /// Whether to train the network's parameters.
+    ///
+    /// For parameters, returns false. For variables, returns true if [`.with_training()`](VertexBase::with_training()) was called with training = true.
+    ///
+    /// For a given function, the output will require grad (and thus propagate gradients in the backward pass) if:
+    /// - Any input variable requires grad.
+    /// - Any input variable is training and any parameter requires grad.
+    ///
+    /// If the output requires grad, then any variables or parameters with a gradient should have that gradient computed in [`Backward::backward()`].
+    pub fn training(&self) -> bool {
+        self.node.as_variable().map_or(false, |node| node.training)
     }
     /// Converts the vertex into dimension `D2`.
     ///
@@ -342,9 +628,23 @@ impl<D: Dimension, N: Node> VertexBase<D, N> {
         Vertex {
             value: self.value,
             grad: self.grad,
-            node: self.node.into(),
+            node: self.node.into_vertex(),
         }
     }
+    /*fn try_into_variable(self) -> Result<Variable<D>, Self> {
+        match self.node.try_into_variable() {
+            Ok(node) => Ok(Variable {
+                value: self.value,
+                grad: self.grad,
+                node,
+            }),
+            Err(node) => Err(Self {
+                value: self.value,
+                grad: self.grad,
+                node,
+            }),
+        }
+    }*/
     /// Potentially adds a gradient to the vertex.
     ///
     /// # Note
@@ -377,6 +677,16 @@ impl<D: Dimension, N: Node> VertexBase<D, N> {
     pub fn requires_grad(&self) -> bool {
         self.grad.is_some()
     }
+    /// Returns the gradient of the vertex.
+    ///
+    /// If None, the vertex does not require grad.
+    pub fn grad(&self) -> Option<GradientBase<D, N>> {
+        Some(GradientBase::new(
+            &self.value,
+            self.grad.clone()?,
+            self.node.clone(),
+        ))
+    }
     /// Takes the gradient from the vertex.
     ///
     /// Returns None if:
@@ -387,6 +697,10 @@ impl<D: Dimension, N: Node> VertexBase<D, N> {
     /// Typically this method should be called in [`Optimizer::update()`](super::optimizer::Optimizer::update()), after one or more backwards passes.
     pub fn take_grad(&mut self) -> Option<FloatTensor<D>> {
         if let Some(grad) = self.grad.as_mut().map(Arc::get_mut).flatten() {
+            assert_eq!(
+                self.value.strides(),
+                bytemuck::cast_slice(self.value.raw_dim().default_strides().slice())
+            );
             Some(
                 FloatTensor::from(grad.get_mut().take()?)
                     .into_shape(self.value.dim())
@@ -395,29 +709,6 @@ impl<D: Dimension, N: Node> VertexBase<D, N> {
         } else {
             None
         }
-    }
-    fn lock(&self) -> VertexGuard<D> {
-        VertexGuard {
-            value: self.value.view(),
-            grad: self.grad.as_deref().map(Mutex::lock),
-        }
-    }
-    /// Sets the `name` of the vertex.
-    ///
-    /// This method is intended for use on vertex construction. The `name` does not have to be unique, and will be used in error messages as well as in rendering the graph.
-    ///
-    /// **Errors**
-    ///
-    /// Errors if the vertex is not exclusive.
-    pub fn set_name(&mut self, name: impl Into<String>) -> Result<()> {
-        self.node.set_name(name.into())
-    }
-    /// Adds a `name` to the vertex.
-    ///
-    /// See [``.set_name()`](Self::set_name()).
-    pub fn with_name(mut self, name: impl Into<String>) -> Result<Self> {
-        self.set_name(name)?;
-        Ok(self)
     }
     /// Transfers the vertex into `device`.
     ///
@@ -434,98 +725,48 @@ impl<D: Dimension, N: Node> VertexBase<D, N> {
         if self.device() == device {
             Ok(self)
         } else {
-            match self.try_into_variable() {
-                Ok(variable) => {
-                    let name = variable
-                        .node
-                        .name()
-                        .map(|name| format!("{}_into_{:?}", name, &device));
-                    let output_value = variable.value.clone().into_device_shared(device).await;
-                    let mut output = variable
-                        .into_builder()
-                        .backward(|vertices, output_grad| {
-                            let [mut x] = vertices.try_into_array().expect("Expected 1 vertex!");
-                            if let Some(grad) = x.grad.as_deref_mut() {
-                                let output_grad = smol::block_on(
-                                    output_grad.to_slice()?.into_device(x.value.device()),
-                                )?;
-                                if let Some(_grad) = grad {
-                                    todo!() // accumulate the gradient
-                                } else {
-                                    grad.replace(output_grad);
-                                }
-                            }
-                            Ok(())
-                        })
-                        .build(|| output_value)?;
-                    if let Some(name) = name {
-                        output.set_name(name)?;
-                    }
-                    Ok(Self::try_from_variable(output).ok().unwrap())
-                }
-                Err(this) => {
-                    let value = this.value.into_device_shared(device).await?;
-                    let grad = this.grad.as_ref().map(|_| Arc::default());
-                    Ok(Self {
-                        value,
-                        grad,
-                        node: this.node,
-                    })
-                }
+            // TODO: users can't implement this pattern, where the return type may be a variable or parameter.
+            // TODO: For Vertex From returns a variable, invalid if parameter.
+            if type_eq::<N, VertexNode>() && self.is_parameter() {
+                todo!()
             }
-        }
-    }
-    fn try_into_variable(self) -> Result<Variable<D>, Self> {
-        match self.node.try_into_variable() {
-            Ok(node) => Ok(Variable {
-                value: self.value,
-                grad: self.grad,
-                node,
-            }),
-            Err(node) => Err(Self {
-                value: self.value,
-                grad: self.grad,
-                node,
-            }),
-        }
-    }
-    fn try_from_variable(variable: Variable<D>) -> Result<Self, Variable<D>> {
-        match N::try_from_variable(variable.node) {
-            Ok(node) => Ok(Self {
-                value: variable.value,
-                grad: variable.grad,
-                node,
-            }),
-            Err(node) => Err(Variable {
-                value: variable.value,
-                grad: variable.grad,
-                node,
-            }),
+            let mut output = Self::from(smol::block_on(
+                self.value().clone().into_device_shared(device),
+            )?);
+            let input_grad = self
+                .grad()
+                .map(|g| g.try_into_variable().ok())
+                .flatten()
+                .map(VariableGradient::into_dyn);
+            if let Some((input_grad, node)) = input_grad.zip(output.node.as_variable_mut()) {
+                node.backward
+                    .replace(Arc::new(IntoDeviceBackward { input_grad }));
+                node.training = self.node.as_variable().unwrap().training;
+            }
+            if self.requires_grad() {
+                output.grad.replace(Arc::default());
+            }
+            Ok(output)
         }
     }
 }
 
-impl<D: Dimension> From<Variable<D>> for Vertex<D> {
-    fn from(variable: Variable<D>) -> Self {
-        Self {
-            value: variable.value,
-            grad: variable.grad,
-            node: variable.node.into(),
-        }
+#[derive(Autograd)]
+#[autograph(crate)]
+struct IntoDeviceBackward {
+    #[autograph(gradient)]
+    input_grad: VariableGradientD,
+}
+
+impl Backward for IntoDeviceBackward {
+    fn backward(&self, output_grad: FloatTensorD) -> Result<()> {
+        let device = self.input_grad.device();
+        let output_grad = smol::block_on(output_grad.into_device(device))?;
+        self.input_grad.lock().add_assign(output_grad)
     }
 }
 
-impl<D: Dimension> From<Parameter<D>> for Vertex<D> {
-    fn from(parameter: Parameter<D>) -> Self {
-        Self {
-            value: parameter.value,
-            grad: parameter.grad,
-            node: parameter.node.into(),
-        }
-    }
-}
-
-impl<D: Dimension, N: Node + Default> From<FloatArcTensor<D>> for VertexBase<D, N> {
+impl<D: Dimension, N: Node> From<FloatArcTensor<D>> for VertexBase<D, N> {
     fn from(tensor: FloatArcTensor<D>) -> Self {
         Self {
             value: tensor,
@@ -535,7 +776,7 @@ impl<D: Dimension, N: Node + Default> From<FloatArcTensor<D>> for VertexBase<D, 
     }
 }
 
-impl<D: Dimension, N: Node + Default> From<FloatTensor<D>> for VertexBase<D, N> {
+impl<D: Dimension, N: Node> From<FloatTensor<D>> for VertexBase<D, N> {
     fn from(tensor: FloatTensor<D>) -> Self {
         Self {
             value: tensor.into(),
@@ -547,7 +788,7 @@ impl<D: Dimension, N: Node + Default> From<FloatTensor<D>> for VertexBase<D, N> 
 
 impl<D: Dimension, N: Node> Debug for VertexBase<D, N> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let ty = if self.node.clone().try_into_variable().is_ok() {
+        let ty = if self.node.is_variable() {
             "Variable"
         } else {
             "Parameter"
@@ -575,342 +816,72 @@ impl<D: Dimension> Variable<D> {
         self.node.training = training;
         self
     }
-    /*
-    /// Forces the graph to be built.
+    /// Adds a `backward` op.
     ///
-    /// By default, the internal graph is built only when required for the backward pass. Use this method when rendering the graph. See [`.graph()`]
-    pub fn with_graph(mut self, graph: bool) -> Self {
-        self.graph = graph;
+    /// [`Backward::backward()`] will be called on 'backward` during the backward pass to compute the input gradients. This variable will also require grad.
+    pub fn with_backward(mut self, backward: impl Backward) -> Self {
+        if self.grad.is_none() {
+            self.grad.replace(Arc::default());
+        }
+        self.node.backward.replace(Arc::new(backward));
         self
-    }
-    pub fn graph(&self) -> Graph {
-        todo!()
-    }*/
-    /// Returns a [`VariableBuilder`] for autograd ops.
-    pub fn builder(&self) -> VariableBuilder {
-        self.clone().into_builder()
-    }
-    /// Converts the variable into a [`VariableBuilder`].
-    pub fn into_builder(self) -> VariableBuilder {
-        VariableBuilder::from_vertices(once(self.into_dyn().into()))
     }
     /// Runs the backward pass.
     ///
     /// Recursively calls all backward ops, which compute the gradients of variables and parameters.
-    pub fn backward(&mut self) -> Result<()> {
-        let grad = if let Some(mut grad) = self.grad.take() {
-            if let Some(grad) = Arc::get_mut(&mut grad) {
-                let grad = grad.get_mut();
-                if grad.is_none() {
-                    let float_type = self.value.float_type();
-                    let device = self.value.device();
-                    let len = self.value.len();
-                    grad.replace(FloatBuffer::ones(float_type, device, len)?);
-                }
-            } else {
-                bail!("Variable not exclusive!");
-            }
-            grad
-        } else {
-            bail!("Variable does not require grad!");
-        };
-        let var = Variable {
-            value: self.value.clone().into_dyn(),
-            grad: Some(grad),
-            node: take(&mut self.node),
-        };
-        let mut stack = vec![var];
-        while let Some(mut var) = stack.pop() {
-            if let Some(output_grad) = var.take_grad() {
-                let node = var.node;
-                let name = &node.name;
-                if let Some(Ok(base)) = node.base.map(Arc::try_unwrap) {
-                    if let Some(backward) = base.backward {
-                        let guards = base.vertices.iter().map(Vertex::lock).collect();
+    pub fn backward(self) -> Result<()> {
+        let grad = self
+            .grad()
+            .ok_or_else(|| anyhow!("Variable does not require grad!"))?;
+        std::mem::drop(self);
+        let mut queue = VecDeque::new();
+        queue.push_back(grad.into_dyn());
+        while let Some(gradient) = queue.pop_front() {
+            if let Some((output_grad, node)) = gradient.into_grad_node() {
+                if let Some(backward) = node.backward {
+                    backward.backward(output_grad)?;
+                    queue.extend(
                         backward
-                            .backward(VertexGuardDVec(guards), output_grad)
-                            .with_context(|| {
-                                format!(
-                                    "Backward failed{}!",
-                                    name.as_ref()
-                                        .map_or(String::new(), |name| format!(" at {:?}", name)),
-                                )
-                            })?;
-                        stack.extend(
-                            base.vertices
-                                .into_iter()
-                                .filter_map(|v| v.try_into_variable().ok()),
-                        );
-                    }
+                            .grads()
+                            .into_iter()
+                            .filter_map(|grad| grad.try_into_variable().ok()),
+                    )
                 }
             }
         }
         Ok(())
     }
 }
-/*
-pub struct Graph {
 
+#[derive(Autograd)]
+#[autograph(crate)]
+struct DotBackward {
+    #[autograph(vertex)]
+    input: Vertex2,
+    #[autograph(vertex)]
+    weight: Vertex2,
+    #[autograph(optional_vertex)]
+    bias: Option<Vertex1>,
 }
 
-impl Graph {
-    fn render(&self) {
-        todo!()
-    }
-}
-*/
-
-/// A guard for [`Vertex`], with a value and a locked gradient.
-#[derive(Debug)]
-pub struct VertexGuard<'a, D: Dimension> {
-    value: FloatTensorView<'a, D>,
-    grad: Option<MutexGuard<'a, Option<FloatBuffer>>>,
-}
-
-/// Dynamically dimensional [`VertexGuard`].
-pub type VertexGuardD<'a> = VertexGuard<'a, IxDyn>;
-
-impl<'a, D: Dimension> VertexGuard<'a, D> {
-    /// The value of the vertex as a view.
-    pub fn value(&self) -> FloatTensorView<'a, D> {
-        self.value.clone()
-    }
-    /*
-    /// Returns the gradient as a mutable view.
-    ///
-    /// If the gradient has not been computed, allocates the gradient.
-    ///
-    /// Returns None if the vertex does not require grad.
-    ///
-    /// Use this method in the closure provided to [`VariableBuilder::backward()`].
-    ///
-    /// # Safety
-    /// The gradient is not initialized. See [`.grad_zeroed_mut()`](Self::grad_zeroed_mut()) for a safe alternative.
-    ///
-    /// **Errors**
-    ///
-    /// See [`FloatTensor::alloc()`](FloatTensorBase::alloc()).
-    pub unsafe fn grad_alloc_mut(&mut self) -> Result<Option<FloatTensorViewMut<D>>> {
-        if let Some(mut grad) = self.grad.as_mut() {
-            if grad.is_none() {
-                let float_type = self.value.float_type();
-                let device = self.value.device();
-                let len = self.value.len();
-                grad.replace(FloatBuffer::alloc(float_type, device, len)?);
-            }
-            Ok(Some(FloatTensorViewMut::from(grad.as_mut().unwrap().as_slice_mut())
-                .into_shape(self.value.dim())?))
-        } else {
-            Ok(None)
+impl Backward for DotBackward {
+    fn backward(&self, output_grad: FloatTensorD) -> Result<()> {
+        let dy = output_grad.into_dimensionality()?;
+        let x = &self.input;
+        let w = &self.weight;
+        if let Some(dx) = x.grad() {
+            let mut dx = dx.lock();
+            dy.dot_acc(&x.value().view(), &mut dx.zeroed_mut()?)?;
         }
-    }*/
-    /// Returns the gradient as a mutable view.
-    ///
-    /// If the gradient has not been computed, zeroes the gradient.
-    ///
-    /// Returns None if the vertex does not require grad.
-    ///
-    /// Use this method in the closure provided to [`VariableBuilder::backward()`].
-    ///
-    /// **Errors**
-    ///
-    /// See [`FloatTensor::zeros()`](FloatTensorBase::zeros()).
-    pub fn grad_zeroed_mut(&mut self) -> Result<Option<FloatTensorViewMut<D>>> {
-        if let Some(grad) = self.grad.as_mut() {
-            if grad.is_none() {
-                let float_type = self.value.float_type();
-                let device = self.value.device();
-                let len = self.value.len();
-                grad.replace(FloatBuffer::zeros(float_type, device, len)?);
-            }
-            Ok(Some({
-                let tensor = FloatTensorViewMut::from(grad.as_mut().unwrap().as_slice_mut())
-                    .into_shape(self.value.dim())?;
-                unsafe { tensor.with_raw_strides(self.value.raw_strides()) }
-            }))
-        } else {
-            Ok(None)
+        if let Some(dw) = w.grad() {
+            let mut dw = dw.lock();
+            x.value().t().dot_acc(&dy.view(), &mut dw.zeroed_mut()?)?;
         }
-    }
-    /// Converts the guard into dimension `D2`.
-    ///
-    /// See [`FloatTensor::into_dimensionality()`](FloatTensorBase::into_dimensionality()).
-    pub fn into_dimensionality<D2>(self) -> Result<VertexGuard<'a, D2>>
-    where
-        D2: Dimension,
-    {
-        Ok(VertexGuard {
-            value: self.value.into_dimensionality()?,
-            grad: self.grad,
-        })
-    }
-}
-
-/// A vec of [`VertexGuard`]'s.
-#[derive(Debug)]
-pub struct VertexGuardDVec<'a>(Vec<VertexGuardD<'a>>);
-
-impl<'a> VertexGuardDVec<'a> {
-    /// Converts the vec into an array.
-    ///
-    /// **Errors**
-    ///
-    /// Returns self if `N` is not equal to the length of the vec.
-    pub fn try_into_array<const N: usize>(self) -> Result<[VertexGuardD<'a>; N], Self> {
-        self.try_into()
-    }
-}
-
-impl<'a, const N: usize> TryFrom<VertexGuardDVec<'a>> for [VertexGuardD<'a>; N] {
-    type Error = VertexGuardDVec<'a>;
-    fn try_from(vec: VertexGuardDVec<'a>) -> Result<Self, Self::Error> {
-        Self::try_from(vec.0).map_err(VertexGuardDVec)
-    }
-}
-
-/// A builder for [`Variable`] autograd functions.
-#[derive(Default)]
-pub struct VariableBuilder {
-    vertices: Vec<VertexD>,
-    backward: Option<Box<dyn Backward>>,
-    training: bool,
-    graph: bool,
-}
-
-impl VariableBuilder {
-    /// Creates a new builder from `vertices`.
-    ///
-    /// # Example
-    /**
-    ```no_run
-    # use autograph::{result::Result, learn::neural_network::autograd::{VariableD, ParameterD, VariableBuilder}};
-    fn my_func(x: VariableD, w: ParameterD) -> Result<VariableD> {
-        VariableBuilder::from_vertices([x.clone().into(), w.clone().into()])
-            .backward(|vertex_guards, output_grad| {
-            let [mut x, mut w] = vertex_guards.try_into_array().expect("Expected 2 vertices!");
-            # #[allow(unused_mut)]
-            if let Some(mut x_grad) = x.grad_zeroed_mut()? {
-                // accumulate the input grad
-            }
-            # #[allow(unused_mut)]
-            if let Some(mut w_grad) = w.grad_zeroed_mut()? {
-                // accumulate the weight grad
-            }
-            Ok(())
-        }).build(|| todo!() /* compute output */)?
-            .with_name("my_func")
-    }
-    ```
-    */
-    pub fn from_vertices<I>(vertices: I) -> Self
-    where
-        I: IntoIterator<Item = VertexD>,
-    {
-        Self::default().with_vertices(vertices)
-    }
-    /// Adds `vertices` to the builder.
-    ///
-    /// Vertices are inputs to the function (either parameters or variables).
-
-    pub fn with_vertices<I>(mut self, vertices: I) -> Self
-    where
-        I: IntoIterator<Item = VertexD>,
-    {
-        self.vertices.extend(vertices);
-        let nodes = self
-            .vertices
-            .iter()
-            .filter_map(|v| v.node.as_variable_node());
-        for node in nodes {
-            self.training |= node.training;
-            self.graph |= node.graph;
-        }
-        self
-    }
-    /// Adds a backward op.
-    ///
-    /// The closure `backward` takes the vertices as a [`VertexGuardDVec`] and the output gradient, and computes the gradient of each vertex (input / parameter).
-    ///
-    /// # Example
-    /**
-    ```no_run
-    # use autograph::{result::Result, device::Device, scalar::FloatType, learn::neural_network::autograd::Variable};
-    # fn main() -> Result<()> {
-    # let device = Device::new()?;
-    # let x = Variable::zeros(FloatType::F32, device, 1)?;
-    # let my_function = |x| Result::<_, autograph::error::Error>::Ok(x);
-    let y = x.builder().backward(|vertex_guards, output_grad| {
-        # let my_function_grad = |x, dx, dy| Result::<_, autograph::error::Error>::Ok(());
-        let [mut x] = vertex_guards.try_into_array().ok().expect("Expected 1 vertex!");
-        let x_value = x.value();
-        # #[allow(unused_mut)]
-        if let Some(mut x_grad) = x.grad_zeroed_mut()? {
-            my_function_grad(x_value, x_grad, output_grad)?;
+        if let Some(db) = self.bias.as_ref().map(Vertex::grad).flatten() {
+            let mut db = db.lock();
+            bias_backward(&mut db.zeroed_mut()?, &dy.view())?;
         }
         Ok(())
-    }).build(|| my_function(x.into_value()))?
-        .with_name("my_function")?;
-    # Ok(())
-    # }
-    ```
-    */
-    pub fn backward<F>(mut self, backward: F) -> Self
-    where
-        F: Fn(VertexGuardDVec, FloatTensorD) -> Result<()> + Send + Sync + 'static,
-    {
-        let variable_grad = self
-            .vertices
-            .iter()
-            .filter(|v| v.node.as_variable_node().is_some())
-            .any(|v| v.grad.is_some());
-        let parameter_grad = self
-            .vertices
-            .iter()
-            .filter(|v| v.node.as_parameter_node().is_some())
-            .any(|v| v.grad.is_some());
-        if (self.training && parameter_grad) || variable_grad {
-            self.backward.replace(Box::new(backward));
-        }
-        self
-    }
-    /// Builds the variable.
-    ///
-    /// Returns a variable with value computed by `value_fn`. If not needed for building the graph,
-    /// the vertices will be dropped prior to calling `value_fn`.
-    ///
-    /// **Errors**
-    ///
-    /// If `value_fn` fails, returns the error.
-    pub fn build<D, F>(self, value_fn: F) -> Result<Variable<D>>
-    where
-        D: Dimension,
-        F: FnOnce() -> Result<FloatArcTensor<D>>,
-    {
-        let grad = if self.backward.is_some() {
-            Some(Arc::default())
-        } else {
-            None
-        };
-        let node_base = if self.graph || self.backward.is_some() {
-            Some(Arc::new(VariableNodeBase {
-                vertices: self.vertices,
-                backward: self.backward,
-            }))
-        } else {
-            std::mem::drop(self.vertices);
-            None
-        };
-        let node = VariableNode {
-            base: node_base,
-            name: None,
-            training: self.training,
-            graph: self.graph,
-        };
-        Ok(Variable {
-            value: value_fn()?,
-            grad,
-            node,
-        })
     }
 }
 
@@ -918,26 +889,7 @@ impl VariableBuilder {
 impl<N1: Node, N2: Node> Dot<VertexBase<Ix2, N2>> for VertexBase<Ix2, N1> {
     type Output = Variable2;
     fn dot(&self, rhs: &VertexBase<Ix2, N2>) -> Result<Variable2> {
-        let vertices = [
-            self.clone().into_dyn().into_vertex(),
-            rhs.clone().into_dyn().into_vertex(),
-        ];
-        VariableBuilder::from_vertices(vertices)
-            .backward(|vertices, dy| {
-                let dy = dy.into_dimensionality()?;
-                let [x, w] = vertices.try_into_array().unwrap();
-                let mut x = x.into_dimensionality()?;
-                let mut w = w.into_dimensionality()?;
-                if let Some(mut dx) = x.grad_zeroed_mut()? {
-                    dy.dot_acc(&w.value(), &mut dx)?;
-                }
-                if let Some(mut dw) = w.grad_zeroed_mut()? {
-                    x.value().t().dot_acc(&dy.view(), &mut dw)?;
-                }
-                Ok(())
-            })
-            .build(|| self.value().dot(rhs.value()).map(Into::into))?
-            .with_name("dot")
+        self.dot_bias(rhs, Option::<&VertexBase<Ix1, N2>>::None)
     }
 }
 
@@ -981,38 +933,35 @@ impl<N1: Node, N2: Node, N3: Node> DotBias<VertexBase<Ix2, N2>, VertexBase<Ix1, 
         rhs: &VertexBase<Ix2, N2>,
         bias: Option<&VertexBase<Ix1, N3>>,
     ) -> Result<Variable2> {
-        if let Some(bias) = bias {
-            let vertices = [
-                self.clone().into_dyn().into_vertex(),
-                rhs.clone().into_dyn().into_vertex(),
-                bias.clone().into_dyn().into_vertex(),
-            ];
-            VariableBuilder::from_vertices(vertices)
-                .backward(|vertices, dy| {
-                    let dy = dy.into_dimensionality()?;
-                    let [x, w, b] = vertices.try_into_array().unwrap();
-                    let mut x = x.into_dimensionality()?;
-                    let mut w = w.into_dimensionality()?;
-                    let mut b = b.into_dimensionality()?;
-                    if let Some(mut dx) = x.grad_zeroed_mut()? {
-                        dy.dot_acc(&w.value(), &mut dx)?;
-                    }
-                    if let Some(mut dw) = w.grad_zeroed_mut()? {
-                        x.value().t().dot_acc(&dy.view(), &mut dw)?;
-                    }
-                    if let Some(mut db) = b.grad_zeroed_mut()? {
-                        bias_backward(&mut db.view_mut(), &dy.view())?;
-                    }
-                    Ok(())
-                })
-                .build(|| {
-                    self.value()
-                        .dot_bias(rhs.value(), Some(bias.value()))
-                        .map(Into::into)
-                })?
-                .with_name("dot_bias")
+        let input = self;
+        let training =
+            input.training() || rhs.training() || bias.map_or(false, VertexBase::training);
+        let output = Variable::from(input.value().dot(rhs.value())?).with_training(training);
+        let train = training
+            && (input.is_parameter()
+                || rhs.is_parameter()
+                || bias.map_or(false, VertexBase::is_parameter));
+        let requires_grad = train
+            || (input.is_variable() && input.requires_grad())
+            || (rhs.is_variable() && rhs.requires_grad())
+            || bias.map_or(false, |bias| bias.is_variable() && bias.requires_grad());
+        if requires_grad {
+            let input = input.clone().into_vertex();
+            let mut weight = rhs.clone().into_vertex();
+            let mut bias = bias.map(|bias| bias.clone().into_vertex());
+            if !train {
+                weight.require_grad_mut(false);
+                if let Some(bias) = bias.as_mut() {
+                    bias.require_grad_mut(false);
+                }
+            }
+            Ok(output.with_backward(DotBackward {
+                input,
+                weight,
+                bias,
+            }))
         } else {
-            self.dot(rhs)
+            Ok(output)
         }
     }
 }
@@ -1103,8 +1052,44 @@ fn cross_entropy_loss_backward(
     unsafe { builder.submit([n, 1, 1]) }
 }
 
+#[derive(Autograd)]
+#[autograph(crate)]
+struct CrosEntropyLossBackward {
+    #[autograph(vertex)]
+    input: Variable2,
+    target: FloatArcTensor2,
+}
+
+impl Backward for CrosEntropyLossBackward {
+    fn backward(&self, output_grad: FloatTensorD) -> Result<()> {
+        let x = &self.input;
+        let t = &self.target;
+        let dy = output_grad.into_dimensionality()?;
+        if let Some(dx) = x.grad() {
+            let mut dx = dx.lock();
+            cross_entropy_loss_backward(
+                &x.value().view(),
+                &mut dx.zeroed_mut()?,
+                &t.view(),
+                &dy.view(),
+            )?;
+        }
+        Ok(())
+    }
+}
+
 impl<D: Dimension> Variable<D> {
     pub(super) fn cross_entropy_loss(&self, target: FloatArcTensor<D>) -> Result<Variable0> {
+        let input = self.clone().into_dimensionality()?;
+        let target = target.into_dimensionality()?;
+        let mut output =
+            Variable::from(cross_entropy_loss(&input.value().view(), &target.view())?.sum()?)
+                .with_training(input.training());
+        if input.requires_grad() {
+            output = output.with_backward(CrosEntropyLossBackward { input, target });
+        }
+        Ok(output)
+        /*
         let target = target.into_dimensionality()?;
         let output =
             cross_entropy_loss(&self.value().view().into_dimensionality()?, &target.view())?
@@ -1126,6 +1111,7 @@ impl<D: Dimension> Variable<D> {
             })
             .build(|| Ok(output))?
             .with_name("cross_entropy_loss")
+        */
     }
 }
 
