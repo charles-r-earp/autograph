@@ -35,6 +35,7 @@ use parking_lot::{
     MappedRwLockReadGuard, Mutex, RwLock, RwLockReadGuard, RwLockUpgradableReadGuard,
     RwLockWriteGuard,
 };
+#[cfg(windows)]
 use smol::lock::Semaphore;
 use std::{
     collections::{HashMap, VecDeque},
