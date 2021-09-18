@@ -1,43 +1,38 @@
 use spirv_std::glam::UVec3;
 
 #[repr(C)]
-pub struct KernelPushConsts<A> {
+pub struct KernelPushConsts2 {
     channels: u32,
-    input_dim: A,
-    output_dim: A,
-    kernel: A,
-    strides: A,
-    padding: A,
-    dilation: A,
+    ih: u32,
+    iw: u32,
+    oh: u32,
+    ow: u32,
+    kh: u32,
+    kw: u32,
+    sh: u32,
+    sw: u32,
+    ph: u32,
+    pw: u32,
+    dh: u32,
+    dw: u32,
 }
-
-type KernelPushConsts2 = KernelPushConsts<[u32; 2]>;
 
 // Adapted from https://github.com/CNugteren/CLBlast/blob/master/src/kernels/levelx/im2col.opencl
 #[allow(unused)]
 fn im2col_2d_f32_impl(kernel_flip: bool, global_id: UVec3, x: &[f32], y: &mut [f32], push_consts: &KernelPushConsts2) {
-    let KernelPushConsts {
-        channels,
-        input_dim,
-        output_dim,
-        kernel,
-        strides,
-        padding,
-        dilation
-    } = push_consts;
-    let channels = *channels as usize;
-    let ih = input_dim[0] as usize;
-    let iw = input_dim[1] as usize;
-    let oh = output_dim[0] as usize;
-    let ow = output_dim[1] as usize;
-    let kh = kernel[0] as usize;
-    let kw = kernel[1] as usize;
-    let sh = strides[0] as usize;
-    let sw = strides[1] as usize;
-    let ph = padding[0] as usize;
-    let pw = padding[1] as usize;
-    let dh = dilation[0] as usize;
-    let dw = dilation[1] as usize;
+    let channels = push_consts.channels as usize;
+    let ih = push_consts.ih as usize;
+    let iw = push_consts.iw as usize;
+    let oh = push_consts.oh as usize;
+    let ow = push_consts.ow as usize;
+    let kh = push_consts.kh as usize;
+    let kw = push_consts.kw as usize;
+    let sh = push_consts.sh as usize;
+    let sw = push_consts.sw as usize;
+    let ph = push_consts.ph as usize;
+    let pw = push_consts.pw as usize;
+    let dh = push_consts.dh as usize;
+    let dw = push_consts.dw as usize;
     let wid = global_id.x as usize;
     let global_y = global_id.y as usize;
     let hid = global_y % ih;

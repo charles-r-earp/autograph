@@ -35,6 +35,7 @@ use parking_lot::{
     MappedRwLockReadGuard, Mutex, RwLock, RwLockReadGuard, RwLockUpgradableReadGuard,
     RwLockWriteGuard,
 };
+use smol::lock::Semaphore;
 use std::{
     collections::{HashMap, VecDeque},
     convert::TryFrom,
@@ -884,9 +885,7 @@ impl MappingBlocks {
     }
     fn drop_guard(&self) {
         let prev = self.refcount.fetch_sub(1, Ordering::SeqCst);
-        if prev == 1
-        /*&& self.completed.load(Ordering::SeqCst) == self.offset.load(Ordering::SeqCst)*/
-        {
+        if prev == 1 {
             self.submitted.store(0, Ordering::SeqCst);
             self.completed.store(0, Ordering::SeqCst);
             self.offset.store(0, Ordering::SeqCst);
@@ -1695,12 +1694,21 @@ struct ShaderModule<B: Backend> {
 impl<B: Backend> ShaderModule<B> {
     fn new(context: Arc<Context<B>>, module: &Module) -> DeviceResult<Self> {
         let name = module.name().map(Into::into);
+        // Hack because DX12 doesn't like parallel shader compiliation.
+        #[cfg(windows)]
+        let s = if type_eq::<B, DX12>() {
+            Some(smol::block_on(context.shader_semaphore.acquire()))
+        } else {
+            None
+        };
         let module = unsafe {
             context
                 .device()
                 .create_shader_module(bytemuck::cast_slice(&module.spirv))
                 .unwrap()
         };
+        #[cfg(windows)]
+        std::mem::drop(s);
         Ok(Self {
             context,
             module: ManuallyDrop::new(module),
@@ -1720,6 +1728,12 @@ impl<B: Backend> ShaderModule<B> {
                 .take(entries.len())
                 .collect();
         for (entry, descriptor) in entries {
+            #[cfg(windows)]
+            let _s = if type_eq::<B, DX12>() {
+                Some(smol::block_on(self.context.shader_semaphore.acquire()))
+            } else {
+                None
+            };
             let shader = Shader::new(self.device(), entry, &descriptor)?;
             unsafe {
                 shaders
@@ -2373,6 +2387,8 @@ impl<B: Backend> Frame<B> {
 struct Context<B: Backend> {
     device: B::Device,
     allocator: ManuallyDrop<Allocator<B>>,
+    #[cfg(windows)]
+    shader_semaphore: Semaphore,
     _adapter: Arc<Adapter<B>>,
     _instance: Arc<B::Instance>,
 }
@@ -2387,6 +2403,8 @@ impl<B: Backend> Context<B> {
         Self {
             device,
             allocator: ManuallyDrop::new(allocator),
+            #[cfg(windows)]
+            shader_semaphore: Semaphore::new(1),
             _adapter: adapter,
             _instance: instance,
         }

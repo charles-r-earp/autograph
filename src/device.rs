@@ -668,7 +668,7 @@ impl Device {
                 let device = if let Some(name) = option_env!("AUTOGRAPH_TEST_DEVICE") {
                     Device::builder_iter()
                         .find(|b| b.info().name() == name)
-                        .ok_or(anyhow!("Device {:?} not found!"))?
+                        .ok_or(anyhow!("Device {:?} not found!", name))?
                         .build()?
                 } else {
                     new_impl()?

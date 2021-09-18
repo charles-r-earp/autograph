@@ -22,12 +22,10 @@ pub fn relu_bf16(
         let x = bf16x2_to_vec2(x[gid]);
         let y0 = if x.x > 0. { x.x } else { 0. };
         let y1 = if x.y > 0. { x.y } else { 0. };
-        let y_out = vec2_to_bf16x2(vec2(y0, y1));
-        if gid * 2 + 1 < n {
-            y[gid] = y_out;
-        } else {
-            y[gid] = y_out & 0xFFFF;
-        }
+        /*if gid * 2 + 1 >= n {
+            //y1 = bf16x2_to_vec2(y[gid]).y;
+        }*/
+        y[gid] = vec2_to_bf16x2(vec2(y0, y1));
     }
 }
 
