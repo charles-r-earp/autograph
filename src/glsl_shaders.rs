@@ -14,7 +14,7 @@ fn modules() -> Result<&'static HashMap<&'static str, Module>> {
     })?)
 }
 
-pub fn module(name: impl AsRef<str>) -> Result<&'static Module> {
+pub(crate) fn module(name: impl AsRef<str>) -> Result<&'static Module> {
     let name = name.as_ref();
     let module = modules()?
         .get(name)
