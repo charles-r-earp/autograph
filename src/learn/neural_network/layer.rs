@@ -6,6 +6,7 @@ use crate::{
     buffer::{float::FloatBuffer, Buffer},
     device::Device,
     linalg::DotBias,
+    ops::{Im2Col, KernelArgs, KernelKind},
     result::Result,
     rust_shaders,
     scalar::FloatType,
@@ -13,7 +14,6 @@ use crate::{
         FloatArcTensor, FloatArcTensorD, FloatTensor, FloatTensorD, FloatTensorViewD,
         FloatTensorViewMutD,
     },
-    //ops::{KernelKind, KernelArgs, Im2Col},
     util::type_eq,
 };
 use anyhow::bail;
@@ -21,8 +21,8 @@ use anyhow::bail;
 pub use async_trait::async_trait;
 #[doc(hidden)]
 pub use autograph_derive::*;
-use ndarray::{Dimension, IntoDimension, IxDyn /*Dim*/};
-use rand::distributions::{Distribution, Standard, Uniform};
+use ndarray::{Dim, Dimension, IntoDimension, Ix4, IxDyn};
+use rand::distributions::{Distribution, Uniform};
 use serde::{Deserialize, Serialize};
 use std::fmt::{self, Debug};
 
@@ -131,19 +131,6 @@ pub trait Forward {
     fn forward(&self, input: VariableD) -> Result<VariableD>;
 }
 
-fn xavier(inputs: usize, outputs: usize) -> Uniform<f32> {
-    let a = (6. / (inputs as f32 * outputs as f32)).sqrt();
-    Uniform::new(-a, a)
-}
-
-fn he_normal(mut inputs: usize) -> impl Distribution<f32> {
-    if inputs == 0 {
-        inputs = 1;
-    }
-    let a = (2. / inputs as f32).sqrt();
-    Standard.map(move |x: f32| x * a)
-}
-
 /// Convolutional layer.
 #[derive(Layer, Clone, Serialize, Deserialize)]
 #[autograph(crate)]
@@ -166,7 +153,10 @@ impl Conv {
     /// - dilation: 1,
     /// - bias: None
     ///
-    /// The weight is initialized with a uniform distribution of (-a, a) where a = sqrt(6 / (inputs * outputs)).
+    /// The weight is initialized with a uniform distribution of (-a, a) where a = sqrt(1 / (inputs * kernel.size())).
+    ///
+    /// # Note
+    /// Only 2D convolutions of 4D imputs are currently implemented.
     ///
     /// # Example
     /*
@@ -188,9 +178,10 @@ impl Conv {
         let mut kernel_dim = IxDyn::zeros(kernel.ndim() + 2);
         let mut kernel_dim_array = kernel_dim.as_array_view_mut();
         let kernel_dim_slice = kernel_dim_array.as_slice_mut().unwrap();
-        kernel_dim_slice[..2].copy_from_slice([inputs, outputs].as_ref());
+        kernel_dim_slice[..2].copy_from_slice([outputs, inputs].as_ref());
         kernel_dim_slice[2..].copy_from_slice(kernel.slice());
-        let data = xavier(inputs, outputs)
+        let a = f32::sqrt(1. / (inputs * kernel.size()) as f32);
+        let data = Uniform::new(-a, a)
             .sample_iter(&mut rand::thread_rng())
             .take(kernel_dim.size())
             .collect::<Vec<_>>();
@@ -263,22 +254,26 @@ impl Conv {
     }
     /// Adds a bias to the layer.
     ///
-    /// The bias is initialized with 0`s.
-    ///
-    /// **Errors**
-    ///
-    /// Allocates the bias on the device of the kernel (cannot fail on host). See [`Parameter::zeros()`](super::autograd::VertexBase::zeros()).
-    pub fn with_bias(mut self, bias: bool) -> Result<Self> {
+    /// The bias is initialized with a uniform distribution of (-a, a) where a = sqrt(1 / inputs).
+    pub fn with_bias(mut self, bias: bool) -> Self {
         if bias {
-            let float_type = self.weight.float_type();
-            let device = self.weight.device();
+            let inputs = self.weight.shape()[1];
             let outputs = self.weight.shape()[0];
-            self.bias
-                .replace(Parameter::zeros(float_type, device, [outputs].as_ref())?);
+            let a = f32::sqrt(1. / inputs as f32);
+            let data = Uniform::new(-a, a)
+                .sample_iter(&mut rand::thread_rng())
+                .take(outputs)
+                .collect::<Vec<_>>();
+            let buffer = FloatBuffer::from(Buffer::from(data));
+            self.bias.replace(Parameter::from(
+                FloatArcTensor::from(buffer)
+                    .into_shape([outputs].as_ref())
+                    .unwrap(),
+            ));
         } else {
             self.bias = None;
         }
-        Ok(self)
+        self
     }
 }
 
@@ -303,34 +298,38 @@ impl Debug for Conv {
 }
 
 impl Forward for Conv {
-    #[allow(unused)]
     fn forward(&self, input: VariableD) -> Result<VariableD> {
-        todo!()
-        /*
-        let input = input.into_dimensionality()?;
-        let (bs, ic, ih, iw) = input.dim();
-        let weight = self.weight.clone().into_dimensionality()?;
-        let (_ic, oc, kh, kw) = weight.dim();
-        debug_assert_eq!(_ic, ic);
-        let bias = self.bias.clone().map(Parameter::into_dimensionality).transpose()?;
-        let kernel = [kh, kw].into_dimension();
-        let args = KernelArgs {
-            strides: Dim::from_dimension(&self.strides).unwrap(),
-            padding: Dim::from_dimension(&self.padding).unwrap(),
-            dilation: Dim::from_dimension(&self.dilation).unwrap(),
-        };
-        let input = smol::block_on(input.into_device(weight.device()))?;
-        let input = input.im2col(&kernel, KernelKind::Convolution, &args)?;
-        let (bs, _, oh, ow) = input.dim();
-        let input = input.into_shape([bs, ic * kh * kw, oh * ow])?;
-        input.dot_bias(&weight, bias.as_ref())?
-            .into_shape([bs, oc, oh, ow])
-        // [bs, ic * kh *kw, oh * ow]
-        // [ic, oc, kh, kw]
-        // [bs, oc, oh, ow]
-        //
-        // [bs * ow * ow, ic * kh * kw] [ic * kh * kw, oc] [bs * oh * ow, oc]
-        */
+        smol::block_on(async {
+            // TODO: convert input to float type of weight
+            let input = input
+                .into_device(self.weight.device())
+                .await?
+                .into_dimensionality::<Ix4>()?;
+            let (bs, ic, ih, iw) = input.dim();
+            let weight = self.weight.clone().into_dimensionality::<Ix4>()?;
+            let (oc, _ic, kh, kw) = weight.dim();
+            debug_assert_eq!(_ic, ic);
+            let weight = weight.into_shape([oc, ic * kh * kw])?;
+            let bias = self
+                .bias
+                .clone()
+                .map(Parameter::into_dimensionality)
+                .transpose()?;
+            let kernel = [kh, kw].into_dimension();
+            let args = KernelArgs {
+                strides: Dim::from_dimension(&self.strides).unwrap(),
+                padding: Dim::from_dimension(&self.padding).unwrap(),
+                dilation: Dim::from_dimension(&self.dilation).unwrap(),
+            };
+            let (oh, ow) = args.im2col_shape([ih, iw], &kernel).into_pattern();
+            let output = input.im2col(&kernel, KernelKind::Convolution, &args)?;
+            let output = output.dot_bias(&weight.t(), bias.as_ref())?;
+            let output = output
+                .into_shape([bs, oh, ow, oc])?
+                .nhwc_into_nchw()?
+                .into_dyn();
+            Ok(output)
+        })
     }
 }
 
@@ -347,9 +346,10 @@ pub struct Dense {
 impl Dense {
     /// Creates a new [`Dense`] for `inputs` and `outputs`.
     ///
-    /// The weight is initialized with a normal distribution with std_dev = sqrt(2 / inputs).
+    /// The weight is initialized with a uniform distribution of (-a, a) where a = sqrt(1 / inputs).
     pub fn from_inputs_outputs(inputs: usize, outputs: usize) -> Self {
-        let data = he_normal(inputs)
+        let a = f32::sqrt(1. / inputs as f32);
+        let data = Uniform::new(-a, a)
             .sample_iter(&mut rand::thread_rng())
             .take(inputs * outputs)
             .collect::<Vec<_>>();
@@ -363,22 +363,26 @@ impl Dense {
     }
     /// Adds a bias to the layer.
     ///
-    /// The bias is initialized with 0`s.
-    ///
-    /// **Errors**
-    ///
-    /// Allocates the bias on the device of the weight (cannot fail on host). See [`Parameter::zeros()`](super::autograd::VertexBase::zeros()).
-    pub fn with_bias(mut self, bias: bool) -> Result<Self> {
+    /// The bias is initialized with a uniform distribution of (-a, a) where a = sqrt(1 / inputs).
+    pub fn with_bias(mut self, bias: bool) -> Self {
         if bias {
-            let float_type = self.weight.float_type();
-            let device = self.weight.device();
+            let inputs = self.weight.shape()[1];
             let outputs = self.weight.shape()[0];
-            self.bias
-                .replace(Parameter::zeros(float_type, device, [outputs].as_ref())?);
+            let a = f32::sqrt(1. / inputs as f32);
+            let data = Uniform::new(-a, a)
+                .sample_iter(&mut rand::thread_rng())
+                .take(outputs)
+                .collect::<Vec<_>>();
+            let buffer = FloatBuffer::from(Buffer::from(data));
+            self.bias.replace(Parameter::from(
+                FloatArcTensor::from(buffer)
+                    .into_shape([outputs].as_ref())
+                    .unwrap(),
+            ));
         } else {
             self.bias = None;
         }
-        Ok(self)
+        self
     }
 }
 
@@ -393,7 +397,6 @@ impl Forward for Dense {
             None
         };
         Ok(input.dot_bias(&weight.t(), bias.as_ref())?.into_dyn())
-        //Ok(input.dense(&weight, bias.as_ref())?.into_dyn())
     }
 }
 
@@ -410,6 +413,9 @@ fn relu(input: &FloatTensorViewD) -> Result<FloatTensorD> {
         FloatType::BF16 => FloatTensor::zeros(float_type, device, dim)?,
         FloatType::F32 => unsafe { FloatTensor::alloc(float_type, device, dim)? },
     };
+    unsafe {
+        output = output.with_raw_strides(input.raw_strides());
+    }
     let n = input.len() as u32;
     let ws = match float_type {
         FloatType::BF16 => {
@@ -423,7 +429,7 @@ fn relu(input: &FloatTensorViewD) -> Result<FloatTensorD> {
     };
     let builder = rust_shaders::core()?
         .compute_pass(&format!("activation::relu_{}", float_type.as_str()))?
-        .float_slice(input.to_slice()?.as_slice())?
+        .float_slice(input.as_raw_slice())?
         .float_slice_mut(output.as_raw_slice_mut())?
         .push(n)?;
     unsafe {
@@ -439,6 +445,8 @@ fn relu_backward(
 ) -> Result<()> {
     debug_assert_eq!(input.shape(), input_grad.shape());
     debug_assert_eq!(input.shape(), output_grad.shape());
+    debug_assert_eq!(input.raw_strides(), input_grad.raw_strides());
+    debug_assert_eq!(input_grad.raw_strides(), output_grad.raw_strides());
     let float_type = input.float_type();
     let n = input.len() as u32;
     let ws = match float_type {

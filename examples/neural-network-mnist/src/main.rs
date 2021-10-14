@@ -3,7 +3,7 @@ use autograph::{
     device::Device,
     learn::{
         neural_network::{
-            layer::{Dense, Layer},
+            layer::{Layer, Forward, Conv, Relu, Dense},
             Network, NetworkTrainer,
         },
         Summarize, Train,
@@ -12,29 +12,92 @@ use autograph::{
     tensor::{float::FloatTensor4, Tensor1, TensorView},
 };
 use ndarray::{s, ArrayView1, ArrayView4, Axis};
-use std::convert::TryFrom;
+use argparse::{ArgumentParser, StoreConst};
+use std::{
+    fmt::Debug,
+    convert::TryFrom,
+};
+
+#[derive(Clone, Copy)]
+enum NetworkKind {
+    Linear,
+    CNN,
+}
+
+#[derive(Layer, Forward, Clone, Debug)]
+struct CNN {
+    #[autograph(layer)]
+    conv1: Conv,
+    #[autograph(layer)]
+    relu1: Relu,
+    #[autograph(layer)]
+    dense1: Dense,
+    #[autograph(layer)]
+    relu2: Relu,
+    #[autograph(layer)]
+    dense2: Dense,
+}
+
+impl CNN {
+    fn new() -> Self {
+        let conv1 = Conv::from_inputs_outputs_kernel(1, 6, [5, 5]);
+        let relu1 = Relu::default();
+        let dense1 = Dense::from_inputs_outputs(6 * 24 * 24, 84);
+        let relu2 = Relu::default();
+        let dense2 = Dense::from_inputs_outputs(84, 10)
+            .with_bias(true);
+        Self {
+            conv1,
+            relu1,
+            dense1,
+            relu2,
+            dense2,
+        }
+    }
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let mut kind = NetworkKind::Linear;
+    {
+        let mut ap = ArgumentParser::new();
+        ap.set_description("Neural Network MNIST Example");
+        ap.refer(&mut kind)
+            .add_option(&["--linear"], StoreConst(NetworkKind::Linear), "A linear network.")
+            .add_option(&["--cnn"], StoreConst(NetworkKind::CNN), "A convolutional network.");
+         ap.parse_args_or_exit();
+    }
+
     // Create a device.
     let device = Device::new()?;
-    dbg!(device.info());
+    println!("{:#?}", device.info());
 
-    // Define the model.
-    let dense = Dense::from_inputs_outputs(28 * 28, 10)
-        .with_bias(true)?
-        // Transfer the layer into the device. Most operations (ie compute shaders) only
-        // run on a device.
-        .into_device(device.clone())
-        // Note that Host -> Device transfers do not block / the future resolves immediately.
-        .await?;
+    match kind {
+        NetworkKind::Linear => {
+            let dense = Dense::from_inputs_outputs(28 * 28, 10)
+                .with_bias(true);
+            train(device, dense).await
+        }
+        NetworkKind::CNN => {
+            train(device, CNN::new()).await
+        }
+    }
+}
+
+async fn train<L: Layer + Debug>(device: Device, layer: L) -> Result<()> {
+    // Transfer the layer into the device. Most operations (ie compute shaders) only
+    // run on a device.
+    let layer = layer.into_device(device.clone())
+    // Note that Host -> Device transfers do not block / the future resolves immediately.
+    .await?;
+
     // Wrap the layer in a Network. Network is simply a new type wrapper that provides an
     // implementation for the Infer trait, and NetworkTrainer stores the model in a Network.
-    let network = Network::from(dense);
+    let network = Network::from(layer);
 
     // Construct a trainer to train the model.
     let mut trainer = NetworkTrainer::from(network);
-    dbg!(&trainer);
+    println!("{:#?}", &trainer);
 
     // Load the dataset.
     println!("Loading dataset...");
@@ -50,7 +113,7 @@ async fn main() -> Result<()> {
         .images()
         .slice(s![60_000.., .., .., ..]);
     let test_classes = mnist.classes().slice(s![60_000..]);
-    let test_batch_size = 1_000;
+    let test_batch_size = 1000;
 
     // Stream the data to the device, converting arrays to tensors.
     fn batch_iter<'a>(
@@ -74,8 +137,8 @@ async fn main() -> Result<()> {
     }
 
     println!("Training...");
-    // Run the training for 10 epochs
-    while trainer.summarize().epoch < 10 {
+    // Run the training for 100 epochs
+    while trainer.summarize().epoch < 100 {
         let train_iter = batch_iter(&device, &train_images, &train_classes, train_batch_size);
         let test_iter = batch_iter(&device, &test_images, &test_classes, test_batch_size);
         trainer.train_test(train_iter, test_iter)?;

@@ -28,6 +28,7 @@ mod accuracy;
 mod linalg;
 mod ops;
 mod reduce;
+mod reorder;
 
 /// Float tensors.
 pub mod float;
@@ -102,6 +103,13 @@ pub trait Data: Sized + DataBase {
         }
     }
     #[doc(hidden)]
+    fn to_shared(&self) -> Result<ArcRepr<Self::Elem>>
+    where
+        Self::Elem: Copy,
+    {
+        Ok(ArcRepr(self.as_slice().to_owned()?.into()))
+    }
+    #[doc(hidden)]
     fn as_slice(&self) -> Slice<Self::Elem>;
 }
 
@@ -173,6 +181,12 @@ impl<T> Data for ArcRepr<T> {
     }
     fn try_into_arc_buffer(self) -> Result<ArcBuffer<T>, Self> {
         Ok(self.0)
+    }
+    fn to_shared(&self) -> Result<Self>
+    where
+        Self::Elem: Copy,
+    {
+        Ok(self.clone())
     }
     fn as_slice(&self) -> Slice<T> {
         self.0.as_slice()
@@ -294,6 +308,35 @@ where
             shape.slice()
         ))
     }
+}
+
+fn is_standard_layout<D: Dimension>(dim: &D, strides: &D) -> bool {
+    let zero_strides = strides.slice().iter().any(|s| *s == 0);
+    zero_strides || strides == &dim.default_strides()
+}
+
+// adapted from https://docs.rs/ndarray/0.15.3/ndarray/struct.ArrayBase.html#method.permuted_axes
+fn permuted_axes<D: Dimension>(dim: D, strides: D, axes: D) -> (D, D) {
+    // Ensure that each axis is used exactly once.
+    let mut usage_counts = D::zeros(dim.ndim());
+    for axis in axes.slice() {
+        usage_counts[*axis] += 1;
+    }
+    for count in usage_counts.slice() {
+        assert_eq!(*count, 1, "each axis must be listed exactly once");
+    }
+    // Determine the new shape and strides.
+    let mut new_dim = usage_counts; // reuse to avoid an allocation
+    let mut new_strides = D::zeros(dim.ndim());
+    {
+        let dim = dim.slice();
+        let strides = strides.slice();
+        for (new_axis, &axis) in axes.slice().iter().enumerate() {
+            new_dim[new_axis] = dim[axis];
+            new_strides[new_axis] = strides[axis];
+        }
+    }
+    (new_dim, new_strides)
 }
 
 /// Multi-dimensional matrix
@@ -576,6 +619,33 @@ impl<T, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
             data: ViewMutRepr(self.data.as_slice_mut()),
         }
     }
+    /// Whether the tensor is standard layout.
+    ///
+    /// In standard layout, the strides increase from right to left by the product of each dimension.
+    pub fn is_standard_layout(&self) -> bool {
+        is_standard_layout(&self.dim, &self.strides)
+    }
+    /// Permute the axes of the tensor.
+    ///
+    /// Reorders the dimensions of the tensor, where for each a in `axes`, a is the index of that axis in the new tensor.
+    ///
+    /// # Note
+    /// This operation merely reorders the dimensions / strides and does not copy the data. Combine with [`.into_standard_layout()`](TensorBase::into_standard_layout()) to execute the operation, returning a tensor in standard layout.
+    ///
+    /// **Errors**
+    ///
+    /// Each axis 0 .. ndim must be used exactly once.
+    pub fn permuted_axes<A>(self, axes: A) -> Self
+    where
+        A: IntoDimension<Dim = D>,
+    {
+        let (dim, strides) = permuted_axes(self.dim, self.strides, axes.into_dimension());
+        Self {
+            dim,
+            strides,
+            data: self.data,
+        }
+    }
     /// Reverses (transposes) the axes of the tensor.
     pub fn reversed_axes(mut self) -> Self {
         self.dim.slice_mut().reverse();
@@ -596,14 +666,12 @@ impl<T, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     /// See [`.to_owned()`](TensorBase::to_owned()).
     pub fn to_slice(&self) -> Result<CowBuffer<T>>
     where
-        T: Copy,
+        T: Scalar,
     {
         if self.strides == self.dim.default_strides() {
             Ok(self.data.as_slice().into())
         } else {
-            Err(anyhow!(
-                "Tensor is not standard layout! Not yet implemented!"
-            ))
+            Ok(self.as_standard_layout()?.data.0)
         }
     }
     /// Borrows the tensor as a [`Slice`].
@@ -694,6 +762,19 @@ impl<T, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
             data: self.data.into_shared()?,
         })
     }
+    /// Converts to an [`ArcTensor`].
+    ///
+    /// For [`ArcTensor`] clones the [`Arc`], otherwise copies the data into a new [`ArcTensor`].
+    pub fn to_shared(&self) -> Result<ArcTensor<T, D>>
+    where
+        T: Copy,
+    {
+        Ok(TensorBase {
+            dim: self.dim.clone(),
+            strides: self.strides.clone(),
+            data: self.data.to_shared()?,
+        })
+    }
     /// Converts into a [`FloatTensorBase`]
     #[doc(hidden)]
     pub fn into_float<S2: float::FloatData>(self) -> float::FloatTensorBase<S2, D>
@@ -771,6 +852,36 @@ impl<'a, T, D: Dimension> TryFrom<ArrayView<'a, T, D>> for TensorView<'a, T, D> 
         let strides = strides_from_array(&array);
         let data = ViewRepr(slice.into());
         Ok(Self { dim, strides, data })
+    }
+}
+
+impl<'a, T, D: Dimension> From<TensorView<'a, T, D>> for CowTensor<'a, T, D> {
+    fn from(view: TensorView<'a, T, D>) -> Self {
+        Self {
+            dim: view.dim,
+            strides: view.strides,
+            data: CowRepr(view.data.0.into()),
+        }
+    }
+}
+
+impl<T, D: Dimension> From<Tensor<T, D>> for CowTensor<'_, T, D> {
+    fn from(tensor: Tensor<T, D>) -> Self {
+        Self {
+            dim: tensor.dim,
+            strides: tensor.strides,
+            data: CowRepr(tensor.data.0.into()),
+        }
+    }
+}
+
+impl<T, D: Dimension> From<Tensor<T, D>> for ArcTensor<T, D> {
+    fn from(tensor: Tensor<T, D>) -> Self {
+        Self {
+            dim: tensor.dim,
+            strides: tensor.strides,
+            data: ArcRepr(tensor.data.0.into()),
+        }
     }
 }
 

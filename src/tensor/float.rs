@@ -9,9 +9,9 @@ use crate::{
     result::Result,
     scalar::{Float, FloatType, Scalar, Uint},
     tensor::{
-        dim_strides_from_shape, into_dimensionality, into_shape, ArcRepr, ArcTensor, CowRepr,
-        CowTensor, Data, DataBase, OwnedRepr, Tensor, TensorBase, TensorView, TensorViewMut,
-        ViewMutRepr, ViewRepr,
+        dim_strides_from_shape, into_dimensionality, into_shape, is_standard_layout, permuted_axes,
+        ArcRepr, ArcTensor, CowRepr, CowTensor, Data, DataBase, OwnedRepr, Tensor, TensorBase,
+        TensorView, TensorViewMut, ViewMutRepr, ViewRepr,
     },
 };
 use half::bf16;
@@ -392,6 +392,9 @@ impl<S: FloatData, D: Dimension> FloatTensorBase<S, D> {
     pub fn raw_dim(&self) -> D {
         self.dim.clone()
     }
+    pub(crate) unsafe fn with_raw_dim(self, dim: D) -> Self {
+        Self { dim, ..self }
+    }
     /// The dimensions of the tensor as a slice.
     pub fn shape(&self) -> &[usize] {
         self.dim.slice()
@@ -490,6 +493,20 @@ impl<S: FloatData, D: Dimension> FloatTensorBase<S, D> {
             data: FloatViewMutRepr(self.data.as_slice_mut()),
         }
     }
+    /// Permute the axes of the tensor.
+    ///
+    /// See [`TensorBase::permuted_axes`].
+    pub fn permuted_axes<A>(self, axes: A) -> Self
+    where
+        A: IntoDimension<Dim = D>,
+    {
+        let (dim, strides) = permuted_axes(self.dim, self.strides, axes.into_dimension());
+        Self {
+            dim,
+            strides,
+            data: self.data,
+        }
+    }
     /// Reverses (transposes) the axes of the tensor.
     pub fn reversed_axes(mut self) -> Self {
         self.dim.slice_mut().reverse();
@@ -499,6 +516,12 @@ impl<S: FloatData, D: Dimension> FloatTensorBase<S, D> {
     /// Retunrs a view with reversed (transposed) axes.
     pub fn t(&self) -> FloatTensorView<D> {
         self.view().reversed_axes()
+    }
+    /// Whether the tensor is standard layout.
+    ///
+    /// See [`TensorBase::is_standard_layout()`].
+    pub fn is_standard_layout(&self) -> bool {
+        is_standard_layout(&self.dim, &self.strides)
     }
     /// Returns a [`FloatCowBuffer`] in standard layout.
     ///
@@ -726,6 +749,28 @@ impl<'a, T: Float, D: Dimension> From<CowTensor<'a, T, D>> for FloatCowTensor<'a
     }
 }
 
+impl<D: Dimension> From<FloatTensor<D>> for FloatCowTensor<'_, D> {
+    fn from(tensor: FloatTensor<D>) -> Self {
+        let data = FloatCowRepr(tensor.data.0.into());
+        Self {
+            dim: tensor.dim,
+            strides: tensor.strides,
+            data,
+        }
+    }
+}
+
+impl<'a, D: Dimension> From<FloatTensorView<'a, D>> for FloatCowTensor<'a, D> {
+    fn from(tensor: FloatTensorView<'a, D>) -> Self {
+        let data = FloatCowRepr(tensor.data.0.into());
+        Self {
+            dim: tensor.dim,
+            strides: tensor.strides,
+            data,
+        }
+    }
+}
+
 macro_rules! impl_downcast {
     ($($float_tensor:ident | $float_data:ident $(<$a:lifetime>)? => $tensor:ident | $data:ident,)+) => {
         $(
@@ -827,12 +872,12 @@ impl<T: Uint, S: Data<Elem = T>> TensorBase<S, Ix1> {
 
 macro_rules! map_float_tensor {
     (ref $tensor:ident, $x:ident => $e:expr) => {
-        map_float_tensor! {$tensor, $x => downcast_ref $e}
+        map_float_tensor! {Downcast $tensor, $x => downcast_ref $e}
     };
     (mut $tensor:ident, $x:ident => $e:expr) => {
-        map_float_tensor! {$tensor, $x => downcast_mut { let mut $x = $x; $e }}
+        map_float_tensor! {Downcast $tensor, $x => downcast_mut { let mut $x = $x; $e }}
     };
-    ($tensor:ident, $x:ident => $downcast:ident $e:expr) => {{
+    (Downcast $tensor:ident, $x:ident => $downcast:ident $e:expr) => {{
         use FloatType::*;
         match $tensor.float_type() {
             BF16 => {
@@ -845,6 +890,45 @@ macro_rules! map_float_tensor {
             }
         }
     }};
+    ($tensor:ident, $x:ident => $e:expr) => {{
+        use FloatType::*;
+        match $tensor.float_type() {
+            BF16 => {
+                let $x = $tensor.cast_into::<bf16>().unwrap();
+                $e
+            }
+            F32 => {
+                let $x = $tensor.cast_into::<f32>().unwrap();
+                $e
+            }
+        }
+    }};
+}
+
+/// Reorder
+impl<S: FloatData, D: Dimension> FloatTensorBase<S, D> {
+    /// Converts to standard layout.
+    ///
+    /// See [`TensorBase::as_standard_layout()`].
+    pub fn as_standard_layout(&self) -> Result<FloatCowTensor<D>> {
+        if self.is_standard_layout() {
+            Ok(self.view().into())
+        } else {
+            self.view().into_standard_layout().map(Into::into)
+        }
+    }
+    /// Converts into standard layout.
+    ///
+    /// See [`TensorBase::into_standard_layout()`].
+    pub fn into_standard_layout(self) -> Result<FloatTensor<D>> {
+        map_float_tensor!(self, x => x.into_standard_layout().map(Into::into))
+    }
+    /// Converts to a [`FloatArcTensor`] in standard layout.
+    ///
+    /// See [`TensorBase::to_standard_layout_shared()`].
+    pub fn to_standard_layout_shared(&self) -> Result<FloatArcTensor<D>> {
+        map_float_tensor!(ref self, x => x.to_standard_layout_shared().map(Into::into))
+    }
 }
 
 /// Reductions
@@ -975,7 +1059,7 @@ impl<S1: FloatData, S2: FloatData, S3: FloatDataMut>
 
 /// Conv
 impl<S: FloatData> Im2Col<Ix2> for FloatTensorBase<S, Ix4> {
-    type Output = FloatTensor4;
+    type Output = FloatTensor2;
     fn im2col(
         &self,
         kernel: &Ix2,

@@ -62,16 +62,21 @@ impl Optimizer for Sgd {
     fn update(&mut self, parameters: &mut [&mut ParameterD]) -> Result<()> {
         for parameter in parameters {
             if let Some(grad) = parameter.take_grad() {
-                /*{
-                    let _value = smol::block_on(parameter.value().cast_to::<f32>()?.read())?;
-                    dbg!(_value.as_array());
+                /*if parameter.ndim() == 4 {
                     let _grad = smol::block_on(grad.cast_to::<f32>()?.read())?;
-                    dbg!(_grad.as_array());
+                    panic!("{:?}", _grad.as_array());
                 }*/
                 parameter
                     .value_mut()
                     .make_mut()?
                     .scaled_add(-self.learning_rate, &grad)?;
+                /*if parameter.ndim() == 4 {
+                    let w = smol::block_on(parameter.value()
+                        .clone()
+                        .cast_into::<f32>()?
+                        .read())?;
+                    println!("{:?}", w.as_array());
+                }*/
             }
         }
         Ok(())

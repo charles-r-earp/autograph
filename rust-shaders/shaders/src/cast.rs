@@ -74,7 +74,7 @@ pub fn scale_u8_bf16(
 pub fn scale_bf16_bf16(
     #[spirv(global_invocation_id)]
     global_id: UVec3,
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] x: &mut [u32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] x: &[u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] y: &mut [u32],
     #[spirv(push_constant)]
     push_consts: &ScalePushConsts<f32>,
@@ -93,46 +93,3 @@ pub fn scale_bf16_bf16(
         }
     }
 }
-
-/*
-macro_rules! impl_scale {
-    ($( $($f1:literal)? $t1:ident),+ => $t2s:tt) => {
-        $(
-            pub mod $t1 {
-                use super::*;
-
-                impl_scale!{@Inner $($f1)? $t1 => $t2s}
-            }
-        )+
-    };
-    (@Inner $($f1:literal)? $t1:ident => ($($t2:ident | $a:ident),+)) => {
-        $(
-            $(#[target_feature(enable = $f1)])?
-            #[allow(unused)]
-            #[spirv(compute(threads(64)))]
-            pub fn $t2(
-                #[spirv(global_invocation_id)]
-                global_id: UVec3,
-                #[spirv(storage_buffer, descriptor_set = 0, binding = 0, non_writable)] x: &mut [$t1],
-                #[spirv(storage_buffer, descriptor_set = 0, binding = 1, non_readable)] y: &mut [$t2],
-                #[spirv(push_constant)]
-                push_consts: &ScalePushConsts<$a>,
-            ) {
-                let alpha = <$t2 as NumCast>::from(push_consts.alpha).unwrap();
-                let vs = vector_size::<$t1>().max(vector_size::<$t2>()) as u32;
-                let start = global_id.x as usize;
-                let end = (global_id.x + vs).min(push_consts.n) as usize;
-                for i in start .. end {
-                    y[i] = <$t2 as NumCast>::from(x[i]).unwrap() * alpha;
-                }
-            }
-        )+
-    }
-}
-
-pub mod scale {
-    use super::*;
-
-    impl_scale!{"Int8" u8 => (bf16 | f32, f32 | f32)}
-}
-*/

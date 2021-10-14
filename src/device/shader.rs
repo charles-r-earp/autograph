@@ -17,7 +17,7 @@ use std::{
 };
 type Result<T, E = anyhow::Error> = std::result::Result<T, E>;
 
-pub(super) const PUSH_CONSTANT_SIZE: usize = 64;
+pub(super) const PUSH_CONSTANT_SIZE: usize = 256;
 pub(super) const SPECIALIZATION_SIZE: usize = 32;
 
 static MODULE_IDS: Lazy<Mutex<BitSet>> = Lazy::new(Mutex::default);

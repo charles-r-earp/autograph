@@ -50,7 +50,7 @@ impl Lenet5 {
         let dense2 = Dense::from_inputs_outputs(120, 84);
         let relu4 = Relu::default();
         let dense3 = Dense::from_inputs_outputs(84, 10)
-            .with_bias(true)?;
+            .with_bias(true);
         Ok(Self {
             conv1,
             relu1,

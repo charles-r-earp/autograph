@@ -1,10 +1,11 @@
 use super::*;
 use crate::{
-    ops::{AddAssign, Im2Col, KernelArgs, KernelKind, ScaledAdd},
+    ops::{AddAssign, Col2Im, Im2Col, KernelArgs, KernelKind, ScaledAdd},
     rust_shaders,
     scalar::Float,
 };
 use anyhow::ensure;
+use ndarray::{Array, Array2, Array4, Axis, Data as ArrayData};
 
 impl<T: Scalar, S1: DataMut<Elem = T>, S2: Data<Elem = T>, D: Dimension>
     AddAssign<TensorBase<S2, D>> for TensorBase<S1, D>
@@ -32,30 +33,39 @@ impl<T: Scalar, S1: DataMut<Elem = T>, S2: Data<Elem = T>, D: Dimension>
 }
 
 impl<T: Float, S: Data<Elem = T>> Im2Col<Ix2> for TensorBase<S, Ix4> {
-    type Output = Tensor4<T>;
+    type Output = Tensor2<T>;
     fn im2col(
         &self,
         kernel: &Ix2,
         kind: KernelKind,
         args: &KernelArgs<Ix2>,
     ) -> Result<Self::Output> {
+        /*smol::block_on(async {
+            let output = self.cast_to::<f32>()?
+                .read()
+                .await?
+                .as_array()
+                .im2col(kernel, kind, args)?
+                .map(|x| T::from_f32(*x).unwrap());
+            Ok(Tensor::from(output).into_device(self.device()).await?)
+        })*/
+        let input = self.as_standard_layout()?;
+        let (bs, ic, ih, iw) = input.dim();
         let (kh, kw) = kernel.into_pattern();
-        let (bs, ic, ih, iw) = self.dim();
         let strides = &args.strides;
         let padding = &args.padding;
         let dilation = &args.dilation;
-        let oh = (ih + 2 * padding[0] - dilation[0] * (kh - 1) - 1) / strides[0] + 1;
-        let ow = (iw + 2 * padding[1] - dilation[1] * (kw - 1) - 1) / strides[1] + 1;
-        let mut output = Tensor::zeros(self.device(), [bs, ic * kh * kw, oh, ow])?;
-        let input_slice = self.to_slice()?;
+        let (oh, ow) = args.im2col_shape([ih, iw], kernel).into_pattern();
+        let mut output = unsafe { Tensor::alloc(input.device(), [bs * oh * ow, ic * kh * kw])? };
         let builder = rust_shaders::core()?
             .compute_pass(&format!(
                 "kernel::im2col_2d_{}_{}",
                 kind.as_str(),
                 T::scalar_name()
             ))?
-            .slice(input_slice.as_slice())?
+            .slice(input.as_raw_slice())?
             .slice_mut(output.as_raw_slice_mut())?
+            .push(bs as u32)?
             .push(ic as u32)?
             .push([ih as u32, iw as u32])?
             .push([oh as u32, ow as u32])?
@@ -64,17 +74,346 @@ impl<T: Float, S: Data<Elem = T>> Im2Col<Ix2> for TensorBase<S, Ix4> {
             .push([padding[0] as u32, padding[1] as u32])?
             .push([dilation[0] as u32, dilation[1] as u32])?;
         unsafe {
-            builder.submit([iw as u32, (ic * ic) as u32, 1])?;
+            builder.submit([(bs * ic) as u32, (ih * iw) as u32, 1])?;
         }
         Ok(output)
     }
 }
 
-/*
-impl<T: Float, S: Data<Elem=T>, D: Dimension> Col2Im<D> for TensorBase<S, Ix2> {
-    type Output = Tensor<T, <<D as ndarray::Dimension>::Larger as Dimension>::Larger>;
-    fn col2im(&self, args: &ConvArgs<D>) -> Result<Self::Output> {
-        todo!()
+// adapted from https://github.com/CNugteren/CLBlast/blob/master/src/utilities/utilities.cpp
+fn eclid_gcd(mut a: usize, mut b: usize) -> (usize, usize, usize) {
+    let mut p = 0;
+    let mut q = 1;
+    let mut p_1 = 1;
+    let mut q_1 = 0;
+    loop {
+        let c = a % b;
+        if c == 0 {
+            break;
+        }
+        let p_2 = p_1;
+        let q_2 = q_1;
+        p_1 = p;
+        q_1 = q;
+        p = p_2 - p_1 * (a / b);
+        q = q_2 - q_1 * (a / b);
+        a = b;
+        b = c;
+    }
+    (p, q, b)
+}
+
+impl<T: Float, S: Data<Elem = T>> Col2Im<Ix2> for TensorBase<S, Ix2> {
+    type Output = Tensor4<T>;
+    fn col2im(
+        &self,
+        shape: &Ix2,
+        kernel: &Ix2,
+        kind: KernelKind,
+        args: &KernelArgs<Ix2>,
+    ) -> Result<Self::Output> {
+        if shape.size() == 0 {
+            bail!("Shape has zero value! {:?}", shape.slice());
+        }
+        if kernel.size() == 0 {
+            bail!("Kernel has zero value! {:?}", kernel.slice());
+        }
+        let input = self.as_standard_layout()?;
+        let (bsihiw, ickhkw) = input.dim();
+        let (oh, ow) = shape.into_pattern();
+        let (kh, kw) = kernel.into_pattern();
+        let ic = ickhkw / (kh * kw);
+        let (ih, iw) = args.im2col_shape([oh, ow], kernel).into_pattern();
+        let bs = bsihiw / (ih * iw);
+        let strides = &args.strides;
+        let padding = &args.padding;
+        let dilation = &args.dilation;
+        let (s_bez_h, d_bez_h, gcd_h) = eclid_gcd(strides[0], dilation[0]);
+        let (s_bez_w, d_bez_w, gcd_w) = eclid_gcd(strides[1], dilation[1]);
+        let mut output = unsafe { Tensor::alloc(input.device(), [bs, ic, oh, ow])? };
+        let builder = rust_shaders::core()?
+            .compute_pass(&format!(
+                "kernel::col2im_2d_{}_{}",
+                kind.as_str(),
+                T::scalar_name()
+            ))?
+            .slice(input.as_raw_slice())?
+            .slice_mut(output.as_raw_slice_mut())?
+            .push(bs as u32)?
+            .push(ic as u32)?
+            .push([ih as u32, iw as u32])?
+            .push([oh as u32, ow as u32])?
+            .push([kh as u32, kw as u32])?
+            .push([strides[0] as u32, strides[1] as u32])?
+            .push([padding[0] as u32, padding[1] as u32])?
+            .push([dilation[0] as u32, dilation[1] as u32])?
+            .push([s_bez_h as u32, s_bez_w as u32])?
+            .push([d_bez_h as u32, d_bez_w as u32])?
+            .push([gcd_h as u32, gcd_w as u32])?;
+        let h = (oh - 1) / gcd_h + 1;
+        let w = (ow - 1) / gcd_w + 1;
+        unsafe {
+            builder.submit([(bs * ic) as u32, (h * w) as u32, 1])?;
+        }
+        Ok(output)
     }
 }
-*/
+
+impl<S: ArrayData<Elem = f32>> Im2Col<Ix2> for ArrayBase<S, Ix4> {
+    type Output = Array2<f32>;
+    fn im2col(
+        &self,
+        kernel: &Ix2,
+        kind: KernelKind,
+        args: &KernelArgs<Ix2>,
+    ) -> Result<Self::Output> {
+        let input = self.as_standard_layout();
+        let (bs, ic, ih, iw) = input.dim();
+        let (kh, kw) = kernel.into_pattern();
+        let (sh, sw) = args.strides.into_pattern();
+        let (ph, pw) = args.padding.into_pattern();
+        let (dh, dw) = args.dilation.into_pattern();
+        let (oh, ow) = args.im2col_shape([ih, iw], kernel).into_pattern();
+        let kernel_flip = kind == KernelKind::CrossCorrelation;
+        let mut output = Array::zeros([bs, oh, ow, ic, kh * kw]);
+        for (input, mut output) in input.outer_iter().zip(output.outer_iter_mut()) {
+            for (input, mut output) in input.outer_iter().zip(output.axis_iter_mut(Axis(2))) {
+                for (hid, mut output) in output.outer_iter_mut().enumerate() {
+                    for (wid, mut output) in output.outer_iter_mut().enumerate() {
+                        for ki in 0..kh {
+                            for kj in 0..kw {
+                                let hidx = -(ph as isize) + (ki * dh + sh * hid) as isize;
+                                let widx = -(pw as isize) + (kj * dw + sw * wid) as isize;
+                                let mut kidx = ki * kw + kj;
+                                if kernel_flip {
+                                    kidx = kh * kw - (kidx + 1);
+                                }
+                                if hidx >= 0 {
+                                    if hidx < ih as isize {
+                                        if widx >= 0 {
+                                            if widx < iw as isize {
+                                                output[kidx] =
+                                                    input[(hidx as usize, widx as usize)];
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let output = output.into_shape([bs * oh * ow, ic * kh * kw])?;
+        Ok(output)
+    }
+}
+
+impl<S: ArrayData<Elem = f32>> Col2Im<Ix2> for ArrayBase<S, Ix2> {
+    type Output = Array4<f32>;
+    fn col2im(
+        &self,
+        shape: &Ix2,
+        kernel: &Ix2,
+        kind: KernelKind,
+        args: &KernelArgs<Ix2>,
+    ) -> Result<Self::Output> {
+        if shape.size() == 0 {
+            bail!("Shape has zero value! {:?}", shape.slice());
+        }
+        if kernel.size() == 0 {
+            bail!("Kernel has zero value! {:?}", kernel.slice());
+        }
+        if shape.size() == 0 {
+            bail!("Shape has zero value! {:?}", shape.slice());
+        }
+        if kernel.size() == 0 {
+            bail!("Kernel has zero value! {:?}", kernel.slice());
+        }
+        let input = self.as_standard_layout();
+        let (bsihiw, ickhkw) = input.dim();
+        let (oh, ow) = shape.into_pattern();
+        let (kh, kw) = kernel.into_pattern();
+        let kernel_flip = kind == KernelKind::CrossCorrelation;
+        let (ih, iw) = args.im2col_shape([oh, ow], kernel).into_pattern();
+        let ic = ickhkw / (kh * kw);
+        let bs = bsihiw / (ih * iw);
+        let (sh, sw) = args.strides.into_pattern();
+        let (ph, pw) = args.padding.into_pattern();
+        let (dh, dw) = args.dilation.into_pattern();
+        let input = input.into_shape([bs, ih, iw, ic, kh * kw])?;
+        let mut output = Array::zeros([bs, ic, oh, ow]);
+        for (input, mut output) in input.outer_iter().zip(output.outer_iter_mut()) {
+            for (input, mut output) in input.axis_iter(Axis(2)).zip(output.outer_iter_mut()) {
+                for (hid, input) in input.outer_iter().enumerate() {
+                    for (wid, input) in input.outer_iter().enumerate() {
+                        for ki in 0..kh {
+                            for kj in 0..kw {
+                                let hidx = -(ph as isize) + (ki * dh + sh * hid) as isize;
+                                let widx = -(pw as isize) + (kj * dw + sw * wid) as isize;
+                                let mut kidx = ki * kw + kj;
+                                if kernel_flip {
+                                    kidx = kh * kw - (kidx + 1);
+                                }
+                                if hidx >= 0 {
+                                    if hidx < oh as isize {
+                                        if widx >= 0 {
+                                            if widx < ow as isize {
+                                                output[(hidx as usize, widx as usize)] +=
+                                                    input[kidx];
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(output)
+    }
+}
+
+#[cfg(all(test, feature = "device_tests"))]
+mod tests {
+    use super::*;
+    use crate::tensor::{OwnedRepr, TensorBase};
+    use ndarray::{ArrayBase, OwnedRepr as ArrayOwnedRepr};
+
+    async fn im2col<
+        T: Float,
+        D1: Dimension,
+        D2: Dimension,
+        E1: IntoDimension<Dim = D1>,
+        E2: IntoDimension<Dim = D2>,
+    >(
+        input_dim: E1,
+        kernel: E2,
+        kind: KernelKind,
+        args: &KernelArgs<D2>,
+    ) -> Result<()>
+    where
+        TensorBase<OwnedRepr<T>, D1>: Im2Col<D2, Output = Tensor<T, D2>>,
+        ArrayBase<ArrayOwnedRepr<f32>, D1>: Im2Col<D2, Output = Array<f32, D2>>,
+    {
+        let input_dim = input_dim.into_dimension();
+        let x_vec = (1..=input_dim.size())
+            .into_iter()
+            .map(|x| if x % 3 != 0 { x as f32 } else { -(x as f32) })
+            .collect::<Vec<_>>();
+        let kernel = kernel.into_dimension();
+        let x_array = Array::from(x_vec).into_shape(input_dim)?;
+        let y_array = x_array.im2col(&kernel, kind, args)?;
+        let device = Device::new()?;
+        let _s = device.acquire().await;
+        let x = Tensor::from(x_array.map(|x| T::from_f32(*x).unwrap()))
+            .into_device(device)
+            .await?;
+        let y = x.im2col(&kernel, kind, args)?;
+        let y_out = y.read().await?.as_array().map(|x| x.to_f32().unwrap());
+        assert_eq!(y_out, y_array);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn im2col_convolution_f32() -> Result<()> {
+        im2col::<f32, _, _, _, _>(
+            [1, 2, 3, 3],
+            [2, 2],
+            KernelKind::Convolution,
+            &KernelArgs::default(),
+        )
+        .await?;
+        im2col::<f32, _, _, _, _>(
+            [16, 6, 8, 8],
+            [5, 5],
+            KernelKind::Convolution,
+            &KernelArgs::default(),
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn col2im<
+        T: Float,
+        D1: Dimension,
+        D2: Dimension,
+        E1: IntoDimension<Dim = D1>,
+        E2: IntoDimension<Dim = D1>,
+        E3: IntoDimension<Dim = D1>,
+    >(
+        input_dim: E1,
+        shape: E2,
+        kernel: E3,
+        kind: KernelKind,
+        args: &KernelArgs<D1>,
+    ) -> Result<()>
+    where
+        TensorBase<OwnedRepr<T>, D1>: Col2Im<D1, Output = Tensor<T, D2>>,
+        ArrayBase<ArrayOwnedRepr<f32>, D1>: Col2Im<D1, Output = Array<f32, D2>>,
+    {
+        let input_dim = input_dim.into_dimension();
+        let x_vec = (1..=input_dim.size())
+            .into_iter()
+            .map(|x| if x % 3 != 0 { x as f32 } else { -(x as f32) })
+            .collect::<Vec<_>>();
+        let shape = shape.into_dimension();
+        let kernel = kernel.into_dimension();
+        let x_array = Array::from(x_vec).into_shape(input_dim)?;
+        let y_array = x_array.col2im(&shape, &kernel, kind, args)?;
+        let device = Device::new()?;
+        let _s = device.acquire().await;
+        let x = Tensor::from(x_array.map(|x| T::from_f32(*x).unwrap()))
+            .into_device(device)
+            .await?;
+        let y = x.col2im(&shape, &kernel, kind, args)?;
+        let y_out = y.read().await?.as_array().map(|x| x.to_f32().unwrap());
+        assert_eq!(y_out, y_array);
+        Ok(())
+    }
+
+    async fn col2im_for<
+        T: Float,
+        D1: Dimension,
+        D2: Dimension,
+        E1: IntoDimension<Dim = D1>,
+        E2: IntoDimension<Dim = D2>,
+    >(
+        input_dim: E1,
+        kernel: E2,
+        kind: KernelKind,
+        args: &KernelArgs<D2>,
+    ) -> Result<()>
+    where
+        TensorBase<OwnedRepr<T>, D2>: Col2Im<D2, Output = Tensor<T, D1>>,
+        ArrayBase<ArrayOwnedRepr<f32>, D1>: Im2Col<D2, Output = Array<f32, D2>>,
+        ArrayBase<ArrayOwnedRepr<f32>, D2>: Col2Im<D2, Output = Array<f32, D1>>,
+    {
+        let x = Array::<f32, _>::zeros(input_dim);
+        let kernel = kernel.into_dimension();
+        let y = x.im2col(&kernel, kind, args)?;
+        let mut shape = D2::zeros(x.ndim() - 2);
+        shape.slice_mut().copy_from_slice(&x.shape()[2..]);
+        col2im(y.raw_dim(), shape, kernel, KernelKind::Convolution, args).await
+    }
+
+    #[tokio::test]
+    async fn col2im_convolution_f32() -> Result<()> {
+        col2im_for::<f32, _, _, _, _>(
+            [1, 2, 3, 3],
+            [2, 2],
+            KernelKind::Convolution,
+            &KernelArgs::default(),
+        )
+        .await?;
+        col2im_for::<f32, _, _, _, _>(
+            [16, 6, 8, 8],
+            [5, 5],
+            KernelKind::Convolution,
+            &KernelArgs::default(),
+        )
+        .await?;
+        Ok(())
+    }
+}

@@ -4,6 +4,7 @@ use crate::{
     glsl_shaders,
     linalg::{Dot, DotAcc, DotBias},
     ops::AddAssign,
+    ops::{Col2Im, Im2Col, KernelArgs, KernelKind},
     result::Result,
     scalar::FloatType,
     tensor::float::{
@@ -11,7 +12,6 @@ use crate::{
         FloatTensorD, FloatTensorView0, FloatTensorView2, FloatTensorViewMut, FloatTensorViewMut1,
         FloatTensorViewMut2,
     },
-    //ops::{KernelKind, KernelArgs, Im2Col},
     util::type_eq,
 };
 use anyhow::{anyhow, bail};
@@ -53,6 +53,32 @@ pub trait Backward: Autograd {
     ///
     /// Returns an error if the operation cannot be performed. May return an error even if the input gradients are modified.
     fn backward(&self, output_grad: FloatTensorD) -> Result<()>;
+}
+
+struct BackwardOp {
+    backward: Box<dyn Backward>,
+    dim: IxDyn,
+    strides: IxDyn,
+}
+
+impl Autograd for BackwardOp {
+    fn name(&self) -> Cow<'static, str> {
+        self.backward.name()
+    }
+    fn grads(&self) -> Vec<GradientD> {
+        self.backward.grads()
+    }
+}
+
+impl Backward for BackwardOp {
+    fn backward(&self, output_grad: FloatTensorD) -> Result<()> {
+        let output_grad = unsafe {
+            output_grad
+                .with_raw_dim(self.dim.clone())
+                .with_raw_strides(self.strides.clone())
+        };
+        self.backward.backward(output_grad)
+    }
 }
 
 /// Marker trait for [`VertexBase`] nodes.
@@ -364,6 +390,16 @@ impl<D: Dimension> GradientGuard<'_, D> {
         }
         Ok(self.view_mut().unwrap())
     }
+    fn oned_mut(&mut self) -> Result<()> {
+        if self.guard.is_none() {
+            self.guard.replace(FloatBuffer::ones(
+                self.desc.float_type,
+                self.desc.device.clone(),
+                self.desc.dim.size(),
+            )?);
+        }
+        Ok(())
+    }
     /// Accumulates the gradient with `tensor`.
     ///
     /// If the gradient has not been computed, stores `tensor`. Otherwise accumulates the gradient.
@@ -371,7 +407,7 @@ impl<D: Dimension> GradientGuard<'_, D> {
         &mut self,
         tensor: FloatTensorBase<S2, D>,
     ) -> Result<()> {
-        if self.desc.dim.slice() == tensor.shape() {
+        if self.desc.dim.slice() != tensor.shape() {
             bail!(
                 "Shape does not match gradient! {:?} != {:?}",
                 self.desc.dim.slice(),
@@ -538,6 +574,9 @@ impl<D: Dimension, N: Node> VertexBase<D, N> {
     pub fn strides(&self) -> &[isize] {
         self.value.strides()
     }
+    fn raw_strides(&self) -> D {
+        self.value.raw_strides()
+    }
     /// The length of the vertex.
     pub fn len(&self) -> usize {
         self.value.len()
@@ -598,6 +637,16 @@ impl<D: Dimension, N: Node> VertexBase<D, N> {
             node: self.node,
         })
     }
+    /// Permute the axes of the vertex.
+    ///
+    /// See [`FloatTensor::permuted_axes()`].
+    pub fn permuted_axes<A>(mut self, axes: A) -> Self
+    where
+        A: IntoDimension<Dim = D>,
+    {
+        self.value = self.value.permuted_axes(axes);
+        self
+    }
     /// Reverses (transposes) the axes of the vertex.
     pub fn reversed_axes(mut self) -> Self {
         self.value = self.value.reversed_axes();
@@ -606,6 +655,12 @@ impl<D: Dimension, N: Node> VertexBase<D, N> {
     /// Clones self with reversed (transposed) axes.
     pub fn t(&self) -> Self {
         self.clone().reversed_axes()
+    }
+    /// Whether the vertex is standard layout.
+    ///
+    /// See [`TensorBase::is_standard_layout()`].
+    pub fn is_standard_layout(&self) -> bool {
+        self.value.is_standard_layout()
     }
     #[allow(unused)]
     pub(crate) fn flatten(self) -> Result<VertexBase<Ix2, N>> {
@@ -738,10 +793,12 @@ impl<D: Dimension, N: Node> VertexBase<D, N> {
                 .map(|g| g.try_into_variable().ok())
                 .flatten()
                 .map(VariableGradient::into_dyn);
-            if let Some((input_grad, node)) = input_grad.zip(output.node.as_variable_mut()) {
-                node.backward
-                    .replace(Arc::new(IntoDeviceBackward { input_grad }));
+            if let Some(node) = output.node.as_variable_mut() {
                 node.training = self.node.as_variable().unwrap().training;
+                if let Some(input_grad) = input_grad {
+                    node.backward
+                        .replace(Arc::new(IntoDeviceBackward { input_grad }));
+                }
             }
             if self.requires_grad() {
                 output.grad.replace(Arc::default());
@@ -823,7 +880,11 @@ impl<D: Dimension> Variable<D> {
         if self.grad.is_none() {
             self.grad.replace(Arc::default());
         }
-        self.node.backward.replace(Arc::new(backward));
+        self.node.backward.replace(Arc::new(BackwardOp {
+            backward: Box::new(backward),
+            dim: self.raw_dim().into_dyn(),
+            strides: self.raw_strides().into_dyn(),
+        }));
         self
     }
     /// Runs the backward pass.
@@ -834,6 +895,7 @@ impl<D: Dimension> Variable<D> {
             .grad()
             .ok_or_else(|| anyhow!("Variable does not require grad!"))?;
         std::mem::drop(self);
+        grad.lock().oned_mut()?;
         let mut queue = VecDeque::new();
         queue.push_back(grad.into_dyn());
         while let Some(gradient) = queue.pop_front() {
@@ -853,6 +915,99 @@ impl<D: Dimension> Variable<D> {
     }
 }
 
+/*
+fn get_permuted_axes(input_strides: &[isize], output_strides: &[isize]) -> Result<IxDyn> {
+    let mut axes = IxDyn::zeros(input_strides.len());
+    for (a, os) in axes.slice_mut().iter_mut().zip(output_strides) {
+        *a = input_strides.iter()
+            .position(|s| s == os)
+            .ok_or_else(|| anyhow!("Unsupported input strides: {:?} output strides: {:?}!", input_strides, output_strides))?;
+    }
+    Ok(axes)
+}
+*/
+#[derive(Autograd)]
+#[autograph(crate)]
+struct NHWCIntoNCHWBackward {
+    #[autograph(gradient)]
+    input_grad: VariableGradient<Ix4>,
+}
+
+impl Backward for NHWCIntoNCHWBackward {
+    fn backward(&self, output_grad: FloatTensorD) -> Result<()> {
+        let output_grad = output_grad
+            .into_dimensionality()?
+            .permuted_axes([0, 2, 3, 1])
+            .into_standard_layout()?;
+        self.input_grad.lock().add_assign(output_grad)
+    }
+}
+
+impl Variable4 {
+    pub(super) fn nhwc_into_nchw(self) -> Result<Self> {
+        if !self.is_standard_layout() {
+            bail!("Must be standard_layout!");
+        }
+        let mut output = Self::from(
+            self.value()
+                .clone()
+                .permuted_axes([0, 3, 1, 2])
+                .to_standard_layout_shared()?,
+        )
+        .with_training(self.training());
+        if let Some(input_grad) = self.grad() {
+            output = output.with_backward(NHWCIntoNCHWBackward { input_grad });
+        }
+        Ok(output)
+    }
+}
+
+/*
+#[derive(Autograd)]
+#[autograph(crate)]
+struct IntoStandardLayoutBackward {
+    input_grad: VariableGradientD,
+}
+
+impl Backward for IntoStandardLayoutBackward {
+    fn backward(&self, output_grad: FloatTensorD) -> Result<()> {
+        assert!(output_grad.is_standard_layout());
+        let axes = get_permuted_axes(self.input_grad.strides(), output_grad.strides())?;
+        let output_grad = output_grad.permuted_axes(axes).into_standard_layout()?;
+        self.input_grad.lock().add_assign(output_grad)
+    }
+}
+
+impl<D: Dimension> Variable<D> {
+    /// Converts into standard layout.
+    ///
+    /// See [`FloatArcTensor::to_standard_layout_shared()`](FloatTensorBase::to_standard_layout_shared()).
+    ///
+    /// # Note
+    /// Autograd only supports standard layout and its permutations, that is the dimensions have been reordered.
+    pub(crate) fn into_standard_layout(self) -> Result<Self> {
+        if self.is_standard_layout() {
+            return Ok(self);
+        }
+        let mut output = Self::from(self.value.to_standard_layout_shared()?)
+            .with_training(self.training());
+        if let Some(grad) = self.grad() {
+            if cfg!(debug_assertions) {
+                // TODO: Validate only permutation?
+                dbg!(self.shape());
+                dbg!(self.strides());
+                dbg!(output.shape());
+                dbg!(output.strides());
+                get_permuted_axes(self.strides(), output.strides())?;
+            }
+            output = output.with_backward(IntoStandardLayoutBackward {
+                input_grad: grad.into_dyn(),
+            });
+        }
+        Ok(output)
+    }
+}*/
+
 #[derive(Autograd)]
 #[autograph(crate)]
 struct DotBackward {
@@ -871,7 +1026,7 @@ impl Backward for DotBackward {
         let w = &self.weight;
         if let Some(dx) = x.grad() {
             let mut dx = dx.lock();
-            dy.dot_acc(&x.value().view(), &mut dx.zeroed_mut()?)?;
+            dy.dot_acc(&w.value().t(), &mut dx.zeroed_mut()?)?;
         }
         if let Some(dw) = w.grad() {
             let mut dw = dw.lock();
@@ -946,13 +1101,20 @@ impl<N1: Node, N2: Node, N3: Node> DotBias<VertexBase<Ix2, N2>, VertexBase<Ix1, 
             || (rhs.is_variable() && rhs.requires_grad())
             || bias.map_or(false, |bias| bias.is_variable() && bias.requires_grad());
         if requires_grad {
-            let input = input.clone().into_vertex();
+            let mut input = input.clone().into_vertex();
             let mut weight = rhs.clone().into_vertex();
             let mut bias = bias.map(|bias| bias.clone().into_vertex());
             if !train {
-                weight.require_grad_mut(false);
+                if input.is_parameter() {
+                    input.require_grad_mut(false);
+                }
+                if weight.is_parameter() {
+                    weight.require_grad_mut(false);
+                }
                 if let Some(bias) = bias.as_mut() {
-                    bias.require_grad_mut(false);
+                    if bias.is_parameter() {
+                        bias.require_grad_mut(false);
+                    }
                 }
             }
             Ok(output.with_backward(DotBackward {
@@ -966,16 +1128,63 @@ impl<N1: Node, N2: Node, N3: Node> DotBias<VertexBase<Ix2, N2>, VertexBase<Ix1, 
     }
 }
 
-/*
-impl Im2Col<Ix2> for Variable4 {
-    type Output = Variable3;
-    fn im2col(&self, kernel: &Ix2, kind: KernelKind, args: &KernelArgs<Ix2>) -> Result<Self::Output> {
-        self.builder()
-            .build(|| self.value().im2col(kernel, kind, args).map(Into::into))?
-            .with_name("im2col")
+#[derive(Autograd)]
+#[autograph(crate)]
+struct Im2ColBackward {
+    #[autograph(vertex)]
+    input: Variable4,
+    kernel: Ix2,
+    kind: KernelKind,
+    args: KernelArgs<Ix2>,
+}
+
+impl Backward for Im2ColBackward {
+    fn backward(&self, output_grad: FloatTensorD) -> Result<()> {
+        use crate::tensor::Tensor;
+        smol::block_on(async {
+            let input = &self.input;
+            if let Some(input_grad) = input.grad() {
+                let shape = [input.dim().2, input.dim().3].into_dimension();
+                let grad = output_grad
+                    .into_dimensionality()?
+                    .cast_into::<f32>()?
+                    .read()
+                    .await?
+                    .as_array()
+                    .col2im(&shape, &self.kernel, self.kind, &self.args)?;
+                let grad = Tensor::from(grad)
+                    .into_device(input.device())
+                    .await?
+                    .into_shared()?
+                    .into_float();
+                input_grad.lock().add_assign(grad)?;
+            }
+            Ok(())
+        })
     }
 }
-*/
+
+impl Im2Col<Ix2> for Variable4 {
+    type Output = Variable2;
+    fn im2col(
+        &self,
+        kernel: &Ix2,
+        kind: KernelKind,
+        args: &KernelArgs<Ix2>,
+    ) -> Result<Self::Output> {
+        let mut output = Variable2::from(self.value().im2col(kernel, kind, args)?)
+            .with_training(self.training());
+        if self.requires_grad() {
+            output = output.with_backward(Im2ColBackward {
+                input: self.clone(),
+                kernel: kernel.clone(),
+                kind,
+                args: args.clone(),
+            });
+        }
+        Ok(output)
+    }
+}
 
 #[allow(unused_variables)]
 fn cross_entropy_loss(input: &FloatTensorView2, target: &FloatTensorView2) -> Result<FloatTensor2> {
@@ -1089,29 +1298,6 @@ impl<D: Dimension> Variable<D> {
             output = output.with_backward(CrosEntropyLossBackward { input, target });
         }
         Ok(output)
-        /*
-        let target = target.into_dimensionality()?;
-        let output =
-            cross_entropy_loss(&self.value().view().into_dimensionality()?, &target.view())?
-                .sum()?
-                .into_shared()?;
-        let target = Variable::from(target).into_dyn().with_name("target")?;
-        self.builder()
-            .with_vertices(once(target.into_vertex()))
-            .backward(|vertices, dy| {
-                let dy = dy.into_dimensionality()?;
-                let [x, t] = vertices.try_into_array().unwrap();
-                let mut x = x.into_dimensionality()?;
-                let t = t.into_dimensionality()?;
-                let x_value = x.value();
-                if let Some(mut dx) = x.grad_zeroed_mut()? {
-                    cross_entropy_loss_backward(&x_value.view(), &mut dx, &t.value(), &dy.view())?;
-                }
-                Ok(())
-            })
-            .build(|| Ok(output))?
-            .with_name("cross_entropy_loss")
-        */
     }
 }
 
