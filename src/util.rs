@@ -58,6 +58,31 @@ impl BuildHasher for U32Hasher {
     }
 }
 
+// adapted from https://github.com/CNugteren/CLBlast/blob/master/src/utilities/utilities.cpp
+#[allow(clippy::many_single_char_names)]
+#[cfg(feature = "tensor")]
+pub(crate) fn eclid_gcd(mut a: usize, mut b: usize) -> (usize, usize, usize) {
+    let mut p = 0;
+    let mut q = 1;
+    let mut p_1 = 1;
+    let mut q_1 = 0;
+    loop {
+        let c = a % b;
+        if c == 0 {
+            break;
+        }
+        let p_2 = p_1;
+        let q_2 = q_1;
+        p_1 = p;
+        q_1 = q;
+        p = p_2 - p_1 * (a / b);
+        q = q_2 - q_1 * (a / b);
+        a = b;
+        b = c;
+    }
+    (p, q, b)
+}
+
 #[cfg(test)]
 mod tests {
     use half::f16;

@@ -3,6 +3,7 @@ use crate::{
     ops::{AddAssign, Col2Im, Im2Col, KernelArgs, KernelKind, ScaledAdd},
     rust_shaders,
     scalar::Float,
+    util::eclid_gcd,
 };
 use anyhow::ensure;
 use ndarray::{Array, Array2, Array4, Axis, Data as ArrayData};
@@ -40,15 +41,6 @@ impl<T: Float, S: Data<Elem = T>> Im2Col<Ix2> for TensorBase<S, Ix4> {
         kind: KernelKind,
         args: &KernelArgs<Ix2>,
     ) -> Result<Self::Output> {
-        /*smol::block_on(async {
-            let output = self.cast_to::<f32>()?
-                .read()
-                .await?
-                .as_array()
-                .im2col(kernel, kind, args)?
-                .map(|x| T::from_f32(*x).unwrap());
-            Ok(Tensor::from(output).into_device(self.device()).await?)
-        })*/
         let input = self.as_standard_layout()?;
         let (bs, ic, ih, iw) = input.dim();
         let (kh, kw) = kernel.into_pattern();
@@ -78,29 +70,6 @@ impl<T: Float, S: Data<Elem = T>> Im2Col<Ix2> for TensorBase<S, Ix4> {
         }
         Ok(output)
     }
-}
-
-// adapted from https://github.com/CNugteren/CLBlast/blob/master/src/utilities/utilities.cpp
-fn eclid_gcd(mut a: usize, mut b: usize) -> (usize, usize, usize) {
-    let mut p = 0;
-    let mut q = 1;
-    let mut p_1 = 1;
-    let mut q_1 = 0;
-    loop {
-        let c = a % b;
-        if c == 0 {
-            break;
-        }
-        let p_2 = p_1;
-        let q_2 = q_1;
-        p_1 = p;
-        q_1 = q;
-        p = p_2 - p_1 * (a / b);
-        q = q_2 - q_1 * (a / b);
-        a = b;
-        b = c;
-    }
-    (p, q, b)
 }
 
 impl<T: Float, S: Data<Elem = T>> Col2Im<Ix2> for TensorBase<S, Ix2> {
@@ -188,15 +157,12 @@ impl<S: ArrayData<Elem = f32>> Im2Col<Ix2> for ArrayBase<S, Ix4> {
                                 if kernel_flip {
                                     kidx = kh * kw - (kidx + 1);
                                 }
-                                if hidx >= 0 {
-                                    if hidx < ih as isize {
-                                        if widx >= 0 {
-                                            if widx < iw as isize {
-                                                output[kidx] =
-                                                    input[(hidx as usize, widx as usize)];
-                                            }
-                                        }
-                                    }
+                                if hidx >= 0
+                                    && hidx < ih as isize
+                                    && widx >= 0
+                                    && widx < iw as isize
+                                {
+                                    output[kidx] = input[(hidx as usize, widx as usize)];
                                 }
                             }
                         }
@@ -255,15 +221,12 @@ impl<S: ArrayData<Elem = f32>> Col2Im<Ix2> for ArrayBase<S, Ix2> {
                                 if kernel_flip {
                                     kidx = kh * kw - (kidx + 1);
                                 }
-                                if hidx >= 0 {
-                                    if hidx < oh as isize {
-                                        if widx >= 0 {
-                                            if widx < ow as isize {
-                                                output[(hidx as usize, widx as usize)] +=
-                                                    input[kidx];
-                                            }
-                                        }
-                                    }
+                                if hidx >= 0
+                                    && hidx < oh as isize
+                                    && widx >= 0
+                                    && widx < ow as isize
+                                {
+                                    output[(hidx as usize, widx as usize)] += input[kidx];
                                 }
                             }
                         }

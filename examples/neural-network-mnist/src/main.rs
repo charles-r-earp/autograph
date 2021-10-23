@@ -3,7 +3,7 @@ use autograph::{
     device::Device,
     learn::{
         neural_network::{
-            layer::{Layer, Forward, Conv, Relu, Dense},
+            layer::{Layer, Forward, Conv, Relu, Dense, MaxPool},
             Network, NetworkTrainer,
         },
         Summarize, Train,
@@ -22,6 +22,7 @@ use std::{
 enum NetworkKind {
     Linear,
     CNN,
+    Lenet5,
 }
 
 #[derive(Layer, Forward, Clone, Debug)]
@@ -39,20 +40,78 @@ struct CNN {
 }
 
 impl CNN {
-    fn new() -> Self {
+    fn new() -> Result<Self> {
         let conv1 = Conv::from_inputs_outputs_kernel(1, 6, [5, 5]);
         let relu1 = Relu::default();
         let dense1 = Dense::from_inputs_outputs(6 * 24 * 24, 84);
         let relu2 = Relu::default();
         let dense2 = Dense::from_inputs_outputs(84, 10)
-            .with_bias(true);
-        Self {
+            .with_bias(true)?;
+        Ok(Self {
             conv1,
             relu1,
             dense1,
             relu2,
             dense2,
-        }
+        })
+    }
+}
+
+#[derive(Layer, Forward, Clone, Debug)]
+struct Lenet5 {
+    #[autograph(layer)]
+    conv1: Conv,
+    #[autograph(layer)]
+    relu1: Relu,
+    #[autograph(layer)]
+    pool1: MaxPool,
+    #[autograph(layer)]
+    conv2: Conv,
+    #[autograph(layer)]
+    relu2: Relu,
+    #[autograph(layer)]
+    pool2: MaxPool,
+    #[autograph(layer)]
+    dense1: Dense,
+    #[autograph(layer)]
+    relu3: Relu,
+    #[autograph(layer)]
+    dense2: Dense,
+    #[autograph(layer)]
+    relu4: Relu,
+    #[autograph(layer)]
+    dense3: Dense,
+}
+
+impl Lenet5 {
+    fn new() -> Result<Self> {
+        let conv1 = Conv::from_inputs_outputs_kernel(1, 6, [5, 5]);
+        let relu1 = Relu::default();
+        let pool1 = MaxPool::from_kernel([2, 2])
+            .with_strides(2)?;
+        let conv2 = Conv::from_inputs_outputs_kernel(6, 16, [5, 5]);
+        let relu2 = Relu::default();
+        let pool2 = MaxPool::from_kernel([2, 2])
+            .with_strides(2)?;
+        let dense1 = Dense::from_inputs_outputs(16 * 4 * 4, 120);
+        let relu3 = Relu::default();
+        let dense2 = Dense::from_inputs_outputs(120, 84);
+        let relu4 = Relu::default();
+        let dense3 = Dense::from_inputs_outputs(84, 10)
+            .with_bias(true)?;
+        Ok(Self {
+            conv1,
+            relu1,
+            pool1,
+            conv2,
+            relu2,
+            pool2,
+            dense1,
+            relu3,
+            dense2,
+            relu4,
+            dense3,
+        })
     }
 }
 
@@ -64,7 +123,8 @@ async fn main() -> Result<()> {
         ap.set_description("Neural Network MNIST Example");
         ap.refer(&mut kind)
             .add_option(&["--linear"], StoreConst(NetworkKind::Linear), "A linear network.")
-            .add_option(&["--cnn"], StoreConst(NetworkKind::CNN), "A convolutional network.");
+            .add_option(&["--cnn"], StoreConst(NetworkKind::CNN), "A convolutional network.")
+            .add_option(&["--lenet5"], StoreConst(NetworkKind::Lenet5), "The LeNet5 network.");
          ap.parse_args_or_exit();
     }
 
@@ -75,11 +135,14 @@ async fn main() -> Result<()> {
     match kind {
         NetworkKind::Linear => {
             let dense = Dense::from_inputs_outputs(28 * 28, 10)
-                .with_bias(true);
+                .with_bias(true)?;
             train(device, dense).await
         }
         NetworkKind::CNN => {
-            train(device, CNN::new()).await
+            train(device, CNN::new()?).await
+        }
+        NetworkKind::Lenet5 => {
+            train(device, Lenet5::new()?).await
         }
     }
 }

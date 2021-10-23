@@ -101,10 +101,7 @@ pub struct Col2ImPushConsts2 {
     gcd_w: u32,
 }
 
-
-
 // adapted from https://github.com/CNugteren/CLBlast/blob/master/src/kernels/levelx/col2im.opencl
-#[allow(unused)]
 fn col2im_2d_f32_impl(kernel_flip: bool, global_id: UVec3, x: &[f32], y: &mut [f32], push_consts: &Col2ImPushConsts2) {
     let bs = push_consts.bs as usize;
     let ic = push_consts.ic as usize;
@@ -144,7 +141,7 @@ fn col2im_2d_f32_impl(kernel_flip: bool, global_id: UVec3, x: &[f32], y: &mut [f
 
     fn grid_ceil(x: i32, step: i32) -> i32 {
         if x > 0 {
-            ((x - 1) / step + 1)
+            (x - 1) / step + 1
         } else {
             x / step * step
         }

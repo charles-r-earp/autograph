@@ -13,3 +13,4 @@ pub mod cast;
 pub mod activation;
 pub mod kernel;
 pub mod reorder;
+pub mod pool;

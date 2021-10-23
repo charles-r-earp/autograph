@@ -1177,7 +1177,7 @@ impl Im2Col<Ix2> for Variable4 {
         if self.requires_grad() {
             output = output.with_backward(Im2ColBackward {
                 input: self.clone(),
-                kernel: kernel.clone(),
+                kernel: *kernel,
                 kind,
                 args: args.clone(),
             });

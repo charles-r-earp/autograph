@@ -10,18 +10,21 @@ use crate::{
     result::Result,
     rust_shaders,
     scalar::FloatType,
-    tensor::float::{
-        FloatArcTensor, FloatArcTensorD, FloatTensor, FloatTensorD, FloatTensorViewD,
-        FloatTensorViewMutD,
+    tensor::{
+        float::{
+            FloatArcTensor, FloatArcTensorD, FloatTensor, FloatTensorD, FloatTensorViewD,
+            FloatTensorViewMutD,
+        },
+        Tensor, TensorD,
     },
-    util::type_eq,
+    util::{eclid_gcd, type_eq},
 };
 use anyhow::bail;
 #[doc(hidden)]
 pub use async_trait::async_trait;
 #[doc(hidden)]
 pub use autograph_derive::*;
-use ndarray::{Dim, Dimension, IntoDimension, Ix4, IxDyn};
+use ndarray::{Dim, Dimension, IntoDimension, Ix1, Ix4, IxDyn};
 use rand::distributions::{Distribution, Uniform};
 use serde::{Deserialize, Serialize};
 use std::fmt::{self, Debug};
@@ -212,8 +215,8 @@ impl Conv {
         let mut strides = strides.into_dimension().into_dyn();
         let kernel = &self.weight.shape()[2..];
         if strides.ndim() != kernel.len() {
-            if strides.ndim() == 1 {
-                strides = vec![1; kernel.len()].into_dimension();
+            if let Some(s) = Ix1::from_dimension(&strides).map(Dimension::into_pattern) {
+                strides = vec![s; kernel.len()].into_dimension();
             } else {
                 bail!(
                     "Strides {:?} do not match kernel {:?}!",
@@ -239,8 +242,8 @@ impl Conv {
         let mut padding = padding.into_dimension().into_dyn();
         let kernel = &self.weight.shape()[2..];
         if padding.ndim() != kernel.len() {
-            if padding.ndim() == 1 {
-                padding = vec![1; kernel.len()].into_dimension();
+            if let Some(p) = Ix1::from_dimension(&padding).map(Dimension::into_pattern) {
+                padding = vec![p; kernel.len()].into_dimension();
             } else {
                 bail!(
                     "Padding {:?} do not match kernel {:?}!",
@@ -255,7 +258,7 @@ impl Conv {
     /// Adds a bias to the layer.
     ///
     /// The bias is initialized with a uniform distribution of (-a, a) where a = sqrt(1 / inputs).
-    pub fn with_bias(mut self, bias: bool) -> Self {
+    pub fn with_bias(mut self, bias: bool) -> Result<Self> {
         if bias {
             let inputs = self.weight.shape()[1];
             let outputs = self.weight.shape()[0];
@@ -264,7 +267,8 @@ impl Conv {
                 .sample_iter(&mut rand::thread_rng())
                 .take(outputs)
                 .collect::<Vec<_>>();
-            let buffer = FloatBuffer::from(Buffer::from(data));
+            let device = self.weight.device();
+            let buffer = FloatBuffer::from(smol::block_on(Buffer::from(data).into_device(device))?);
             self.bias.replace(Parameter::from(
                 FloatArcTensor::from(buffer)
                     .into_shape([outputs].as_ref())
@@ -273,7 +277,7 @@ impl Conv {
         } else {
             self.bias = None;
         }
-        self
+        Ok(self)
     }
 }
 
@@ -364,7 +368,7 @@ impl Dense {
     /// Adds a bias to the layer.
     ///
     /// The bias is initialized with a uniform distribution of (-a, a) where a = sqrt(1 / inputs).
-    pub fn with_bias(mut self, bias: bool) -> Self {
+    pub fn with_bias(mut self, bias: bool) -> Result<Self> {
         if bias {
             let inputs = self.weight.shape()[1];
             let outputs = self.weight.shape()[0];
@@ -373,7 +377,8 @@ impl Dense {
                 .sample_iter(&mut rand::thread_rng())
                 .take(outputs)
                 .collect::<Vec<_>>();
-            let buffer = FloatBuffer::from(Buffer::from(data));
+            let device = self.weight.device();
+            let buffer = FloatBuffer::from(smol::block_on(Buffer::from(data).into_device(device))?);
             self.bias.replace(Parameter::from(
                 FloatArcTensor::from(buffer)
                     .into_shape([outputs].as_ref())
@@ -382,7 +387,7 @@ impl Dense {
         } else {
             self.bias = None;
         }
-        self
+        Ok(self)
     }
 }
 
@@ -509,8 +514,27 @@ impl Forward for Relu {
     }
 }
 
+#[doc(hidden)]
+#[derive(Clone, Copy, Eq, PartialEq, Debug)]
+pub enum PoolingKind {
+    Max,
+    Mean,
+}
+
+impl PoolingKind {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Max => "max",
+            Self::Mean => "mean",
+        }
+    }
+}
+
 /// Marker trait for [`PoolBase`].
-pub trait PoolKind: Default + Send + Sync + 'static + PoolKindBase {}
+pub trait PoolKind: Default + Send + Sync + 'static + PoolKindBase {
+    #[doc(hidden)]
+    fn kind() -> PoolingKind;
+}
 
 /// Marker for [`MaxPool`].
 #[derive(Default, Clone, Serialize, Deserialize)]
@@ -518,15 +542,24 @@ pub struct PoolMax {}
 
 impl PoolKindBase for PoolMax {}
 
-impl PoolKind for PoolMax {}
+impl PoolKind for PoolMax {
+    fn kind() -> PoolingKind {
+        PoolingKind::Max
+    }
+}
 
 /// Marker for [`MeanPool`].
 #[derive(Default, Clone, Serialize, Deserialize)]
-pub struct PoolMean {}
+/* backward not working yet */
+struct PoolMean {}
 
 impl PoolKindBase for PoolMean {}
 
-impl PoolKind for PoolMean {}
+impl PoolKind for PoolMean {
+    fn kind() -> PoolingKind {
+        PoolingKind::Mean
+    }
+}
 
 /// Pooling layer.
 #[derive(Clone, Serialize, Deserialize)]
@@ -542,10 +575,12 @@ pub struct PoolBase<K: PoolKind> {
 /// See [`PoolBase`].
 pub type MaxPool = PoolBase<PoolMax>;
 
+/*
 /// MeanPool
 ///
-/// See [`PoolBase`].
-pub type MeanPool = PoolBase<PoolMean>;
+/// See [`PoolBase`]. */
+#[allow(unused)]
+type MeanPool = PoolBase<PoolMean>;
 
 impl<K: PoolKind> PoolBase<K> {
     /// Creates a new pool with `kernel`.
@@ -580,8 +615,8 @@ impl<K: PoolKind> PoolBase<K> {
     {
         let mut strides = strides.into_dimension().into_dyn();
         if strides.ndim() != self.kernel.ndim() {
-            if strides.ndim() == 1 {
-                strides = vec![1; self.kernel.ndim()].into_dimension();
+            if let Some(s) = Ix1::from_dimension(&strides).map(Dimension::into_pattern) {
+                strides = vec![s; self.kernel.ndim()].into_dimension();
             } else {
                 bail!(
                     "Strides {:?} do not match kernel {:?}!",
@@ -606,8 +641,8 @@ impl<K: PoolKind> PoolBase<K> {
     {
         let mut padding = padding.into_dimension().into_dyn();
         if padding.ndim() != self.kernel.ndim() {
-            if padding.ndim() == 1 {
-                padding = vec![1; self.kernel.ndim()].into_dimension();
+            if let Some(p) = Ix1::from_dimension(&padding).map(Dimension::into_pattern) {
+                padding = vec![p; self.kernel.ndim()].into_dimension();
             } else {
                 bail!(
                     "Padding {:?} do not match kernel {:?}!",
@@ -645,10 +680,177 @@ impl<K: PoolKind> Debug for PoolBase<K> {
 // derive doesn't handle generics yet.
 impl<K: PoolKind> Layer for PoolBase<K> {}
 
+fn pool_forward(
+    kind: PoolingKind,
+    indices: bool,
+    input: &FloatArcTensorD,
+    kernel: &IxDyn,
+    strides: &IxDyn,
+    padding: &IxDyn,
+) -> Result<(Option<TensorD<u32>>, FloatTensorD)> {
+    debug_assert!(input.is_standard_layout());
+    debug_assert_eq!(kernel.ndim() + 2, input.ndim());
+
+    let float_type = input.float_type();
+    match kernel.ndim() {
+        2 => {
+            let bs = input.shape()[0];
+            let ic = input.shape()[1];
+            let ih = input.shape()[2];
+            let iw = input.shape()[3];
+            let oh = (ih + 2 * padding[0] - kernel[0]) / strides[0] + 1;
+            let ow = (iw + 2 * padding[1] - kernel[1]) / strides[1] + 1;
+            let mut output =
+                unsafe { FloatTensor::alloc(float_type, input.device(), [bs, ic, oh, ow])? };
+            let mut indices = if indices {
+                Some(unsafe { Tensor::alloc(input.device(), output.raw_dim())? })
+            } else {
+                None
+            };
+            let bs = bs * ic;
+            let builder = rust_shaders::core()?
+                .compute_pass(&format!(
+                    "pool::{}_pool{}_2d_{}",
+                    kind.as_str(),
+                    indices.as_ref().map_or("", |_| "_indices"),
+                    float_type.as_str()
+                ))?
+                .float_slice(input.as_raw_slice())?;
+            let builder = if let Some(indices) = indices.as_mut() {
+                builder.slice_mut(indices.as_raw_slice_mut())?
+            } else {
+                builder
+            };
+            let builder = builder
+                .float_slice_mut(output.as_raw_slice_mut())?
+                .push(bs as u32)?
+                .push([ih as u32, iw as u32])?
+                .push([oh as u32, ow as u32])?
+                .push([kernel[0] as u32, kernel[1] as u32])?
+                .push([strides[0] as u32, strides[1] as u32])?
+                .push([padding[0] as u32, padding[1] as u32])?;
+            unsafe {
+                builder.submit([(bs * oh) as u32, ow as u32, 1])?;
+            }
+            Ok((indices.map(Tensor::into_dyn), output.into_dyn()))
+        }
+        _ => bail!("Unimplemented!"),
+    }
+}
+
+fn pool_backward(
+    kind: PoolingKind,
+    indices: Option<&TensorD<u32>>,
+    input_shape: &[usize],
+    output_grad: FloatTensorD,
+    kernel: &IxDyn,
+    strides: &IxDyn,
+    padding: &IxDyn,
+) -> Result<FloatTensorD> {
+    debug_assert_eq!(kernel.ndim() + 2, input_shape.len());
+    let output_grad = output_grad.into_standard_layout()?;
+    let mut input_grad =
+        unsafe { FloatTensor::alloc(output_grad.float_type(), output_grad.device(), input_shape)? };
+    match kernel.ndim() {
+        2 => {
+            let (bs, ic, ih, iw) = input_grad.view().into_dimensionality::<Ix4>()?.dim();
+            let dilation = [1, 1].into_dimension();
+            let oh = output_grad.shape()[2];
+            let ow = output_grad.shape()[3];
+            dbg!(&strides);
+            let (s_bez_h, d_bez_h, gcd_h) = eclid_gcd(strides[0], dilation[0]);
+            let (s_bez_w, d_bez_w, gcd_w) = eclid_gcd(strides[1], dilation[1]);
+            dbg!(s_bez_h);
+            dbg!(d_bez_h);
+            dbg!(gcd_h);
+            let builder = rust_shaders::core()?.compute_pass(&format!(
+                "pool::{}_pool_2d_backward_{}",
+                kind.as_str(),
+                input_grad.float_type().as_str()
+            ))?;
+            let builder = if let Some(indices) = indices {
+                builder.slice(indices.as_raw_slice())?
+            } else {
+                builder
+            };
+            let builder = builder
+                .float_slice_mut(input_grad.as_raw_slice_mut())?
+                .float_slice(output_grad.as_raw_slice())?
+                .push(bs as u32)?
+                .push(ic as u32)?
+                .push([ih as u32, iw as u32])?
+                .push([oh as u32, ow as u32])?
+                .push([kernel[0] as u32, kernel[1] as u32])?
+                .push([strides[0] as u32, strides[1] as u32])?
+                .push([padding[0] as u32, padding[1] as u32])?
+                .push([dilation[0] as u32, dilation[1] as u32])?
+                .push([s_bez_h as u32, s_bez_w as u32])?
+                .push([d_bez_h as u32, d_bez_w as u32])?
+                .push([gcd_h as u32, gcd_w as u32])?;
+            let h = (ih - 1) / gcd_h + 1;
+            let w = (iw - 1) / gcd_w + 1;
+            unsafe {
+                builder.submit([(bs * ic) as u32, (h * w) as u32, 1])?;
+            }
+        }
+        _ => bail!("Unimplemented!"),
+    }
+    Ok(input_grad)
+}
+
+#[derive(Autograd)]
+#[autograph(crate)]
+struct PoolBackward {
+    #[autograph(gradient)]
+    input_grad: VariableGradientD,
+    indices: Option<TensorD<u32>>,
+    kind: PoolingKind,
+    kernel: IxDyn,
+    strides: IxDyn,
+    padding: IxDyn,
+}
+
+impl Backward for PoolBackward {
+    fn backward(&self, output_grad: FloatTensorD) -> Result<()> {
+        self.input_grad.lock().add_assign(pool_backward(
+            self.kind,
+            self.indices.as_ref(),
+            self.input_grad.shape(),
+            output_grad,
+            &self.kernel,
+            &self.strides,
+            &self.padding,
+        )?)?;
+        Ok(())
+    }
+}
+
 impl<K: PoolKind> Forward for PoolBase<K> {
     #[allow(unused)]
     fn forward(&self, input: VariableD) -> Result<VariableD> {
-        todo!()
+        let (indices, output) = pool_forward(
+            K::kind(),
+            K::kind() == PoolingKind::Max && input.requires_grad(),
+            &input.value().to_standard_layout_shared()?,
+            &self.kernel,
+            &self.strides,
+            &self.padding,
+        )?;
+        let mut output = Variable::from(output).with_training(input.training());
+        if let Some(input_grad) = input.grad() {
+            if !input.is_standard_layout() {
+                bail!("Must be standard layout!");
+            }
+            output = output.with_backward(PoolBackward {
+                input_grad,
+                indices,
+                kind: K::kind(),
+                kernel: self.kernel.clone(),
+                strides: self.strides.clone(),
+                padding: self.padding.clone(),
+            });
+        }
+        Ok(output)
     }
 }
 
@@ -657,9 +859,10 @@ mod tests {
     use super::*;
     use crate::{
         scalar::{Float, Scalar},
-        tensor::TensorView,
+        tensor::{Tensor, TensorView},
     };
     use half::bf16;
+    use ndarray::{Array, ArrayD, ArrayViewD};
     use std::convert::TryFrom;
 
     use ndarray::{azip, Array1, ArrayView1, ArrayViewMut1};
@@ -764,5 +967,250 @@ mod tests {
     #[tokio::test]
     async fn relu_backward_f32() -> Result<()> {
         relu_backward::<f32>().await
+    }
+
+    fn array_pool(
+        kind: PoolingKind,
+        x: ArrayViewD<f32>,
+        kernel: &IxDyn,
+        strides: &IxDyn,
+        padding: &IxDyn,
+    ) -> ArrayD<f32> {
+        let x = x.into_dimensionality::<Ix4>().unwrap();
+        let (bs, ic, ih, iw) = x.dim();
+        let oh = (ih + 2 * padding[0] - kernel[0]) / strides[0] + 1;
+        let ow = (iw + 2 * padding[1] - kernel[1]) / strides[1] + 1;
+        let mut y = Array::<f32, _>::zeros([bs, ic, oh, ow]);
+        for (x, mut y) in x.outer_iter().zip(y.outer_iter_mut()) {
+            for (x, mut y) in x.outer_iter().zip(y.outer_iter_mut()) {
+                for ((yi, yj), y) in y.indexed_iter_mut() {
+                    let mut acc = match kind {
+                        PoolingKind::Max => f32::NEG_INFINITY,
+                        PoolingKind::Mean => 0.,
+                    };
+                    for ki in 0..kernel[0] {
+                        if let Some(xi) = (yi * strides[0] + ki).checked_sub(padding[0]) {
+                            for kj in 0..kernel[1] {
+                                if let Some(xj) = (yj * strides[1] + kj).checked_sub(padding[1]) {
+                                    if let Some(&val) = x.get((xi, xj)) {
+                                        match kind {
+                                            PoolingKind::Max => {
+                                                acc = f32::max(val, acc);
+                                            }
+                                            PoolingKind::Mean => {
+                                                acc += val / kernel.size() as f32;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    *y = acc;
+                }
+            }
+        }
+        y.into_dyn()
+    }
+
+    async fn pool<T: Float, K: PoolKind>(shape: &[usize], pool: &PoolBase<K>) -> Result<()> {
+        let dim = shape.into_dimension();
+        let x_vec = (1..=dim.size())
+            .into_iter()
+            .map(|x| x as f32)
+            .collect::<Vec<_>>();
+        let x_array = Array::from(x_vec).into_shape(shape)?;
+        let y_array = array_pool(
+            K::kind(),
+            x_array.view(),
+            &pool.kernel,
+            &pool.strides,
+            &pool.padding,
+        )
+        .map(|y| T::from_f32(*y).unwrap());
+        let device = Device::new()?;
+        let _s = device.acquire().await;
+        let x = Tensor::from(x_array.map(|x| T::from_f32(*x).unwrap()))
+            .into_device(device)
+            .await?
+            .into_float()
+            .into_shared()?;
+        let y = pool_forward(
+            K::kind(),
+            false,
+            &x,
+            &pool.kernel,
+            &pool.strides,
+            &pool.padding,
+        )?
+        .1
+        .cast_into::<T>()?
+        .read()
+        .await?;
+        assert_eq!(y.as_array(), y_array.view());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn mean_pool_2d_f32() -> Result<()> {
+        pool::<f32, _>(
+            &[1, 1, 4, 4],
+            &MeanPool::from_kernel([2, 2]).with_strides(2)?,
+        )
+        .await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn max_pool_2d_f32() -> Result<()> {
+        pool::<f32, _>(
+            &[1, 1, 4, 4],
+            &MaxPool::from_kernel([2, 2]).with_strides(2)?,
+        )
+        .await?;
+        Ok(())
+    }
+
+    fn array_pool_backward(
+        kind: PoolingKind,
+        x: ArrayViewD<f32>,
+        dy: ArrayViewD<f32>,
+        kernel: &IxDyn,
+        strides: &IxDyn,
+        padding: &IxDyn,
+    ) -> ArrayD<f32> {
+        let x = x.view().into_dimensionality::<Ix4>().unwrap();
+        let dy = dy.into_dimensionality::<Ix4>().unwrap();
+        let mut dx = Array::<f32, _>::zeros(x.raw_dim());
+        for ((x, mut dx), dy) in x.outer_iter().zip(dx.outer_iter_mut()).zip(dy.outer_iter()) {
+            for ((x, mut dx), dy) in x.outer_iter().zip(dx.outer_iter_mut()).zip(dy.outer_iter()) {
+                for ((yi, yj), dy) in dy.indexed_iter() {
+                    let mut idx = (0, 0);
+                    let mut acc = f32::NEG_INFINITY;
+                    for ki in 0..kernel[0] {
+                        if let Some(xi) = (yi * strides[0] + ki).checked_sub(padding[0]) {
+                            for kj in 0..kernel[1] {
+                                if let Some(xj) = (yj * strides[1] + kj).checked_sub(padding[1]) {
+                                    if let Some(&val) = x.get((xi, xj)) {
+                                        match kind {
+                                            PoolingKind::Max => {
+                                                if val > acc {
+                                                    idx = (xi, xj);
+                                                    acc = val;
+                                                }
+                                            }
+                                            PoolingKind::Mean => {
+                                                dx[(xi, xj)] += *dy;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if kind == PoolingKind::Max {
+                        dx[idx] = *dy;
+                    }
+                }
+            }
+        }
+        dx.into_dyn()
+    }
+
+    async fn pool_backward<T: Float, K: PoolKind>(
+        shape: &[usize],
+        pool: &PoolBase<K>,
+    ) -> Result<()> {
+        let dim = shape.into_dimension();
+        let x_vec = (1..=dim.size())
+            .into_iter()
+            .map(|x| x as f32)
+            .collect::<Vec<_>>();
+        let x_array = Array::from(x_vec).into_shape(shape)?;
+        let y_array = array_pool(
+            K::kind(),
+            x_array.view(),
+            &pool.kernel,
+            &pool.strides,
+            &pool.padding,
+        );
+        let dy_vec = (1..=y_array.len())
+            .into_iter()
+            .map(|x| x as f32)
+            .collect::<Vec<_>>();
+        let dy_array = Array::from(dy_vec).into_shape(y_array.shape())?;
+        let dx_array = array_pool_backward(
+            K::kind(),
+            x_array.view(),
+            dy_array.view(),
+            &pool.kernel,
+            &pool.strides,
+            &pool.padding,
+        )
+        .map(|y| T::from_f32(*y).unwrap());
+        let device = Device::new()?;
+        let _s = device.acquire().await;
+        let x = Tensor::from(x_array.map(|x| T::from_f32(*x).unwrap()))
+            .into_device(device.clone())
+            .await?
+            .into_float()
+            .into_shared()?;
+        let ix = if type_eq::<K, PoolMax>() {
+            pool_forward(
+                K::kind(),
+                true,
+                &x,
+                &pool.kernel,
+                &pool.strides,
+                &pool.padding,
+            )?
+            .0
+        } else {
+            None
+        };
+        let dy = Tensor::from(dy_array.map(|y| T::from_f32(*y).unwrap()))
+            .into_device(device)
+            .await?
+            .into_float();
+        let dx = super::pool_backward(
+            K::kind(),
+            ix.as_ref(),
+            x.shape(),
+            dy,
+            &pool.kernel,
+            &pool.strides,
+            &pool.padding,
+        )?
+        .cast_into::<T>()?
+        .read()
+        .await?;
+        assert_eq!(dx.as_array(), dx_array.view());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn max_pool_2d_backward_f32() -> Result<()> {
+        pool_backward::<f32, _>(
+            &[1, 1, 4, 4],
+            &MaxPool::from_kernel([2, 2]).with_strides(2)?,
+        )
+        .await?;
+        pool_backward::<f32, _>(
+            &[2, 4, 9, 9],
+            &MaxPool::from_kernel([3, 3]).with_strides(3)?,
+        )
+        .await?;
+        Ok(())
+    }
+
+    #[ignore]
+    #[tokio::test]
+    async fn mean_pool_2d_backward_f32() -> Result<()> {
+        pool_backward::<f32, _>(
+            &[1, 1, 4, 4],
+            &MeanPool::from_kernel([2, 2]).with_strides(2)?,
+        )
+        .await?;
+        Ok(())
     }
 }
