@@ -2,7 +2,7 @@
 authors = ["Charles R Earp <charles.r.earp@gmail.com>"]
 categories = ["science"]
 description = "A machine learning library for Rust."
-edition = "2018"
+edition = "2021"
 homepage = "https://github.com/charles-r-earp/autograph"
 keywords = ["neural-networks", "machine-learning", "deep-learning", "autograd", "gpu"]
 license = "MIT/Apache-2.0"
