@@ -757,12 +757,8 @@ fn pool_backward(
             let dilation = [1, 1].into_dimension();
             let oh = output_grad.shape()[2];
             let ow = output_grad.shape()[3];
-            dbg!(&strides);
             let (s_bez_h, d_bez_h, gcd_h) = eclid_gcd(strides[0], dilation[0]);
             let (s_bez_w, d_bez_w, gcd_w) = eclid_gcd(strides[1], dilation[1]);
-            dbg!(s_bez_h);
-            dbg!(d_bez_h);
-            dbg!(gcd_h);
             let builder = rust_shaders::core()?.compute_pass(&format!(
                 "pool::{}_pool_2d_backward_{}",
                 kind.as_str(),

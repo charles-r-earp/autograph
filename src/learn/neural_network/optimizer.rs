@@ -22,7 +22,7 @@ pub trait Optimizer {
 /// Sgd optimizer.
 ///
 /// Defaults:
-/// - learning_rate: 0.001
+/// - learning_rate: 0.1
 /// - momentum: 0.
 #[derive(Debug)]
 pub struct Sgd {
@@ -33,7 +33,7 @@ pub struct Sgd {
 
 impl Default for Sgd {
     fn default() -> Self {
-        Self::new(0.001).unwrap()
+        Self::new(0.1).unwrap()
     }
 }
 
@@ -62,21 +62,10 @@ impl Optimizer for Sgd {
     fn update(&mut self, parameters: &mut [&mut ParameterD]) -> Result<()> {
         for parameter in parameters {
             if let Some(grad) = parameter.take_grad() {
-                /*if parameter.ndim() == 4 {
-                    let _grad = smol::block_on(grad.cast_to::<f32>()?.read())?;
-                    panic!("{:?}", _grad.as_array());
-                }*/
                 parameter
                     .value_mut()
                     .make_mut()?
                     .scaled_add(-self.learning_rate, &grad)?;
-                /*if parameter.ndim() == 4 {
-                    let w = smol::block_on(parameter.value()
-                        .clone()
-                        .cast_into::<f32>()?
-                        .read())?;
-                    println!("{:?}", w.as_array());
-                }*/
             }
         }
         Ok(())

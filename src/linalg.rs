@@ -13,6 +13,6 @@ pub(crate) trait DotBias<R, B>: Dot<R> {
     fn dot_bias(&self, rhs: &R, bias: Option<&B>) -> Result<Self::Output>;
 }
 
-pub(crate) trait DotAcc<R, Y>: Dot<R> {
-    fn dot_acc(&self, rhs: &R, output: &mut Y) -> Result<()>;
+pub(crate) trait DotAcc<T, R, Y>: Dot<R> {
+    fn dot_acc(&self, alpha: T, rhs: &R, output: &mut Y) -> Result<()>;
 }

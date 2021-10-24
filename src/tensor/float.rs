@@ -7,7 +7,7 @@ use crate::{
     linalg::{Dot, DotAcc, DotBias},
     ops::{AddAssign, Im2Col, KernelArgs, KernelKind, ScaledAdd},
     result::Result,
-    scalar::{Float, FloatType, Scalar, Uint},
+    scalar::{AsFloat, Float, FloatType, Scalar, Uint},
     tensor::{
         dim_strides_from_shape, into_dimensionality, into_shape, is_standard_layout, permuted_axes,
         ArcRepr, ArcTensor, CowRepr, CowTensor, Data, DataBase, OwnedRepr, Tensor, TensorBase,
@@ -392,6 +392,7 @@ impl<S: FloatData, D: Dimension> FloatTensorBase<S, D> {
     pub fn raw_dim(&self) -> D {
         self.dim.clone()
     }
+    #[allow(dead_code)]
     pub(crate) unsafe fn with_raw_dim(self, dim: D) -> Self {
         Self { dim, ..self }
     }
@@ -403,9 +404,11 @@ impl<S: FloatData, D: Dimension> FloatTensorBase<S, D> {
     pub fn strides(&self) -> &[isize] {
         bytemuck::cast_slice(self.strides.slice())
     }
+    #[allow(dead_code)]
     pub(crate) fn raw_strides(&self) -> D {
         self.strides.clone()
     }
+    #[allow(dead_code)]
     pub(crate) unsafe fn with_raw_strides(self, strides: D) -> Self {
         Self { strides, ..self }
     }
@@ -623,6 +626,7 @@ impl<S: FloatData, D: Dimension> FloatTensorBase<S, D> {
             }
         }
     }
+    #[allow(dead_code)]
     pub(crate) fn into_raw_buffer(self) -> Result<FloatBuffer> {
         Ok(self.data.into_owned()?.0)
     }
@@ -857,6 +861,7 @@ impl<S: FloatData, D: Dimension> FloatTensorBase<S, D> {
     }
 }
 
+#[allow(dead_code)]
 impl<T: Uint, S: Data<Elem = T>> TensorBase<S, Ix1> {
     pub(crate) fn to_one_hot_float(
         &self,
@@ -1045,15 +1050,16 @@ impl<S1: FloatData, S2: FloatData, S3: FloatData>
     }
 }
 
-impl<S1: FloatData, S2: FloatData, S3: FloatDataMut>
-    DotAcc<FloatTensorBase<S2, Ix2>, FloatTensorBase<S3, Ix2>> for FloatTensorBase<S1, Ix2>
+impl<T: Float, S1: FloatData, S2: FloatData, S3: FloatDataMut>
+    DotAcc<T, FloatTensorBase<S2, Ix2>, FloatTensorBase<S3, Ix2>> for FloatTensorBase<S1, Ix2>
 {
     fn dot_acc(
         &self,
+        alpha: T,
         rhs: &FloatTensorBase<S2, Ix2>,
         output: &mut FloatTensorBase<S3, Ix2>,
     ) -> Result<()> {
-        map_float_tensor!(mut output, output => self.cast_to()?.dot_acc(&rhs.cast_to()?, &mut output))
+        map_float_tensor!(mut output, output => self.cast_to()?.dot_acc(alpha.to_f32().unwrap().as_(), &rhs.cast_to()?, &mut output))
     }
 }
 

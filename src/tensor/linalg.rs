@@ -1,7 +1,8 @@
 use super::*;
 use crate::linalg::{Dot, DotAcc, DotBias};
-use bytemuck::{Pod, Zeroable};
+//use bytemuck::{Pod, Zeroable};
 
+/*
 #[derive(Copy)]
 #[repr(C, packed)]
 struct GemmPushConsts<T> {
@@ -28,13 +29,15 @@ impl<T: Copy> Clone for GemmPushConsts<T> {
 unsafe impl<T: Zeroable> Zeroable for GemmPushConsts<T> {}
 
 unsafe impl<T: Pod> Pod for GemmPushConsts<T> {}
+*/
 
 #[allow(clippy::too_many_arguments, clippy::many_single_char_names)]
 fn gemm_impl<T: Scalar>(
+    alpha: T,
     a: &TensorView2<T>,
     b: &TensorView2<T>,
     bias: Option<&TensorView1<T>>,
-    acc: bool,
+    beta: T,
     c: &mut TensorViewMut2<T>,
 ) -> Result<()> {
     use ScalarType::*;
@@ -44,7 +47,7 @@ fn gemm_impl<T: Scalar>(
 
     // Patch for custom 16 bit ops
     // If 16 bit is supported then this is unnecessary
-    if size_eq::<T, u16>() && !acc {
+    if size_eq::<T, u16>() && beta == T::zero() {
         c.as_raw_slice_mut().fill(T::default())?;
     }
 
@@ -83,28 +86,7 @@ fn gemm_impl<T: Scalar>(
     let [rsc, csc]: [isize; 2] = c.strides().try_into().unwrap();
     let [rsc, csc] = [rsc as i32, csc as i32];
 
-    let one = match T::scalar_type() {
-        F32 | BF16 => u32::from_le_bytes(1f32.to_le_bytes()),
-        _ => 1u32,
-    };
-    let alpha = one;
-    let beta = if acc { one } else { 0u32 };
     let a0 = 0u32;
-
-    let push_consts = GemmPushConsts {
-        alpha,
-        beta,
-        a0,
-        m,
-        k,
-        n,
-        rsa,
-        csa,
-        rsb,
-        csb,
-        rsc,
-        csc,
-    };
 
     let builder = module
         .compute_pass("main")?
@@ -115,8 +97,18 @@ fn gemm_impl<T: Scalar>(
     } else {
         builder
     };
-    let builder = builder.slice_mut(c.as_raw_slice_mut())?.push(push_consts)?;
+    let builder = builder.slice_mut(c.as_raw_slice_mut())?;
 
+    let builder = match T::scalar_type() {
+        BF16 => builder.push([alpha.to_f32().unwrap(), beta.to_f32().unwrap()])?,
+        _ => builder.push([alpha, beta])?,
+    };
+    let builder = builder
+        .push(a0)?
+        .push([m, k, n])?
+        .push([rsa, csa])?
+        .push([rsb, csb])?
+        .push([rsc, csc])?;
     unsafe { builder.submit([m, n, 1]) }
 }
 
@@ -127,10 +119,11 @@ impl<T: Scalar, S1: Data<Elem = T>, S2: Data<Elem = T>> Dot<TensorBase<S2, Ix2>>
     fn dot(&self, rhs: &TensorBase<S2, Ix2>) -> Result<Self::Output> {
         let mut output = unsafe { Tensor::alloc(self.device(), [self.dim().0, rhs.dim().1])? };
         gemm_impl(
+            T::one(),
             &self.view(),
             &rhs.view(),
             None,
-            false,
+            T::zero(),
             &mut output.view_mut(),
         )?;
         Ok(output)
@@ -147,10 +140,11 @@ impl<T: Scalar, S1: Data<Elem = T>, S2: Data<Elem = T>, S3: Data<Elem = T>>
     ) -> Result<Self::Output> {
         let mut output = unsafe { Tensor::alloc(self.device(), [self.dim().0, rhs.dim().1])? };
         gemm_impl(
+            T::one(),
             &self.view(),
             &rhs.view(),
             bias.map(TensorBase::view).as_ref(),
-            false,
+            T::zero(),
             &mut output.view_mut(),
         )?;
         Ok(output)
@@ -158,14 +152,20 @@ impl<T: Scalar, S1: Data<Elem = T>, S2: Data<Elem = T>, S3: Data<Elem = T>>
 }
 
 impl<T: Scalar, S1: Data<Elem = T>, S2: Data<Elem = T>, S3: DataMut<Elem = T>>
-    DotAcc<TensorBase<S2, Ix2>, TensorBase<S3, Ix2>> for TensorBase<S1, Ix2>
+    DotAcc<T, TensorBase<S2, Ix2>, TensorBase<S3, Ix2>> for TensorBase<S1, Ix2>
 {
-    fn dot_acc(&self, rhs: &TensorBase<S2, Ix2>, output: &mut TensorBase<S3, Ix2>) -> Result<()> {
+    fn dot_acc(
+        &self,
+        alpha: T,
+        rhs: &TensorBase<S2, Ix2>,
+        output: &mut TensorBase<S3, Ix2>,
+    ) -> Result<()> {
         gemm_impl(
+            alpha,
             &self.view(),
             &rhs.view(),
             None,
-            false,
+            T::one(),
             &mut output.view_mut(),
         )
     }

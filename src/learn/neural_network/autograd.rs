@@ -1026,11 +1026,13 @@ impl Backward for DotBackward {
         let w = &self.weight;
         if let Some(dx) = x.grad() {
             let mut dx = dx.lock();
-            dy.dot_acc(&w.value().t(), &mut dx.zeroed_mut()?)?;
+            dy.dot_acc(1f32, &w.value().t(), &mut dx.zeroed_mut()?)?;
         }
         if let Some(dw) = w.grad() {
             let mut dw = dw.lock();
-            x.value().t().dot_acc(&dy.view(), &mut dw.zeroed_mut()?)?;
+            x.value()
+                .t()
+                .dot_acc(1. / dy.dim().0 as f32, &dy.view(), &mut dw.zeroed_mut()?)?;
         }
         if let Some(db) = self.bias.as_ref().map(Vertex::grad).flatten() {
             let mut db = db.lock();
@@ -1310,36 +1312,33 @@ mod tests {
     use ndarray::{Array, Array2, ArrayView2, ArrayViewMut1, Axis};
     use num_traits::FromPrimitive;
 
-    fn array_bias_backward<T: Copy + Into<f32> + FromPrimitive>(
-        db: &mut ArrayViewMut1<T>,
-        dy: &ArrayView2<T>,
-    ) {
+    fn array_bias_backward(db: &mut ArrayViewMut1<f32>, dy: &ArrayView2<f32>) {
+        let scale = 1. / dy.dim().0 as f32;
         for (db, dy) in db.iter_mut().zip(dy.axis_iter(Axis(1))) {
-            let acc: f32 = dy.iter().copied().map(Into::into).sum();
-            *db = T::from_f32((*db).into() + acc).unwrap();
+            *db += dy.iter().map(|dy| scale * *dy).sum::<f32>();
         }
     }
 
-    async fn test_bias_backward<T: Float + From<u8> + Into<f32> + FromPrimitive>() -> Result<()> {
+    async fn test_bias_backward<T: Float>() -> Result<()> {
         let batch_size = 3;
         let units = 7;
         let data = (0..batch_size * units)
             .into_iter()
-            .map(|x| (x as u8).into())
+            .map(|x| x as f32)
             .collect();
         let dy_array = Array::from_shape_vec([batch_size, units], data)?;
-        let mut db_true = Array::from_elem(units, T::one());
+        let mut db_true = Array::from_elem(units, 1f32);
         array_bias_backward(&mut db_true.view_mut(), &dy_array.view());
         let device = Device::new()?;
         let _s = device.acquire().await;
-        let dy = CowTensor::from(dy_array.view())
+        let dy = CowTensor::from(dy_array.map(|x| T::from_f32(*x).unwrap()))
             .into_device(device.clone())
             .await?
             .into_float();
         let mut db = FloatTensor::ones(T::float_type(), device, units)?;
         bias_backward(&mut db.view_mut(), &dy.view())?;
-        let db_array = db.cast_into::<T>()?.read().await?;
-        assert_eq!(db_array.as_array(), db_true.view());
+        let db_array = db.cast_into::<f32>()?.read().await?;
+        assert_relative_eq!(db_array.as_array(), db_true.view(), max_relative = 0.000_1);
         Ok(())
     }
 

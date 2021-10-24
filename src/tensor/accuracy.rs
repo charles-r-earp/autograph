@@ -1,5 +1,6 @@
 use super::*;
 
+#[allow(dead_code)]
 impl<S: Data<Elem = u32>, D: Dimension> TensorBase<S, D> {
     pub(crate) fn accuracy<U: Uint>(&self, target: &TensorView<U, D>) -> Result<Tensor0<u32>> {
         let device = self.device();

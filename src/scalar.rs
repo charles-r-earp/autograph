@@ -231,6 +231,34 @@ impl FloatType {
     }
 }
 
+pub(crate) trait AsFloat<T: Float> {
+    fn as_(self) -> T;
+}
+
+impl AsFloat<bf16> for bf16 {
+    fn as_(self) -> Self {
+        self
+    }
+}
+
+impl AsFloat<f32> for bf16 {
+    fn as_(self) -> f32 {
+        self.to_f32()
+    }
+}
+
+impl AsFloat<bf16> for f32 {
+    fn as_(self) -> bf16 {
+        bf16::from_f32(self)
+    }
+}
+
+impl AsFloat<f32> for f32 {
+    fn as_(self) -> Self {
+        self
+    }
+}
+
 /// Base trait for float scalar types.
 pub trait Float: Scalar {
     /// The float type.

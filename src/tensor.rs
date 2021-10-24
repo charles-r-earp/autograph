@@ -930,6 +930,7 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     }
 }
 
+#[allow(dead_code)]
 impl<T: Uint, S: Data<Elem = T>> TensorBase<S, Ix1> {
     pub(crate) fn to_one_hot<T2: Scalar>(&self, nclasses: usize) -> Result<Tensor2<T2>> {
         let n = self.dim();
