@@ -11,45 +11,7 @@ use half::bf16;
 use num_traits::FromPrimitive;
 use serde::{Deserialize, Serialize};
 use std::mem::transmute;
-/*
-/// Float types.
-#[allow(missing_docs)]
-#[non_exhaustive]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum FloatType {
-    BF16,
-    F32,
-}
 
-impl FloatType {
-    /// Returns the type name (ie "f32").
-    pub fn as_str(&self) -> &'static str {
-        use FloatType::*;
-        match self {
-            BF16 => "bf16",
-            F32 => "f32",
-        }
-    }
-}
-
-/// Base trait for float scalar types.
-pub trait Float: Scalar {
-    /// The float type.
-    fn float_type() -> FloatType;
-}
-
-impl Float for bf16 {
-    fn float_type() -> FloatType {
-        FloatType::BF16
-    }
-}
-
-impl Float for f32 {
-    fn float_type() -> FloatType {
-        FloatType::F32
-    }
-}
-*/
 macro_rules! map_float_buffer {
     ($buffer:ident: $t:ident, $x:ident => $e:expr) => (
         match $buffer {
@@ -328,8 +290,6 @@ impl_float_buffer_try_mut! {
 }
 
 /// Float methods.
-///
-/// See [`float`](crate::float).
 impl<'m, 'b> ComputePassBuilder<'m, 'b> {
     /// Adds a float slice as an argument to the shader at the next binding.
     ///

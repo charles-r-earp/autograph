@@ -764,7 +764,7 @@ impl<T, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     }
     /// Converts to an [`ArcTensor`].
     ///
-    /// For [`ArcTensor`] clones the [`Arc`], otherwise copies the data into a new [`ArcTensor`].
+    /// For [`ArcTensor`] clones the [`Arc`](std::sync::Arc), otherwise copies the data into a new [`ArcTensor`].
     pub fn to_shared(&self) -> Result<ArcTensor<T, D>>
     where
         T: Copy,
@@ -787,7 +787,7 @@ impl<T, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     ///
     /// **Errors**
     ///
-    /// See [`BufferBase::fill()`].
+    /// See [`BufferBase::fill()`](crate::buffer::BufferBase::fill()).
     pub fn fill(&mut self, elem: T) -> Result<()>
     where
         T: Scalar,
@@ -890,7 +890,7 @@ impl<T, D: Dimension> From<Tensor<T, D>> for ArcTensor<T, D> {
 impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     /// Casts the tensor into a new tensor.
     ///
-    /// See [`BufferBase::cast_into()`].
+    /// See [`BufferBase::cast_into()`](crate::buffer::BufferBase::cast_into()).
     pub fn cast_into<T2: Scalar>(self) -> Result<Tensor<T2, D>> {
         let buffer = match self.data.try_into_buffer() {
             Ok(buffer) => buffer.cast_into()?,
@@ -904,7 +904,7 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     }
     /// Casts the tensor to a new tensor.
     ///
-    /// See [`BufferBase::cast_to()`].
+    /// See [`BufferBase::cast_to()`](crate::buffer::BufferBase::cast_to()).
     pub fn cast_to<T2: Scalar>(&self) -> Result<CowTensor<T2, D>> {
         let slice = self.data.as_slice();
         let buffer: CowBuffer<T2> = slice.cast_to::<T2>()?;
@@ -916,7 +916,7 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     }
     /// Scales the tensor into a new tensor.
     ///
-    /// See [`BufferBase::scale_into()`].
+    /// See [`BufferBase::scale_into()`](crate::buffer::BufferBase::scale_into()).
     pub fn scale_into<T2: Scalar>(self, alpha: T2) -> Result<Tensor<T2, D>> {
         let buffer = match self.data.try_into_buffer() {
             Ok(buffer) => buffer.scale_into(alpha)?,

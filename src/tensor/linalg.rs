@@ -55,14 +55,6 @@ fn gemm_impl<T: Scalar>(
     let (k2, n) = b.dim();
     let (m2, n2) = c.dim();
 
-    let name = format!(
-        "gemm{}_{}",
-        if bias.is_some() { "_bias" } else { "" },
-        elem_type_name::<T>(),
-    );
-
-    let module = crate::glsl_shaders::module(name)?;
-
     if m != m2 {
         bail!("a_rows != c_rows, {} != {}", m, m2);
     }
@@ -88,10 +80,19 @@ fn gemm_impl<T: Scalar>(
 
     let a0 = 0u32;
 
-    let builder = module
-        .compute_pass("main")?
-        .slice(a.as_raw_slice())?
-        .slice(b.as_raw_slice())?;
+    let name = format!(
+        "gemm{}_{}",
+        if bias.is_some() { "_bias" } else { "" },
+        elem_type_name::<T>(),
+    );
+
+    let builder = match T::scalar_type() {
+        // TODO
+        // F32 => crate::rust_shaders::core()?.compute_pass(&format!("linalg::{}", name))?,
+        _ => crate::glsl_shaders::module(name)?.compute_pass("main")?,
+    };
+
+    let builder = builder.slice(a.as_raw_slice())?.slice(b.as_raw_slice())?;
     let builder = if let Some(bias) = bias.as_ref() {
         builder.slice(bias.as_raw_slice())?
     } else {
@@ -290,6 +291,8 @@ mod tests {
 
     test_dot!(
         f32;
+        tensor_dot_f32_m16_k16_n1_N_N => (12, 12, 1, N, N),
+        tensor_dot_f32_m1_k16_n1_N_N => (1, 12, 1, N, N),
         tensor_dot_f32_m21_k31_n41_N_N => (21, 31, 41, N, N),
         tensor_dot_f32_m121_k131_n141_N_N => (121, 131, 141, N, N),
         tensor_dot_f32_m121_k131_n141_T_N => (121, 131, 141, T, N),

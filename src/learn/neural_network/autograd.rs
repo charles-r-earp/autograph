@@ -658,7 +658,7 @@ impl<D: Dimension, N: Node> VertexBase<D, N> {
     }
     /// Whether the vertex is standard layout.
     ///
-    /// See [`TensorBase::is_standard_layout()`].
+    /// See [`TensorBase::is_standard_layout()`](crate::tensor::TensorBase::is_standard_layout()).
     pub fn is_standard_layout(&self) -> bool {
         self.value.is_standard_layout()
     }
@@ -866,16 +866,20 @@ impl<D: Dimension, N: Node> Debug for VertexBase<D, N> {
 impl<D: Dimension> Variable<D> {
     /// Whether to train the parameters.
     ///
-    /// If true, autograd ops applied via [`VariableBuilder`] will have a gradient if they have at least one parameter, and those parameters will have a gradient provided to the backward op.
+    /// Controls whether to compute the gradients of parameters of functions involving this and dependent variables. If any input is training and any parameter requires grad (which is set for trainers), then the implementation should provide a backward op via [`.backward()`](Variable::backward()) which computes the gradients of any parameters (and input variables) which have a gradient.
+    ///
+    /// Implementations should inherit [`.training()`](Variable::training()) such that if any input is training, all output variables are training.
     ///
     /// This can be toggled on and off, for example to train a generator but not a discriminator (and vice versa) in a Generative Adversarial Network.
+    ///
+    /// Note that disabling training does not prevent gradients from being computed for variables, only for parameters.
     pub fn with_training(mut self, training: bool) -> Self {
         self.node.training = training;
         self
     }
     /// Adds a `backward` op.
     ///
-    /// [`Backward::backward()`] will be called on 'backward` during the backward pass to compute the input gradients. This variable will also require grad.
+    /// If the input variables to a function [`.requires_grad()`](Variable::require_grad()), use this method to provide a [`Backward`] op. [`Backward::backward()`] will be called on 'backward` during the backward pass to compute the input gradients. This variable will also require grad.
     pub fn with_backward(mut self, backward: impl Backward) -> Self {
         if self.grad.is_none() {
             self.grad.replace(Arc::default());
@@ -890,6 +894,14 @@ impl<D: Dimension> Variable<D> {
     /// Runs the backward pass.
     ///
     /// Recursively calls all backward ops, which compute the gradients of variables and parameters.
+    ///
+    /// **Errors**
+    ///
+    /// The variable must require grad.
+    ///
+    /// # Important
+    /// The backward algorithm relies on the exclusivity of gradients in order to visit each node of the graph exactly once, even in a potentially multithreaded context. If a variable or gradient still exists outside of a [`Backward`] op (which is dropped after [`.backward()`](Backward::backward())), all upstream gradients will not be computed.
+    /// If the value of an intermediate variable needs to be retained past [`.backward()`](Variable::backward), use [`.into_value()`](Variable::into_value()) to extract the value while dropping the gradient.
     pub fn backward(self) -> Result<()> {
         let grad = self
             .grad()

@@ -25,7 +25,7 @@ pub fn scale_u8_f32(
     let alpha = push_consts.alpha;
     let yid = gid * 4;
     if yid < n {
-        let ys = (alpha * u8x4_to_uvec4(x[gid]).as_f32()).to_array();
+        let ys = (alpha * u8x4_to_uvec4(x[gid]).as_vec4()).to_array();
         y[yid + 0] = ys[0];
         if yid + 1 < n {
             y[yid + 1] = ys[1];
@@ -55,7 +55,7 @@ pub fn scale_u8_bf16(
     if gid * 4 < n {
         // Hack that fixes issue on DX12.
         y[gid * 2] = y[gid * 2];
-        let (y0, y1) = vec4_to_bf16x4(alpha * u8x4_to_uvec4(x[gid]).as_f32());
+        let (y0, y1) = vec4_to_bf16x4(alpha * u8x4_to_uvec4(x[gid]).as_vec4());
         if gid * 4 + 1 < n {
             y[gid * 2] = y0;
         }else {

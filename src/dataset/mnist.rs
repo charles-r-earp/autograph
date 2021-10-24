@@ -209,13 +209,13 @@ impl Mnist {
     }
     /// The images.
     ///
-    /// Shape = [70_000, 1, 28, 28].
+    /// Shape = \[70_000, 1, 28, 28\].
     pub fn images(&self) -> &ArcArray<u8, Ix4> {
         &self.images
     }
     /// The classes.
     ///
-    /// Shape = [70_000].
+    /// Shape = \[70_000\].
     ///
     /// The classes range from 0 to 9 inclusive.
     pub fn classes(&self) -> &ArcArray1<u8> {

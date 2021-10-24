@@ -21,18 +21,5 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
         e => unreachable!("{:?}", &e),
     }
-    /*
-    use rspirv::{
-        dr::Loader,
-        binary::{Parser, Disassemble},
-    };
-    let mut loader = Loader::new();
-    let spirv = std::fs::read("target/spirv-builder/spirv-unknown-vulkan1.0/release/deps/shaders.spv.dir/module")?;
-    Parser::new(&spirv, &mut loader)
-        .parse()
-        .unwrap();
-    let module = loader.module();
-    panic!("{}", module.disassemble());
-    */
     Ok(())
 }

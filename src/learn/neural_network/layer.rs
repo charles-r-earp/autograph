@@ -126,7 +126,7 @@ pub trait Forward {
     /// Computes the forward pass.
     ///
     /// # Autograd
-    /// Operations on [`Variable`](super::autograd::Variable) are expected to apply backward ops via [`VariableBuilder`](super::autograd::VariableBuilder).
+    /// Operations on [`Variable`](super::autograd::Variable) are expected to apply backward ops via [`Variable::with_backward()`].
     ///
     /// **Errors**
     ///

@@ -5,6 +5,4 @@ authors = ["charles-r-earp <charles.r.earp@gmail.com>"]
 edition = "2018"
 
 [build-dependencies]
-spirv-builder = { git = "https://github.com/EmbarkStudios/rust-gpu/", tag = "v0.4.0-alpha.10" }
-#spirv-builder = { git = "https://github.com/charles-r-earp/rust-gpu", branch = "non-writable" }
-#rspirv = "0.7.0"
+spirv-builder = { git = "https://github.com/EmbarkStudios/rust-gpu/" }

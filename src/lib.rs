@@ -46,8 +46,8 @@ pub mod scalar;
 
 // Linear Algebra.
 mod linalg;
-/// Numerical operations.
-pub mod ops;
+// Numerical operations.
+mod ops;
 
 /// Buffers.
 pub mod buffer;

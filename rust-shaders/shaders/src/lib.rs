@@ -1,9 +1,10 @@
 #![cfg_attr(
     target_arch = "spirv",
     no_std,
-    feature(register_attr),
+    feature(register_attr, generic_const_exprs),
     register_attr(spirv)
 )]
+#![allow(incomplete_features)]
 #![deny(warnings)]
 
 mod util;
@@ -14,3 +15,4 @@ pub mod activation;
 pub mod kernel;
 pub mod reorder;
 pub mod pool;
+pub mod linalg;
