@@ -1350,7 +1350,11 @@ mod tests {
         let mut db = FloatTensor::ones(T::float_type(), device, units)?;
         bias_backward(&mut db.view_mut(), &dy.view())?;
         let db_array = db.cast_into::<f32>()?.read().await?;
-        assert_relative_eq!(db_array.as_array(), db_true.view(), max_relative = 0.000_1);
+        let (epsilon, max_relative) = match T::float_type() {
+            FloatType::BF16 => (0.01, 0.01),
+            FloatType::F32 => (f32::EPSILON, 0.000_1),
+        };
+        assert_relative_eq!(db_array.as_array(), db_true.view(), epsilon = epsilon, max_relative = max_relative);
         Ok(())
     }
 
