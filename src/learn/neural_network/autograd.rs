@@ -1354,7 +1354,12 @@ mod tests {
             FloatType::BF16 => (0.01, 0.01),
             FloatType::F32 => (f32::EPSILON, 0.000_1),
         };
-        assert_relative_eq!(db_array.as_array(), db_true.view(), epsilon = epsilon, max_relative = max_relative);
+        assert_relative_eq!(
+            db_array.as_array(),
+            db_true.view(),
+            epsilon = epsilon,
+            max_relative = max_relative
+        );
         Ok(())
     }
 
