@@ -20,10 +20,10 @@ jobs:
             features: host_full
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            features: full
+            features: "full device_tests"
           - os: macos-latest
             target: x86_64-apple-darwin
-            features: host_full
+            features: full
     steps:
     - uses: actions/checkout@v2
     - name: cargo fetch
