@@ -41,7 +41,6 @@ rspirv = "0.7.0"
 smol = "1.2.5"
 thiserror = "1.0.23"
 tinyvec = "1.2.0"
-#tch = "0.5.0"
 approx = "0.5.0"
 
 [dependencies.async-trait]
@@ -112,8 +111,7 @@ version = "1.8.1"
 bench = []
 derive = ["autograph_derive"]
 device_tests = []
-full = ["host_full", "device_tests"]
-host_full = ["iris", "mnist", "kmeans", "neural_network"]
+full = ["iris", "mnist", "kmeans", "neural_network"]
 iris = ["ndarray"]
 kmeans = ["tensor", "rand"]
 mnist = ["ndarray", "dirs", "flate2", "byteorder", "downloader", "http"]
