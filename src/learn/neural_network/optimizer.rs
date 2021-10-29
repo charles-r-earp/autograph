@@ -1,9 +1,9 @@
 use super::autograd::ParameterD;
-use crate::{ops::ScaledAdd, result::Result, tensor::float::FloatTensorD, device::Device};
+use crate::{device::Device, ops::ScaledAdd, result::Result, tensor::float::FloatTensorD};
 use anyhow::bail;
-use serde::{Serialize, Deserialize};
 #[doc(hidden)]
 pub use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 
 /// A trait for optimizers.
 ///

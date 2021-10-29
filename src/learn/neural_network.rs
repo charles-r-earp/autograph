@@ -81,7 +81,7 @@ use crate::{
     },
 };
 use ndarray::{Axis, Dimension};
-use serde::{Deserialize, Serialize, de::Deserializer};
+use serde::{de::Deserializer, Deserialize, Serialize};
 use std::ops::{Deref, DerefMut};
 
 /// Variables and Parameters
@@ -177,7 +177,10 @@ impl<L: Layer, S: FloatData, D: Dimension> Infer<FloatTensorBase<S, D>> for Netw
 }
 
 fn network_trainer_deserialize_network<'de, L, D>(deserializer: D) -> Result<Network<L>, D::Error>
-    where L: Layer + Deserialize<'de>, D: Deserializer<'de> {
+where
+    L: Layer + Deserialize<'de>,
+    D: Deserializer<'de>,
+{
     let mut network: Network<L> = Network::deserialize(deserializer)?;
     network.init_training();
     Ok(network)
@@ -185,7 +188,9 @@ fn network_trainer_deserialize_network<'de, L, D>(deserializer: D) -> Result<Net
 
 /// A neural network trainer.
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(bound(deserialize = "L: Layer + Deserialize<'de>, C: Deserialize<'de>, O: Deserialize<'de>"))]
+#[serde(bound(
+    deserialize = "L: Layer + Deserialize<'de>, C: Deserialize<'de>, O: Deserialize<'de>"
+))]
 pub struct NetworkTrainer<L, C = CrossEntropyLoss, O = Sgd> {
     #[serde(deserialize_with = "network_trainer_deserialize_network")]
     network: Network<L>,
