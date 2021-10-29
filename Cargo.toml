@@ -75,7 +75,6 @@ version = "1.0.20"
 [dependencies.half]
 features = ["num-traits", "bytemuck", "serde"]
 version = "1.8.2"
-#git = "https://github.com/starkat99/half-rs"
 
 [dependencies.http]
 optional = true
@@ -83,7 +82,6 @@ version = "0.2.4"
 
 [dependencies.ndarray]
 default-features = false
-#features = ["serde", "approx"]
 features = ["serde"]
 optional = true
 version = "0.15.3"
@@ -114,9 +112,10 @@ derive = ["autograph_derive"]
 device_tests = []
 full = ["iris", "mnist", "kmeans", "neural_network"]
 iris = ["ndarray"]
-kmeans = ["tensor", "rand"]
+kmeans = ["learn", "rand"]
 mnist = ["ndarray", "dirs", "flate2", "byteorder", "downloader", "http"]
-neural_network = ["tensor", "rand", "async-trait", "derive"]
+neural_network = ["learn", "rand", "async-trait", "derive"]
+learn = ["tensor"]
 tensor = ["ndarray"]
 
 [target]

@@ -1,11 +1,15 @@
 use super::autograd::ParameterD;
-use crate::{ops::ScaledAdd, result::Result, tensor::float::FloatTensorD};
+use crate::{ops::ScaledAdd, result::Result, tensor::float::FloatTensorD, device::Device};
 use anyhow::bail;
+use serde::{Serialize, Deserialize};
+#[doc(hidden)]
+pub use async_trait::async_trait;
 
 /// A trait for optimizers.
 ///
 /// The optimizer updates the parameters of the model based on their gradients.
-pub trait Optimizer {
+#[async_trait]
+pub trait Optimizer: Send + Sync + 'static {
     /// Updates a set of parameters.
     ///
     /// The optimizer may assume that `parameters` is the same set in the same order on each call to [`.update()`](Self::update()). Typically this is from [`Layer::parameters_mut()`](super::layer::Layer::parameters_mut()).
@@ -17,6 +21,24 @@ pub trait Optimizer {
     ///
     /// Returns an error if the operation could not be performed. Some parameters may be modified even when returning an error.
     fn update(&mut self, parameters: &mut [&mut ParameterD]) -> Result<()>;
+    /// Transfers to `device` inplace.
+    ///
+    /// # Note
+    /// If an error occurs, some data may not have been transfered.
+    #[allow(unused)]
+    async fn to_device_mut(&mut self, device: Device) -> Result<()> {
+        Ok(())
+    }
+    /// Transfers into `device`.
+    ///
+    /// See [`.to_device_mut()`](Self::to_device_mut()).
+    async fn into_device(mut self, device: Device) -> Result<Self>
+    where
+        Self: Sized,
+    {
+        self.to_device_mut(device).await?;
+        Ok(self)
+    }
 }
 
 /// Sgd optimizer.
@@ -24,7 +46,7 @@ pub trait Optimizer {
 /// Defaults:
 /// - learning_rate: 0.1
 /// - momentum: 0.
-#[derive(Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct Sgd {
     learning_rate: f32,
     momentum: f32,

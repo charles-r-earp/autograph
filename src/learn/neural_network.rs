@@ -70,6 +70,7 @@ impl Lenet5 {
 */
 use super::{Infer, Stats, Summarize, Summary, Test, Train};
 use crate::{
+    device::Device,
     learn::criterion::{Criterion, CrossEntropyLoss},
     ops::AddAssign,
     result::Result,
@@ -80,7 +81,7 @@ use crate::{
     },
 };
 use ndarray::{Axis, Dimension};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::Deserializer};
 use std::ops::{Deref, DerefMut};
 
 /// Variables and Parameters
@@ -107,6 +108,33 @@ impl<L> Network<L> {
     /// Returns the layer.
     pub fn into_inner(self) -> L {
         self.0
+    }
+}
+
+impl<L: Layer> Network<L> {
+    fn init_training(&mut self) {
+        for parameter in self.parameters_mut() {
+            parameter.require_grad_mut(true);
+        }
+    }
+    /// Transfers to `device` inplace.
+    ///
+    /// # Note
+    /// If an error occurs, some data may not have been transfered.
+    ///
+    /// See [`Layer::to_device_mut()`].
+    pub async fn to_device_mut(&mut self, device: Device) -> Result<()> {
+        self.0.to_device_mut(device).await
+    }
+    /// Transfers into `device`.
+    ///
+    /// See [`.to_device_mut()`](Self::to_device_mut()).
+    pub async fn into_device(mut self, device: Device) -> Result<Self>
+    where
+        Self: Sized,
+    {
+        self.to_device_mut(device).await?;
+        Ok(self)
     }
 }
 
@@ -148,13 +176,35 @@ impl<L: Layer, S: FloatData, D: Dimension> Infer<FloatTensorBase<S, D>> for Netw
     }
 }
 
+fn network_trainer_deserialize_network<'de, L, D>(deserializer: D) -> Result<Network<L>, D::Error>
+    where L: Layer + Deserialize<'de>, D: Deserializer<'de> {
+    let mut network: Network<L> = Network::deserialize(deserializer)?;
+    network.init_training();
+    Ok(network)
+}
+
 /// A neural network trainer.
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(bound(deserialize = "L: Layer + Deserialize<'de>, C: Deserialize<'de>, O: Deserialize<'de>"))]
 pub struct NetworkTrainer<L, C = CrossEntropyLoss, O = Sgd> {
+    #[serde(deserialize_with = "network_trainer_deserialize_network")]
     network: Network<L>,
     criterion: C,
     optimizer: O,
     summary: Summary,
+}
+
+impl<L: Layer> NetworkTrainer<L> {
+    /// Creates a trainer from a network.
+    pub fn from_network(mut network: Network<L>) -> Self {
+        network.init_training();
+        Self {
+            network,
+            criterion: CrossEntropyLoss::default(),
+            optimizer: Sgd::default(),
+            summary: Summary::default(),
+        }
+    }
 }
 
 impl<L, C, O> NetworkTrainer<L, C, O> {
@@ -178,17 +228,35 @@ impl<L, C, O> NetworkTrainer<L, C, O> {
     }
 }
 
+impl<L: Layer, C, O: Optimizer> NetworkTrainer<L, C, O> {
+    /// Transfers to `device` inplace.
+    ///
+    /// # Note
+    /// If an error occurs, some data may not have been transfered.
+    ///
+    /// See [`Network::to_device_mut()`].
+    pub async fn to_device_mut(&mut self, device: Device) -> Result<()> {
+        let network_fut = self.network.to_device_mut(device.clone());
+        let optimizer_fut = self.optimizer.to_device_mut(device);
+        network_fut.await?;
+        optimizer_fut.await?;
+        Ok(())
+    }
+    /// Transfers into `device`.
+    ///
+    /// See [`.to_device_mut()`](Self::to_device_mut()).
+    pub async fn into_device(mut self, device: Device) -> Result<Self>
+    where
+        Self: Sized,
+    {
+        self.to_device_mut(device).await?;
+        Ok(self)
+    }
+}
+
 impl<L: Layer> From<Network<L>> for NetworkTrainer<L> {
-    fn from(mut network: Network<L>) -> Self {
-        for parameter in network.parameters_mut() {
-            parameter.require_grad_mut(true);
-        }
-        Self {
-            network,
-            criterion: CrossEntropyLoss::default(),
-            optimizer: Sgd::default(),
-            summary: Summary::default(),
-        }
+    fn from(network: Network<L>) -> Self {
+        Self::from_network(network)
     }
 }
 

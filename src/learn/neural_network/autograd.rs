@@ -35,7 +35,7 @@ use sealed::NodeBase;
 
 /// A reflection trait for backward ops.
 ///
-/// [`Autograd`] can an should be [derived](autograph_derive). See [`Backward`].
+/// [`Autograd`] can and should be [derived](autograph_derive). See [`Backward`].
 pub trait Autograd: Send + Sync + 'static {
     /// A name for the the operation. The derive implementation uses the raw type name without path prefix or generics.
     fn name(&self) -> Cow<'static, str>;
@@ -242,13 +242,31 @@ pub struct GradientBase<D: Dimension, N: Node> {
 
 /// A gradient.
 pub type Gradient<D> = GradientBase<D, VertexNode>;
+/// A gradient with 1 element.
+pub type Gradient0 = Gradient<Ix0>;
+/// A gradient with 1 dimension.
+pub type Gradient1 = Gradient<Ix1>;
 /// A gradient with 2 dimensions.
 pub type Gradient2 = Gradient<Ix2>;
+/// A gradient with 3 dimensions.
+pub type Gradient3 = Gradient<Ix3>;
+/// A gradient with 4 dimensions.
+pub type Gradient4 = Gradient<Ix4>;
 /// A dynamically dimensional gradient.
 pub type GradientD = Gradient<IxDyn>;
 
 /// A Variable gradient.
 pub type VariableGradient<D> = GradientBase<D, VariableNode>;
+/// A variable gradient with 1 element.
+pub type VariableGradient0 = VariableGradient<Ix0>;
+/// A variable gradient with 1 dimension.
+pub type VariableGradient1 = VariableGradient<Ix1>;
+/// A variable gradient with 2 dimensions.
+pub type VariableGradient2 = VariableGradient<Ix2>;
+/// A variable gradient with 3 dimensions.
+pub type VariableGradient3 = VariableGradient<Ix3>;
+/// A variable gradient with 4 dimensions.
+pub type VariableGradient4 = VariableGradient<Ix4>;
 /// A dynamically dimensional variable gradient.
 pub type VariableGradientD = VariableGradient<IxDyn>;
 
@@ -927,17 +945,6 @@ impl<D: Dimension> Variable<D> {
     }
 }
 
-/*
-fn get_permuted_axes(input_strides: &[isize], output_strides: &[isize]) -> Result<IxDyn> {
-    let mut axes = IxDyn::zeros(input_strides.len());
-    for (a, os) in axes.slice_mut().iter_mut().zip(output_strides) {
-        *a = input_strides.iter()
-            .position(|s| s == os)
-            .ok_or_else(|| anyhow!("Unsupported input strides: {:?} output strides: {:?}!", input_strides, output_strides))?;
-    }
-    Ok(axes)
-}
-*/
 #[derive(Autograd)]
 #[autograph(crate)]
 struct NHWCIntoNCHWBackward {
@@ -973,52 +980,6 @@ impl Variable4 {
         Ok(output)
     }
 }
-
-/*
-#[derive(Autograd)]
-#[autograph(crate)]
-struct IntoStandardLayoutBackward {
-    input_grad: VariableGradientD,
-}
-
-impl Backward for IntoStandardLayoutBackward {
-    fn backward(&self, output_grad: FloatTensorD) -> Result<()> {
-        assert!(output_grad.is_standard_layout());
-        let axes = get_permuted_axes(self.input_grad.strides(), output_grad.strides())?;
-        let output_grad = output_grad.permuted_axes(axes).into_standard_layout()?;
-        self.input_grad.lock().add_assign(output_grad)
-    }
-}
-
-impl<D: Dimension> Variable<D> {
-    /// Converts into standard layout.
-    ///
-    /// See [`FloatArcTensor::to_standard_layout_shared()`](FloatTensorBase::to_standard_layout_shared()).
-    ///
-    /// # Note
-    /// Autograd only supports standard layout and its permutations, that is the dimensions have been reordered.
-    pub(crate) fn into_standard_layout(self) -> Result<Self> {
-        if self.is_standard_layout() {
-            return Ok(self);
-        }
-        let mut output = Self::from(self.value.to_standard_layout_shared()?)
-            .with_training(self.training());
-        if let Some(grad) = self.grad() {
-            if cfg!(debug_assertions) {
-                // TODO: Validate only permutation?
-                dbg!(self.shape());
-                dbg!(self.strides());
-                dbg!(output.shape());
-                dbg!(output.strides());
-                get_permuted_axes(self.strides(), output.strides())?;
-            }
-            output = output.with_backward(IntoStandardLayoutBackward {
-                input_grad: grad.into_dyn(),
-            });
-        }
-        Ok(output)
-    }
-}*/
 
 #[derive(Autograd)]
 #[autograph(crate)]

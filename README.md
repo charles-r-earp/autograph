@@ -27,7 +27,7 @@ autograph = { git = https://github.com/charles-r-earp/autograph }
 
 # Tests
 - To check that you have a valid device, run `cargo test device_new --features device_tests`.
-- Run all the tests with `cargo test --features full`.
+- Run all the tests with `cargo test --features "full device_tests"`.
 
 # Custom Shader Code
 You can write your own shaders and execute them with **autograph**.

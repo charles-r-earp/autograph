@@ -4,18 +4,22 @@ use autograph::{
     learn::{
         neural_network::{
             layer::{Layer, Forward, Conv, Relu, Dense, MaxPool},
-            Network, NetworkTrainer,
+            NetworkTrainer,
         },
-        Summarize, Train,
+        Summarize, Train, Test,
     },
     result::Result,
     tensor::{float::FloatTensor4, Tensor1, TensorView},
 };
 use ndarray::{s, ArrayView1, ArrayView4, Axis};
-use argparse::{ArgumentParser, StoreConst};
+use argparse::{ArgumentParser, StoreConst, StoreTrue};
+use indicatif::{ProgressStyle, ProgressBar, ProgressIterator};
+use serde::{Serialize, Deserialize};
 use std::{
     fmt::Debug,
     convert::TryFrom,
+    path::PathBuf,
+    fs,
 };
 
 #[derive(Clone, Copy)]
@@ -25,7 +29,7 @@ enum NetworkKind {
     Lenet5,
 }
 
-#[derive(Layer, Forward, Clone, Debug)]
+#[derive(Layer, Forward, Clone, Debug, Serialize, Deserialize)]
 struct CNN {
     #[autograph(layer)]
     conv1: Conv,
@@ -57,7 +61,7 @@ impl CNN {
     }
 }
 
-#[derive(Layer, Forward, Clone, Debug)]
+#[derive(Layer, Forward, Clone, Debug, Serialize, Deserialize)]
 struct Lenet5 {
     #[autograph(layer)]
     conv1: Conv,
@@ -118,6 +122,7 @@ impl Lenet5 {
 #[tokio::main]
 async fn main() -> Result<()> {
     let mut kind = NetworkKind::Linear;
+    let mut save = false;
     {
         let mut ap = ArgumentParser::new();
         ap.set_description("Neural Network MNIST Example");
@@ -125,41 +130,52 @@ async fn main() -> Result<()> {
             .add_option(&["--linear"], StoreConst(NetworkKind::Linear), "A linear network.")
             .add_option(&["--cnn"], StoreConst(NetworkKind::CNN), "A convolutional network.")
             .add_option(&["--lenet5"], StoreConst(NetworkKind::Lenet5), "The LeNet5 network.");
-         ap.parse_args_or_exit();
+        ap.refer(&mut save)
+            .add_option(&["--save"], StoreTrue, "Load / save the trainer.");
+        ap.parse_args_or_exit();
     }
 
     // Create a device.
     let device = Device::new()?;
     println!("{:#?}", device.info());
 
+
+    fn save_path(name: &str, save: bool) -> Option<PathBuf> {
+        if save {
+            Some(format!("{}_trainer.bincode", name).into())
+        } else {
+            None
+        }
+    }
+
     match kind {
         NetworkKind::Linear => {
             let dense = Dense::from_inputs_outputs(28 * 28, 10)
                 .with_bias(true)?;
-            train(device, dense).await
+            train(device, dense, save_path("linear", save)).await
         }
         NetworkKind::CNN => {
-            train(device, CNN::new()?).await
+            train(device, CNN::new()?, save_path("cnn", save)).await
         }
         NetworkKind::Lenet5 => {
-            train(device, Lenet5::new()?).await
+            train(device, Lenet5::new()?, save_path("lenet5", save)).await
         }
     }
 }
 
-async fn train<L: Layer + Debug>(device: Device, layer: L) -> Result<()> {
-    // Transfer the layer into the device. Most operations (ie compute shaders) only
+async fn train<L: Layer + Debug + Serialize + for<'de> Deserialize<'de>>(device: Device, layer: L, save_path: Option<PathBuf>) -> Result<()> {
+
+    // Construct a trainer to train the network.
+    let mut trainer = match save_path.as_ref() {
+        // Load the trainer from a file.
+        Some(save_path) if save_path.exists() => bincode::deserialize(& fs::read(save_path)?)?,
+        // Use the provided layer.
+        _ => NetworkTrainer::from_network(layer.into()),
+    };
+
+    // Transfer the trainer to the device. Most operations (ie compute shaders) only
     // run on a device.
-    let layer = layer.into_device(device.clone())
-    // Note that Host -> Device transfers do not block / the future resolves immediately.
-    .await?;
-
-    // Wrap the layer in a Network. Network is simply a new type wrapper that provides an
-    // implementation for the Infer trait, and NetworkTrainer stores the model in a Network.
-    let network = Network::from(layer);
-
-    // Construct a trainer to train the model.
-    let mut trainer = NetworkTrainer::from(network);
+    trainer.to_device_mut(device.clone()).await?;
     println!("{:#?}", &trainer);
 
     // Load the dataset.
@@ -184,7 +200,7 @@ async fn train<L: Layer + Debug>(device: Device, layer: L) -> Result<()> {
         images: &'a ArrayView4<u8>,
         classes: &'a ArrayView1<u8>,
         batch_size: usize,
-    ) -> impl Iterator<Item = Result<(FloatTensor4, Tensor1<u8>)>> + 'a {
+    ) -> impl ExactSizeIterator<Item = Result<(FloatTensor4, Tensor1<u8>)>> + 'a {
         images
             .axis_chunks_iter(Axis(0), batch_size)
             .into_iter()
@@ -199,14 +215,35 @@ async fn train<L: Layer + Debug>(device: Device, layer: L) -> Result<()> {
             })
     }
 
+    // Show a progress bar
+    fn progress_iter<X>(iter: impl ExactSizeIterator<Item=X>, epoch: usize, name: &str) -> impl ExactSizeIterator<Item=X> {
+        let style = ProgressStyle::default_bar()
+            .template(&format!("[epoch: {} elapsed: {{elapsed}}] {} [{{bar}}] {{pos:>7}}/{{len:7}} [eta: {{eta}}]", epoch, name))
+            .progress_chars("=> ");
+        let bar = ProgressBar::new(iter.len() as u64)
+            .with_style(style);
+        iter.progress_with(bar)
+    }
+
     println!("Training...");
     // Run the training for 100 epochs
     while trainer.summarize().epoch < 100 {
-        let train_iter = batch_iter(&device, &train_images, &train_classes, train_batch_size);
-        let test_iter = batch_iter(&device, &test_images, &test_classes, test_batch_size);
+        let epoch = trainer.summarize().epoch;
+        let train_iter = progress_iter(batch_iter(&device, &train_images, &train_classes, train_batch_size), epoch, "training");
+        let test_iter = progress_iter(batch_iter(&device, &test_images, &test_classes, test_batch_size), epoch, "testing");
         trainer.train_test(train_iter, test_iter)?;
         println!("{:#?}", trainer.summarize());
+
+        // Save the trainer at each epoch.
+        if let Some(save_path) = save_path.as_ref() {
+            fs::write(save_path, bincode::serialize(&trainer)?)?;
+        }
     }
+
+    println!("Evaluating...");
+    let test_iter = progress_iter(batch_iter(&device, &test_images, &test_classes, test_batch_size), trainer.summarize().epoch, "evaluating");
+    let stats = trainer.test(test_iter)?;
+    println!("{:#?}", stats);
 
     Ok(())
 }

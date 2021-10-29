@@ -64,5 +64,5 @@ pub use tensor::float as float_tensor;
 pub mod dataset;
 
 /// Machine Learning.
-#[cfg(feature = "tensor")]
+#[cfg(feature = "learn")]
 pub mod learn;
