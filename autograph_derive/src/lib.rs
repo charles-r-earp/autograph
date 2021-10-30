@@ -49,6 +49,28 @@ struct MyNetwork {
     layer2: Option<MyLayer>,
 }
 ```
+
+Autograd can be derived as well for structs.
+```
+#[derive(Autograd)]
+struct DenseBackward {
+    // Use vertex / optional_vertex for Variables and Parameters
+    #[autograph(vertex)]
+    input: Variable2,
+    #[autograph(vertex)]
+    weight: Parameter2,
+    #[autograph(optional_vertex)]
+    bias: Option<Parameter1>,
+}
+
+#[derive(Autograd)]
+struct ReluBackward {
+    // Use gradient / optional_gradient for VariableGradient and ParameterGradient
+    #[autograph(gradient)]
+    input_grad: VariableGradientD,
+    output: FloatArcTensorD,
+}
+```
 */
 
 use proc_macro::TokenStream;
