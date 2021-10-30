@@ -170,8 +170,9 @@ impl<S: ArrayData<Elem = f32>> Im2Col<Ix2> for ArrayBase<S, Ix4> {
                 }
             }
         }
-        let output = output.into_shape([bs * oh * ow, ic * kh * kw])?;
-        Ok(output)
+        // Only used in testing
+        // Testing of autograph_derive fails to compile here.
+        Ok(output.into_shape([bs * oh * ow, ic * kh * kw]).unwrap())
     }
 }
 
@@ -207,7 +208,9 @@ impl<S: ArrayData<Elem = f32>> Col2Im<Ix2> for ArrayBase<S, Ix2> {
         let (sh, sw) = args.strides.into_pattern();
         let (ph, pw) = args.padding.into_pattern();
         let (dh, dw) = args.dilation.into_pattern();
-        let input = input.into_shape([bs, ih, iw, ic, kh * kw])?;
+        // Only used in testing
+        // Testing of autograph_derive fails to compile here.
+        let input = input.into_shape([bs, ih, iw, ic, kh * kw]).unwrap();
         let mut output = Array::zeros([bs, ic, oh, ow]);
         for (input, mut output) in input.outer_iter().zip(output.outer_iter_mut()) {
             for (input, mut output) in input.axis_iter(Axis(2)).zip(output.outer_iter_mut()) {

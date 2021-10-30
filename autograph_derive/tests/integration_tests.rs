@@ -44,10 +44,10 @@ struct DenseBackward {
 
 #[derive(Autograd)]
 struct DotBackward {
-    input: FloatArcTensor2,
+    _input: FloatArcTensor2,
     #[autograph(gradient)]
     input_grad: Gradient2,
-    weight: FloatArcTensor2,
+    _weight: FloatArcTensor2,
     #[autograph(optional_gradient)]
     weight_grad: Option<Gradient2>,
 }
@@ -56,5 +56,5 @@ struct DotBackward {
 struct ReluBackward {
     #[autograph(gradient)]
     input_grad: VariableGradientD,
-    output: FloatArcTensorD,
+    _output: FloatArcTensorD,
 }
