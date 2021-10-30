@@ -196,7 +196,6 @@ plot(&x_array.view(), &classes.view(), &pred.as_array(), &centroids.as_array())?
 See the [KMeans Iris](examples/kmeans-iris) example.
 
 ## Neural Networks
-**Currently under construction**
 ```rust
 #[derive(Layer, Forward, Clone, Debug)]
 struct Lenet5 {
