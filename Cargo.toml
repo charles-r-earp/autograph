@@ -7,7 +7,6 @@ homepage = "https://github.com/charles-r-earp/autograph"
 keywords = ["neural-networks", "machine-learning", "deep-learning", "autograd", "gpu"]
 license = "MIT/Apache-2.0"
 name = "autograph"
-publish = false
 readme = "README.md"
 repository = "https://github.com/charles-r-earp/autograph"
 version = "0.1.0"
