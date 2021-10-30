@@ -45,8 +45,10 @@ mod rust_shaders;
 pub mod scalar;
 
 // Linear Algebra.
+#[cfg(feature = "tensor")]
 mod linalg;
 // Numerical operations.
+#[cfg(feature = "tensor")]
 mod ops;
 
 /// Buffers.

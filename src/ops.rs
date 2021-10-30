@@ -1,5 +1,4 @@
 use crate::result::Result;
-#[cfg(feature = "tensor")]
 use ndarray::{Dimension, IntoDimension};
 
 /*
@@ -20,7 +19,6 @@ pub(crate) trait ScaledAdd<T, R>: AddAssign<R> {
     fn scaled_add(&mut self, alpha: T, rhs: &R) -> Result<()>;
 }
 
-#[cfg(feature = "tensor")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[allow(unused)]
 pub(crate) enum KernelKind {
@@ -28,7 +26,6 @@ pub(crate) enum KernelKind {
     CrossCorrelation,
 }
 
-#[cfg(feature = "tensor")]
 impl KernelKind {
     #[allow(unused)]
     pub(crate) fn as_str(&self) -> &'static str {
@@ -39,7 +36,6 @@ impl KernelKind {
     }
 }
 
-#[cfg(feature = "tensor")]
 #[derive(Debug, Clone)]
 pub(crate) struct KernelArgs<D: Dimension> {
     pub(crate) strides: D,
@@ -47,7 +43,6 @@ pub(crate) struct KernelArgs<D: Dimension> {
     pub(crate) dilation: D,
 }
 
-#[cfg(feature = "tensor")]
 impl<D: Dimension> Default for KernelArgs<D> {
     fn default() -> Self {
         let mut strides = D::zeros(D::NDIM.unwrap_or(0));
