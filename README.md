@@ -15,7 +15,7 @@ A machine learning library for Rust.
 To use **autograph** in your crate, add it as a dependency in Cargo.toml:
 ```
 [dependencies]
-autograph = { git = https://github.com/charles-r-earp/autograph }
+autograph = "0.1.0"
 ```
 
 # Requirements
