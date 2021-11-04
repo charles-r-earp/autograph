@@ -12,6 +12,8 @@ use std::{
     sync::Arc,
 };
 
+mod profiler;
+
 mod engine;
 use engine::{builders::EngineBuilder, Engine, ReadGuard, ReadGuardFuture, MAX_ALLOCATION};
 
@@ -479,11 +481,15 @@ pub mod builders {
             self.check_args_size(self.args.len(), true)?;
             self.check_push_constant_size(self.push_constants.len(), true)?;
             //self.check_specialization_size()?;
-            let work_groups = work_groups(global_size, self.descriptor.local_size);
+            let local_size = self.descriptor.local_size;
+            let work_groups = work_groups(global_size, local_size);
             let compute_pass = ComputePass {
                 module: self.module.id,
+                module_name: self.module.name().map_or_else(String::new, str::to_string),
                 entry: self.descriptor.id,
+                entry_name: self.entry,
                 work_groups,
+                local_size,
                 args: self.args,
                 push_constants: self.push_constants,
                 specialization: self.specialization,
@@ -560,8 +566,11 @@ struct ComputePassArg {
 #[derive(Debug)]
 struct ComputePass {
     module: ModuleId,
+    module_name: String,
     entry: EntryId,
+    entry_name: String,
     work_groups: [u32; 3],
+    local_size: [u32; 3],
     args: Vec<ComputePassArg>,
     push_constants: Vec<u8>,
     specialization: Vec<u8>,

@@ -18,6 +18,7 @@ glsl-shaders/Cargo.lock
 #already existing elements are commented out
 
 src/main.rs
+*autograph_profile_summary.txt*
 *target*
 *plot.png*
 *_trainer.bincode*

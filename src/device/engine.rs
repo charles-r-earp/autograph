@@ -1,4 +1,5 @@
 use super::{
+    profiler::{ComputePassMetrics, Profiler},
     shader::{EntryDescriptor, EntryId, Module, ModuleId, SPECIALIZATION_SIZE},
     Api, BufferHandle, BufferId, ComputePass, DeviceError, DeviceId, DeviceResult, WriteOnly,
 };
@@ -26,6 +27,10 @@ use gfx_hal::{
         DescriptorSetWrite, DescriptorType, EntryPoint, PipelineStage, ShaderStageFlags,
         Specialization, /* SpecializationConstant, */
     },
+    query::{
+        CreationError as QueryCreationError, Query, ResultFlags as QueryResultFlags,
+        Type as QueryType,
+    },
     queue::{Queue as CommandQueue, QueueFamily, QueueFamilyId, QueueType},
     Backend, Features, Instance, MemoryTypeId,
 };
@@ -43,7 +48,7 @@ use std::{
     fmt::{self, Debug},
     hash::{Hash, Hasher},
     iter::{empty, once, repeat},
-    mem::{take, transmute, ManuallyDrop, MaybeUninit},
+    mem::{size_of, take, transmute, ManuallyDrop, MaybeUninit},
     ops::Deref,
     panic::RefUnwindSafe,
     panic::{catch_unwind, UnwindSafe},
@@ -398,7 +403,9 @@ impl<B: Backend> EngineBase<B> {
         let compute_queue = gpu.queue_groups[0].queues.pop().unwrap();
         let compute_id = compute_family.id();
         let allocator = Allocator::new(&device, &builder.allocator_config)?;
-        let context = Arc::new(Context::new(device, allocator, adapter, instance));
+        // TODO probably convert to using anyhow::Error instead of DeviceError.
+        let profiler = Profiler::get().transpose().unwrap();
+        let context = Arc::new(Context::new(device, allocator, adapter, instance, profiler));
         let (sender, receiver) = unbounded_channel();
         let queue = Queue::new(receiver, context.clone(), compute_queue, compute_id)?;
         let done = Arc::new(AtomicBool::default());
@@ -581,8 +588,11 @@ engine_methods! {
             }).collect();
         let op = Op::Compute {
             module: compute_pass.module,
+            module_name: compute_pass.module_name,
             entry: compute_pass.entry,
+            entry_name: compute_pass.entry_name,
             work_groups: compute_pass.work_groups,
+            local_size: compute_pass.local_size,
             args,
             push_constants: compute_pass.push_constants,
             specialization: compute_pass.specialization,
@@ -1573,6 +1583,7 @@ impl<B: Backend> Queue<B> {
         let n_frames = 3;
         let ready_frames = Vec::with_capacity(n_frames);
         let pending_frames = VecDeque::with_capacity(n_frames);
+        let timestamp_period_ns = queue.timestamp_period() as u64;
         let mut queue = Self {
             receiver,
             queue,
@@ -1583,7 +1594,11 @@ impl<B: Backend> Queue<B> {
             modules: HashMap::new(),
         };
         for _ in 0..n_frames {
-            let frame = Frame::new(queue.context.device(), &mut *queue.command_pool)?;
+            let frame = Frame::new(
+                &queue.context,
+                &mut *queue.command_pool,
+                timestamp_period_ns,
+            )?;
             queue.ready_frames.push(frame);
         }
         Ok(queue)
@@ -1610,7 +1625,7 @@ impl<B: Backend> Queue<B> {
     fn poll(&mut self) -> DeviceResult<()> {
         let mut finished = None;
         if let Some(frame) = self.pending_frames.front_mut() {
-            if frame.poll(self.context.device())? {
+            if frame.poll(&self.context)? {
                 finished = self.pending_frames.pop_front();
             }
         }
@@ -1896,8 +1911,11 @@ enum Op<B: Backend> {
     },
     Compute {
         module: ModuleId,
+        module_name: String,
         entry: EntryId,
+        entry_name: String,
         work_groups: [u32; 3],
+        local_size: [u32; 3],
         args: Vec<ComputeArg<B>>,
         push_constants: Vec<u8>,
         specialization: Vec<u8>,
@@ -2051,6 +2069,76 @@ fn barrier_range(offset: u32, mut len: u32) -> SubRange {
 }
 
 #[derive(Debug)]
+struct QueryPool<B: Backend> {
+    pool: B::QueryPool,
+    buffer: Vec<u32>,
+    period_ns: u64,
+}
+
+impl<B: Backend> QueryPool<B> {
+    fn new(device: &B::Device, count: u32, period_ns: u64) -> DeviceResult<Self> {
+        let pool = unsafe {
+            device
+                .create_query_pool(QueryType::Timestamp, count)
+                .map_err(|err| match err {
+                    QueryCreationError::OutOfMemory(memory_error) => {
+                        DeviceError::from(memory_error)
+                    }
+                    err => todo!("{:?}", err),
+                })?
+        };
+        Ok(Self {
+            pool,
+            buffer: Vec::new(),
+            period_ns,
+        })
+    }
+    unsafe fn get_compute_pass_timestamps(
+        &mut self,
+        device: &B::Device,
+        metrics: &mut [ComputePassMetrics],
+    ) -> DeviceResult<()> {
+        use gfx_hal::device::WaitError;
+        let timestamps = metrics.len() * 2;
+        let reserve = timestamps
+            .checked_sub(self.buffer.len())
+            .unwrap_or_default();
+        self.buffer.extend(std::iter::repeat(0).take(reserve));
+        let data = bytemuck::cast_slice_mut(&mut self.buffer[0..timestamps]);
+        device
+            .get_query_pool_results(
+                &self.pool,
+                0..timestamps as u32,
+                data,
+                size_of::<u32>() as u32,
+                QueryResultFlags::WAIT,
+            )
+            .map_err(|err| match err {
+                WaitError::OutOfMemory(out_of_memory) => DeviceError::from(out_of_memory),
+                WaitError::DeviceLost(device_lost) => DeviceError::from(device_lost),
+            })?;
+        for (duration, timestamp) in metrics
+            .iter_mut()
+            .flat_map(|metric| [&mut metric.start, &mut metric.end])
+            .zip(self.buffer.iter().copied())
+        {
+            *duration = Duration::from_nanos(timestamp as u64 * self.period_ns)
+        }
+        Ok(())
+    }
+    unsafe fn free(self, device: &B::Device) {
+        device.destroy_query_pool(self.pool);
+    }
+}
+
+impl<B: Backend> Deref for QueryPool<B> {
+    type Target = B::QueryPool;
+    fn deref(&self) -> &Self::Target {
+        &self.pool
+    }
+}
+
+#[derive(Debug)]
 struct Frame<B: Backend> {
     semaphore: B::Semaphore,
     fence: B::Fence,
@@ -2060,10 +2148,17 @@ struct Frame<B: Backend> {
     mapping_chunks: HashMap<MappingChunkRef<B>, u32>,
     syncs: Vec<Arc<AtomicBool>>,
     ready_to_submit: bool,
+    query_pool: Option<QueryPool<B>>,
+    compute_pass_metrics: Vec<ComputePassMetrics>,
 }
 
 impl<B: Backend> Frame<B> {
-    fn new(device: &B::Device, command_pool: &mut B::CommandPool) -> DeviceResult<Self> {
+    fn new(
+        context: &Context<B>,
+        command_pool: &mut B::CommandPool,
+        timestamp_period_ns: u64,
+    ) -> DeviceResult<Self> {
+        let device = context.device();
         let semaphore = device.create_semaphore()?;
         let fence = match device.create_fence(true) {
             Ok(fence) => fence,
@@ -2078,6 +2173,11 @@ impl<B: Backend> Frame<B> {
         unsafe {
             command_buffer.begin_primary(CommandBufferFlags::ONE_TIME_SUBMIT);
         }
+        let query_pool = context
+            .profiler
+            .as_ref()
+            .map(|_| QueryPool::new(device, 10_000, timestamp_period_ns))
+            .transpose()?;
         Ok(Self {
             semaphore,
             fence,
@@ -2087,6 +2187,8 @@ impl<B: Backend> Frame<B> {
             mapping_chunks: HashMap::new(),
             syncs: Vec::new(),
             ready_to_submit: false,
+            query_pool,
+            compute_pass_metrics: Vec::new(),
         })
     }
     fn ready_to_submit(&mut self) -> bool {
@@ -2104,8 +2206,11 @@ impl<B: Backend> Frame<B> {
             }
             Op::Compute {
                 module,
+                module_name,
                 entry,
+                entry_name,
                 work_groups,
+                local_size,
                 args,
                 push_constants,
                 specialization,
@@ -2122,13 +2227,31 @@ impl<B: Backend> Frame<B> {
                 } else {
                     return Ok(Err(Op::Compute {
                         module,
+                        module_name,
                         entry,
+                        entry_name,
                         work_groups,
+                        local_size,
                         args,
                         push_constants,
                         specialization,
                     }));
                 };
+                let metric_id = self.compute_pass_metrics.len();
+                if self.query_pool.is_some() {
+                    self.compute_pass_metrics.push(ComputePassMetrics {
+                        module_id: module.0,
+                        module_name,
+                        entry_name,
+                        invocations: work_groups
+                            .iter()
+                            .zip(local_size.iter())
+                            .map(|(wg, ls)| *wg as usize * *ls as usize)
+                            .sum(),
+                        start: Duration::default(),
+                        end: Duration::default(),
+                    });
+                }
                 let descriptors = args.iter().map(|arg| {
                     Descriptor::Buffer(
                         arg.slice.buffer(),
@@ -2184,7 +2307,25 @@ impl<B: Backend> Frame<B> {
                         Dependencies::empty(),
                         barriers,
                     );
+                    if let Some(pool) = self.query_pool.as_deref() {
+                        self.command_buffer.write_timestamp(
+                            PipelineStage::COMPUTE_SHADER,
+                            Query {
+                                pool,
+                                id: (metric_id * 2) as u32,
+                            },
+                        )
+                    }
                     self.command_buffer.dispatch(work_groups);
+                    if let Some(pool) = self.query_pool.as_ref() {
+                        self.command_buffer.write_timestamp(
+                            PipelineStage::COMPUTE_SHADER,
+                            Query {
+                                pool,
+                                id: (metric_id * 2 + 1) as u32,
+                            },
+                        )
+                    }
                 }
             }
             Op::Copy { src, dst } => {
@@ -2314,7 +2455,8 @@ impl<B: Backend> Frame<B> {
         self.ready_to_submit = true;
         Ok(Ok(()))
     }
-    fn poll(&mut self, device: &B::Device) -> DeviceResult<bool> {
+    fn poll(&mut self, context: &Context<B>) -> DeviceResult<bool> {
+        let device = context.device();
         if unsafe { device.get_fence_status(&self.fence)? } {
             for (chunk, offset) in self.mapping_chunks.drain() {
                 chunk.blocks.finish(offset);
@@ -2324,6 +2466,17 @@ impl<B: Backend> Frame<B> {
             }
             for sync in self.syncs.drain(..) {
                 sync.store(true, Ordering::SeqCst);
+            }
+            if let Some((profiler, query_pool)) =
+                context.profiler.as_ref().zip(self.query_pool.as_mut())
+            {
+                unsafe {
+                    query_pool
+                        .get_compute_pass_timestamps(device, &mut self.compute_pass_metrics)?;
+                }
+                for metric in self.compute_pass_metrics.drain(..) {
+                    profiler.compute_pass(metric);
+                }
             }
             unsafe {
                 self.command_buffer.reset(false);
@@ -2382,6 +2535,9 @@ impl<B: Backend> Frame<B> {
         device.destroy_semaphore(self.semaphore);
         device.destroy_fence(self.fence);
         self.descriptor_set_allocator.free(device);
+        if let Some(query_pool) = self.query_pool {
+            query_pool.free(device);
+        }
     }
 }
 
@@ -2392,6 +2548,7 @@ struct Context<B: Backend> {
     shader_semaphore: Semaphore,
     _adapter: Arc<Adapter<B>>,
     _instance: Arc<B::Instance>,
+    profiler: Option<Arc<Profiler>>,
 }
 
 impl<B: Backend> Context<B> {
@@ -2400,6 +2557,7 @@ impl<B: Backend> Context<B> {
         allocator: Allocator<B>,
         adapter: Arc<Adapter<B>>,
         instance: Arc<B::Instance>,
+        profiler: Option<Arc<Profiler>>,
     ) -> Self {
         Self {
             device,
@@ -2408,6 +2566,7 @@ impl<B: Backend> Context<B> {
             shader_semaphore: Semaphore::new(1),
             _adapter: adapter,
             _instance: instance,
+            profiler,
         }
     }
     fn device(&self) -> &B::Device {
