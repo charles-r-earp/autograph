@@ -1115,23 +1115,16 @@ struct Im2ColBackward {
 
 impl Backward for Im2ColBackward {
     fn backward(&self, output_grad: FloatTensorD) -> Result<()> {
-        use crate::tensor::Tensor;
         smol::block_on(async {
             let input = &self.input;
             if let Some(input_grad) = input.grad() {
                 let shape = [input.dim().2, input.dim().3].into_dimension();
-                let grad = output_grad
-                    .into_dimensionality()?
-                    .cast_into::<f32>()?
-                    .read()
-                    .await?
-                    .as_array()
-                    .col2im(&shape, &self.kernel, self.kind, &self.args)?;
-                let grad = Tensor::from(grad)
-                    .into_device(input.device())
-                    .await?
-                    .into_shared()?
-                    .into_float();
+                let grad = output_grad.into_dimensionality()?.col2im(
+                    &shape,
+                    &self.kernel,
+                    self.kind,
+                    &self.args,
+                )?;
                 input_grad.lock().add_assign(grad)?;
             }
             Ok(())
