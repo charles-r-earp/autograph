@@ -12,7 +12,7 @@ use autograph::{
     tensor::{float::FloatTensor4, Tensor1, TensorView},
 };
 use ndarray::{s, ArrayView1, ArrayView4, Axis};
-use argparse::{ArgumentParser, StoreConst, StoreTrue};
+use argparse::{ArgumentParser, Store, StoreConst, StoreTrue};
 use indicatif::{ProgressStyle, ProgressBar, ProgressIterator};
 use serde::{Serialize, Deserialize};
 use std::{
@@ -123,6 +123,7 @@ impl Lenet5 {
 async fn main() -> Result<()> {
     let mut kind = NetworkKind::Linear;
     let mut save = false;
+    let mut epochs = 100;
     {
         let mut ap = ArgumentParser::new();
         ap.set_description("Neural Network MNIST Example");
@@ -132,6 +133,8 @@ async fn main() -> Result<()> {
             .add_option(&["--lenet5"], StoreConst(NetworkKind::Lenet5), "The LeNet5 network.");
         ap.refer(&mut save)
             .add_option(&["--save"], StoreTrue, "Load / save the trainer.");
+        ap.refer(&mut epochs)
+            .add_option(&["--epochs"], Store, "The number of epochs to train for.");
         ap.parse_args_or_exit();
     }
 
@@ -152,18 +155,18 @@ async fn main() -> Result<()> {
         NetworkKind::Linear => {
             let dense = Dense::from_inputs_outputs(28 * 28, 10)
                 .with_bias(true)?;
-            train(device, dense, save_path("linear", save)).await
+            train(device, dense, save_path("linear", save), epochs).await
         }
         NetworkKind::CNN => {
-            train(device, CNN::new()?, save_path("cnn", save)).await
+            train(device, CNN::new()?, save_path("cnn", save), epochs).await
         }
         NetworkKind::Lenet5 => {
-            train(device, Lenet5::new()?, save_path("lenet5", save)).await
+            train(device, Lenet5::new()?, save_path("lenet5", save), epochs).await
         }
     }
 }
 
-async fn train<L: Layer + Debug + Serialize + for<'de> Deserialize<'de>>(device: Device, layer: L, save_path: Option<PathBuf>) -> Result<()> {
+async fn train<L: Layer + Debug + Serialize + for<'de> Deserialize<'de>>(device: Device, layer: L, save_path: Option<PathBuf>, epochs: usize) -> Result<()> {
 
     // Construct a trainer to train the network.
     let mut trainer = match save_path.as_ref() {
@@ -226,8 +229,8 @@ async fn train<L: Layer + Debug + Serialize + for<'de> Deserialize<'de>>(device:
     }
 
     println!("Training...");
-    // Run the training for 100 epochs
-    while trainer.summarize().epoch < 100 {
+    // Run the training for the specified epochs
+    while trainer.summarize().epoch < epochs {
         let epoch = trainer.summarize().epoch;
         let train_iter = progress_iter(batch_iter(&device, &train_images, &train_classes, train_batch_size), epoch, "training");
         let test_iter = progress_iter(batch_iter(&device, &test_images, &test_classes, test_batch_size), epoch, "testing");
