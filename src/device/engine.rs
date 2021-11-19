@@ -2170,7 +2170,6 @@ impl<B: Backend> Frame<B> {
                         if type_eq::<B, DX12>() {
                             states.end |= State::SHADER_WRITE;
                         }
-
                         Barrier::Buffer {
                             states,
                             target: arg.slice.buffer(),
@@ -2314,23 +2313,26 @@ impl<B: Backend> Frame<B> {
         self.ready_to_submit = true;
         Ok(Ok(()))
     }
+    fn reset(&mut self) {
+        for (chunk, offset) in self.mapping_chunks.drain() {
+            chunk.blocks.finish(offset);
+        }
+        for (slice, _) in self.writes.drain(..) {
+            slice.chunk.blocks.drop_guard();
+        }
+        for sync in self.syncs.drain(..) {
+            sync.store(true, Ordering::SeqCst);
+        }
+        unsafe {
+            self.command_buffer.reset(false);
+            self.command_buffer
+                .begin_primary(CommandBufferFlags::ONE_TIME_SUBMIT);
+            self.descriptor_set_allocator.reset();
+        }
+    }
     fn poll(&mut self, device: &B::Device) -> DeviceResult<bool> {
         if unsafe { device.get_fence_status(&self.fence)? } {
-            for (chunk, offset) in self.mapping_chunks.drain() {
-                chunk.blocks.finish(offset);
-            }
-            for (slice, _) in self.writes.drain(..) {
-                slice.chunk.blocks.drop_guard();
-            }
-            for sync in self.syncs.drain(..) {
-                sync.store(true, Ordering::SeqCst);
-            }
-            unsafe {
-                self.command_buffer.reset(false);
-                self.command_buffer
-                    .begin_primary(CommandBufferFlags::ONE_TIME_SUBMIT);
-                self.descriptor_set_allocator.reset();
-            }
+            self.reset();
             Ok(true)
         } else {
             Ok(false)
