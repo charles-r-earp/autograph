@@ -12,6 +12,7 @@ use std::{
     sync::Arc,
 };
 
+#[cfg(feature = "profile")]
 mod profiler;
 
 mod engine;
@@ -79,6 +80,9 @@ enum DeviceError {
     MappingFailed,
     Access,
     ShaderCompilationFailed,
+    // Unable to open summary file
+    #[cfg(feature = "profile")]
+    ProfileSummaryError,
 }
 
 type DeviceResult<T> = Result<T, DeviceError>;
@@ -125,7 +129,9 @@ use write_only::WriteOnly;
 #[derive(Debug, Clone)]
 pub struct DeviceInfo {
     name: String,
+    #[allow(unused)]
     vendor: usize,
+    #[allow(unused)]
     device: usize,
     api: Api,
     device_type: DeviceType,

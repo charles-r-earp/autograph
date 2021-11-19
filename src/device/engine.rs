@@ -1,5 +1,6 @@
+#[cfg(feature = "profile")]
+use super::profiler::{ComputePassMetrics, Profiler};
 use super::{
-    profiler::{ComputePassMetrics, Profiler},
     shader::{EntryDescriptor, EntryId, Module, ModuleId, SPECIALIZATION_SIZE},
     Api, BufferHandle, BufferId, ComputePass, DeviceError, DeviceId, DeviceResult, WriteOnly,
 };
@@ -10,6 +11,10 @@ use crate::{
 use anyhow::{anyhow, bail};
 use crossbeam_channel::{unbounded as unbounded_channel, Receiver, Sender};
 use crossbeam_utils::atomic::AtomicCell;
+#[cfg(feature = "profile")]
+use gfx_hal::query::{
+    CreationError as QueryCreationError, Query, ResultFlags as QueryResultFlags, Type as QueryType,
+};
 use gfx_hal::{
     adapter::{Adapter, DeviceType, MemoryProperties, PhysicalDevice},
     buffer::{CreationError as BufferCreationError, State, SubRange, Usage},
@@ -27,10 +32,6 @@ use gfx_hal::{
         DescriptorSetWrite, DescriptorType, EntryPoint, PipelineStage, ShaderStageFlags,
         Specialization, /* SpecializationConstant, */
     },
-    query::{
-        CreationError as QueryCreationError, Query, ResultFlags as QueryResultFlags,
-        Type as QueryType,
-    },
     queue::{Queue as CommandQueue, QueueFamily, QueueFamilyId, QueueType},
     Backend, Features, Instance, MemoryTypeId,
 };
@@ -42,13 +43,15 @@ use parking_lot::{
 };
 #[cfg(windows)]
 use smol::lock::Semaphore;
+#[cfg(feature = "profile")]
+use std::mem::size_of;
 use std::{
     collections::{HashMap, VecDeque},
     convert::TryFrom,
     fmt::{self, Debug},
     hash::{Hash, Hasher},
     iter::{empty, once, repeat},
-    mem::{size_of, take, transmute, ManuallyDrop, MaybeUninit},
+    mem::{take, transmute, ManuallyDrop, MaybeUninit},
     ops::Deref,
     panic::RefUnwindSafe,
     panic::{catch_unwind, UnwindSafe},
@@ -404,8 +407,14 @@ impl<B: Backend> EngineBase<B> {
         let compute_id = compute_family.id();
         let allocator = Allocator::new(&device, &builder.allocator_config)?;
         // TODO probably convert to using anyhow::Error instead of DeviceError.
-        let profiler = Profiler::get().transpose().unwrap();
+        #[cfg(feature = "profile")]
+        let profiler = Profiler::get()
+            .transpose()
+            .map_err(|_| DeviceError::ProfileSummaryError)?;
+        #[cfg(feature = "profile")]
         let context = Arc::new(Context::new(device, allocator, adapter, instance, profiler));
+        #[cfg(not(feature = "profile"))]
+        let context = Arc::new(Context::new(device, allocator, adapter, instance));
         let (sender, receiver) = unbounded_channel();
         let queue = Queue::new(receiver, context.clone(), compute_queue, compute_id)?;
         let done = Arc::new(AtomicBool::default());
@@ -1029,7 +1038,7 @@ impl<B: Backend> Default for MappingChunk<B> {
 
 #[derive(Clone, Copy, Debug)]
 struct HeapInfo {
-    index: usize,
+    // index: usize,
     size: u64,
     id: MemoryTypeId,
 }
@@ -1048,11 +1057,11 @@ impl HeapInfo {
             .map(|(i, heap)| (i, heap.size))
             .collect();
         heaps.sort_by_key(|(_, size)| *size);
-        for (index, size) in heaps {
+        for (_index, size) in heaps {
             for (i, memory_type) in memory_properties.memory_types.iter().enumerate() {
                 if memory_type.properties.contains(properties) {
                     return Some(Self {
-                        index,
+                        // index,
                         size,
                         id: MemoryTypeId(i),
                     });
@@ -1384,7 +1393,7 @@ impl<B: Backend> WriteSlice<B> {
 
 #[derive(Debug)]
 pub(crate) struct WriteGuardBase<B: Backend> {
-    context: Arc<Context<B>>,
+    _context: Arc<Context<B>>,
     slice: WriteSlice<B>,
     drop: bool,
 }
@@ -1397,7 +1406,7 @@ impl<B: Backend> WriteGuardBase<B> {
         len: u32,
     ) -> Self {
         Self {
-            context,
+            _context: context,
             slice: WriteSlice {
                 chunk,
                 barrier: WriteBarrier::default(),
@@ -2068,6 +2077,7 @@ fn barrier_range(offset: u32, mut len: u32) -> SubRange {
     }
 }
 
+#[cfg(feature = "profile")]
 #[derive(Debug)]
 struct QueryPool<B: Backend> {
     pool: B::QueryPool,
@@ -2075,6 +2085,7 @@ struct QueryPool<B: Backend> {
     period_ns: u64,
 }
 
+#[cfg(feature = "profile")]
 impl<B: Backend> QueryPool<B> {
     fn new(device: &B::Device, count: u32, period_ns: u64) -> DeviceResult<Self> {
         let pool = unsafe {
@@ -2131,6 +2142,7 @@ impl<B: Backend> QueryPool<B> {
     }
 }
 
+#[cfg(feature = "profile")]
 impl<B: Backend> Deref for QueryPool<B> {
     type Target = B::QueryPool;
     fn deref(&self) -> &Self::Target {
@@ -2148,7 +2160,9 @@ struct Frame<B: Backend> {
     mapping_chunks: HashMap<MappingChunkRef<B>, u32>,
     syncs: Vec<Arc<AtomicBool>>,
     ready_to_submit: bool,
+    #[cfg(feature = "profile")]
     query_pool: Option<QueryPool<B>>,
+    #[cfg(feature = "profile")]
     compute_pass_metrics: Vec<ComputePassMetrics>,
 }
 
@@ -2156,7 +2170,7 @@ impl<B: Backend> Frame<B> {
     fn new(
         context: &Context<B>,
         command_pool: &mut B::CommandPool,
-        timestamp_period_ns: u64,
+        #[allow(unused)] timestamp_period_ns: u64,
     ) -> DeviceResult<Self> {
         let device = context.device();
         let semaphore = device.create_semaphore()?;
@@ -2173,6 +2187,7 @@ impl<B: Backend> Frame<B> {
         unsafe {
             command_buffer.begin_primary(CommandBufferFlags::ONE_TIME_SUBMIT);
         }
+        #[cfg(feature = "profile")]
         let query_pool = context
             .profiler
             .as_ref()
@@ -2187,7 +2202,9 @@ impl<B: Backend> Frame<B> {
             mapping_chunks: HashMap::new(),
             syncs: Vec::new(),
             ready_to_submit: false,
+            #[cfg(feature = "profile")]
             query_pool,
+            #[cfg(feature = "profile")]
             compute_pass_metrics: Vec::new(),
         })
     }
@@ -2237,7 +2254,9 @@ impl<B: Backend> Frame<B> {
                         specialization,
                     }));
                 };
+                #[cfg(feature = "profile")]
                 let metric_id = self.compute_pass_metrics.len();
+                #[cfg(feature = "profile")]
                 if self.query_pool.is_some() {
                     self.compute_pass_metrics.push(ComputePassMetrics {
                         module_id: module.0,
@@ -2293,7 +2312,6 @@ impl<B: Backend> Frame<B> {
                         if type_eq::<B, DX12>() {
                             states.end |= State::SHADER_WRITE;
                         }
-
                         Barrier::Buffer {
                             states,
                             target: arg.slice.buffer(),
@@ -2307,6 +2325,7 @@ impl<B: Backend> Frame<B> {
                         Dependencies::empty(),
                         barriers,
                     );
+                    #[cfg(feature = "profile")]
                     if let Some(pool) = self.query_pool.as_deref() {
                         self.command_buffer.write_timestamp(
                             PipelineStage::COMPUTE_SHADER,
@@ -2317,6 +2336,7 @@ impl<B: Backend> Frame<B> {
                         )
                     }
                     self.command_buffer.dispatch(work_groups);
+                    #[cfg(feature = "profile")]
                     if let Some(pool) = self.query_pool.as_ref() {
                         self.command_buffer.write_timestamp(
                             PipelineStage::COMPUTE_SHADER,
@@ -2455,35 +2475,39 @@ impl<B: Backend> Frame<B> {
         self.ready_to_submit = true;
         Ok(Ok(()))
     }
-    fn poll(&mut self, context: &Context<B>) -> DeviceResult<bool> {
-        let device = context.device();
-        if unsafe { device.get_fence_status(&self.fence)? } {
-            for (chunk, offset) in self.mapping_chunks.drain() {
-                chunk.blocks.finish(offset);
-            }
-            for (slice, _) in self.writes.drain(..) {
-                slice.chunk.blocks.drop_guard();
-            }
-            for sync in self.syncs.drain(..) {
-                sync.store(true, Ordering::SeqCst);
-            }
-            if let Some((profiler, query_pool)) =
-                context.profiler.as_ref().zip(self.query_pool.as_mut())
-            {
-                unsafe {
-                    query_pool
-                        .get_compute_pass_timestamps(device, &mut self.compute_pass_metrics)?;
-                }
-                for metric in self.compute_pass_metrics.drain(..) {
-                    profiler.compute_pass(metric);
-                }
-            }
+    fn reset(&mut self, #[allow(unused)] context: &Context<B>) -> DeviceResult<()> {
+        for (chunk, offset) in self.mapping_chunks.drain() {
+            chunk.blocks.finish(offset);
+        }
+        for (slice, _) in self.writes.drain(..) {
+            slice.chunk.blocks.drop_guard();
+        }
+        for sync in self.syncs.drain(..) {
+            sync.store(true, Ordering::SeqCst);
+        }
+        #[cfg(feature = "profile")]
+        if let Some((profiler, query_pool)) =
+            context.profiler.as_ref().zip(self.query_pool.as_mut())
+        {
+            let device = context.device();
             unsafe {
-                self.command_buffer.reset(false);
-                self.command_buffer
-                    .begin_primary(CommandBufferFlags::ONE_TIME_SUBMIT);
-                self.descriptor_set_allocator.reset();
+                query_pool.get_compute_pass_timestamps(device, &mut self.compute_pass_metrics)?;
             }
+            for metric in self.compute_pass_metrics.drain(..) {
+                profiler.compute_pass(metric);
+            }
+        }
+        unsafe {
+            self.command_buffer.reset(false);
+            self.command_buffer
+                .begin_primary(CommandBufferFlags::ONE_TIME_SUBMIT);
+            self.descriptor_set_allocator.reset();
+        }
+        Ok(())
+    }
+    fn poll(&mut self, context: &Context<B>) -> DeviceResult<bool> {
+        if unsafe { context.device().get_fence_status(&self.fence)? } {
+            self.reset(context)?;
             Ok(true)
         } else {
             Ok(false)
@@ -2535,6 +2559,7 @@ impl<B: Backend> Frame<B> {
         device.destroy_semaphore(self.semaphore);
         device.destroy_fence(self.fence);
         self.descriptor_set_allocator.free(device);
+        #[cfg(feature = "profile")]
         if let Some(query_pool) = self.query_pool {
             query_pool.free(device);
         }
@@ -2548,6 +2573,7 @@ struct Context<B: Backend> {
     shader_semaphore: Semaphore,
     _adapter: Arc<Adapter<B>>,
     _instance: Arc<B::Instance>,
+    #[cfg(feature = "profile")]
     profiler: Option<Arc<Profiler>>,
 }
 
@@ -2557,7 +2583,7 @@ impl<B: Backend> Context<B> {
         allocator: Allocator<B>,
         adapter: Arc<Adapter<B>>,
         instance: Arc<B::Instance>,
-        profiler: Option<Arc<Profiler>>,
+        #[cfg(feature = "profile")] profiler: Option<Arc<Profiler>>,
     ) -> Self {
         Self {
             device,
@@ -2566,6 +2592,7 @@ impl<B: Backend> Context<B> {
             shader_semaphore: Semaphore::new(1),
             _adapter: adapter,
             _instance: instance,
+            #[cfg(feature = "profile")]
             profiler,
         }
     }

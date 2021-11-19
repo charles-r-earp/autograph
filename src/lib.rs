@@ -15,8 +15,8 @@
 //!     - Metal (MacOS / iOS) <https://developer.apple.com/metal/>
 //!     - DX12 (Windows) <https://docs.microsoft.com/windows/win32/directx>
 
+#![cfg_attr(feature = "profile", feature(lang_items))] // Hack to ensure nightly only for now.
 #![cfg_attr(feature = "bench", feature(test))]
-
 #[cfg(feature = "bench")]
 extern crate test;
 

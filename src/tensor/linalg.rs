@@ -78,7 +78,7 @@ fn gemm_impl<T: Scalar>(
     let [rsc, csc]: [isize; 2] = c.strides().try_into().unwrap();
     let [rsc, csc] = [rsc as i32, csc as i32];
 
-    let a0 = 0u32;
+    let a0 = 0f32;
 
     let name = format!(
         "gemm{}_{}",
@@ -87,9 +87,8 @@ fn gemm_impl<T: Scalar>(
     );
 
     let builder = match T::scalar_type() {
-        // TODO
-        // F32 => crate::rust_shaders::core()?.compute_pass(&format!("linalg::{}", name))?,
-        _ => crate::glsl_shaders::module(name)?.compute_pass("main")?,
+        BF16 => crate::glsl_shaders::module(name)?.compute_pass("main")?,
+        _ => crate::rust_shaders::core()?.compute_pass(format!("linalg::{}", name))?,
     };
 
     let builder = builder.slice(a.as_raw_slice())?.slice(b.as_raw_slice())?;
@@ -291,8 +290,6 @@ mod tests {
 
     test_dot!(
         f32;
-        tensor_dot_f32_m16_k16_n1_N_N => (12, 12, 1, N, N),
-        tensor_dot_f32_m1_k16_n1_N_N => (1, 12, 1, N, N),
         tensor_dot_f32_m21_k31_n41_N_N => (21, 31, 41, N, N),
         tensor_dot_f32_m121_k131_n141_N_N => (121, 131, 141, N, N),
         tensor_dot_f32_m121_k131_n141_T_N => (121, 131, 141, T, N),
@@ -357,14 +354,8 @@ mod tests {
 
         bench_dot!(
             f32;
-            tensor_dot_f32_m32_k32_n32_N_N => (32, 32, 32, N, N),
             tensor_dot_f32_m100_k100_n100_N_N => (100, 100, 100, N, N),
-        );
-
-        bench_dot!(
-            bf16;
-            tensor_dot_bf16_m32_k32_n32_N_N => (32, 32, 32, N, N),
-            tensor_dot_bf16_m100_k100_n100_N_N => (100, 100, 100, N, N),
+            tensor_dot_f32_m1024_k1024_n1024_N_N => (1024, 1024, 1024, N, N),
         );
     }
 }

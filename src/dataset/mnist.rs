@@ -79,6 +79,7 @@ use builders::MnistBuilder;
 /// The MNIST dataset.
 #[derive(Clone)]
 pub struct Mnist {
+    #[allow(unused)]
     kind: MnistKind,
     images: ArcArray<u8, Ix4>,
     classes: ArcArray1<u8>,

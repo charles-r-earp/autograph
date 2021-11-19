@@ -15,7 +15,7 @@ A machine learning library for Rust.
 To use **autograph** in your crate, add it as a dependency in Cargo.toml:
 ```
 [dependencies]
-autograph = { git = https://github.com/charles-r-earp/autograph }
+autograph = "0.1.0"
 ```
 
 # Requirements
@@ -258,9 +258,9 @@ impl Lenet5 {
 See the [Neural Network MNIST](examples/neural-network-mnist) example.
 
 # Profiling
-Set the AUTOGRAPH_PROFILE environmental variable to 1 or True to produce a table of statistics for compute passes that are executed.
+Currently requires nightly and feature "profile". Set the AUTOGRAPH_PROFILE environmental variable to 1 or True to produce a table of statistics for compute passes that are executed.
 ```
-AUTOGRAPH_PROFILE=1 cargo run
+AUTOGRAPH_PROFILE=1 cargo +nightly run --feature profile
 ```
 Will create a file "autograph_profile_summary.txt" like this:
 ```
@@ -306,6 +306,8 @@ Will create a file "autograph_profile_summary.txt" like this:
 | scaled_cast_f32_f32             | main                               | 0.00 %  | 132         | 31.00ns   | 4.10µs     |
 +---------------------------------+------------------------------------+---------+-------------+-----------+------------+
 ```
+### Note
+Specify the profile feature for autograph if it is a dependency as `autograph/profile`.
 
 
 # Developement Platforms

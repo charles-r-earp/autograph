@@ -2,9 +2,11 @@
 
 #include "buffer_macros.comp"
 
-#define M_TILE 8
-#define K_TILE 8
-#define N_TILE 8
+#define TILE 16
+
+#define M_TILE TILE
+#define K_TILE TILE
+#define N_TILE TILE
 
 layout(local_size_x = M_TILE, local_size_y = N_TILE) in;
 
@@ -56,9 +58,9 @@ void main() {
 
     uint tile_k;
     for(uint z = 0; z < k; ++z) {
-        tile_k = (z + K_TILE) % K_TILE;
+        tile_k = z % K_TILE;
         if (tile_k == 0) {
-            memoryBarrierShared();
+            barrier();
 
             if (global_x < m) {
                 a_tile[local_y][local_x] = BUFFER_LOAD(a, global_x * rsa + (z + local_y) * csa);
@@ -70,14 +72,7 @@ void main() {
 
             barrier();
         }
-
-        memoryBarrierShared();
-
-        if (valid) {
-            acc += a_tile[tile_k][local_x] * b_tile[tile_k][local_y];
-        }
-
-        barrier();
+        acc += a_tile[tile_k][local_x] * b_tile[tile_k][local_y];
     }
 
     if (valid) {

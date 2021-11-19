@@ -108,6 +108,7 @@ version = "1.8.1"
 
 [features]
 bench = []
+profile = []
 derive = ["autograph_derive"]
 device_tests = []
 full = ["iris", "mnist", "kmeans", "neural_network"]

@@ -13,3 +13,4 @@ crate-type = ["dylib"]
 [dependencies]
 spirv-std = { git = "https://github.com/EmbarkStudios/rust-gpu", features = ["glam"] }
 num-traits = { version = "0.2.14", default-features = false }
+crunchy = "0.2.2"

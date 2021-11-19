@@ -1,29 +1,10 @@
 use spirv_std::{
-    //memory::{Scope, Semantics},
-    //arch::{control_barrier, /* memory_barrier */},
+    memory::{Scope, Semantics},
+    arch::control_barrier,
     glam::UVec3,
 };
 use num_traits::NumAssign;
-
-trait Load<T> {
-    fn load(&self, index: usize) -> T;
-}
-
-trait Store<T> {
-    fn store(&mut self, index: usize, value: T);
-}
-
-impl Load<f32> for [f32] {
-    fn load(&self, index: usize) -> f32 {
-        self[index]
-    }
-}
-
-impl Store<f32> for [f32] {
-    fn store(&mut self, index: usize, value: f32) {
-        self[index] = value;
-    }
-}
+use crunchy::unroll;
 
 #[repr(C)]
 pub struct GemmPushConsts<T> {
@@ -33,40 +14,34 @@ pub struct GemmPushConsts<T> {
     m: u32,
     k: u32,
     n: u32,
-    rsa: i32,
-    csa: i32,
-    rsb: i32,
-    csb: i32,
-    rsc: i32,
-    csc: i32,
+    rsa: u32,
+    csa: u32,
+    rsb: u32,
+    csb: u32,
+    rsc: u32,
+    csc: u32,
 }
 
-#[allow(unused)]
-#[repr(u32)]
-#[derive(Copy, Clone)]
-enum Activation {
-    Identity,
-    Relu,
-}
+const TS: usize = 16;
 
-#[allow(unused)]
-fn gemm_impl<X, T: Copy + NumAssign + PartialOrd, const M_TILE: usize, const K_TILE: usize, const N_TILE: usize>(
+pub fn gemm<T: Copy + NumAssign + PartialEq>(
     global_id: UVec3,
     local_id: UVec3,
-    a: &[X],
-    a_tile: &mut [[T; M_TILE];  K_TILE],
-    b: &[X],
-    b_tile: &mut [[T; N_TILE]; K_TILE],
+    a: &[T],
+    a_tile: &mut [[T; TS]; TS],
+    b: &[T],
+    b_tile: &mut [[T; TS]; TS],
     use_bias: u32,
-    bias: &[X],
-    c: &mut [X],
-    activation: Activation,
+    bias: &[T],
+    c: &mut [T],
     push_consts: &GemmPushConsts<T>,
-) where [X]: Load<T> + Store<T> {
+) {
     let global_x = global_id.x as usize;
     let global_y = global_id.y as usize;
     let local_x = local_id.x as usize;
     let local_y = local_id.y as usize;
+    let alpha = push_consts.alpha;
+    let beta = push_consts.beta;
     let m = push_consts.m as usize;
     let k = push_consts.k as usize;
     let n = push_consts.n as usize;
@@ -77,82 +52,147 @@ fn gemm_impl<X, T: Copy + NumAssign + PartialOrd, const M_TILE: usize, const K_T
     let rsc = push_consts.rsc as usize;
     let csc = push_consts.csc as usize;
 
-    let mut valid = 0;
-    if global_x < m { if global_y < n {
-        valid = 1;
-    }}
+    let mut ntiles = k / TS;
+    if ntiles * TS < k {
+        ntiles += 1;
+    }
 
     let mut acc = T::zero();
-    for z in 0 .. k {
-        let tile_k = z % K_TILE;
-        if tile_k == 0 {
-            /*
-            unsafe {
-                memory_barrier::<{Scope::Workgroup as u32}, {Semantics::ACQUIRE_RELEASE.bits() | Semantics::WORKGROUP_MEMORY.bits()}>();
+    for t in 0 .. ntiles {
+        let z = t * TS;
+        a_tile[local_y][local_x] = if global_x < m {
+            if z + local_y < k {
+                a[global_x * rsa + (z + local_y) * csa]
+            } else {
+                T::zero()
             }
-            */
-            if global_x < m {
-                a_tile[local_y][local_x] = a.load(global_x * rsa + (z + local_y) * csa);
-            }
-
+        } else {
+            T::zero()
+        };
+        b_tile[local_x][local_y] = if z + local_x < k {
             if global_y < n {
-                b_tile[local_x][local_y] = b.load((z + local_x) * rsb + global_y * csb);
+                b[(z + local_x) * rsb + global_y * csb]
+            } else {
+                T::zero()
             }
-
-            /*unsafe {
-                control_barrier::<{Scope::Workgroup as u32}, {Scope::Workgroup as u32}, {Semantics::NONE.bits()}>;
-            }*/
-        }
-
-        /*
+        } else {
+            T::zero()
+        };
         unsafe {
-            memory_barrier::<{Scope::Workgroup as u32}, {Semantics::ACQUIRE_RELEASE.bits() | Semantics::WORKGROUP_MEMORY.bits()}>();
+            control_barrier::<{Scope::Workgroup as u32}, {Scope::Workgroup as u32}, {Semantics::NONE.bits()}>();
         }
-        */
-        if valid == 1 {
-            acc += a_tile[tile_k][local_x] * b_tile[tile_k][local_y];
-        }
-
-        /*unsafe {
-            control_barrier::<{Scope::Workgroup as u32}, {Scope::Workgroup as u32}, {Semantics::ACQUIRE_RELEASE.bits() | Semantics::WORKGROUP_MEMORY.bits()}>();
-        }*/
-    }
-
-    let mut y = push_consts.alpha * acc;
-
-    let cidx = global_x * rsc + global_y * csc;
-    if valid == 1 { if use_bias == 1 {
-        y += push_consts.beta * c.load(cidx);
-    }}
-
-    match activation {
-        Activation::Identity => (),
-        Activation::Relu => {
-            if y < T::zero() {
-                y *= push_consts.a0;
+        unroll! {
+            for u in 0 .. 16 {
+                acc += a_tile[u][local_x] * b_tile[u][local_y];
             }
         }
+        unsafe {
+            control_barrier::<{Scope::Workgroup as u32}, {Scope::Workgroup as u32}, {Semantics::NONE.bits()}>();
+        }
     }
-
-    if valid == 1 {
-        c.store(cidx, y);
-    }
+    if global_x < m { if global_y < n {
+        let idx = global_x * rsc + global_y * csc;
+        let mut y = alpha * acc;
+        if beta != T::zero() {
+            y += beta * c[idx];
+        }
+        if use_bias == 1 {
+            y += bias[global_y];
+        }
+        c[idx] = y;
+    }}
 }
 
 #[allow(unused_attributes)]
-#[spirv(compute(threads(8, 8)))]
+#[spirv(compute(threads(16, 16)))]
+pub fn gemm_u32(
+    #[spirv(global_invocation_id)]
+    global_id: UVec3,
+    #[spirv(local_invocation_id)]
+    local_id: UVec3,
+    #[spirv(storage_buffer, descriptor_set=0, binding=0)]
+    a: &[u32],
+    #[spirv(workgroup)]
+    a_tile: &mut [[u32; TS]; TS],
+    #[spirv(storage_buffer, descriptor_set=0, binding=1)]
+    b: &[u32],
+    #[spirv(workgroup)]
+    b_tile: &mut [[u32; TS]; TS],
+    #[spirv(storage_buffer, descriptor_set=0, binding=2)]
+    c: &mut [u32],
+    #[spirv(push_constant)]
+    push_consts: &GemmPushConsts<u32>,
+) {
+    gemm(global_id, local_id, a, a_tile, b, b_tile, 0, a, c, push_consts);
+}
+
+#[allow(unused_attributes)]
+#[spirv(compute(threads(16, 16)))]
+pub fn gemm_i32(
+    #[spirv(global_invocation_id)]
+    global_id: UVec3,
+    #[spirv(local_invocation_id)]
+    local_id: UVec3,
+    #[spirv(storage_buffer, descriptor_set=0, binding=0)]
+    a: &[i32],
+    #[spirv(workgroup)]
+    a_tile: &mut [[i32; TS]; TS],
+    #[spirv(storage_buffer, descriptor_set=0, binding=1)]
+    b: &[i32],
+    #[spirv(workgroup)]
+    b_tile: &mut [[i32; TS]; TS],
+    #[spirv(storage_buffer, descriptor_set=0, binding=2)]
+    c: &mut [i32],
+    #[spirv(push_constant)]
+    push_consts: &GemmPushConsts<i32>,
+) {
+    gemm(global_id, local_id, a, a_tile, b, b_tile, 0, a, c, push_consts);
+}
+
+#[allow(unused_attributes)]
+#[spirv(compute(threads(16, 16)))]
 pub fn gemm_f32(
     #[spirv(global_invocation_id)]
     global_id: UVec3,
     #[spirv(local_invocation_id)]
     local_id: UVec3,
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] a: &[f32],
-    #[spirv(workgroup)] a_tile: &mut [[f32; 8]; 8],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] b: &[f32],
-    #[spirv(workgroup)] b_tile: &mut [[f32; 8]; 8],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] c: &mut [f32],
+    #[spirv(storage_buffer, descriptor_set=0, binding=0)]
+    a: &[f32],
+    #[spirv(workgroup)]
+    a_tile: &mut [[f32; TS]; TS],
+    #[spirv(storage_buffer, descriptor_set=0, binding=1)]
+    b: &[f32],
+    #[spirv(workgroup)]
+    b_tile: &mut [[f32; TS]; TS],
+    #[spirv(storage_buffer, descriptor_set=0, binding=2)]
+    c: &mut [f32],
     #[spirv(push_constant)]
     push_consts: &GemmPushConsts<f32>,
 ) {
-    gemm_impl::<f32, f32, 8, 8, 8>(global_id, local_id, a, a_tile, b, b_tile, 0, a, c, Activation::Identity, push_consts)
+    gemm(global_id, local_id, a, a_tile, b, b_tile, 0, a, c, push_consts);
+}
+
+#[allow(unused_attributes)]
+#[spirv(compute(threads(16, 16)))]
+pub fn gemm_bias_f32(
+    #[spirv(global_invocation_id)]
+    global_id: UVec3,
+    #[spirv(local_invocation_id)]
+    local_id: UVec3,
+    #[spirv(storage_buffer, descriptor_set=0, binding=0)]
+    a: &[f32],
+    #[spirv(workgroup)]
+    a_tile: &mut [[f32; TS]; TS],
+    #[spirv(storage_buffer, descriptor_set=0, binding=1)]
+    b: &[f32],
+    #[spirv(workgroup)]
+    b_tile: &mut [[f32; TS]; TS],
+    #[spirv(storage_buffer, descriptor_set=0, binding=2)]
+    bias: &[f32],
+    #[spirv(storage_buffer, descriptor_set=0, binding=3)]
+    c: &mut [f32],
+    #[spirv(push_constant)]
+    push_consts: &GemmPushConsts<f32>,
+) {
+    gemm(global_id, local_id, a, a_tile, b, b_tile, 1, bias, c, push_consts);
 }
