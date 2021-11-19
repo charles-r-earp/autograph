@@ -193,7 +193,7 @@ fn col2im_2d_f32_impl(kernel_flip: bool, global_id: UVec3, x: &[f32], y: &mut [f
 }
 
 #[allow(unused_attributes)]
-#[spirv(compute(threads(1, 1)))]
+#[spirv(compute(threads(16, 16)))]
 pub fn col2im_2d_convolution_f32(
     #[spirv(global_invocation_id)]
     global_id: UVec3,

@@ -74,7 +74,7 @@ fn pool_2d_f32_impl(kind: PoolKind, global_id: UVec3, x: &[f32], y: &mut [f32], 
 }
 
 #[allow(unused_attributes)]
-#[spirv(compute(threads(8, 8)))]
+#[spirv(compute(threads(16, 16)))]
 pub fn max_pool_2d_f32(
     #[spirv(global_invocation_id)]
     global_id: UVec3,
@@ -87,7 +87,7 @@ pub fn max_pool_2d_f32(
 }
 
 #[allow(unused_attributes)]
-#[spirv(compute(threads(8, 8)))]
+#[spirv(compute(threads(16, 16)))]
 pub fn max_pool_indices_2d_f32(
     #[spirv(global_invocation_id)]
     global_id: UVec3,
@@ -305,7 +305,7 @@ fn min_usize(a: usize, b: usize) -> usize {
 }
 
 #[allow(unused_attributes)]
-#[spirv(compute(threads(8, 8)))]
+#[spirv(compute(threads(16, 16)))]
 pub fn max_pool_2d_backward_f32(
     #[spirv(global_invocation_id)]
     global_id: UVec3,
