@@ -1,4 +1,4 @@
-use crate::half::{bf16x2_to_vec2, vec2_to_bf16x2};
+use crate::{util::{Load, Store}, half::{bf16x2_to_vec2, vec2_to_bf16x2, bf16x2}};
 use spirv_std::glam::{UVec3, vec2};
 
 #[repr(C)]
@@ -6,26 +6,41 @@ pub struct ReluPushConsts {
     n: u32,
 }
 
+#[allow(unused)]
+fn relu<T>(
+    global_id: UVec3,
+    x: &[T],
+    y: &mut [T],
+    push_consts: &ReluPushConsts,
+) where [T]: Store<f32> {
+    let gid = global_id.x as usize;
+    let n = push_consts.n as usize;
+    if gid < n {
+        let x = x.load(gid);
+        y.store(gid, if x > 0. { x } else { 0. });
+    }
+}
+
 #[allow(unused_attributes)]
 #[spirv(compute(threads(64)))]
 pub fn relu_bf16(
     #[spirv(global_invocation_id)]
     global_id: UVec3,
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] x: &[u32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] y: &mut [u32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] x: &[bf16x2],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] y: &mut [bf16x2],
     #[spirv(push_constant)]
     push_consts: &ReluPushConsts,
 ) {
+    // Atomics not supported in rust-gpu yet.
+    // relu(global_id, x, y, push_consts);
+
     let gid = global_id.x as usize;
     let n = push_consts.n as usize;
     if gid * 2 < n {
-        let x = bf16x2_to_vec2(x[gid]);
-        let y0 = if x.x > 0. { x.x } else { 0. };
-        let y1 = if x.y > 0. { x.y } else { 0. };
-        /*if gid * 2 + 1 >= n {
-            //y1 = bf16x2_to_vec2(y[gid]).y;
-        }*/
-        y[gid] = vec2_to_bf16x2(vec2(y0, y1));
+        let x = x[gid].to_f32x2();
+        let y0 = if x[0] > 0. { x[0] } else { 0. };
+        let y1 = if x[1] > 0. { x[1] } else { 0. };
+        y[gid] = bf16x2::from_f32x2([y0, y1]);
     }
 }
 
@@ -39,12 +54,13 @@ pub fn relu_f32(
     #[spirv(push_constant)]
     push_consts: &ReluPushConsts,
 ) {
-    let gid = global_id.x as usize;
+    relu(global_id, x, y, push_consts);
+    /*let gid = global_id.x as usize;
     let n = push_consts.n as usize;
     if gid < n {
         let x = x[gid];
         y[gid] = if x > 0. { x } else { 0. };
-    }
+    }*/
 }
 
 #[allow(unused_attributes)]
