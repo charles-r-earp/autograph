@@ -34,7 +34,6 @@ void main() {
         }
         memoryBarrierShared();
     #endif
-    T scale = 1. / float(n);
     T acc;
     if (global_x < c) {
         #ifdef BF16
@@ -44,7 +43,7 @@ void main() {
         #endif
 
         for(uint i = 0; i < n; ++i) {
-            acc += scale * BUFFER_LOAD(dy, i * c + global_x);
+            acc += BUFFER_LOAD(dy, i * c + global_x);
         }
 
         #ifdef BF16

@@ -69,7 +69,7 @@ impl Sgd {
     ///
     /// If `learning_rate` is not between 0 and 1.
     pub fn new(learning_rate: f32) -> Result<Self> {
-        if !(0f32..1f32).contains(&learning_rate) {
+        if !(0f32..=1f32).contains(&learning_rate) {
             bail!("Learning rate must be between 0 and 1!");
         }
         Ok(Self {
@@ -84,12 +84,21 @@ impl Optimizer for Sgd {
     fn update(&mut self, parameters: &mut [&mut ParameterD]) -> Result<()> {
         for parameter in parameters {
             if let Some(grad) = parameter.take_grad() {
+                /*let array = smol::block_on(grad.cast_into::<f32>()?.read())?.into_array();
+                let n = array.len();
+                if n % 4 == 0 {
+                    let array = array.into_shape(n)?.into_shape([n/4, 4])?;
+                    println!("{:#?}", array);
+                } else {
+                    println!("{:?}", array);
+                }*/
                 parameter
                     .value_mut()
                     .make_mut()?
                     .scaled_add(-self.learning_rate, &grad)?;
             }
         }
+        //todo!();
         Ok(())
     }
 }

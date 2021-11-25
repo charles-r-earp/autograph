@@ -17,3 +17,4 @@ pub mod kernel;
 pub mod reorder;
 pub mod pool;
 pub mod linalg;
+pub mod criterion;

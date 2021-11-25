@@ -173,7 +173,7 @@ async fn train<L: Layer + Debug + Serialize + for<'de> Deserialize<'de>>(device:
         // Load the trainer from a file.
         Some(save_path) if save_path.exists() => bincode::deserialize(& fs::read(save_path)?)?,
         // Use the provided layer.
-        _ => NetworkTrainer::from_network(layer.into()),
+        _ => NetworkTrainer::from_network(layer.into())
     };
 
     // Transfer the trainer to the device. Most operations (ie compute shaders) only

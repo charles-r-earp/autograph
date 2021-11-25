@@ -183,7 +183,7 @@ impl Conv {
         let kernel_dim_slice = kernel_dim_array.as_slice_mut().unwrap();
         kernel_dim_slice[..2].copy_from_slice([outputs, inputs].as_ref());
         kernel_dim_slice[2..].copy_from_slice(kernel.slice());
-        let a = f32::sqrt(1. / (inputs * kernel.size()) as f32);
+        let a = f32::sqrt(2. / (inputs * kernel.size()) as f32);
         let data = Uniform::new(-a, a)
             .sample_iter(&mut rand::thread_rng())
             .take(kernel_dim.size())
@@ -262,7 +262,7 @@ impl Conv {
         if bias {
             let inputs = self.weight.shape()[1];
             let outputs = self.weight.shape()[0];
-            let a = f32::sqrt(1. / inputs as f32);
+            let a = f32::sqrt(2. / inputs as f32);
             let data = Uniform::new(-a, a)
                 .sample_iter(&mut rand::thread_rng())
                 .take(outputs)
@@ -352,7 +352,7 @@ impl Dense {
     ///
     /// The weight is initialized with a uniform distribution of (-a, a) where a = sqrt(1 / inputs).
     pub fn from_inputs_outputs(inputs: usize, outputs: usize) -> Self {
-        let a = f32::sqrt(1. / inputs as f32);
+        let a = f32::sqrt(2. / inputs as f32);
         let data = Uniform::new(-a, a)
             .sample_iter(&mut rand::thread_rng())
             .take(inputs * outputs)
@@ -372,7 +372,7 @@ impl Dense {
         if bias {
             let inputs = self.weight.shape()[1];
             let outputs = self.weight.shape()[0];
-            let a = f32::sqrt(1. / inputs as f32);
+            let a = f32::sqrt(2. / inputs as f32);
             let data = Uniform::new(-a, a)
                 .sample_iter(&mut rand::thread_rng())
                 .take(outputs)

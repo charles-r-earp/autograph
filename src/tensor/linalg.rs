@@ -234,7 +234,7 @@ mod tests {
 
     macro_rules! check_arrays {
         (f32 => ($a:expr, $b:expr)) => {
-            assert_relative_eq!($a, $b, max_relative = 0.000_1);
+            assert_relative_eq!($a, $b);
         };
         (bf16 => ($a:expr, $b:expr)) => {
             let b = $b.map(|x| x.to_f32());

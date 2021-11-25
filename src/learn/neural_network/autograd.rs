@@ -6,6 +6,7 @@ use crate::{
     ops::AddAssign,
     ops::{Col2Im, Im2Col, KernelArgs, KernelKind},
     result::Result,
+    rust_shaders,
     scalar::FloatType,
     tensor::float::{
         FloatArcTensor, FloatArcTensor2, FloatData, FloatTensor, FloatTensor2, FloatTensorBase,
@@ -1003,9 +1004,11 @@ impl Backward for DotBackward {
         }
         if let Some(dw) = w.grad() {
             let mut dw = dw.lock();
-            x.value()
-                .t()
-                .dot_acc(1. / dy.dim().0 as f32, &dy.view(), &mut dw.zeroed_mut()?)?;
+            x.value().t().dot_acc(
+                1., /* / dy.dim().0 as f32*/
+                &dy.view(),
+                &mut dw.zeroed_mut()?,
+            )?;
         }
         if let Some(db) = self.bias.as_ref().map(Vertex::grad).flatten() {
             let mut db = db.lock();
@@ -1173,30 +1176,17 @@ fn cross_entropy_loss(input: &FloatTensorView2, target: &FloatTensorView2) -> Re
     let device = input.device();
     let (n, nclasses) = input.dim();
     let float_type = input.float_type();
-    let mut output = match float_type {
-        FloatType::BF16 => FloatTensor::zeros(float_type, device, [n, nclasses])?,
-        FloatType::F32 => unsafe { FloatTensor::alloc(float_type, device, [n, nclasses])? },
-    };
-    let nclasses_str = if nclasses <= 64 {
-        "64"
-    } else if nclasses <= 256 {
-        "256"
-    } else if nclasses <= 1024 {
-        "1024"
-    } else {
-        bail!("nclasses > 1024 unimplemented!");
-    };
-    let input_slice = input.to_slice()?;
-    let target_slice = target.to_slice()?;
-    let name = format!(
-        "cross_entropy_loss_{}_{}",
-        float_type.as_str(),
-        nclasses_str
-    );
-    let builder = glsl_shaders::module(&name)?
-        .compute_pass("main")?
-        .float_slice(input_slice.as_slice())?
-        .float_slice(target_slice.as_slice())?
+    if float_type == FloatType::BF16 {
+        todo!();
+    }
+    let mut output = unsafe { FloatTensor::alloc(float_type, device, [n, nclasses])? };
+    let input = input.as_standard_layout()?;
+    let target = target.as_standard_layout()?;
+    let name = format!("criterion::cross_entropy_loss_{}", float_type.as_str());
+    let builder = rust_shaders::core()?
+        .compute_pass(name)?
+        .float_slice(input.as_raw_slice())?
+        .float_slice(target.as_raw_slice())?
         .float_slice_mut(output.as_raw_slice_mut())?
         .push([n as u32, nclasses as u32])?;
     unsafe {
@@ -1212,20 +1202,26 @@ fn cross_entropy_loss_backward(
     output_grad: &FloatTensorView0,
 ) -> Result<()> {
     let n = input.dim().0 as u32;
+    let nclasses = input.dim().1 as u32;
     let float_type = input.float_type();
     let input_slice = input.to_slice()?;
     let target_slice = target.to_slice()?;
     let output_grad_slice = output_grad.to_slice()?;
-    let builder = glsl_shaders::module(&format!(
-        "cross_entropy_loss_backward_{}",
-        float_type.as_str()
-    ))?
-    .compute_pass("main")?
-    .float_slice(input_slice.as_slice())?
-    .float_slice_mut(input_grad.as_raw_slice_mut())?
-    .float_slice(target_slice.as_slice())?
-    .float_slice(output_grad_slice.as_slice())?
-    .push(n)?;
+
+    if float_type == FloatType::BF16 {
+        bail!("Not yet implemented!");
+    }
+
+    let builder = rust_shaders::core()?
+        .compute_pass(&format!(
+            "criterion::cross_entropy_loss_backward_{}",
+            float_type.as_str()
+        ))?
+        .float_slice(input_slice.as_slice())?
+        .float_slice_mut(input_grad.as_raw_slice_mut())?
+        .float_slice(target_slice.as_slice())?
+        .float_slice(output_grad_slice.as_slice())?
+        .push([n, nclasses])?;
     unsafe { builder.submit([n, 1, 1]) }
 }
 
@@ -1279,9 +1275,8 @@ mod tests {
     use num_traits::FromPrimitive;
 
     fn array_bias_backward(db: &mut ArrayViewMut1<f32>, dy: &ArrayView2<f32>) {
-        let scale = 1. / dy.dim().0 as f32;
         for (db, dy) in db.iter_mut().zip(dy.axis_iter(Axis(1))) {
-            *db += dy.iter().map(|dy| scale * *dy).sum::<f32>();
+            *db += dy.iter().copied().sum::<f32>();
         }
     }
 
@@ -1371,18 +1366,71 @@ mod tests {
         if type_eq::<T, bf16>() {
             assert_relative_eq!(y_array, y_true, epsilon = 0.01, max_relative = 0.01);
         } else {
-            assert_relative_eq!(y_array, y_true, max_relative = 0.000_1);
+            assert_relative_eq!(y_array, y_true, max_relative = 0.000_001);
+        }
+        Ok(())
+    }
+
+    /*#[tokio::test]
+    async fn cross_entropy_loss_bf16() -> Result<()> {
+        test_cross_entropy_loss::<bf16>().await
+    }*/
+
+    #[tokio::test]
+    async fn cross_entropy_loss_f32() -> Result<()> {
+        test_cross_entropy_loss::<f32>().await
+    }
+
+    fn array_cross_entropy_loss_backward(x: &ArrayView2<f32>, t: &ArrayView2<f32>) -> Array2<f32> {
+        let mut dx = Array::zeros(x.raw_dim());
+        let dy = 1. / x.dim().0 as f32;
+        for (mut dx, (x, t)) in dx.outer_iter_mut().zip(x.outer_iter().zip(t.outer_iter())) {
+            let m = x.iter().copied().fold(x[0], |m, x| m.max(x));
+            let s: f32 = x.iter().map(|x| (x - m).exp()).sum();
+            for (dx, (x, t)) in dx.iter_mut().zip(x.iter().copied().zip(t.iter().copied())) {
+                *dx += dy * ((x - m).exp() / s - t);
+            }
+        }
+        dx
+    }
+
+    async fn test_cross_entropy_loss_backward<T: Float + From<u8> + FromPrimitive>() -> Result<()> {
+        let n = 67;
+        let c = 9;
+        let x_data: Vec<T> = (0..n * c).into_iter().map(|x| (x as u8).into()).collect();
+        let t_data: Vec<T> = x_data.iter().copied().rev().collect();
+        let x_array = Array::from_shape_vec([n, c], x_data)?;
+        let t_array = Array::from_shape_vec([n, c], t_data)?;
+        let dx_true = {
+            let x_array = x_array.map(|x| x.to_f32().unwrap());
+            let t_array = t_array.map(|t| t.to_f32().unwrap());
+            array_cross_entropy_loss_backward(&x_array.view(), &t_array.view())
+        };
+        let device = Device::new()?;
+        let _s = device.acquire().await;
+        let x = CowTensor::from(x_array.view())
+            .into_device(device.clone())
+            .await?
+            .into_float();
+        let t = CowTensor::from(t_array.view())
+            .into_device(device.clone())
+            .await?
+            .into_float();
+        let mut dx = FloatTensor::zeros(T::float_type(), device.clone(), x.raw_dim())?;
+        let dy = FloatTensor::ones(T::float_type(), device.clone(), ())?;
+        cross_entropy_loss_backward(&x.view(), &mut dx.view_mut(), &t.view(), &dy.view())?;
+        let dx = dx.cast_into::<f32>()?.read().await?;
+        let dx_array = dx.as_array();
+        if type_eq::<T, bf16>() {
+            assert_relative_eq!(dx_array, dx_true, epsilon = 0.01, max_relative = 0.01);
+        } else {
+            assert_relative_eq!(dx_array, dx_true);
         }
         Ok(())
     }
 
     #[tokio::test]
-    async fn cross_entropy_loss_bf16() -> Result<()> {
-        test_cross_entropy_loss::<bf16>().await
-    }
-
-    #[tokio::test]
-    async fn cross_entropy_loss_f32() -> Result<()> {
-        test_cross_entropy_loss::<f32>().await
+    async fn cross_entropy_loss_backward_f32() -> Result<()> {
+        test_cross_entropy_loss_backward::<f32>().await
     }
 }
