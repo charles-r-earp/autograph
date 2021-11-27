@@ -332,6 +332,7 @@ pub mod builders {
             } else {
                 self.device.replace(device.clone());
             }
+            self.check_args_size(self.args.len() + 1, false)?;
             let declared_mutable = *self.descriptor.buffers.get(self.args.len()).unwrap();
             if !mutable && declared_mutable {
                 bail!(
@@ -340,9 +341,6 @@ pub mod builders {
                     self.module,
                     &self.entry,
                 )
-            }
-            if cfg!(debug_assertions) {
-                self.check_args_size(self.args.len() + 1, false)?;
             }
             self.args.push(ComputePassArg { buffer, mutable });
             Ok(ComputePassBuilder {

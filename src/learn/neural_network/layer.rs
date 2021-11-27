@@ -550,8 +550,7 @@ impl PoolKind for PoolMax {
 
 /// Marker for [`MeanPool`].
 #[derive(Default, Clone, Serialize, Deserialize)]
-/* backward not working yet */
-struct PoolMean {}
+pub struct PoolMean {}
 
 impl PoolKindBase for PoolMean {}
 
@@ -575,12 +574,10 @@ pub struct PoolBase<K: PoolKind> {
 /// See [`PoolBase`].
 pub type MaxPool = PoolBase<PoolMax>;
 
-/*
 /// MeanPool
 ///
-/// See [`PoolBase`]. */
-#[allow(unused)]
-type MeanPool = PoolBase<PoolMean>;
+/// See [`PoolBase`].
+pub type MeanPool = PoolBase<PoolMean>;
 
 impl<K: PoolKind> PoolBase<K> {
     /// Creates a new pool with `kernel`.
@@ -624,6 +621,13 @@ impl<K: PoolKind> PoolBase<K> {
                     self.kernel.slice()
                 );
             }
+        }
+        if K::kind() == PoolingKind::Mean && strides != self.kernel {
+            bail!(
+                "MeanPool with kernel {:?} != strides {:?} not yet implemented!",
+                self.kernel.slice(),
+                strides.slice()
+            );
         }
         self.strides = strides;
         Ok(self)
@@ -740,17 +744,15 @@ fn pool_forward(
 
 fn pool_backward(
     kind: PoolingKind,
+    input_grad: &mut FloatTensorViewMutD,
     indices: Option<&TensorD<u32>>,
-    input_shape: &[usize],
     output_grad: FloatTensorD,
     kernel: &IxDyn,
     strides: &IxDyn,
     padding: &IxDyn,
-) -> Result<FloatTensorD> {
-    debug_assert_eq!(kernel.ndim() + 2, input_shape.len());
+) -> Result<()> {
+    debug_assert_eq!(kernel.ndim() + 2, input_grad.ndim());
     let output_grad = output_grad.into_standard_layout()?;
-    let mut input_grad =
-        unsafe { FloatTensor::alloc(output_grad.float_type(), output_grad.device(), input_shape)? };
     match kernel.ndim() {
         2 => {
             let (bs, ic, ih, iw) = input_grad.view().into_dimensionality::<Ix4>()?.dim();
@@ -779,19 +781,31 @@ fn pool_backward(
                 .push([kernel[0] as u32, kernel[1] as u32])?
                 .push([strides[0] as u32, strides[1] as u32])?
                 .push([padding[0] as u32, padding[1] as u32])?
-                .push([dilation[0] as u32, dilation[1] as u32])?
-                .push([s_bez_h as u32, s_bez_w as u32])?
-                .push([d_bez_h as u32, d_bez_w as u32])?
-                .push([gcd_h as u32, gcd_w as u32])?;
-            let h = (ih - 1) / gcd_h + 1;
-            let w = (iw - 1) / gcd_w + 1;
+                .push([dilation[0] as u32, dilation[1] as u32])?;
+            let builder = if kind == PoolingKind::Max {
+                builder
+                    .push([s_bez_h as u32, s_bez_w as u32])?
+                    .push([d_bez_h as u32, d_bez_w as u32])?
+                    .push([gcd_h as u32, gcd_w as u32])?
+            } else {
+                builder
+            };
+            let global_x = (bs * ic) as u32;
+            let global_y = match kind {
+                PoolingKind::Max => {
+                    let h = (ih - 1) / gcd_h + 1;
+                    let w = (iw - 1) / gcd_w + 1;
+                    (h * w) as u32
+                }
+                PoolingKind::Mean => (oh * ow) as u32,
+            };
             unsafe {
-                builder.submit([(bs * ic) as u32, (h * w) as u32, 1])?;
+                builder.submit([global_x, global_y, 1])?;
             }
         }
         _ => bail!("Unimplemented!"),
     }
-    Ok(input_grad)
+    Ok(())
 }
 
 #[derive(Autograd)]
@@ -808,16 +822,15 @@ struct PoolBackward {
 
 impl Backward for PoolBackward {
     fn backward(&self, output_grad: FloatTensorD) -> Result<()> {
-        self.input_grad.lock().add_assign(pool_backward(
+        pool_backward(
             self.kind,
+            &mut self.input_grad.lock().zeroed_mut()?,
             self.indices.as_ref(),
-            self.input_grad.shape(),
             output_grad,
             &self.kernel,
             &self.strides,
             &self.padding,
-        )?)?;
-        Ok(())
+        )
     }
 }
 
@@ -1165,21 +1178,20 @@ mod tests {
             None
         };
         let dy = Tensor::from(dy_array.map(|y| T::from_f32(*y).unwrap()))
-            .into_device(device)
+            .into_device(device.clone())
             .await?
             .into_float();
-        let dx = super::pool_backward(
+        let mut dx = FloatTensor::zeros(T::float_type(), device, x.shape())?;
+        super::pool_backward(
             K::kind(),
+            &mut dx.view_mut(),
             ix.as_ref(),
-            x.shape(),
             dy,
             &pool.kernel,
             &pool.strides,
             &pool.padding,
-        )?
-        .cast_into::<T>()?
-        .read()
-        .await?;
+        )?;
+        let dx = dx.cast_into::<T>()?.read().await?;
         assert_eq!(dx.as_array(), dx_array.view());
         Ok(())
     }
@@ -1192,6 +1204,11 @@ mod tests {
         )
         .await?;
         pool_backward::<f32, _>(
+            &[1, 1, 4, 4],
+            &MaxPool::from_kernel([2, 2]).with_strides(1)?,
+        )
+        .await?;
+        pool_backward::<f32, _>(
             &[2, 4, 9, 9],
             &MaxPool::from_kernel([3, 3]).with_strides(3)?,
         )
@@ -1199,12 +1216,16 @@ mod tests {
         Ok(())
     }
 
-    #[ignore]
     #[tokio::test]
     async fn mean_pool_2d_backward_f32() -> Result<()> {
         pool_backward::<f32, _>(
             &[1, 1, 4, 4],
-            &MeanPool::from_kernel([2, 2]).with_strides(2)?,
+            &MeanPool::from_kernel([2, 2]).with_strides([2, 2])?,
+        )
+        .await?;
+        pool_backward::<f32, _>(
+            &[2, 4, 9, 9],
+            &MeanPool::from_kernel([3, 3]).with_strides(3)?,
         )
         .await?;
         Ok(())
