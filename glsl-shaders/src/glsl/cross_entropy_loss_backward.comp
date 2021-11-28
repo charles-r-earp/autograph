@@ -32,7 +32,7 @@ void main() {
         T x = BUFFER_LOAD(x, tid);
         T x_hat = 1 / (1 + exp(-x));
         T dy = BUFFER_LOAD(dy, 0);
-        acc += (1 / n) dy * (x_hat - BUFFER_LOAD(t, tid));
+        acc += (1 / n) * dy * (x_hat - BUFFER_LOAD(t, tid));
 
         BUFFER_STORE(dx, tid, acc);
     }

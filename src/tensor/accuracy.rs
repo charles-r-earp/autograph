@@ -31,7 +31,7 @@ mod tests {
 
     #[tokio::test]
     async fn accuracy_u32() -> Result<()> {
-        let x_vec = (0..33).into_iter().collect::<Vec<u32>>();
+        let x_vec = (0..1033).into_iter().collect::<Vec<u32>>();
         let t_vec = x_vec
             .iter()
             .map(|x| if x % 3 == 0 { *x } else { *x + 1 })

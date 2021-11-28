@@ -278,6 +278,141 @@ impl<L, C, O> Deref for NetworkTrainer<L, C, O> {
     }
 }
 
+fn test<L, C, S1, D1, U, S2, D2, I>(
+    network: &Network<L>,
+    criterion: &C,
+    test_iter: I,
+) -> Result<Stats>
+where
+    L: Layer,
+    C: Criterion<Variable<D2::Larger>, TensorBase<S2, D2>, Output = Variable0>,
+    S1: FloatData,
+    D1: Dimension,
+    U: Uint,
+    S2: Data<Elem = U>,
+    D2: Dimension,
+    I: IntoIterator<Item = Result<(FloatTensorBase<S1, D1>, TensorBase<S2, D2>)>>,
+{
+    smol::block_on(async {
+        let mut count = 0;
+        let mut loss: Option<FloatTensor0> = None;
+        let mut correct: Option<Tensor0<u32>> = None;
+        for x in test_iter {
+            let (x, t) = x?;
+            count += x.shape().first().copied().unwrap_or(0);
+            let y = network.forward(x.into_shared()?.into_dyn().into())?;
+            let pred = y.value().argmax_axis(Axis(1))?.into_dimensionality()?;
+            if let Some(correct) = correct.as_mut() {
+                pred.accuracy_with(&t.view(), &mut correct.view_mut())?;
+            } else {
+                correct.replace(pred.accuracy(&t.view())?);
+            };
+            let batch_loss = criterion.eval(y.into_dimensionality()?, t)?;
+            if let Some(loss) = loss.as_mut() {
+                loss.add_assign(batch_loss.value())?;
+            } else {
+                loss.replace(batch_loss.value().view().into_owned()?);
+            }
+        }
+        let loss_fut = if let Some(loss) = loss {
+            Some(loss.scale_into(1. / count as f32)?.read())
+        } else {
+            None
+        };
+        let correct_fut = correct.map(|correct| correct.read());
+
+        let loss = if let Some(loss_fut) = loss_fut {
+            loss_fut.await?.as_array().first().copied()
+        } else {
+            None
+        };
+        let correct = if let Some(correct_fut) = correct_fut {
+            correct_fut
+                .await?
+                .as_array()
+                .first()
+                .map(|correct| *correct as usize)
+        } else {
+            None
+        };
+
+        Ok(Stats {
+            count,
+            loss,
+            correct,
+        })
+    })
+}
+
+fn train<L, C, O, S1, D1, U, S2, D2, I>(
+    network: &mut Network<L>,
+    criterion: &C,
+    optimizer: &mut O,
+    train_iter: I,
+) -> Result<Stats>
+where
+    L: Layer,
+    C: Criterion<Variable<D2::Larger>, TensorBase<S2, D2>, Output = Variable0>,
+    O: Optimizer,
+    S1: FloatData,
+    D1: Dimension,
+    U: Uint,
+    S2: Data<Elem = U>,
+    D2: Dimension,
+    I: IntoIterator<Item = Result<(FloatTensorBase<S1, D1>, TensorBase<S2, D2>)>>,
+{
+    smol::block_on(async {
+        let mut train_count = 0;
+        let mut train_loss: Option<FloatTensor0> = None;
+        let mut train_correct: Option<Tensor0<u32>> = None;
+        let mut train_iter = train_iter.into_iter();
+        while let Some((x, t)) = train_iter.next().transpose()? {
+            train_count += x.shape().first().copied().unwrap_or(0);
+            let x = Variable::from(x.into_shared()?.into_dyn()).with_training(true);
+            let y = network.forward(x)?;
+            let pred = y.value().argmax_axis(Axis(1))?.into_dimensionality()?;
+            if let Some(train_correct) = train_correct.as_mut() {
+                pred.accuracy_with(&t.view(), &mut train_correct.view_mut())?;
+            } else {
+                train_correct.replace(pred.accuracy(&t.view())?);
+            };
+            let batch_loss = criterion.eval(y.into_dimensionality()?, t)?;
+            if let Some(train_loss) = train_loss.as_mut() {
+                train_loss.add_assign(batch_loss.value())?;
+            } else {
+                train_loss.replace(batch_loss.value().view().into_owned()?);
+            }
+            batch_loss.backward()?;
+            network.update(optimizer)?;
+        }
+        let train_loss_fut = if let Some(train_loss) = train_loss {
+            Some(train_loss.scale_into(1. / train_count as f32)?.read())
+        } else {
+            None
+        };
+        let train_correct_fut = train_correct.map(|train_correct| train_correct.read());
+        let train_loss = if let Some(train_loss_fut) = train_loss_fut {
+            train_loss_fut.await?.as_array().first().copied()
+        } else {
+            None
+        };
+        let train_correct = if let Some(train_correct_fut) = train_correct_fut {
+            train_correct_fut
+                .await?
+                .as_array()
+                .first()
+                .map(|correct| *correct as usize)
+        } else {
+            None
+        };
+        Ok(Stats {
+            count: train_count,
+            loss: train_loss,
+            correct: train_correct,
+        })
+    })
+}
+
 impl<
         L: Layer,
         O,
@@ -293,55 +428,7 @@ impl<
     where
         I: IntoIterator<Item = Result<(FloatTensorBase<S1, D1>, TensorBase<S2, D2>)>>,
     {
-        smol::block_on(async {
-            let mut count = 0;
-            let mut loss: Option<FloatTensor0> = None;
-            let mut correct: Option<Tensor0<u32>> = None;
-            for x in test_iter {
-                let (x, t) = x?;
-                count += x.shape().first().copied().unwrap_or(0);
-                let y = self.forward(x.into_shared()?.into_dyn().into())?;
-                let pred = y.value().argmax_axis(Axis(1))?.into_dimensionality()?;
-                if let Some(correct) = correct.as_mut() {
-                    pred.accuracy_with(&t.view(), &mut correct.view_mut())?;
-                } else {
-                    correct.replace(pred.accuracy(&t.view())?);
-                };
-                let batch_loss = self.criterion.eval(y.into_dimensionality()?, t)?;
-                if let Some(loss) = loss.as_mut() {
-                    loss.add_assign(batch_loss.value())?;
-                } else {
-                    loss.replace(batch_loss.value().view().into_owned()?);
-                }
-            }
-            let loss_fut = if let Some(loss) = loss {
-                Some(loss.scale_into(1. / count as f32)?.read())
-            } else {
-                None
-            };
-            let correct_fut = correct.map(|correct| correct.read());
-
-            let loss = if let Some(loss_fut) = loss_fut {
-                loss_fut.await?.as_array().first().copied()
-            } else {
-                None
-            };
-            let correct = if let Some(correct_fut) = correct_fut {
-                correct_fut
-                    .await?
-                    .as_array()
-                    .first()
-                    .map(|correct| *correct as usize)
-            } else {
-                None
-            };
-
-            Ok(Stats {
-                count,
-                loss,
-                correct,
-            })
-        })
+        test(&self.network, &self.criterion, test_iter)
     }
 }
 
@@ -375,106 +462,9 @@ impl<
         let criterion = &self.criterion;
         let optimizer = &mut self.optimizer;
         self.summary.run_epoch(|_| {
-            smol::block_on(async {
-                let mut train_count = 0;
-                let mut train_loss: Option<FloatTensor0> = None;
-                let mut train_correct: Option<Tensor0<u32>> = None;
-                let mut train_iter = train_iter.into_iter();
-                while let Some((x, t)) = train_iter.next().transpose()? {
-                    train_count += x.shape().first().copied().unwrap_or(0);
-                    let x = Variable::from(x.into_shared()?.into_dyn()).with_training(true);
-                    let y = network.forward(x)?;
-                    let pred = y.value().argmax_axis(Axis(1))?.into_dimensionality()?;
-                    if let Some(train_correct) = train_correct.as_mut() {
-                        pred.accuracy_with(&t.view(), &mut train_correct.view_mut())?;
-                    } else {
-                        train_correct.replace(pred.accuracy(&t.view())?);
-                    };
-                    let batch_loss = criterion.eval(y.into_dimensionality()?, t)?;
-                    if let Some(train_loss) = train_loss.as_mut() {
-                        train_loss.add_assign(batch_loss.value())?;
-                    } else {
-                        train_loss.replace(batch_loss.value().view().into_owned()?);
-                    }
-                    batch_loss.backward()?;
-                    network.update(optimizer)?;
-                }
-
-                let mut test_count = 0;
-                let mut test_loss: Option<FloatTensor0> = None;
-                let mut test_correct: Option<Tensor0<u32>> = None;
-                let mut test_iter = test_iter.into_iter();
-                while let Some((x, t)) = test_iter.next().transpose()? {
-                    test_count += x.shape().first().copied().unwrap_or(0);
-                    let y = network.forward(x.into_shared()?.into_dyn().into())?;
-                    let pred = y.value().argmax_axis(Axis(1))?.into_dimensionality()?;
-                    if let Some(test_correct) = test_correct.as_mut() {
-                        pred.accuracy_with(&t.view(), &mut test_correct.view_mut())?;
-                    } else {
-                        test_correct.replace(pred.accuracy(&t.view())?);
-                    };
-                    let batch_loss = criterion.eval(y.into_dimensionality()?, t)?;
-                    if let Some(test_loss) = test_loss.as_mut() {
-                        test_loss.add_assign(batch_loss.value())?;
-                    } else {
-                        test_loss.replace(batch_loss.value().view().into_owned()?);
-                    }
-                }
-
-                let train_loss_fut = if let Some(train_loss) = train_loss {
-                    Some(train_loss.scale_into(1. / train_count as f32)?.read())
-                } else {
-                    None
-                };
-                let train_correct_fut = train_correct.map(|train_correct| train_correct.read());
-                let test_loss_fut = if let Some(test_loss) = test_loss {
-                    Some(test_loss.scale_into(1. / test_count as f32)?.read())
-                } else {
-                    None
-                };
-                let test_correct_fut = test_correct.map(|test_correct| test_correct.read());
-
-                let train_loss = if let Some(train_loss_fut) = train_loss_fut {
-                    train_loss_fut.await?.as_array().first().copied()
-                } else {
-                    None
-                };
-                let train_correct = if let Some(train_correct_fut) = train_correct_fut {
-                    train_correct_fut
-                        .await?
-                        .as_array()
-                        .first()
-                        .map(|correct| *correct as usize)
-                } else {
-                    None
-                };
-                let test_loss = if let Some(test_loss_fut) = test_loss_fut {
-                    test_loss_fut.await?.as_array().first().copied()
-                } else {
-                    None
-                };
-                let test_correct = if let Some(test_correct_fut) = test_correct_fut {
-                    test_correct_fut
-                        .await?
-                        .as_array()
-                        .first()
-                        .map(|correct| *correct as usize)
-                } else {
-                    None
-                };
-
-                let train_stats = Stats {
-                    count: train_count,
-                    loss: train_loss,
-                    correct: train_correct,
-                };
-                let test_stats = Stats {
-                    count: test_count,
-                    loss: test_loss,
-                    correct: test_correct,
-                };
-                Ok((train_stats, test_stats))
-            })
+            let train_stats = train(network, criterion, optimizer, train_iter)?;
+            let test_stats = test(network, criterion, test_iter)?;
+            Ok((train_stats, test_stats))
         })
     }
 }

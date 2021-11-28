@@ -9,9 +9,9 @@ use autograph::{
         Summarize, Train, Test,
     },
     result::Result,
-    tensor::{float::FloatTensor4, Tensor1, TensorView},
+    tensor::{Tensor, float::FloatTensor4, Tensor1, TensorView},
 };
-use ndarray::{s, ArrayView1, ArrayView4, Axis};
+use ndarray::{s, Array1, ArrayView1, ArrayView4, Axis};
 use argparse::{ArgumentParser, Store, StoreConst, StoreTrue};
 use indicatif::{ProgressStyle, ProgressBar, ProgressIterator};
 use serde::{Serialize, Deserialize};
@@ -21,6 +21,7 @@ use std::{
     path::PathBuf,
     fs,
 };
+use rand::seq::SliceRandom;
 
 #[derive(Clone, Copy)]
 enum NetworkKind {
@@ -218,6 +219,39 @@ async fn train<L: Layer + Debug + Serialize + for<'de> Deserialize<'de>>(device:
             })
     }
 
+    // Shuffled training data iterator
+    fn shuffled_batch_iter<'a>(
+        device: &'a Device,
+        images: &'a ArrayView4<'a, u8>,
+        classes: &'a ArrayView1<'a, u8>,
+        batch_size: usize,
+    ) -> impl ExactSizeIterator<Item = Result<(FloatTensor4, Tensor1<u8>)>> + 'a {
+        let mut indices = (0 .. images.shape()[0]).into_iter().collect::<Vec<usize>>();
+        indices.shuffle(&mut rand::thread_rng());
+        (0 .. indices.len())
+            .into_iter()
+            .step_by(batch_size)
+            .map(move |index| {
+                let batch_indices = &indices[index..(index+batch_size).min(indices.len())];
+                let x = batch_indices.iter()
+                    .copied()
+                    .flat_map(|i| images.index_axis(Axis(0), i))
+                    .copied()
+                    .collect::<Array1<u8>>()
+                    .into_shape([batch_indices.len(), images.dim().1, images.dim().2, images.dim().3])?;
+                let t = batch_indices.iter()
+                    .copied()
+                    .map(|i| classes[i])
+                    .collect::<Array1<u8>>();
+                let x = smol::block_on(Tensor::from(x).into_device(device.clone()))?
+                    // normalize the bytes to f32
+                    .scale_into::<f32>(1. / 255.)?
+                    .into_float();
+                let t = smol::block_on(Tensor::from(t).into_device(device.clone()))?;
+                Ok((x, t))
+            })
+    }
+
     // Show a progress bar
     fn progress_iter<X>(iter: impl ExactSizeIterator<Item=X>, epoch: usize, name: &str) -> impl ExactSizeIterator<Item=X> {
         let style = ProgressStyle::default_bar()
@@ -232,7 +266,7 @@ async fn train<L: Layer + Debug + Serialize + for<'de> Deserialize<'de>>(device:
     // Run the training for the specified epochs
     while trainer.summarize().epoch < epochs {
         let epoch = trainer.summarize().epoch;
-        let train_iter = progress_iter(batch_iter(&device, &train_images, &train_classes, train_batch_size), epoch, "training");
+        let train_iter = progress_iter(shuffled_batch_iter(&device, &train_images, &train_classes, train_batch_size), epoch, "training");
         let test_iter = progress_iter(batch_iter(&device, &test_images, &test_classes, test_batch_size), epoch, "testing");
         trainer.train_test(train_iter, test_iter)?;
         println!("{:#?}", trainer.summarize());
