@@ -86,29 +86,25 @@ mod tests {
 
     async fn into_standard_layout<T: Scalar, E: IntoDimension>(shape: E) -> Result<()> {
         let shape = shape.into_dimension();
-        let x_vec = (0 .. shape.size())
+        let x_vec = (0..shape.size())
             .into_iter()
             .map(|x| T::from_usize(x).unwrap())
             .collect();
         let x_array = Array::from_shape_vec(shape, x_vec)?;
-        let axes = (0 .. x_array.ndim())
+        let axes = (0..x_array.ndim())
             .cycle()
             .skip(1)
             .take(x_array.ndim())
             .collect::<Vec<usize>>();
         let axes = E::Dim::from_dimension(&axes.into_dimension()).unwrap();
-        let y_array = x_array.view()
+        let y_array = x_array
+            .view()
             .permuted_axes(axes.clone())
             .as_standard_layout()
             .to_owned();
         let device = Device::new()?;
-        let x = Tensor::from(x_array)
-                .into_device(device)
-                .await?;
-        let y = x.permuted_axes(axes)
-            .into_standard_layout()?
-            .read()
-            .await?;
+        let x = Tensor::from(x_array).into_device(device).await?;
+        let y = x.permuted_axes(axes).into_standard_layout()?.read().await?;
         assert_eq!(y_array.view(), y.as_array());
         Ok(())
     }
