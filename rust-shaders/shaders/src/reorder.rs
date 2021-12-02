@@ -1,6 +1,52 @@
 use spirv_std::glam::UVec3;
 
 #[repr(C)]
+pub struct AsStandardLayoutPushConsts4 {
+    d0: u32,
+    s0: i32,
+    d1: u32,
+    s1: i32,
+    d2: u32,
+    s2: i32,
+    d3: u32,
+    s3: i32,
+}
+
+#[allow(unused_attributes)]
+#[spirv(compute(threads(256)))]
+pub fn as_standard_layout_4d_u32(
+    #[spirv(workgroup_id)]
+    group_id: UVec3,
+    #[spirv(local_invocation_id)]
+    local_id: UVec3,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] x: &[u32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] y: &mut [u32],
+    #[spirv(push_constant)]
+    push_consts: &AsStandardLayoutPushConsts4,
+) {
+    let d0 = push_consts.d0 as usize;
+    let s0 = push_consts.s0 as isize;
+    let d1 = push_consts.d1 as usize;
+    let s1 = push_consts.s1 as isize;
+    let d2 = push_consts.d2 as usize;
+    let s2 = push_consts.s2 as isize;
+    let d3 = push_consts.d3 as usize;
+    let s3 = push_consts.s3 as isize;
+    let gid = group_id.x as usize * 256 + local_id.x as usize;
+    let n = d0 * d1 * d2 * d3;
+    let i0 = (gid / (d1 * d2 * d3)) as isize;
+    let r0 = gid % (d1 * d2 * d3);
+    let i1 = (r0 / (d2 * d3)) as isize;
+    let r1 = r0 % (d2 * d3);
+    let i2 = (r1 / d3) as isize;
+    let i3 = (r1 % d3) as isize;
+    let xid = (i0 * s0 + i1 * s1 + i2 * s2 + i3 * s3) as usize;
+    if gid < n {
+        y[gid] = x[xid];
+    }
+}
+
+#[repr(C)]
 pub struct AsStandardLayoutPushConsts6 {
     d0: u32,
     s0: i32,
@@ -18,10 +64,12 @@ pub struct AsStandardLayoutPushConsts6 {
 
 
 #[allow(unused_attributes)]
-#[spirv(compute(threads(64)))]
+#[spirv(compute(threads(256)))]
 pub fn as_standard_layout_6d_u32(
-    #[spirv(global_invocation_id)]
-    global_id: UVec3,
+    #[spirv(workgroup_id)]
+    group_id: UVec3,
+    #[spirv(local_invocation_id)]
+    local_id: UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] x: &[u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] y: &mut [u32],
     #[spirv(push_constant)]
@@ -39,7 +87,7 @@ pub fn as_standard_layout_6d_u32(
     let s4 = push_consts.s4 as isize;
     let d5 = push_consts.d5 as usize;
     let s5 = push_consts.s5 as isize;
-    let gid = global_id.x as usize;
+    let gid = group_id.x as usize * 256 + local_id.x as usize;
     let n = d0 * d1 * d2 * d3 * d4 * d5;
     let i0 = (gid / (d1 * d2 * d3 * d4 * d5)) as isize;
     let r0 = gid % (d1 * d2 * d3 * d4 * d5);

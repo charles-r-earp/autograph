@@ -497,6 +497,18 @@ impl<T, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     {
         Self::from_elem(device, shape, T::default())
     }
+    /// Creates a tensor on `device` with `shape` filled with 1's.
+    ///
+    /// **Errors**
+    /// See [`Buffer::alloc()`](crate::device::buffer::BufferBase::alloc()).
+    pub fn ones<Sh>(device: Device, shape: Sh) -> Result<Self>
+    where
+        T: Scalar,
+        S: DataOwned,
+        Sh: ShapeBuilder<Dim = D>,
+    {
+        Self::from_elem(device, shape, T::one())
+    }
     /// The device of the tensor.
     pub fn device(&self) -> Device {
         self.data.device()

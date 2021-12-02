@@ -1,35 +1,5 @@
 use super::*;
 use crate::linalg::{Dot, DotAcc, DotBias};
-//use bytemuck::{Pod, Zeroable};
-
-/*
-#[derive(Copy)]
-#[repr(C, packed)]
-struct GemmPushConsts<T> {
-    alpha: T,
-    beta: T,
-    a0: T, // ie relu negative slope
-    m: u32,
-    k: u32,
-    n: u32,
-    rsa: i32,
-    csa: i32,
-    rsb: i32,
-    csb: i32,
-    rsc: i32,
-    csc: i32,
-}
-
-impl<T: Copy> Clone for GemmPushConsts<T> {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-
-unsafe impl<T: Zeroable> Zeroable for GemmPushConsts<T> {}
-
-unsafe impl<T: Pod> Pod for GemmPushConsts<T> {}
-*/
 
 #[allow(clippy::too_many_arguments, clippy::many_single_char_names)]
 fn gemm_impl<T: Scalar>(
@@ -100,16 +70,23 @@ fn gemm_impl<T: Scalar>(
     let builder = builder.slice_mut(c.as_raw_slice_mut())?;
 
     let builder = match T::scalar_type() {
-        BF16 => builder.push([alpha.to_f32().unwrap(), beta.to_f32().unwrap()])?,
+        BF16 => builder.push([alpha.to_f32().unwrap(), beta.to_f32().unwrap(), a0])?,
         _ => builder.push([alpha, beta])?,
     };
     let builder = builder
-        .push(a0)?
         .push([m, k, n])?
         .push([rsa, csa])?
         .push([rsb, csb])?
         .push([rsc, csc])?;
-    unsafe { builder.submit([m, n, 1]) }
+
+    let work_size = if T::scalar_type() == BF16 {
+        [m, n, 1]
+    } else {
+        let global_x = m + if m % 16 != 0 { 16 } else { 0 };
+        let global_y = n + if n % 16 != 0 { 16 } else { 0 };
+        [global_x * global_y, 1, 1]
+    };
+    unsafe { builder.submit(work_size) }
 }
 
 impl<T: Scalar, S1: Data<Elem = T>, S2: Data<Elem = T>> Dot<TensorBase<S2, Ix2>>
@@ -191,6 +168,7 @@ mod tests {
         let vec: Vec<T> = (0..n)
             .into_iter()
             .map(|x| T::from((((x + 100) % 100) + 1) as u8))
+            //.map(|x| T::from(1))
             .collect();
         Array2::from_shape_vec(dim, vec).unwrap()
     }
@@ -290,11 +268,14 @@ mod tests {
 
     test_dot!(
         f32;
+        tensor_dot_f32_m4_k4_n4_N_N => (4, 4, 4, N, N),
+
         tensor_dot_f32_m21_k31_n41_N_N => (21, 31, 41, N, N),
         tensor_dot_f32_m121_k131_n141_N_N => (121, 131, 141, N, N),
         tensor_dot_f32_m121_k131_n141_T_N => (121, 131, 141, T, N),
         tensor_dot_f32_m121_k131_n141_N_T => (121, 131, 141, N, T),
         tensor_dot_f32_m121_k131_n141_T_T => (121, 131, 141, T, T),
+        tensor_dot_f32_m512_k512_n512_N_N => (512, 512, 512, N, N),
     );
 
     test_dot!(
@@ -354,7 +335,7 @@ mod tests {
 
         bench_dot!(
             f32;
-            tensor_dot_f32_m100_k100_n100_N_N => (100, 100, 100, N, N),
+            tensor_dot_f32_m512_k512_n512_N_N => (512, 512, 512, N, N),
             tensor_dot_f32_m1024_k1024_n1024_N_N => (1024, 1024, 1024, N, N),
         );
     }

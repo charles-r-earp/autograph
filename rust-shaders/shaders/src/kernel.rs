@@ -19,7 +19,7 @@ pub struct Im2ColPushConsts2 {
 }
 
 // Adapted from https://github.com/CNugteren/CLBlast/blob/master/src/kernels/levelx/im2col.opencl
-fn im2col_2d_f32_impl(kernel_flip: bool, global_id: UVec3, x: &[f32], y: &mut [f32], push_consts: &Im2ColPushConsts2) {
+fn im2col_2d_f32<const TX: usize, const TY: usize>(kernel_flip: bool, group_id: UVec3, local_id: UVec3, x: &[f32], y: &mut [f32], push_consts: &Im2ColPushConsts2) {
     let bs = push_consts.bs as usize;
     let ic = push_consts.ic as usize;
     let ih = push_consts.ih as usize;
@@ -34,14 +34,18 @@ fn im2col_2d_f32_impl(kernel_flip: bool, global_id: UVec3, x: &[f32], y: &mut [f
     let pw = push_consts.pw as usize;
     let dh = push_consts.dh as usize;
     let dw = push_consts.dw as usize;
-    let global_x = global_id.x as usize;
+    let group_x = group_id.x as usize;
+    let group_y = group_id.y as usize;
+    let local_x = local_id.x as usize;
+    let local_y = local_id.y as usize;
+    let global_x = group_x * TX + local_x;
+    let global_y = group_y * TY + local_y;
     let bid = global_x / ic;
     let cid = global_x % ic;
     let bidx = bid * ic * ih * iw;
     let bidy = bid * oh * ow * ic * kh * kw;
     let cidx = cid * ih * iw;
     let cidy = cid * kh * kw;
-    let global_y = global_id.y as usize;
     let hid = global_y / ow;
     let wid = global_y % ow;
     let patch_idx = (hid * ow + wid) * ic * kh * kw;
@@ -59,22 +63,24 @@ fn im2col_2d_f32_impl(kernel_flip: bool, global_id: UVec3, x: &[f32], y: &mut [f
                     kidx = kh * kw - (kidx + 1);
                 }
                 y[bidy + patch_idx + cidy + kidx] = val;
-            }
-        }
-    }}}}
+            }}
+        }}
+    }}
 }
 
 #[allow(unused_attributes)]
 #[spirv(compute(threads(8, 8)))]
 pub fn im2col_2d_convolution_f32(
-    #[spirv(global_invocation_id)]
-    global_id: UVec3,
+    #[spirv(workgroup_id)]
+    group_id: UVec3,
+    #[spirv(local_invocation_id)]
+    local_id: UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] x: &[f32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] y: &mut [f32],
     #[spirv(push_constant)]
     push_consts: &Im2ColPushConsts2,
 ) {
-    im2col_2d_f32_impl(false, global_id, x, y, push_consts);
+    im2col_2d_f32::<8, 8>(false, group_id, local_id, x, y, push_consts);
 }
 
 #[repr(C)]

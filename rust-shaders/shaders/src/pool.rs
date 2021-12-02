@@ -306,8 +306,10 @@ fn min_usize(a: usize, b: usize) -> usize {
 #[allow(unused_attributes)]
 #[spirv(compute(threads(16, 16)))]
 pub fn max_pool_2d_backward_f32(
-    #[spirv(global_invocation_id)]
-    global_id: UVec3,
+    #[spirv(workgroup_id)]
+    group_id: UVec3,
+    #[spirv(local_invocation_id)]
+    local_id: UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] ix: &[u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] dx: &mut [f32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] dy: &[f32],
@@ -334,8 +336,12 @@ pub fn max_pool_2d_backward_f32(
     let d_bez_w = push_consts.d_bez_w as usize;
     let gcd_h = push_consts.gcd_h as usize;
     let gcd_w = push_consts.gcd_w as usize;
-    let global_x = global_id.x as usize;
-    let global_y = global_id.y as usize;
+    let group_x = group_id.x as usize;
+    let group_y = group_id.y as usize;
+    let local_x = local_id.x as usize;
+    let local_y = local_id.y as usize;
+    let global_x = group_x * 16 + local_x;
+    let global_y = group_y * 16 + local_y;
     let bid = global_x / ic;
     let cid = global_x % ic;
     let bidx = bid * ic * ih * iw;
