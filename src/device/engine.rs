@@ -2266,7 +2266,7 @@ impl<B: Backend> Frame<B> {
                             .iter()
                             .zip(local_size.iter())
                             .map(|(wg, ls)| *wg as usize * *ls as usize)
-                            .sum(),
+                            .product(),
                         start: Duration::default(),
                         end: Duration::default(),
                     });

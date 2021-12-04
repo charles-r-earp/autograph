@@ -690,27 +690,25 @@ fn parse_spirv(spirv: &[u8]) -> Result<ModuleDescriptor> {
                 if let Some(&buffer) = buffer_bindings.get(variable) {
                     if buffer.descriptor_set != 0 {
                         bail!(
-                            "entry_point: {} functions[{}] descriptor set must be 0\n{:#?}",
+                            "entry_point: {} functions[{}] descriptor set must be 0\n",
                             &entry_point.name,
                             f,
-                            &function,
                         );
                     }
                     let mut buffer = buffer;
                     buffer.mutable = *mutable;
                     if buffer.mutable && nonwritable.contains(variable) {
                         bail!(
-                            "entry_point: {} functions[{}] nonwritable buffer at binding {} is modified!\n{:#?}",
+                            "entry_point: {} functions[{}] nonwritable buffer at binding {} is modified!\n",
                             &entry_point.name,
                             f,
                             buffer.binding,
-                            &function,
                         );
                     }
                     buffers.push(buffer);
                 } else if let Some(&push_consts) = push_constants.get(variable) {
                     if push_constant_range > 0 {
-                        bail!("entry_point: {} functions[{}] only 1 push constant block is allowed!\n{:#?}", &entry_point.name, f, &function);
+                        bail!("entry_point: {} functions[{}] only 1 push constant block is allowed!\n", &entry_point.name, f);
                     }
                     push_constant_range = push_consts;
                 }
@@ -718,7 +716,7 @@ fn parse_spirv(spirv: &[u8]) -> Result<ModuleDescriptor> {
             buffers.sort_by_key(|b| b.binding);
             for (i, buffer) in buffers.iter().enumerate() {
                 if i != buffer.binding as usize {
-                    bail!("entry_point: {} functions[{}] buffer bindings must be in order from 0 .. N!\n{:#?}", &entry_point.name, f, &function);
+                    bail!("entry_point: {} functions[{}] buffer bindings must be in order from 0 .. N!\n", &entry_point.name, f);
                 }
             }
             let buffers = buffers.iter().map(|b| b.mutable).collect();
