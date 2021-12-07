@@ -50,15 +50,38 @@ fn gemm_impl<T: Scalar>(
 
     let a0 = 0f32;
 
-    let name = format!(
-        "gemm{}_{}",
-        if bias.is_some() { "_bias" } else { "" },
-        elem_type_name::<T>(),
-    );
-
-    let builder = match T::scalar_type() {
-        BF16 => crate::glsl_shaders::module(name)?.compute_pass("main")?,
-        _ => crate::rust_shaders::core()?.compute_pass(format!("linalg::{}", name))?,
+    let (builder, ts, wpt) = match T::scalar_type() {
+        BF16 => {
+            // TODO: Porting to Rust requires atomics
+            let ts = 16;
+            let wpt = 1;
+            let name = format!("gemm{}_bf16", if bias.is_some() { "_bias" } else { "" },);
+            let builder = crate::glsl_shaders::module(name)?.compute_pass("main")?;
+            (builder, ts, wpt)
+        }
+        _ => {
+            let ts = 16;
+            let wpt = if T::scalar_type() == F32 {
+                if u32::min(m, n) >= ts * 8 {
+                    4
+                } else if u32::min(m, n) >= ts * 2 {
+                    2
+                } else {
+                    1
+                }
+            } else {
+                1
+            };
+            let name = format!(
+                "gemm{}_{}_ts{}_wpt{}",
+                if bias.is_some() { "_bias" } else { "" },
+                elem_type_name::<T>(),
+                ts,
+                wpt,
+            );
+            let builder = crate::rust_shaders::core()?.compute_pass(format!("linalg::{}", name))?;
+            (builder, ts, wpt)
+        }
     };
 
     let builder = builder.slice(a.as_raw_slice())?.slice(b.as_raw_slice())?;
@@ -82,8 +105,8 @@ fn gemm_impl<T: Scalar>(
     let work_size = if T::scalar_type() == BF16 {
         [m, n, 1]
     } else {
-        let global_x = m + if m % 16 != 0 { 16 } else { 0 };
-        let global_y = n + if n % 16 != 0 { 16 } else { 0 };
+        let global_x = m / wpt + if m % (ts * wpt) != 0 { ts } else { 0 };
+        let global_y = n / wpt + if n % (ts * wpt) != 0 { ts } else { 0 };
         [global_x * global_y, 1, 1]
     };
     unsafe { builder.submit(work_size) }
@@ -337,6 +360,8 @@ mod tests {
             f32;
             tensor_dot_f32_m512_k512_n512_N_N => (512, 512, 512, N, N),
             tensor_dot_f32_m1024_k1024_n1024_N_N => (1024, 1024, 1024, N, N),
+            tensor_dot_f32_m57600_k25_n6_N_N => (57600, 25, 6, N, N),
+            tensor_dot_f32_m25_k57600_n6_N_N => (25, 57600, 6, N, N),
         );
     }
 }
