@@ -39,14 +39,18 @@ fn gemm_impl<T: Scalar>(
     let k = k as u32;
     let n = n as u32;
 
+    // TODO: Potentially support negative strides with an offset?
+    // Strides are negative to match ndarray but we can't offset pointers yet.
+    // Offsetting pointers of 16 and 8 bit types is a problem because bindings
+    // are required to be aligned to 32 bits on most backends.
     let [rsa, csa]: [isize; 2] = a.strides().try_into().unwrap();
-    let [rsa, csa] = [rsa as i32, csa as i32];
+    let [rsa, csa] = [rsa as u32, csa as u32];
 
     let [rsb, csb]: [isize; 2] = b.strides().try_into().unwrap();
-    let [rsb, csb] = [rsb as i32, csb as i32];
+    let [rsb, csb] = [rsb as u32, csb as u32];
 
     let [rsc, csc]: [isize; 2] = c.strides().try_into().unwrap();
-    let [rsc, csc] = [rsc as i32, csc as i32];
+    let [rsc, csc] = [rsc as u32, csc as u32];
 
     let a0 = 0f32;
 
@@ -61,6 +65,7 @@ fn gemm_impl<T: Scalar>(
         }
         _ => {
             let ts = 16;
+            let unr = ts;
             let wpt = if T::scalar_type() == F32 {
                 if u32::min(m, n) >= ts * 8 {
                     4
@@ -72,14 +77,17 @@ fn gemm_impl<T: Scalar>(
             } else {
                 1
             };
-            let name = format!(
-                "gemm{}_{}_ts{}_wpt{}",
+            let entry = format!(
+                "linalg::gemm{}_{}_tsa{}_tsb{}_unr{}_mica{}_micb{}",
                 if bias.is_some() { "_bias" } else { "" },
                 elem_type_name::<T>(),
                 ts,
+                ts,
+                unr,
+                wpt,
                 wpt,
             );
-            let builder = crate::rust_shaders::core()?.compute_pass(format!("linalg::{}", name))?;
+            let builder = crate::rust_shaders::core()?.compute_pass(entry)?;
             (builder, ts, wpt)
         }
     };
@@ -292,6 +300,9 @@ mod tests {
     test_dot!(
         f32;
         tensor_dot_f32_m4_k4_n4_N_N => (4, 4, 4, N, N),
+        tensor_dot_f32_m16_k16_n16_N_N => (16, 16, 16, N, N),
+        tensor_dot_f32_m16_k32_n16_N_N => (16, 32, 16, N, N),
+        tensor_dot_f32_m32_k32_n32_N_N => (32, 32, 32, N, N),
 
         tensor_dot_f32_m21_k31_n41_N_N => (21, 31, 41, N, N),
         tensor_dot_f32_m121_k131_n141_N_N => (121, 131, 141, N, N),
