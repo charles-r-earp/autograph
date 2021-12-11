@@ -40,7 +40,6 @@ pub struct TrainerStats {
 }
 
 pub trait Library {
-    fn name() -> &'static str;
     fn benchmark(
         trainer_descriptor: &TrainerDescriptor,
         epoch_cb: impl FnMut(usize),

@@ -257,6 +257,12 @@ impl Lenet5 {
 ```
 See the [Neural Network MNIST](examples/neural-network-mnist) example.
 
+# Benchmarks
+
+![NVIDIA GeForce GTX 1060 with Max-Q Design](benchmarks/neural-network/nv_gtx1060.png)
+
+See the [Neural Network](benchmarks/neural-network) benchark.
+
 # Profiling
 Currently requires nightly and feature "profile". Set the AUTOGRAPH_PROFILE environmental variable to 1 or True to produce a table of statistics for compute passes that are executed.
 ```
@@ -308,7 +314,6 @@ Will create a file "autograph_profile_summary.txt" like this:
 ```
 ### Note
 Specify the profile feature for autograph if it is a dependency as `autograph/profile`.
-
 
 # Developement Platforms
 1. Ubuntu 18.04 | (Vulkan) NVidia GeForce GTX 1060 with Max-Q Design

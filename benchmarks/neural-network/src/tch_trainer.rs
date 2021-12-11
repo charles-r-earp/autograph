@@ -56,10 +56,13 @@ impl ModuleT for Lenet5 {
 
 pub enum Tch {}
 
-impl Library for Tch {
-    fn name() -> &'static str {
-        "tch"
+impl Tch {
+    pub fn is_gpu_available() -> bool {
+        Device::cuda_if_available().is_cuda()
     }
+}
+
+impl Library for Tch {
     fn benchmark(
         trainer_descriptor: &TrainerDescriptor,
         mut epoch_cb: impl FnMut(usize),
@@ -70,7 +73,7 @@ impl Library for Tch {
         let epochs = trainer_descriptor.epochs;
 
         let mnist = mnist()?;
-        let vs = tch::nn::VarStore::new(Device::Cuda(0));
+        let vs = tch::nn::VarStore::new(Device::cuda_if_available());
         let network = Lenet5::new(&vs.root());
         let lr = 0.1;
         let mut optim = tch::nn::Sgd::default().build(&vs, lr).unwrap();

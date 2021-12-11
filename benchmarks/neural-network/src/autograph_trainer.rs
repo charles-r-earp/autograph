@@ -133,9 +133,6 @@ fn shuffled_batch_iter<'a>(
 pub enum Autograph {}
 
 impl Library for Autograph {
-    fn name() -> &'static str {
-        "autograph"
-    }
     fn benchmark(
         trainer_descriptor: &TrainerDescriptor,
         mut epoch_cb: impl FnMut(usize),

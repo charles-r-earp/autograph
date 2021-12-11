@@ -8,6 +8,7 @@ use neural_network_benchmark::{
 
 use argparse::{ArgumentParser, Store, StoreConst, StoreTrue};
 use indicatif::{ProgressBar, ProgressStyle};
+use plotters::style::{RGBColor, colors::*};
 
 fn main() -> Result<()> {
     let mut dataset_kind = DatasetKind::Mnist;
@@ -63,8 +64,28 @@ fn main() -> Result<()> {
             tch = true;
         }
     }
-    if tch && !cfg!(feature = "tch") {
-        bail!("Benchmarking tch requires --feature tch");
+    let mut tch_name = "tch";
+    if tch {
+        if !cfg!(feature = "tch") {
+            bail!("Benchmarking tch requires --feature tch");
+        }
+        #[cfg(feature = "tch")]
+        if !Tch::is_gpu_available() {
+            tch_name = "tch(cpu)";
+        }
+    }
+    if ![autograph, tch].iter().copied().any(|x| x) {
+        bail!(
+            "Specify at least one libary (ie --autograph) or benchmark all libraries with --all!"
+        );
+    }
+
+    let title = format!("dataset = {:?}, network = {:?}, train-batch-size = {}, test-batch-size = {}, epochs = {}", dataset_kind, network_kind, train_batch_size, test_batch_size, epochs);
+    println!("Benchmarking ({})", &title);
+    for (lib, flag) in [("autograph", autograph), (tch_name, tch)] {
+        if flag {
+            println!("    - {}", lib);
+        }
     }
 
     let dataset_descriptor = DatasetDescriptor {
@@ -79,47 +100,49 @@ fn main() -> Result<()> {
         epochs,
     };
 
-    fn benchmark<L: Library>(trainer: &TrainerDescriptor) -> Result<(&'static str, TrainerStats)> {
+    fn benchmark<L: Library>(name: &str, trainer: &TrainerDescriptor) -> Result<TrainerStats> {
         let style = ProgressStyle::default_bar()
             .template(&format!(
                 "{} [{{bar}}] {{pos:>7}}/{{len:7}} [eta: {{eta}}]",
-                L::name()
+                name,
             ))
             .progress_chars("=> ");
         let bar = ProgressBar::new(trainer.epochs as u64).with_style(style);
         let stats = L::benchmark(trainer, |epoch| bar.set_position(epoch as u64))?;
         bar.finish();
-        Ok((L::name(), stats))
+        Ok(stats)
     }
 
     let mut stats = Vec::new();
 
     if autograph {
-        stats.push(benchmark::<Autograph>(&trainer_descriptor)?);
+        stats.push(("autograph".to_string(), BLACK, benchmark::<Autograph>("autograph", &trainer_descriptor)?));
     }
 
     #[cfg(feature = "tch")]
     if tch {
-        stats.push(benchmark::<Tch>(&trainer_descriptor)?);
+        stats.push((tch_name.to_string(), MAGENTA, benchmark::<Tch>(tch_name, &trainer_descriptor)?));
     }
 
-    fn plot(stats: &[(&'static str, TrainerStats)]) -> Result<()> {
+    fn plot(title: &str, stats: &[(String, RGBColor, TrainerStats)]) -> Result<()> {
         use plotters::prelude::*;
 
         let time_max = stats
             .iter()
-            .map(|(_, stats)| stats.total_time.last().copied().unwrap_or(0.))
+            .map(|(_, _, stats)| stats.total_time.last().copied().unwrap_or(0.))
             .fold(0f32, |a, b| f32::max(a, b));
         let accuracy_min = stats
             .iter()
-            .map(|(_, stats)| stats.test_accuracy.first().copied().unwrap_or(0.))
+            .map(|(_, _, stats)| stats.test_accuracy.first().copied().unwrap_or(0.))
             .fold(1f32, |a, b| f32::min(a, b));
         let (width, height) = (1024, 760);
         let fpath = std::path::PathBuf::from(".")
             .canonicalize()?
             .join("plot.png");
-        let root = BitMapBackend::new(&fpath, (width, height)).into_drawing_area();
+        let root = BitMapBackend::new(&fpath, (width, height))
+            .into_drawing_area();
         root.fill(&WHITE)?;
+        let root = root.titled(title, ("sans-serif", 20))?;
         let mut chart = ChartBuilder::on(&root)
             .margin(5)
             .set_all_label_area_size(50)
@@ -132,7 +155,7 @@ fn main() -> Result<()> {
             .x_label_formatter(&|v| format!("{:.0}", v))
             .y_label_formatter(&|v| format!("{:.1}%", v))
             .draw()?;
-        for (name, stats) in stats.iter() {
+        for (name, color, stats) in stats.iter() {
             chart
                 .draw_series(LineSeries::new(
                     stats
@@ -140,10 +163,18 @@ fn main() -> Result<()> {
                         .iter()
                         .copied()
                         .zip(stats.test_accuracy.iter().copied().map(|a| 100. * a)),
-                    &BLACK,
+                    &*color,
                 ))?
                 .label(name.to_string())
-                .legend(|(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], &BLACK));
+                .legend(|(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], &*color));
+            chart.draw_series(
+                stats
+                    .total_time
+                    .iter()
+                    .copied()
+                    .zip(stats.test_accuracy.iter().copied().map(|a| 100. * a))
+                    .map(|(x, y)| Circle::new((x, y), 2, color.filled()))
+            )?;
         }
         chart
             .configure_series_labels()
@@ -153,14 +184,7 @@ fn main() -> Result<()> {
         println!("Plot saved to {:?}.", fpath);
         Ok(())
     }
-
-    if stats.is_empty() {
-        bail!(
-            "Specify at least one libary (ie --autograph) or benchmark all libraries with --all!"
-        );
-    } else {
-        plot(&stats)?;
-    }
+    plot(&title, &stats)?;
 
     Ok(())
 }
