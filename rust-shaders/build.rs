@@ -1,4 +1,4 @@
-use spirv_builder::{SpirvBuilder, ModuleResult};
+use spirv_builder::{SpirvBuilder, ModuleResult, Capability};
 use std::{
     error::Error,
     path::PathBuf,
@@ -7,6 +7,7 @@ use std::{
 
 fn main() -> Result<(), Box<dyn Error>> {
     let result = SpirvBuilder::new("shaders", "spirv-unknown-vulkan1.1")
+        .capability(Capability::VulkanMemoryModelDeviceScopeKHR)
         .build()?;
     match result.module {
         ModuleResult::SingleModule(path) => {
