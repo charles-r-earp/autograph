@@ -95,7 +95,7 @@ fn run(receiver: Receiver<Msg>, mut file: File) {
                 disconnected = err.is_disconnected();
             }
         }
-        if !updated && (previous_update.elapsed().as_secs() > 0 || disconnected) {
+        if !updated && (previous_update.elapsed().as_millis() > 400 || disconnected) {
             if let Err(err) = summary.write_to_file(&mut file) {
                 if cfg!(debug_assertions) {
                     panic!("{:?}", err);
