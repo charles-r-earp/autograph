@@ -228,7 +228,7 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
 #[cfg(all(test, feature = "device_tests"))]
 mod tests {
     use super::*;
-    use crate::device::Device;
+    use crate::{device::Device, rust_shaders};
     use approx::assert_relative_eq;
     use half::bf16;
     use ndarray::{Array, ArrayView, IntoDimension};
@@ -514,5 +514,44 @@ mod tests {
     #[test]
     fn tensor_argmax_f32_22x23_axis1() -> Result<()> {
         tensor_argmax::<f32, _>([22, 23], Axis(1))
+    }
+
+    async fn atomic_add<T: Scalar + core::iter::Sum>(n: usize) -> Result<()> {
+        let x_vec = (1..=n)
+            .into_iter()
+            .map(|x| T::from_usize(x).unwrap())
+            .collect::<Vec<_>>();
+        let y_true = x_vec.iter().copied().sum::<T>();
+        let device = Device::new()?;
+        let _s = device.acquire().await;
+        let x = Buffer::from(x_vec).into_device(device.clone()).await?;
+        let mut y = Buffer::<T>::zeros(device, 1)?;
+        let entry = format!("util::tests::atomic_add_{}", T::scalar_name());
+        let builder = rust_shaders::core()?
+            .compute_pass(entry)?
+            .slice(x.as_slice())?
+            .slice_mut(y.as_slice_mut())?;
+        unsafe {
+            builder.submit([x.len() as u32, 1, 1])?;
+        }
+        let y = y.read().await?[0];
+        assert_eq!(y, y_true);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn atomic_add_u32() -> Result<()> {
+        for n in [4, 67, 1021] {
+            atomic_add::<u32>(n).await?;
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn atomic_add_i32() -> Result<()> {
+        for n in [4, 67, 1021] {
+            atomic_add::<i32>(n).await?;
+        }
+        Ok(())
     }
 }
