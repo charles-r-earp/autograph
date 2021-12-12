@@ -17,3 +17,4 @@ rand = "0.8.4"
 anyhow = "1.0.51"
 plotters = "0.3.1"
 tch = { version = "0.6.1", optional = true }
+prettytable-rs = "0.8.0"

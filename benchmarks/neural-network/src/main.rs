@@ -8,7 +8,7 @@ use neural_network_benchmark::{
 
 use argparse::{ArgumentParser, Store, StoreConst, StoreTrue};
 use indicatif::{ProgressBar, ProgressStyle};
-use plotters::style::{RGBColor, colors::*};
+use plotters::style::{colors::*, RGBColor};
 
 fn main() -> Result<()> {
     let mut dataset_kind = DatasetKind::Mnist;
@@ -80,7 +80,10 @@ fn main() -> Result<()> {
         );
     }
 
-    let title = format!("dataset = {:?}, network = {:?}, train-batch-size = {}, test-batch-size = {}, epochs = {}", dataset_kind, network_kind, train_batch_size, test_batch_size, epochs);
+    let title = format!(
+        "dataset = {:?}, network = {:?}, train-batch-size = {}, test-batch-size = {}, epochs = {}",
+        dataset_kind, network_kind, train_batch_size, test_batch_size, epochs
+    );
     println!("Benchmarking ({})", &title);
     for (lib, flag) in [("autograph", autograph), (tch_name, tch)] {
         if flag {
@@ -116,13 +119,63 @@ fn main() -> Result<()> {
     let mut stats = Vec::new();
 
     if autograph {
-        stats.push(("autograph".to_string(), BLACK, benchmark::<Autograph>("autograph", &trainer_descriptor)?));
+        stats.push((
+            "autograph".to_string(),
+            BLACK,
+            benchmark::<Autograph>("autograph", &trainer_descriptor)?,
+        ));
     }
 
     #[cfg(feature = "tch")]
     if tch {
-        stats.push((tch_name.to_string(), MAGENTA, benchmark::<Tch>(tch_name, &trainer_descriptor)?));
+        stats.push((
+            tch_name.to_string(),
+            MAGENTA,
+            benchmark::<Tch>(tch_name, &trainer_descriptor)?,
+        ));
     }
+
+    fn summary<'a>(stats: impl Iterator<Item = (&'a str, &'a TrainerStats)>) {
+        use core::time::Duration;
+        use prettytable::{cell, row, Table};
+
+        let mut table = Table::new();
+        table.set_titles(row![
+            "Library",
+            "Best Epoch",
+            "Best Accuracy",
+            "Time To Best Accuracy",
+            "Mean Epoch Time to Best Accuracy",
+        ]);
+        table.extend(stats.map(|(lib, stats)| {
+            let best_accuracy = stats.test_accuracy.iter().copied().fold(
+                stats.test_accuracy.first().copied().unwrap_or(0.),
+                |acc, x| acc.max(x),
+            );
+            let best_index = stats
+                .test_accuracy
+                .iter()
+                .copied()
+                .position(|x| x == best_accuracy)
+                .unwrap_or(0);
+            let best_epoch = best_index + 1;
+            let best_time = Duration::from_secs_f32(stats.total_time[best_index]);
+            let mean_time = best_time / best_epoch as u32;
+            row![
+                lib,
+                best_epoch,
+                format!("{:.2}%", 100. * best_accuracy),
+                format!("{:.2?}", best_time),
+                format!("{:.2?}", mean_time),
+            ]
+        }));
+        table.print_tty(false);
+    }
+    summary(
+        stats
+            .iter()
+            .map(|(name, _color, stats)| (name.as_str(), stats)),
+    );
 
     fn plot(title: &str, stats: &[(String, RGBColor, TrainerStats)]) -> Result<()> {
         use plotters::prelude::*;
@@ -139,8 +192,7 @@ fn main() -> Result<()> {
         let fpath = std::path::PathBuf::from(".")
             .canonicalize()?
             .join("plot.png");
-        let root = BitMapBackend::new(&fpath, (width, height))
-            .into_drawing_area();
+        let root = BitMapBackend::new(&fpath, (width, height)).into_drawing_area();
         root.fill(&WHITE)?;
         let root = root.titled(title, ("sans-serif", 20))?;
         let mut chart = ChartBuilder::on(&root)
@@ -173,7 +225,7 @@ fn main() -> Result<()> {
                     .iter()
                     .copied()
                     .zip(stats.test_accuracy.iter().copied().map(|a| 100. * a))
-                    .map(|(x, y)| Circle::new((x, y), 2, color.filled()))
+                    .map(|(x, y)| Circle::new((x, y), 2, color.filled())),
             )?;
         }
         chart
