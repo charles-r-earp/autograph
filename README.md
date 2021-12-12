@@ -260,6 +260,15 @@ See the [Neural Network MNIST](examples/neural-network-mnist) example.
 # Benchmarks
 
 ![NVIDIA GeForce GTX 1060 with Max-Q Design](benchmarks/neural-network/nv_gtx1060.png)
+```
++-----------+------------+---------------+-----------------------+----------------------------------+
+| Library   | Best Epoch | Best Accuracy | Time To Best Accuracy | Mean Epoch Time to Best Accuracy |
++===========+============+===============+=======================+==================================+
+| autograph | 69         | 99.04%        | 127.38s               | 1.85s                            |
++-----------+------------+---------------+-----------------------+----------------------------------+
+| tch       | 32         | 99.12%        | 22.03s                | 688.31ms                         |
++-----------+------------+---------------+-----------------------+----------------------------------+
+```
 
 See the [Neural Network](benchmarks/neural-network) benchark.
 

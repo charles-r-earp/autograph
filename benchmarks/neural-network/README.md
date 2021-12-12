@@ -27,6 +27,15 @@ cargo run --release --features tch -- --tch
 NVIDIA GeForce GTX 1060 with Max-Q Design
 
 ![NVIDIA GeForce GTX 1060 with Max-Q Design](nv_gtx1060.png)
+```
++-----------+------------+---------------+-----------------------+----------------------------------+
+| Library   | Best Epoch | Best Accuracy | Time To Best Accuracy | Mean Epoch Time to Best Accuracy |
++===========+============+===============+=======================+==================================+
+| autograph | 69         | 99.04%        | 127.38s               | 1.85s                            |
++-----------+------------+---------------+-----------------------+----------------------------------+
+| tch       | 32         | 99.12%        | 22.03s                | 688.31ms                         |
++-----------+------------+---------------+-----------------------+----------------------------------+
+```
 
 # Final Notes
 If you have any issues with this example please create an issue at https://github.com/charles-r-earp/autograph.
