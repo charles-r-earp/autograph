@@ -3,6 +3,7 @@ name = "rust-shaders"
 version = "0.1.0"
 authors = ["charles-r-earp <charles.r.earp@gmail.com>"]
 edition = "2018"
+publish = false
 
 [build-dependencies]
 spirv-builder = { git = "https://github.com/EmbarkStudios/rust-gpu/" }
