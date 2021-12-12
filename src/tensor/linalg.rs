@@ -66,20 +66,14 @@ fn gemm_impl<T: Scalar>(
         _ => {
             let ts = 16;
             let unr = ts;
-            let splitk = if k > 256 && k > m * n {
-                // splitk has a small rounding error which fails tests
-                Some(128)
+            let splitk = 256;
+            let splitk = if k >= (m * n).max(splitk * 2) {
+                Some(splitk)
             } else {
                 None
             };
             let wpt = if splitk.is_none() && T::scalar_type() == F32 {
-                if u32::min(m, n) >= ts * 8 {
-                    2 // /* correctness issue */ 4
-                } else if u32::min(m, n) >= ts * 2 {
-                    2
-                } else {
-                    1
-                }
+                u32::min(m / ts, n / ts).min(4).max(1)
             } else {
                 1
             };
@@ -218,7 +212,6 @@ mod tests {
         let vec: Vec<T> = (0..n)
             .into_iter()
             .map(|x| T::from((((x + 100) % 100) + 1) as u8))
-            //.map(|x| T::from(1))
             .collect();
         Array2::from_shape_vec(dim, vec).unwrap()
     }
@@ -323,7 +316,7 @@ mod tests {
         tensor_dot_f32_m121_k131_n141_T_N => (121, 131, 141, T, N),
         tensor_dot_f32_m121_k131_n141_N_T => (121, 131, 141, N, T),
         tensor_dot_f32_m121_k131_n141_T_T => (121, 131, 141, T, T),
-        //tensor_dot_f32_m25_k57600_n6_N_N => (25, 57600, 6, N, N),
+        tensor_dot_f32_m25_k611_n6_N_N => (25, 611, 6, N, N),
     );
 
     test_dot!(

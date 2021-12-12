@@ -130,7 +130,7 @@ macro_rules! impl_gemm {
                 let mut b_idx = tiled_row * rsb;
 
                 let ntiles = if n_groups_z > 1 {
-                    let n_groups_with_one_more = (k % g_unroll) / $UNR;
+                    let n_groups_with_one_more = (k % g_unroll) / $UNR + if k % g_unroll != 0 { 1 } else { 0 };
                     k / g_unroll + if group_z < n_groups_with_one_more { 1 } else { 0 }
                 } else {
                     k / $UNR + if k % $UNR != 0 { 1 } else { 0 }
@@ -233,6 +233,6 @@ impl_gemm!{
     gemm_bias_f32_tsa16_tsb16_unr16_mica2_micb2<f32, f32, 256, 16, 16, 16, 2, 2>(bias=true),
     gemm_f32_tsa16_tsb16_unr16_mica4_micb4<f32, f32, 256, 16, 16, 16, 4, 4>(),
     gemm_bias_f32_tsa16_tsb16_unr16_mica4_micb4<f32, f32, 256, 16, 16, 16, 4, 4>(bias=true),
-    gemm_f32_tsa16_tsb16_splitk128_unr16_mica1_micb1<@splitk=128, f32, u32, 256, 16, 16, 16, 1, 1>(),
-    gemm_bias_f32_tsa16_tsb16_splitk128_unr16_mica1_micb1<@splitk=128, f32, u32, 256, 16, 16, 16, 1, 1>(bias=true),
+    gemm_f32_tsa16_tsb16_splitk256_unr16_mica1_micb1<@splitk=256, f32, u32, 256, 16, 16, 16, 1, 1>(),
+    gemm_bias_f32_tsa16_tsb16_splitk256_unr16_mica1_micb1<@splitk=256, f32, u32, 256, 16, 16, 16, 1, 1>(bias=true),
 }
