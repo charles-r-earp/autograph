@@ -21,8 +21,6 @@ jobs:
     - uses: actions/checkout@v2
     - name: cargo fetch
       run: cargo fetch --target ${{ matrix.target }}
-    - name: Install Xcode Cmdl Tools
-      run: xcode-select --install
     - name: Xcode print path
       run: xcode-select --print-path
     - name: Switch path
