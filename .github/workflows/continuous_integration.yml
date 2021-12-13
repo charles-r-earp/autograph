@@ -24,7 +24,7 @@ jobs:
     - name: Xcode print path
       run: xcode-select --print-path
     - name: Switch path
-      run: xcode-select --switch /Applications/Xcode.app/Contents/Developer
+      run: sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer
     - name: Test Device New
       run: cargo test device_new --features device_tests
     - name: Test
