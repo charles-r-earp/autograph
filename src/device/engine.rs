@@ -385,7 +385,7 @@ impl<B: Backend> EngineBase<B> {
     fn build(builder: &EngineBuilderBase<B>) -> DeviceResult<Self> {
         let adapter = builder.adapter.clone();
         let instance = builder.instance.clone();
-        let compute_family = adapter
+        let compute_family = dbg!(adapter
             .queue_families
             .iter()
             .filter(|f| f.queue_type() == QueueType::Compute)
@@ -396,11 +396,11 @@ impl<B: Backend> EngineBase<B> {
                     .filter(|f| f.queue_type().supports_compute()),
             )
             .next()
-            .ok_or(DeviceError::DeviceUnsupported)?;
+            .ok_or(DeviceError::DeviceUnsupported))?;
         let mut gpu = unsafe {
-            adapter
+            dbg!(adapter
                 .physical_device
-                .open(&[(compute_family, &[1.])], Features::empty())?
+                .open(&[(compute_family, &[1.])], Features::empty()))?
         };
         let device = gpu.device;
         let compute_queue = gpu.queue_groups[0].queues.pop().unwrap();
@@ -421,6 +421,7 @@ impl<B: Backend> EngineBase<B> {
         let result = Arc::new(AtomicCell::new(Ok(())));
         let exited = Arc::new(AtomicBool::default());
         queue.launch(builder.id, done.clone(), result.clone(), exited.clone());
+        dbg!("after launch");
         Ok(Self {
             context,
             sender,
@@ -1624,10 +1625,12 @@ impl<B: Backend> Queue<B> {
         std::thread::Builder::new()
             .name(name)
             .spawn(move || {
+                dbg!("thread launched");
                 let r =
                     catch_unwind(move || self.run(&done)).unwrap_or(Err(DeviceError::DeviceLost));
                 result.store(r);
                 exited.store(true, Ordering::Relaxed);
+                dbg!("thread exit");
             })
             .unwrap();
     }
