@@ -21,10 +21,6 @@ jobs:
     - uses: actions/checkout@v2
     - name: cargo fetch
       run: cargo fetch --target ${{ matrix.target }}
-    - name: Xcode print path
-      run: xcode-select --print-path
-    - name: Switch path
-      run: sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer
     - name: Test Device New
       run: cargo test device_new --features device_tests
     - name: Test
