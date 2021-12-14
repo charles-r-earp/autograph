@@ -64,37 +64,15 @@ use std::{
 };
 use tinyvec::ArrayVec;
 
-#[cfg(all(
-    any(
-        all(unix, not(any(target_os = "ios", target_os = "macos"))),
-        feature = "gfx_backend_vulkan",
-        windows,
-    ),
-    not(feature = "gfx-backend-empty"),
+#[cfg(any(
+    all(unix, not(any(target_os = "ios", target_os = "macos"))),
+    feature = "gfx_backend_vulkan",
+    windows,
 ))]
 use gfx_backend_vulkan::Backend as Vulkan;
 
-#[cfg(all(
-    any(
-        all(unix, not(any(target_os = "ios", target_os = "macos"))),
-        feature = "gfx_backend_vulkan",
-        windows
-    ),
-    feature = "gfx-backend-empty",
-))]
-use gfx_backend_empty::Backend as Vulkan;
-
-#[cfg(all(
-    any(target_os = "ios", target_os = "macos"),
-    feature = "gfx-backend-empty"
-))]
+#[cfg(any(target_os = "ios", target_os = "macos"))]
 use gfx_backend_metal::Backend as Metal;
-
-#[cfg(all(
-    any(target_os = "ios", target_os = "macos"),
-    not(feature = "gfx-backend-empty")
-))]
-use gfx_backend_empty::Backend as Metal;
 
 #[cfg(windows)]
 use gfx_backend_dx12::Backend as DX12;
@@ -433,15 +411,20 @@ impl<B: Backend> EngineBase<B> {
         let profiler = Profiler::get()
             .transpose()
             .map_err(|_| DeviceError::ProfileSummaryError)?;
+        dbg!("before context");
         #[cfg(feature = "profile")]
         let context = Arc::new(Context::new(device, allocator, adapter, instance, profiler));
         #[cfg(not(feature = "profile"))]
         let context = Arc::new(Context::new(device, allocator, adapter, instance));
+        dbg!("after context");
         let (sender, receiver) = unbounded_channel();
+        dbg!("before queue");
         let queue = Queue::new(receiver, context.clone(), compute_queue, compute_id)?;
+        dbg!("after queue");
         let done = Arc::new(AtomicBool::default());
         let result = Arc::new(AtomicCell::new(Ok(())));
         let exited = Arc::new(AtomicBool::default());
+        dbg!("before launch");
         queue.launch(builder.id, done.clone(), result.clone(), exited.clone());
         dbg!("after launch");
         Ok(Self {
