@@ -1063,7 +1063,7 @@ impl HeapInfo {
             .map(|(i, heap)| (i, heap.size))
             .collect();
         heaps.sort_by_key(|(_, size)| *size);
-        for (_index, size) in heaps {
+        for (_index, size) in heaps.into_iter().rev() {
             for (i, memory_type) in memory_properties.memory_types.iter().enumerate() {
                 if memory_type.properties.contains(properties) {
                     return Some(Self {
@@ -1136,10 +1136,11 @@ impl AllocatorConfig {
         Self::default().with_memory_properties(memory_properties)
     }
     fn with_memory_properties(mut self, memory_properties: &MemoryProperties) -> Self {
+        dbg!(&memory_properties);
         self.device_heap = Self::device_heap(memory_properties);
         self.shared_heap = Self::shared_heap(memory_properties);
         self.host_heap = Self::host_heap(memory_properties);
-        self
+        dbg!(self)
     }
     fn device_id(&self) -> Option<MemoryTypeId> {
         self.device_heap.as_ref().map(|x| x.id)
@@ -1153,15 +1154,15 @@ impl AllocatorConfig {
     fn storage_chunks(&self) -> usize {
         let device_chunks = (self.device_heap.map_or(0, |x| x.size) / CHUNK_SIZE as u64) as usize;
         let shared_chunks = (self.shared_heap.map_or(0, |x| x.size) / CHUNK_SIZE as u64) as usize;
-        (device_chunks + shared_chunks).max(256)
+        (dbg!(device_chunks) + dbg!(shared_chunks)).min(256)
     }
     fn storage_memory(&self) -> u64 {
-        self.storage_chunks() as u64 * CHUNK_SIZE as u64
+        dbg!(dbg!(self.storage_chunks() as u64) * dbg!(CHUNK_SIZE as u64))
     }
     fn mapping_chunks(&self) -> usize {
         let shared_chunks = (self.shared_heap.map_or(0, |x| x.size) / CHUNK_SIZE as u64) as usize;
         let host_chunks = (self.host_heap.map_or(0, |x| x.size) / CHUNK_SIZE as u64) as usize;
-        (shared_chunks + host_chunks).max(256)
+        (dbg!(shared_chunks) + dbg!(host_chunks)).min(256)
     }
 }
 
