@@ -427,7 +427,7 @@ impl<B: Backend> EngineBase<B> {
         let device = gpu.device;
         let compute_queue = gpu.queue_groups[0].queues.pop().unwrap();
         let compute_id = compute_family.id();
-        let allocator = Allocator::new(&device, &builder.allocator_config)?;
+        let allocator = dbg!(Allocator::new(&device, &builder.allocator_config))?;
         // TODO probably convert to using anyhow::Error instead of DeviceError.
         #[cfg(feature = "profile")]
         let profiler = Profiler::get()
@@ -1125,7 +1125,7 @@ impl AllocatorConfig {
         )
     }
     fn mapping_properties() -> Properties {
-        Properties::CPU_VISIBLE | Properties::COHERENT | Properties::CPU_CACHED
+        Properties::CPU_VISIBLE | Properties::COHERENT // | Properties::CPU_CACHED
     }
     fn shared_heap(memory_properties: &MemoryProperties) -> Option<HeapInfo> {
         if let Some(heap) = HeapInfo::new(
