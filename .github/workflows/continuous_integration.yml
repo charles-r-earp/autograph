@@ -22,4 +22,4 @@ jobs:
     - name: cargo fetch
       run: cargo fetch --target ${{ matrix.target }}
     - name: Test Device New
-      run: cargo test device_new --features device_tests
+      run: cargo check --features device_tests
