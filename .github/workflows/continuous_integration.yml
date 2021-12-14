@@ -22,6 +22,4 @@ jobs:
     - name: cargo fetch
       run: cargo fetch --target ${{ matrix.target }}
     - name: Test Device New
-      run: cargo test device_new --features "device_tests gfx-backend-empty"
-    - name: Test
-      run: cargo test --features "device_tests gfx-backend-empty"
+      run: cargo test device_new --features device_tests
