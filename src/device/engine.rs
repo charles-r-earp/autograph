@@ -64,15 +64,37 @@ use std::{
 };
 use tinyvec::ArrayVec;
 
-#[cfg(any(
-    all(unix, not(any(target_os = "ios", target_os = "macos"))),
-    feature = "gfx_backend_vulkan",
-    windows
+#[cfg(all(
+    any(
+        all(unix, not(any(target_os = "ios", target_os = "macos"))),
+        feature = "gfx_backend_vulkan",
+        windows,
+    ),
+    not(feature = "gfx-backend-empty"),
 ))]
 use gfx_backend_vulkan::Backend as Vulkan;
 
-#[cfg(any(target_os = "ios", target_os = "macos"))]
+#[cfg(all(
+    any(
+        all(unix, not(any(target_os = "ios", target_os = "macos"))),
+        feature = "gfx_backend_vulkan",
+        windows
+    ),
+    feature = "gfx-backend-empty",
+))]
+use gfx_backend_empty::Backend as Vulkan;
+
+#[cfg(all(
+    any(target_os = "ios", target_os = "macos"),
+    feature = "gfx-backend-empty"
+))]
 use gfx_backend_metal::Backend as Metal;
+
+#[cfg(all(
+    any(target_os = "ios", target_os = "macos"),
+    not(feature = "gfx-backend-empty")
+))]
+use gfx_backend_empty::Backend as Metal;
 
 #[cfg(windows)]
 use gfx_backend_dx12::Backend as DX12;
