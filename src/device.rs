@@ -667,6 +667,7 @@ impl Device {
         fn new_impl() -> Result<Device> {
             let mut builders: Vec<_> = Device::builder_iter().collect();
             builders.sort_by_key(|b| b.info().device_type());
+            #[cfg(test)]
             dbg!(&builders);
             builders
                 .first()
