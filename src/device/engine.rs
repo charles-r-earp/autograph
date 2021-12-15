@@ -1036,7 +1036,6 @@ impl<B: Backend> Default for MappingChunk<B> {
     }
 }
 
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct HeapInfo {
     // index: usize,
@@ -1204,11 +1203,15 @@ impl AllocatorConfig {
     }*/
     fn new(memory_properties: &MemoryProperties) -> Self {
         dbg!(memory_properties);
-        let mut storage = memory_properties.memory_heaps.iter()
+        let mut storage = memory_properties
+            .memory_heaps
+            .iter()
             .enumerate()
             .filter(|(_, h)| h.flags == HeapFlags::DEVICE_LOCAL && h.size > CHUNK_SIZE)
             .filter_map(|(i, h)| {
-                let mut ids = memory_properties.memory_types.iter()
+                let mut ids = memory_properties
+                    .memory_types
+                    .iter()
                     .enumerate()
                     .filter(|(_, t)| t.heap_index == i)
                     .collect::<Vec<_>>();
@@ -1234,15 +1237,29 @@ impl AllocatorConfig {
             .collect::<Vec<_>>();
         storage.sort_by_key(|x| x.size);
         storage.reverse();
-        let mut mapping = memory_properties.memory_heaps.iter()
+        let mut mapping = memory_properties
+            .memory_heaps
+            .iter()
             .enumerate()
             .filter(|(_, h)| h.flags != HeapFlags::DEVICE_LOCAL && h.size > CHUNK_SIZE)
             .filter_map(|(i, h)| {
-                let mut ids = memory_properties.memory_types.iter()
+                let mut ids = memory_properties
+                    .memory_types
+                    .iter()
                     .enumerate()
-                    .filter(|(_, t)| t.heap_index == i && t.properties.contains(Properties::CPU_VISIBLE | Properties::COHERENT))
+                    .filter(|(_, t)| {
+                        t.heap_index == i
+                            && t.properties
+                                .contains(Properties::CPU_VISIBLE | Properties::COHERENT)
+                    })
                     .collect::<Vec<_>>();
-                ids.sort_by_key(|(_, t)| if t.properties.contains(Properties::CPU_CACHED) { 0 } else { 1 });
+                ids.sort_by_key(|(_, t)| {
+                    if t.properties.contains(Properties::CPU_CACHED) {
+                        0
+                    } else {
+                        1
+                    }
+                });
                 let id = ids.first().copied().map(|(i, _)| i)?;
                 Some(HeapInfo {
                     size: h.size,
@@ -1252,10 +1269,7 @@ impl AllocatorConfig {
             .collect::<Vec<_>>();
         mapping.sort_by_key(|x| x.size);
         mapping.reverse();
-        Self {
-            storage,
-            mapping,
-        }
+        Self { storage, mapping }
     }
     /*fn with_memory_properties(mut self, memory_properties: &MemoryProperties) -> Self {
         #[cfg(test)]
@@ -1265,11 +1279,12 @@ impl AllocatorConfig {
         self.host_heap = Self::host_heap(memory_properties);
         self
     }*/
-    fn storage_ids(&self) -> impl Iterator<Item=MemoryTypeId> + '_ {
+    fn storage_ids(&self) -> impl Iterator<Item = MemoryTypeId> + '_ {
         self.storage.iter().map(|x| x.id)
     }
     fn storage_chunks(&self) -> usize {
-        self.storage.iter()
+        self.storage
+            .iter()
             .map(|x| x.size / CHUNK_SIZE)
             .sum::<u64>()
             .min(256) as usize
@@ -1278,12 +1293,13 @@ impl AllocatorConfig {
         self.storage_chunks() as u64 * CHUNK_SIZE as u64
     }
     fn mapping_chunks(&self) -> usize {
-        self.mapping.iter()
+        self.mapping
+            .iter()
             .map(|x| x.size / CHUNK_SIZE)
             .sum::<u64>()
             .min(256) as usize
     }
-    fn mapping_ids(&self) -> impl Iterator<Item=MemoryTypeId> + '_ {
+    fn mapping_ids(&self) -> impl Iterator<Item = MemoryTypeId> + '_ {
         self.mapping.iter().copied().map(|x| x.id)
     }
 }
@@ -2911,12 +2927,19 @@ mod tests {
         };
         let expected = AllocatorConfig {
             storage: vec![
-                HeapInfo { size: 6_442_450_944, id: MemoryTypeId(7) },
-                HeapInfo { size: 257949696, id: MemoryTypeId(10) }
+                HeapInfo {
+                    size: 6_442_450_944,
+                    id: MemoryTypeId(7),
+                },
+                HeapInfo {
+                    size: 257949696,
+                    id: MemoryTypeId(10),
+                },
             ],
-            mapping: vec![
-                HeapInfo { size: 12_358_213_632, id: MemoryTypeId(9) }
-            ],
+            mapping: vec![HeapInfo {
+                size: 12_358_213_632,
+                id: MemoryTypeId(9),
+            }],
         };
         let config = AllocatorConfig::new(&memory_properties);
         assert!(
