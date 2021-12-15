@@ -1202,7 +1202,14 @@ impl AllocatorConfig {
         )
     }*/
     fn new(memory_properties: &MemoryProperties) -> Self {
-        dbg!(memory_properties);
+        #[cfg(test)]
+        {
+            tests::ALLOCATOR_CONFIG_DIAGNOSTIC.with(|a| {
+                if a.get() {
+                    dbg!(memory_properties);
+                }
+            });
+        }
         let mut storage = memory_properties
             .memory_heaps
             .iter()
@@ -2856,6 +2863,21 @@ impl From<MapError> for DeviceError {
 mod tests {
     use super::*;
     use gfx_hal::adapter::{MemoryHeap, MemoryType};
+    use std::cell::Cell;
+
+    thread_local! {
+        pub(super) static ALLOCATOR_CONFIG_DIAGNOSTIC: Cell<bool> = Cell::default();
+    }
+
+    #[ignore]
+    #[test]
+    fn allocator_config_diagnostic() {
+        ALLOCATOR_CONFIG_DIAGNOSTIC.with(|a| a.set(true));
+        Engine::builder_iter().for_each(|e| {
+            dbg!(e);
+        });
+        ALLOCATOR_CONFIG_DIAGNOSTIC.with(|a| a.set(false));
+    }
 
     #[test]
     fn allocator_config_nv_gtx1060_vulkan() {
