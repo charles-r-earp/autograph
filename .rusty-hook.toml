@@ -1,6 +1,5 @@
 [hooks]
-pre-commit = "RUSTFLAGS=\"-Dwarnings\" cargo clippy -- -D warnings && cargo test --features \"full device_tests\""
-pre-push = "cargo fmt --all -- --check"
+pre-commit = "cargo fmt --all -- --check && cargo clippy --features full -- -D warnings && cargo test --features full --features device_tests"
 
 [logging]
 verbose = true
