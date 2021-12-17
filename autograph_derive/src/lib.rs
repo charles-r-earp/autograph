@@ -74,9 +74,11 @@ struct ReluBackward {
 */
 
 use proc_macro::TokenStream;
-use proc_macro2::TokenStream as TokenStream2;
+use proc_macro2::{Literal, TokenStream as TokenStream2};
 use quote::{quote, ToTokens};
-use syn::{Attribute, Data, DataStruct, DeriveInput, Fields, Index, Meta, NestedMeta};
+use syn::{
+    Attribute, Data, DataStruct, DeriveInput, Fields, FnArg, Index, ItemFn, Meta, NestedMeta,
+};
 
 fn autograph_path(attributes: &[Attribute]) -> TokenStream2 {
     for attribute in attributes {
@@ -437,4 +439,63 @@ pub fn derive_autograd(input: TokenStream) -> TokenStream {
             compile_error!("Unions unsupported!")
         }),
     }
+}
+
+#[doc(hidden)]
+// Generates descriptor_set = 0, binding = 0.. for each #[spirv(storage_buffer)]
+#[proc_macro_attribute]
+pub fn autobind(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    let mut func: ItemFn = syn::parse(item).unwrap();
+    let mut binding: usize = 0;
+
+    for fn_arg in func.sig.inputs.iter_mut() {
+        let pat_type = match fn_arg {
+            FnArg::Receiver(_) => continue,
+            FnArg::Typed(pat_type) => pat_type,
+        };
+        for mut attr in pat_type.attrs.iter_mut() {
+            if let Ok(Meta::List(meta_list)) = attr.parse_meta() {
+                if &meta_list.path.to_token_stream().to_string() == "spirv" {
+                    let mut found = false;
+                    for nested in meta_list.nested.iter() {
+                        if let NestedMeta::Meta(Meta::Path(path)) = nested {
+                            if path.to_token_stream().to_string() == "storage_buffer" {
+                                found = true;
+                                break;
+                            }
+                        }
+                    }
+                    if found {
+                        let mut nested = meta_list.nested;
+                        let descriptor_set_name_value = syn::parse(
+                            quote! {
+                                descriptor_set = 0
+                            }
+                            .into(),
+                        )
+                        .expect("Unable to parse descriptor_set!");
+                        nested.push(NestedMeta::Meta(Meta::NameValue(descriptor_set_name_value)));
+                        let binding_lit = Literal::usize_unsuffixed(binding);
+                        let binding_name_value = syn::parse(
+                            quote! {
+                                binding = #binding_lit
+                            }
+                            .into(),
+                        )
+                        .expect("Unable to parse binding!");
+                        nested.push(NestedMeta::Meta(Meta::NameValue(binding_name_value)));
+                        attr.tokens = quote! {
+                            (#nested)
+                        };
+                        binding += 1;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    TokenStream::from(quote! {
+        #func
+    })
 }
