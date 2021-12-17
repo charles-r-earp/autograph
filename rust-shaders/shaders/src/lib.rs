@@ -9,6 +9,8 @@
 
 
 pub mod util;
+mod byte;
+mod short;
 mod half;
 mod atomic;
 pub mod fill;

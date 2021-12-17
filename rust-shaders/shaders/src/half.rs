@@ -1,5 +1,8 @@
-use spirv_std::glam::{Vec2, Vec4, Vec4Swizzles};
-use crate::util::{Load, /*Store*/};
+use spirv_std::{
+    //glam::{Vec2, Vec4, Vec4Swizzles},
+    memory::{Scope, Semantics},
+};
+use crate::{util::{Load, Store}, atomic::atomic_compare_exchange};
 use core::{mem::size_of, /*sync::atomic::{AtomicU32, Ordering}*/};
 
 /* Original: https://github.com/starkat99/half-rs/releases/tag/v1.7.1/src/bfloat/conver.rs
@@ -60,24 +63,25 @@ pub(crate) fn bf16_to_f32(i: u32) -> f32 {
     }
 }
 
-pub(crate) fn bf16x2_to_vec2(x: u32) -> Vec2 {
+/*fn bf16x2_to_vec2(x: u32) -> Vec2 {
     Vec2::new(bf16_to_f32(x), bf16_to_f32(x >> 16))
-}
+}*/
 
+/*
 pub(crate) fn vec2_to_bf16x2(x: Vec2) -> u32 {
     f32_to_bf16(x.x) | f32_to_bf16(x.y) << 16
 }
 
 pub(crate) fn vec4_to_bf16x4(x: Vec4) -> (u32, u32) {
     (vec2_to_bf16x2(x.xy()), vec2_to_bf16x2(x.zw()))
-}
+}*/
 
 #[allow(non_camel_case_types)]
 #[derive(Clone, Copy)]
 pub struct bf16x2(u32);
 
 impl bf16x2 {
-    //fn as_bits_mut(&mut self) -> &mut u32 { &mut self.0 }
+    fn as_bits_mut(&mut self) -> &mut u32 { &mut self.0 }
     fn to_bits(self) -> u32 { self.0 }
     fn from_bits(v: u32) -> Self { Self(v) }
     pub(crate) fn from_f32x2(x: [f32; 2]) -> Self {
@@ -100,16 +104,20 @@ impl Load<f32> for [bf16x2] {
     }
 }
 
-/*
 impl Store<f32> for [bf16x2] {
     fn store(&mut self, index: usize, value: f32) {
-        let bits = if index & 1 == 0 {
-            f32_to_bf16(value)
-        } else {
-            f32_to_bf16(value) << 16
-        };
-        AtomicU32::from_mut(self[index / size_of::<u16>()].as_bits_mut())
-            .store(bits, Ordering::Relaxed);
+        let mut previous: u32;
+        let idx = index / 2;
+        loop {
+            previous = self[idx].to_bits();
+            let mut values = self[idx].to_f32x2();
+            values[index & 1] = value;
+            let value = bf16x2::from_f32x2(values).to_bits();
+            if unsafe {
+                atomic_compare_exchange::<u32, {Scope::Device as u32}, {Semantics::NONE.bits()}, {Semantics::NONE.bits()}>(self[idx].as_bits_mut(), value, previous)
+            } == previous {
+                break;
+            }
+        }
     }
 }
-*/

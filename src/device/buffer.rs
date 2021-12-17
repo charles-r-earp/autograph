@@ -3,7 +3,7 @@ use super::{
     WriteOnly,
 };
 use crate::{
-    glsl_shaders, rust_shaders,
+    rust_shaders,
     scalar::{Scalar, ScalarType},
     util::{elem_type_name, size_eq, type_eq},
 };
@@ -872,16 +872,16 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
             let n = self.len() as u32;
             // TODO: DX12 not working
             //let api = self.device().info().map_or(Api::Vulkan, |i| i.api());
-            let (module, entry, gs) = match (T::scalar_type(), T2::scalar_type()) {
+            /*let (module, entry, gs) = match (T::scalar_type(), T2::scalar_type()) {
                 (U8, BF16 | F32) => {
                     let module = rust_shaders::core()?;
                     let entry = format!("cast::scale_{}_{}", T::scalar_name(), T2::scalar_name());
-                    (module, entry, n / 4)
+                    (module, entry, n)
                 }
                 (BF16, BF16) => {
                     let module = rust_shaders::core()?;
                     let entry = format!("cast::scale_{}_{}", T::scalar_name(), T2::scalar_name());
-                    (module, entry, n / 2)
+                    (module, entry, n)
                 }
                 _ => {
                     // patch for old impl
@@ -893,9 +893,9 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
                     let entry = String::from("main");
                     (module, entry, n)
                 }
-            };
-            //let mut output = Buffer::zeros(self.device(), self.len())?;
-            let builder = module
+            };*/
+            let entry = format!("cast::scale_{}_{}", T::scalar_name(), T2::scalar_name());
+            let builder = rust_shaders::core()?
                 .compute_pass(entry)?
                 .slice(self.as_slice())?
                 .slice_mut(output.as_slice_mut())?
@@ -910,7 +910,7 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
                 }
             };
             unsafe {
-                builder.submit([gs, 1, 1])?;
+                builder.submit([n, 1, 1])?;
             }
             Ok(output)
         }

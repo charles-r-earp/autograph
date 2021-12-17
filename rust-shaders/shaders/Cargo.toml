@@ -15,3 +15,6 @@ spirv-std = { git = "https://github.com/EmbarkStudios/rust-gpu", features = ["gl
 num-traits = { version = "0.2.14", default-features = false }
 crunchy = "0.2.2"
 autograph_derive = { path = "../../autograph_derive" }
+
+[build-dependencies]
+anyhow = "1.0.51"
