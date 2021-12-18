@@ -433,10 +433,7 @@ fn relu(input: &FloatTensorViewD) -> Result<FloatTensorD> {
         FloatType::F32 => n,
     };
     let builder = rust_shaders::core()?
-        .compute_pass(&format!(
-            "activation::relu_{}",
-            float_type.as_str(),
-        ))?
+        .compute_pass(&format!("activation::relu_{}", float_type.as_str(),))?
         .float_slice(input.as_raw_slice())?
         .float_slice_mut(output.as_raw_slice_mut())?
         .push(n)?;

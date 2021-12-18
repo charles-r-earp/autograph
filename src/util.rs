@@ -21,7 +21,6 @@ pub(crate) fn size_eq<A, B>() -> bool {
     size_of::<A>() == size_of::<B>()
 }
 
-
 pub(crate) trait UnwrapUnchecked {
     type Output;
     unsafe fn _unwrap_unchecked(self) -> Self::Output;

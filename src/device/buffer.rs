@@ -13,7 +13,7 @@ use serde::{de::Deserializer, ser::Serializer, Deserialize, Serialize};
 use std::{
     fmt::{self, Debug},
     marker::PhantomData,
-    mem::{forget, transmute, size_of},
+    mem::{forget, size_of, transmute},
     ops::{Deref, DerefMut},
     sync::Arc,
 };
