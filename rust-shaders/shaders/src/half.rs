@@ -3,7 +3,7 @@ use spirv_std::{
     memory::{Scope, Semantics},
 };
 use crate::{util::{Load, Store}, atomic::atomic_compare_exchange};
-use core::{mem::size_of, /*sync::atomic::{AtomicU32, Ordering}*/};
+//use core::{mem::size_of, /*sync::atomic::{AtomicU32, Ordering}*/};
 
 /* Original: https://github.com/starkat99/half-rs/releases/tag/v1.7.1/src/bfloat/conver.rs
 pub(crate) fn f32_to_bf16(value: f32) -> u16 {
@@ -28,15 +28,17 @@ pub(crate) fn f32_to_bf16(value: f32) -> u16 {
 fn f32_to_bf16(value: f32) -> u32 {
     // Convert to raw bytes
     let x = value.to_bits();
+
     // check for NaN
     if x & 0x7FFF_FFFFu32 > 0x7F80_0000u32 {
         // Keep high part of current mantissa but also set most significiant mantissa bit
         return (x >> 16) | 0x0040u32;
     }
 
+    // TODO: impl correct rounding, can't due to emitting byte instructions
     // round and shift
     let round_bit = 0x0000_8000u32;
-    if (x & round_bit) != 0 /*&& (x & (3 * round_bit - 1)) != 0*/ {
+    if (x & round_bit) != 0 && (x & (3 * round_bit - 1)) != 0  {
         (x >> 16) + 1
     } else {
         x >> 16
@@ -95,12 +97,13 @@ impl bf16x2 {
 
 impl Load<f32> for [bf16x2] {
     fn load(&self, index: usize) -> f32 {
-        let bits = self[index / size_of::<u16>()].0;
+        /*let bits = self[index / size_of::<u16>()].0;
         if index & 1 == 0 {
             f32::from_bits(bits << 16)
         } else {
             f32::from_bits(bits >> 16 << 16)
-        }
+        }*/
+        self[index / 2].to_f32x2()[index & 1]
     }
 }
 
