@@ -2,44 +2,53 @@ use spirv_std::glam::UVec3;
 use crate::autobind;
 
 #[repr(C)]
-pub struct FillPushConstsU32 {
-    n: u32,
-    x: u32,
-}
-
-#[autobind]
-#[spirv(compute(threads(64)))]
-pub fn fill_u32(
-    #[spirv(global_invocation_id)]
-    global_id: UVec3,
-    #[spirv(storage_buffer)] y: &mut [u32],
-    #[spirv(push_constant)]
-    push_consts: &FillPushConstsU32,
-) {
-    if global_id.x < push_consts.n {
-        y[global_id.x as usize] = push_consts.x;
-    }
+#[derive(Copy, Clone)]
+pub struct u32x2 {
+    _x: u32,
+    _y: u32,
 }
 
 #[repr(C)]
-pub struct FillPushConstsU64 {
-    n: u32,
-    x1: u32,
-    x2: u32,
+#[derive(Copy, Clone)]
+pub struct u32x4 {
+    _x: u32,
+    _y: u32,
+    _z: u32,
+    _w: u32,
 }
 
-#[autobind]
-#[spirv(compute(threads(64)))]
-pub fn fill_u64(
-    #[spirv(global_invocation_id)]
-    global_id: UVec3,
-    #[spirv(storage_buffer)] y: &mut [u32],
-    #[spirv(push_constant)]
-    push_consts: &FillPushConstsU64,
-) {
-    if global_id.x < push_consts.n {
-        let index = (global_id.x as usize) * 2;
-        y[index] = push_consts.x1;
-        y[index + 1] = push_consts.x2;
-    }
+#[repr(C)]
+pub struct FillPushConsts<T> {
+    n: u32,
+    x: T,
+}
+
+macro_rules! impl_fill {
+    ($($func:ident<$t:ty>),* $(,)?) => (
+        $(
+            #[autobind]
+            #[spirv(compute(threads(256)))]
+            pub fn $func(
+                #[spirv(workgroup_id)]
+                group_id: UVec3,
+                #[spirv(local_invocation_id)]
+                local_id: UVec3,
+                #[spirv(storage_buffer)] y: &mut [$t],
+                #[spirv(push_constant)]
+                push_consts: &FillPushConsts<$t>,
+            ) {
+                let gid = (group_id.x * 256 + local_id.x) as usize;
+                let n = push_consts.n as usize;
+                let x = push_consts.x;
+                if gid < n {
+                    y[gid] = x;
+                }
+            }
+        )*
+    );
+}
+
+impl_fill!{
+    fill_u32<u32>,
+    fill_u32x2<u32x2>,
 }
