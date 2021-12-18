@@ -7,12 +7,11 @@ pub struct ReluPushConsts {
 }
 
 fn relu<T>(
-    global_id: UVec3,
+    gid: usize,
     x: &[T],
     y: &mut [T],
     push_consts: &ReluPushConsts,
 ) where [T]: Store<f32> {
-    let gid = global_id.x as usize;
     let n = push_consts.n as usize;
     if gid < n {
         let x = x.load(gid);
@@ -20,72 +19,66 @@ fn relu<T>(
     }
 }
 
-#[autobind]
-#[spirv(compute(threads(64)))]
-pub fn relu_bf16(
-    #[spirv(global_invocation_id)]
-    global_id: UVec3,
-    #[spirv(storage_buffer)] x: &[bf16x2],
-    #[spirv(storage_buffer)] y: &mut [bf16x2],
-    #[spirv(push_constant)]
-    push_consts: &ReluPushConsts,
-) {
-    relu(global_id, x, y, push_consts);
-}
-
-#[autobind]
-#[spirv(compute(threads(64)))]
-pub fn relu_f32(
-    #[spirv(global_invocation_id)]
-    global_id: UVec3,
-    #[spirv(storage_buffer)] x: &[f32],
-    #[spirv(storage_buffer)] y: &mut [f32],
-    #[spirv(push_constant)]
-    push_consts: &ReluPushConsts,
-) {
-    relu(global_id, x, y, push_consts);
-}
-
 fn relu_backward<T>(
-    global_id: UVec3,
+    gid: usize,
     x: &[T],
     dx: &mut [T],
     dy: &[T],
     push_consts: &ReluPushConsts,
 ) where [T]: Store<f32> {
-    let gid = global_id.x as usize;
     let n = push_consts.n as usize;
     if gid < n {
-        if x.load(gid) > 0. {
-            dx.store(gid, dx.load(gid) + dy.load(gid));
-        }
+        let x = x.load(gid);
+        let dy = dy.load(gid);
+        let dy = if x > 0. {
+            dy
+        } else {
+            0.
+        };
+        dx.store(gid, dx.load(gid) + dy);
     }
 }
 
-#[autobind]
-#[spirv(compute(threads(64)))]
-pub fn relu_backward_bf16(
-    #[spirv(global_invocation_id)]
-    global_id: UVec3,
-    #[spirv(storage_buffer)] x: &[bf16x2],
-    #[spirv(storage_buffer)] dx: &mut [bf16x2],
-    #[spirv(storage_buffer)] dy: &[bf16x2],
-    #[spirv(push_constant)]
-    push_consts: &ReluPushConsts,
-) {
-    relu_backward(global_id, x, dx, dy, push_consts);
+macro_rules! impl_relu {
+    ($($fw:ident | $bw:ident <$t:ty>),* $(,)?) => (
+        $(
+            #[autobind]
+            #[spirv(compute(threads(256)))]
+            pub fn $fw(
+                #[spirv(workgroup_id)]
+                group_id: UVec3,
+                #[spirv(local_invocation_id)]
+                local_id: UVec3,
+                #[spirv(storage_buffer)] x: &[$t],
+                #[spirv(storage_buffer)] y: &mut [$t],
+                #[spirv(push_constant)]
+                push_consts: &ReluPushConsts,
+            ) {
+                let gid = (group_id.x * 256 + local_id.x) as usize;
+                relu(gid, x, y, push_consts);
+            }
+
+            #[autobind]
+            #[spirv(compute(threads(256)))]
+            pub fn $bw(
+                #[spirv(workgroup_id)]
+                group_id: UVec3,
+                #[spirv(local_invocation_id)]
+                local_id: UVec3,
+                #[spirv(storage_buffer)] x: &[$t],
+                #[spirv(storage_buffer)] dx: &mut [$t],
+                #[spirv(storage_buffer)] dy: &[$t],
+                #[spirv(push_constant)]
+                push_consts: &ReluPushConsts,
+            ) {
+                let gid = (group_id.x * 256 + local_id.x) as usize;
+                relu_backward(gid, x, dx, dy, push_consts);
+            }
+        )*
+    );
 }
 
-#[autobind]
-#[spirv(compute(threads(64)))]
-pub fn relu_backward_f32(
-    #[spirv(global_invocation_id)]
-    global_id: UVec3,
-    #[spirv(storage_buffer)] x: &[f32],
-    #[spirv(storage_buffer)] dx: &mut [f32],
-    #[spirv(storage_buffer)] dy: &[f32],
-    #[spirv(push_constant)]
-    push_consts: &ReluPushConsts,
-) {
-    relu_backward(global_id, x, dx, dy, push_consts);
+impl_relu!{
+    relu_bf16 | relu_backward_bf16 <bf16x2>,
+    relu_f32 | relu_backward_f32 <f32>,
 }
