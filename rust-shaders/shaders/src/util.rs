@@ -1,9 +1,10 @@
-use spirv_std::glam::UVec4;
+//use spirv_std::glam::UVec4;
 use crate::atomic::{
     atomic_i_add,
     //atomic_f32_add,
 };
 
+/*
 pub(crate) fn u8x4_to_uvec4(x: u32) -> UVec4 {
     UVec4::new(
         x & 0xFF,
@@ -12,7 +13,7 @@ pub(crate) fn u8x4_to_uvec4(x: u32) -> UVec4 {
         x >> 24,
     )
 }
-
+*/
 /*
 pub(crate) fn bf16x2_to_vec2(x: u32) -> Vec2 {
     Vec2::new(

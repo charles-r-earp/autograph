@@ -3,9 +3,9 @@ use super::{
     WriteOnly,
 };
 use crate::{
-    glsl_shaders, rust_shaders,
+    rust_shaders,
     scalar::{Scalar, ScalarType},
-    util::{elem_type_name, size_eq, type_eq},
+    util::{elem_type_name, type_eq},
 };
 use anyhow::bail;
 use bytemuck::Pod;
@@ -13,7 +13,7 @@ use serde::{de::Deserializer, ser::Serializer, Deserialize, Serialize};
 use std::{
     fmt::{self, Debug},
     marker::PhantomData,
-    mem::{forget, transmute},
+    mem::{forget, size_of, transmute},
     ops::{Deref, DerefMut},
     sync::Arc,
 };
@@ -731,27 +731,41 @@ impl<T, S: Data<Elem = T>> BufferBase<S> {
         S: DataMut,
     {
         let n = self.len() as u32;
-        let name = if size_eq::<T, u64>() {
-            "fill::fill_u64"
-        } else {
-            "fill::fill_u32"
+        let size = size_of::<T>();
+        let core = crate::rust_shaders::core()?;
+        let (builder, gs) = match size {
+            1 => {
+                let builder = core.compute_pass("fill::fill_u32")?;
+                let n = if n % 4 == 0 { n / 4 } else { n / 4 + 1 };
+                let builder = builder.push(n)?.push([elem; 4])?;
+                (builder, n)
+            }
+            2 => {
+                let builder = core.compute_pass("fill::fill_u32")?;
+                let n = if n % 2 == 0 { n / 2 } else { n / 2 + 1 };
+                let builder = builder.push(n)?.push([elem; 2])?;
+                (builder, n)
+            }
+            4 if n % 2 == 0 => {
+                let builder = core.compute_pass("fill::fill_u32x2")?;
+                let n = n / 2;
+                let builder = builder.push(n)?.push([elem; 2])?;
+                (builder, n)
+            }
+            4 => {
+                let builder = core.compute_pass("fill::fill_u32")?;
+                let builder = builder.push(n)?.push(elem)?;
+                (builder, n)
+            }
+            8 => {
+                let builder = core.compute_pass("fill::fill_u32x2")?;
+                let builder = builder.push(n)?.push(elem)?;
+                (builder, n)
+            }
+            _ => unreachable!(),
         };
-        let builder = crate::rust_shaders::core()?
-            .compute_pass(name)?
-            .slice_mut(self.as_slice_mut())?;
-        let (builder, n) = if size_eq::<T, u8>() {
-            let n = if n % 4 == 0 { n / 4 } else { n / 4 + 1 };
-            let builder = builder.push(n)?.push([elem; 4])?;
-            (builder, n)
-        } else if size_eq::<T, u16>() {
-            let n = if n % 2 == 0 { n / 2 } else { n / 2 + 1 };
-            let builder = builder.push(n)?.push([elem; 2])?;
-            (builder, n)
-        } else {
-            let builder = builder.push(n)?.push(elem)?;
-            (builder, n)
-        };
-        unsafe { builder.submit([n, 1, 1]) }
+        let builder = builder.slice_mut(self.as_slice_mut())?;
+        unsafe { builder.submit([gs, 1, 1]) }
     }
 }
 
@@ -872,16 +886,16 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
             let n = self.len() as u32;
             // TODO: DX12 not working
             //let api = self.device().info().map_or(Api::Vulkan, |i| i.api());
-            let (module, entry, gs) = match (T::scalar_type(), T2::scalar_type()) {
+            /*let (module, entry, gs) = match (T::scalar_type(), T2::scalar_type()) {
                 (U8, BF16 | F32) => {
                     let module = rust_shaders::core()?;
                     let entry = format!("cast::scale_{}_{}", T::scalar_name(), T2::scalar_name());
-                    (module, entry, n / 4)
+                    (module, entry, n)
                 }
                 (BF16, BF16) => {
                     let module = rust_shaders::core()?;
                     let entry = format!("cast::scale_{}_{}", T::scalar_name(), T2::scalar_name());
-                    (module, entry, n / 2)
+                    (module, entry, n)
                 }
                 _ => {
                     // patch for old impl
@@ -893,9 +907,9 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
                     let entry = String::from("main");
                     (module, entry, n)
                 }
-            };
-            //let mut output = Buffer::zeros(self.device(), self.len())?;
-            let builder = module
+            };*/
+            let entry = format!("cast::scale_{}_{}", T::scalar_name(), T2::scalar_name());
+            let builder = rust_shaders::core()?
                 .compute_pass(entry)?
                 .slice(self.as_slice())?
                 .slice_mut(output.as_slice_mut())?
@@ -910,7 +924,7 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
                 }
             };
             unsafe {
-                builder.submit([gs, 1, 1])?;
+                builder.submit([n, 1, 1])?;
             }
             Ok(output)
         }

@@ -38,6 +38,7 @@ pub mod device;
 
 mod util;
 
+#[allow(unused)]
 mod glsl_shaders;
 mod rust_shaders;
 

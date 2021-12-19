@@ -1,8 +1,13 @@
 use crate::{
-    util::u8x4_to_uvec4,
-    half::{bf16x2_to_vec2, vec2_to_bf16x2, vec4_to_bf16x4}
+    util::{Load, Store},
+    byte::u8x4,
+    short::u16x2,
+    half::bf16x2,
+    autobind,
 };
 use spirv_std::glam::UVec3;
+use num_traits::cast::AsPrimitive;
+use core::ops::Mul;
 
 #[repr(C)]
 pub struct ScalePushConsts<A> {
@@ -10,86 +15,37 @@ pub struct ScalePushConsts<A> {
     alpha: A
 }
 
-#[allow(unused_attributes)]
-#[spirv(compute(threads(64)))]
-pub fn scale_u8_f32(
-    #[spirv(global_invocation_id)]
+fn scale<X, T1, Y, T2>(
     global_id: UVec3,
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] x: &[u32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] y: &mut [f32],
-    #[spirv(push_constant)]
-    push_consts: &ScalePushConsts<f32>,
-) {
+    x: &[X],
+    y: &mut [Y],
+    push_consts: &ScalePushConsts<T2>,
+) where [X]: Load<T1>, T1: AsPrimitive<T2>, [Y]: Store<T2>, T2: Copy + Mul<T2, Output=T2> + 'static {
     let gid = global_id.x as usize;
     let n = push_consts.n as usize;
     let alpha = push_consts.alpha;
-    let yid = gid * 4;
-    if yid < n {
-        let ys = (alpha * u8x4_to_uvec4(x[gid]).as_vec4()).to_array();
-        y[yid + 0] = ys[0];
-        if yid + 1 < n {
-            y[yid + 1] = ys[1];
-        }
-        if yid + 2 < n {
-            y[yid + 2] = ys[2];
-        }
-        if yid + 3 < n {
-            y[yid + 3] = ys[3];
-        }
+    if gid < n {
+        y.store(gid, alpha * x.load(gid).as_());
     }
 }
 
-#[allow(unused_attributes)]
-#[spirv(compute(threads(64)))]
-pub fn scale_u8_bf16(
-    #[spirv(global_invocation_id)]
-    global_id: UVec3,
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] x: &[u32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] y: &mut [u32],
-    #[spirv(push_constant)]
-    push_consts: &ScalePushConsts<f32>,
-) {
-    let gid = global_id.x as usize;
-    let n = push_consts.n as usize;
-    let alpha = push_consts.alpha;
-    if gid * 4 < n {
-        // Hack that fixes issue on DX12.
-        y[gid * 2] = y[gid * 2];
-        let (y0, y1) = vec4_to_bf16x4(alpha * u8x4_to_uvec4(x[gid]).as_vec4());
-        if gid * 4 + 1 < n {
-            y[gid * 2] = y0;
-        }else {
-            y[gid * 2] = y0 & 0xFFFF;
-        }
-        if gid * 4 + 3 < n {
-            y[gid * 2 + 1] = y1;
-        } else if gid * 4 + 2 < n {
-            y[gid * 2 + 1] = y1 & 0xFFFF;
-        }
-    }
+macro_rules! impl_scale {
+    ($($func:ident<$X:ty, $T1:ty, $Y:ty, $T2:ty>),* $(,)?) => (
+        $(
+            #[autobind]
+            #[spirv(compute(threads(64)))]
+            pub fn $func(
+                #[spirv(global_invocation_id)]
+                global_id: UVec3,
+                #[spirv(storage_buffer)] x: &[$X],
+                #[spirv(storage_buffer)] y: &mut [$Y],
+                #[spirv(push_constant)]
+                push_consts: &ScalePushConsts<$T2>,
+            ) {
+                scale::<$X, $T1, $Y, $T2>(global_id, x, y, push_consts);
+            }
+        )*
+    );
 }
 
-#[allow(unused_attributes)]
-#[spirv(compute(threads(64)))]
-pub fn scale_bf16_bf16(
-    #[spirv(global_invocation_id)]
-    global_id: UVec3,
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] x: &[u32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] y: &mut [u32],
-    #[spirv(push_constant)]
-    push_consts: &ScalePushConsts<f32>,
-) {
-    let gid = global_id.x as usize;
-    let n = push_consts.n as usize;
-    let alpha = push_consts.alpha;
-    if gid * 2 < n {
-        // Hack that fixes issue on DX12.
-        y[gid] = y[gid];
-        let ys = vec2_to_bf16x2(alpha * bf16x2_to_vec2(x[gid]));
-        if gid * 2 + 1 < n {
-            y[gid] = ys;
-        } else {
-            y[gid] = ys & 0xFFFF;
-        }
-    }
-}
+include!(concat!(env!("OUT_DIR"), "/scale_impls.rs"));

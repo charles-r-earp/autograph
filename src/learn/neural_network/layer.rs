@@ -433,7 +433,7 @@ fn relu(input: &FloatTensorViewD) -> Result<FloatTensorD> {
         FloatType::F32 => n,
     };
     let builder = rust_shaders::core()?
-        .compute_pass(&format!("activation::relu_{}", float_type.as_str()))?
+        .compute_pass(&format!("activation::relu_{}", float_type.as_str(),))?
         .float_slice(input.as_raw_slice())?
         .float_slice_mut(output.as_raw_slice_mut())?
         .push(n)?;
@@ -468,7 +468,7 @@ fn relu_backward(
     let builder = rust_shaders::core()?
         .compute_pass(&format!(
             "activation::relu_backward_{}",
-            float_type.as_str()
+            float_type.as_str(),
         ))?
         .float_slice(input.to_slice()?.as_slice())?
         .float_slice_mut(input_grad.as_raw_slice_mut())?
@@ -753,8 +753,32 @@ fn pool_backward(
 ) -> Result<()> {
     debug_assert_eq!(kernel.ndim() + 2, input_grad.ndim());
     let output_grad = output_grad.into_standard_layout()?;
-    match kernel.ndim() {
-        2 => {
+    match (kind, kernel.ndim()) {
+        (PoolingKind::Max, 2) => {
+            let (bs, ic, ih, iw) = input_grad.view().into_dimensionality::<Ix4>()?.dim();
+            let oh = output_grad.shape()[2];
+            let ow = output_grad.shape()[3];
+            let builder = rust_shaders::core()?.compute_pass(&format!(
+                "pool::max_pool_2d_backward_{}",
+                input_grad.float_type().as_str()
+            ))?;
+            let builder = if let Some(indices) = indices {
+                builder.slice(indices.as_raw_slice())?
+            } else {
+                builder
+            };
+            let bs = bs * ic;
+            let builder = builder
+                .float_slice_mut(input_grad.as_raw_slice_mut())?
+                .float_slice(output_grad.as_raw_slice())?
+                .push(bs as u32)?
+                .push([ih as u32, iw as u32])?
+                .push([oh as u32, ow as u32])?;
+            unsafe {
+                builder.submit([bs as u32, oh as u32, ow as u32])?;
+            }
+        }
+        (PoolingKind::Mean, 2) => {
             let (bs, ic, ih, iw) = input_grad.view().into_dimensionality::<Ix4>()?.dim();
             let dilation = [1, 1].into_dimension();
             let oh = output_grad.shape()[2];
@@ -762,8 +786,7 @@ fn pool_backward(
             let (s_bez_h, d_bez_h, gcd_h) = eclid_gcd(strides[0], dilation[0]);
             let (s_bez_w, d_bez_w, gcd_w) = eclid_gcd(strides[1], dilation[1]);
             let builder = rust_shaders::core()?.compute_pass(&format!(
-                "pool::{}_pool_2d_backward_{}",
-                kind.as_str(),
+                "pool::mean_pool_2d_backward_{}",
                 input_grad.float_type().as_str()
             ))?;
             let builder = if let Some(indices) = indices {
@@ -1200,6 +1223,11 @@ mod tests {
     async fn max_pool_2d_backward_f32() -> Result<()> {
         pool_backward::<f32, _>(
             &[1, 1, 4, 4],
+            &MaxPool::from_kernel([2, 2]).with_strides(2)?,
+        )
+        .await?;
+        pool_backward::<f32, _>(
+            &[2, 1, 4, 4],
             &MaxPool::from_kernel([2, 2]).with_strides(2)?,
         )
         .await?;

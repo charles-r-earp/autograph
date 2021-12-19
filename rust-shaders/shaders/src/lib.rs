@@ -9,6 +9,8 @@
 
 
 pub mod util;
+mod byte;
+mod short;
 mod half;
 mod atomic;
 pub mod fill;
@@ -19,3 +21,5 @@ pub mod reorder;
 pub mod pool;
 pub mod linalg;
 pub mod criterion;
+
+use autograph_derive::autobind;
