@@ -23,74 +23,6 @@ pub struct Im2ColPushConsts2 {
     dw: u32,
 }
 
-
-/*
-// Adapted from https://github.com/CNugteren/CLBlast/blob/master/src/kernels/levelx/im2col.opencl
-fn im2col_2d_f32<const TX: usize, const TY: usize>(kernel_flip: bool, group_id: UVec3, local_id: UVec3, x: &[f32], y: &mut [f32], push_consts: &Im2ColPushConsts2) {
-    let bs = push_consts.bs as usize;
-    let ic = push_consts.ic as usize;
-    let ih = push_consts.ih as usize;
-    let iw = push_consts.iw as usize;
-    let oh = push_consts.oh as usize;
-    let ow = push_consts.ow as usize;
-    let kh = push_consts.kh as usize;
-    let kw = push_consts.kw as usize;
-    let sh = push_consts.sh as usize;
-    let sw = push_consts.sw as usize;
-    let ph = push_consts.ph as usize;
-    let pw = push_consts.pw as usize;
-    let dh = push_consts.dh as usize;
-    let dw = push_consts.dw as usize;
-    let group_x = group_id.x as usize;
-    let group_y = group_id.y as usize;
-    let local_x = local_id.x as usize;
-    let local_y = local_id.y as usize;
-    let global_x = group_x * TX + local_x;
-    let global_y = group_y * TY + local_y;
-    let bid = global_x / ic;
-    let cid = global_x % ic;
-    let bidx = bid * ic * ih * iw;
-    let bidy = bid * oh * ow * ic * kh * kw;
-    let cidx = cid * ih * iw;
-    let cidy = cid * kh * kw;
-    let hid = global_y / ow;
-    let wid = global_y % ow;
-    let patch_idx = (hid * ow + wid) * ic * kh * kw;
-    if bid < bs { if cid < ic { if hid < oh { if wid < ow {
-        for ki in 0 .. kh {
-            for kj in 0 .. kw {
-                let hidx = -(ph as isize) + (ki * dh + sh * hid) as isize;
-                let widx = -(pw as isize) + (kj * dw + sw * wid) as isize;
-                let mut val = 0.;
-                if hidx >= 0 { if hidx < ih as isize { if widx >= 0 { if widx < iw as isize {
-                    val = x[bidx + cidx + (hidx as usize) * iw + widx as usize];
-                }}}}
-                let mut kidx = ki * kw + kj;
-                if kernel_flip {
-                    kidx = kh * kw - (kidx + 1);
-                }
-                y[bidy + patch_idx + cidy + kidx] = val;
-            }}
-        }}
-    }}
-}
-
-#[allow(unused_attributes)]
-#[spirv(compute(threads(8, 8)))]
-pub fn im2col_2d_convolution_f32(
-    #[spirv(workgroup_id)]
-    group_id: UVec3,
-    #[spirv(local_invocation_id)]
-    local_id: UVec3,
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] x: &[f32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] y: &mut [f32],
-    #[spirv(push_constant)]
-    push_consts: &Im2ColPushConsts2,
-) {
-    im2col_2d_f32::<8, 8>(false, group_id, local_id, x, y, push_consts);
-}
-*/
-
 // Adapted from https://github.com/CNugteren/CLBlast/blob/master/src/kernels/levelx/im2col.opencl
 fn im2col_2d<T>(kernel_flip: bool, group_id: UVec3, local_id: UVec3, x: &[T], y: &mut [T], push_consts: &Im2ColPushConsts2)
     where T: Copy, [T]: Store<f32> {
@@ -114,11 +46,11 @@ fn im2col_2d<T>(kernel_flip: bool, group_id: UVec3, local_id: UVec3, x: &[T], y:
     let groups_hw = groups_h * groups_w;
     let group_bc = group_id / groups_hw;
     let group_hw = group_id % groups_hw;
-    let group_h = group_hw / ow;
-    let group_w = group_hw % ow;
+    let group_h = group_hw / groups_w;
+    let group_w = group_hw % groups_w;
     let local_id = local_id.x as usize;
-    let local_h = local_id / ow;
-    let local_w = local_id % ow;
+    let local_h = local_id / 16;
+    let local_w = local_id % 16;
     let bid = group_bc / ic;
     let cid = group_bc % ic;
     let bidx = bid * ic * ih * iw;
@@ -176,6 +108,87 @@ pub fn im2col_2d_convolution_f32(
 ) {
     im2col_2d(false, group_id, local_id, x, y, push_consts);
 }
+
+/*
+fn im2col_2d<T>(kernel_flip: bool, group_id: UVec3, local_id: UVec3, x: &[T], y: &mut [T], push_consts: &Im2ColPushConsts2)
+    where T: Copy, [T]: Store<f32> {
+    let bs = push_consts.bs as usize;
+    let ic = push_consts.ic as usize;
+    let ih = push_consts.ih as usize;
+    let iw = push_consts.iw as usize;
+    let oh = push_consts.oh as usize;
+    let ow = push_consts.ow as usize;
+    let kh = push_consts.kh as usize;
+    let kw = push_consts.kw as usize;
+    let sh = push_consts.sh as usize;
+    let sw = push_consts.sw as usize;
+    let ph = push_consts.ph as usize;
+    let pw = push_consts.pw as usize;
+    let dh = push_consts.dh as usize;
+    let dw = push_consts.dw as usize;
+    /*let group_id = group_id.x as usize;
+    let groups_h = oh / 16 + if oh % 16 != 0 { 1 } else { 0 };
+    let groups_w = ow / 16 + if ow % 16 != 0 { 1 } else { 0 };
+    let groups_hw = groups_h * groups_w;
+    let group_bc = group_id / groups_hw;
+    let group_hw = group_id % groups_hw;
+    let group_h = group_hw / ow;
+    let group_w = group_hw % ow;
+    let local_id = local_id.x as usize;
+    let local_h = local_id / ow;
+    let local_w = local_id % ow;*/
+    let group_bc = group_id.x as usize;
+    let group_hw = group_id.y as usize;
+    let groups_w = ow / 16 + if ow % 16 != 0 { 1 } else { 0 };
+    let group_h = group_hw / groups_w;
+    let group_w = group_hw % groups_w;
+    let local_id = local_id.y as usize;
+    let local_h = local_id / 16;
+    let local_w = local_id % 16;
+
+    let bid = group_bc / ic;
+    let cid = group_bc % ic;
+    let bidx = bid * ic * ih * iw;
+    let bidy = bid * oh * ow * ic * kh * kw;
+    let cidx = cid * ih * iw;
+    let cidy = cid * kh * kw;
+    let hid = group_h * 16 + local_h;
+    let wid = group_w * 16 + local_w;
+    let patch_idx = (hid * ow + wid) * ic * kh * kw;
+    if bid < bs { if cid < ic { if hid < oh { if wid < ow {
+        for ki in 0 .. kh {
+            for kj in 0 .. kw {
+                let hidx = -(ph as isize) + (ki * dh + sh * hid) as isize;
+                let widx = -(pw as isize) + (kj * dw + sw * wid) as isize;
+                let mut val = 0.;
+                if hidx >= 0 { if hidx < ih as isize { if widx >= 0 { if widx < iw as isize {
+                    val = x.load(bidx + cidx + (hidx as usize) * iw + widx as usize);
+                }}}}
+                let mut kidx = ki * kw + kj;
+                if kernel_flip {
+                    kidx = kh * kw - (kidx + 1);
+                }
+                y.store(bidy + patch_idx + cidy + kidx, val);
+            }
+        }
+    }}}}
+}
+
+#[autobind]
+#[spirv(compute(threads(1, 256)))]
+pub fn im2col_2d_convolution_f32(
+    #[spirv(workgroup_id)]
+    group_id: UVec3,
+    #[spirv(local_invocation_id)]
+    local_id: UVec3,
+    #[spirv(storage_buffer)] x: &[f32],
+    #[spirv(storage_buffer)] y: &mut [f32],
+    #[spirv(push_constant)]
+    push_consts: &Im2ColPushConsts2,
+) {
+    im2col_2d(false, group_id, local_id, x, y, push_consts);
+}
+*/
 
 #[repr(C)]
 pub struct Col2ImPushConsts2 {

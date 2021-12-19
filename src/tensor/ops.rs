@@ -66,11 +66,15 @@ impl<T: Float, S: Data<Elem = T>> Im2Col<Ix2> for TensorBase<S, Ix4> {
             .push([padding[0] as u32, padding[1] as u32])?
             .push([dilation[0] as u32, dilation[1] as u32])?;
         let work_size = {
-            let oh = (oh / 16) * 16 + if oh % 16 != 0 { 16 } else { 0 };
-            let ow = (ow / 16) * 16 + if ow % 16 != 0 { 16 } else { 0 };
-            let ohw = oh * ow;
-            let ohw = (ohw / 256) * 256 + if ohw % 256 != 0 { 256 } else { 0 };
+            //let oh = (oh / 16) * 16 + if oh % 16 != 0 { 16 } else { 0 };
+            //let ow = (ow / 16) * 16 + if ow % 16 != 0 { 16 } else { 0 };
+            /*let ohw = oh * ow;
+            //let ohw = (ohw / 256) * 256 + if ohw % 256 != 0 { 256 } else { 0 };*/
+            let gh = oh / 16 + if oh % 16 != 0 { 1 } else { 0 };
+            let gw = ow / 16 + if ow % 16 != 0 { 1 } else { 0 };
+            let ohw = gh * gw * 256;
             [(bs * ic * ohw) as u32, 1, 1]
+            //[(bs * ic) as u32, ohw as u32, 1]
         };
         unsafe {
             builder.submit(work_size)?;
@@ -286,11 +290,6 @@ mod tests {
             .await?;
         let y = x.im2col(&kernel, kind, args)?;
         let y_out = y.read().await?.as_array().map(|x| x.to_f32().unwrap());
-        for (a, b) in y_out.iter().zip(y_array.iter()) {
-            if a != b {
-                dbg!((a, b));
-            }
-        }
         assert_eq!(y_out, y_array);
         Ok(())
     }
@@ -325,8 +324,22 @@ mod tests {
         )
         .await?;
         im2col::<f32, _, _, _, _>(
+            [1, 2, 21, 5],
+            [2, 2],
+            KernelKind::Convolution,
+            &KernelArgs::default(),
+        )
+        .await?;
+        im2col::<f32, _, _, _, _>(
             [16, 6, 8, 8],
             [5, 5],
+            KernelKind::Convolution,
+            &KernelArgs::default(),
+        )
+        .await?;
+        im2col::<f32, _, _, _, _>(
+            [1, 1, 15, 20],
+            [2, 2],
             KernelKind::Convolution,
             &KernelArgs::default(),
         )
