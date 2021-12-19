@@ -65,7 +65,6 @@ fn gemm_impl<T: Scalar>(
         }
         _ => {
             let ts = 16;
-            let unr = ts;
             let splitk = 256;
             let splitk = if k >= (m * n).max(splitk * 2) {
                 Some(splitk)
@@ -77,12 +76,11 @@ fn gemm_impl<T: Scalar>(
             } else {
                 1
             };
+            let unr = if wpt == 1 { 16 } else { 8 };
             let entry = format!(
-                "linalg::gemm{}_{}_tsa{}_tsb{}{}_unr{}_mica{}_micb{}",
+                "linalg::gemm{}_{}{}_unr{}_mica{}_micb{}",
                 if bias.is_some() { "_bias" } else { "" },
                 elem_type_name::<T>(),
-                ts,
-                ts,
                 splitk.map_or(String::new(), |splitk| format!("_splitk{}", splitk)),
                 unr,
                 wpt,
