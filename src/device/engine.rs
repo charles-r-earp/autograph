@@ -23,7 +23,7 @@ use gfx_hal::{
         AllocationError, BindError, CreationError as DeviceCreationError, Device, DeviceLost,
         MapError, OutOfMemory,
     },
-    memory::{Barrier, Dependencies, HeapFlags, Properties, Segment, SparseFlags},
+    memory::{Barrier, Dependencies, Properties, Segment, SparseFlags},
     pool::{CommandPool, CommandPoolCreateFlags},
     prelude::DescriptorPool,
     pso::{
@@ -67,7 +67,7 @@ use tinyvec::ArrayVec;
 #[cfg(any(
     all(unix, not(any(target_os = "ios", target_os = "macos"))),
     feature = "gfx_backend_vulkan",
-    windows
+    windows,
 ))]
 use gfx_backend_vulkan::Backend as Vulkan;
 
@@ -239,7 +239,7 @@ pub(super) mod builders {
             Self {
                 adapter: self.adapter.clone(),
                 instance: self.instance.clone(),
-                allocator_config: self.allocator_config,
+                allocator_config: self.allocator_config.clone(),
                 id: self.id,
             }
         }
@@ -1036,149 +1036,125 @@ impl<B: Backend> Default for MappingChunk<B> {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct HeapInfo {
-    // index: usize,
     size: u64,
     id: MemoryTypeId,
 }
 
-impl HeapInfo {
-    fn new(
-        memory_properties: &MemoryProperties,
-        heap_flags: HeapFlags,
-        properties: Properties,
-    ) -> Option<Self> {
-        let mut heaps: Vec<_> = memory_properties
-            .memory_heaps
-            .iter()
-            .enumerate()
-            .filter(|(_, heap)| heap.flags == heap_flags)
-            .map(|(i, heap)| (i, heap.size))
-            .collect();
-        heaps.sort_by_key(|(_, size)| *size);
-        for (_index, size) in heaps {
-            for (i, memory_type) in memory_properties.memory_types.iter().enumerate() {
-                if memory_type.properties.contains(properties) {
-                    return Some(Self {
-                        // index,
-                        size,
-                        id: MemoryTypeId(i),
-                    });
-                }
-            }
-        }
-        None
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 struct AllocatorConfig {
-    device_heap: Option<HeapInfo>,
-    shared_heap: Option<HeapInfo>,
-    host_heap: Option<HeapInfo>,
-    initial_storage_chunks: usize,
-    initial_mapping_chunks: usize,
-}
-
-impl Default for AllocatorConfig {
-    fn default() -> Self {
-        Self {
-            device_heap: None,
-            shared_heap: None,
-            host_heap: None,
-            initial_storage_chunks: 4,
-            initial_mapping_chunks: 4,
-        }
-    }
+    storage: Vec<HeapInfo>,
+    mapping: Vec<HeapInfo>,
 }
 
 impl AllocatorConfig {
-    fn device_heap(memory_properties: &MemoryProperties) -> Option<HeapInfo> {
-        HeapInfo::new(
-            memory_properties,
-            HeapFlags::DEVICE_LOCAL,
-            Properties::DEVICE_LOCAL,
-        )
-    }
-    fn mapping_properties() -> Properties {
-        Properties::CPU_VISIBLE | Properties::COHERENT | Properties::CPU_CACHED
-    }
-    fn shared_heap(memory_properties: &MemoryProperties) -> Option<HeapInfo> {
-        if let Some(heap) = HeapInfo::new(
-            memory_properties,
-            HeapFlags::DEVICE_LOCAL,
-            Self::mapping_properties(),
-        ) {
-            if heap.size < 4 * CHUNK_SIZE {
-                None
-            } else {
-                Some(heap)
-            }
-        } else {
-            None
-        }
-    }
-    fn host_heap(memory_properties: &MemoryProperties) -> Option<HeapInfo> {
-        HeapInfo::new(
-            memory_properties,
-            HeapFlags::empty(),
-            Self::mapping_properties(),
-        )
-    }
     fn new(memory_properties: &MemoryProperties) -> Self {
-        Self::default().with_memory_properties(memory_properties)
+        #[cfg(test)]
+        {
+            tests::ALLOCATOR_CONFIG_DIAGNOSTIC.with(|a| {
+                if a.get() {
+                    dbg!(memory_properties);
+                }
+            });
+        }
+        let memory_heaps = &memory_properties.memory_heaps;
+        let mut memory_types = memory_properties
+            .memory_types
+            .iter()
+            .enumerate()
+            .filter_map(|(i, t)| {
+                let size = memory_heaps.get(t.heap_index)?.size;
+                if size >= CHUNK_SIZE {
+                    let id = MemoryTypeId(i);
+                    let info = HeapInfo { size, id };
+                    Some((info, t))
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        memory_types.sort_by_key(|(_, t)| {
+            let p = &t.properties;
+            if p.contains(Properties::CPU_CACHED) {
+                3
+            } else if p.contains(Properties::COHERENT) {
+                2
+            } else if p.contains(Properties::CPU_VISIBLE) {
+                1
+            } else {
+                0
+            }
+        });
+        let has_non_device_heap = memory_types
+            .iter()
+            .any(|(_, t)| !t.properties.contains(Properties::DEVICE_LOCAL));
+        let mut storage_heaps = BitSet::new();
+        let storage = memory_types
+            .iter()
+            .filter(|(_, t)| t.properties.contains(Properties::DEVICE_LOCAL))
+            .filter(|(_, t)| !storage_heaps.add(t.heap_index as u32))
+            .map(|(i, _)| i)
+            .copied()
+            .collect::<Vec<_>>();
+        let mut mapping_heaps = BitSet::new();
+        let mapping = memory_types
+            .iter()
+            .rev()
+            .filter(|(_, t)| {
+                t.properties
+                    .contains(Properties::CPU_VISIBLE | Properties::COHERENT)
+            })
+            .filter(|(_, t)| {
+                !has_non_device_heap || !t.properties.contains(Properties::DEVICE_LOCAL)
+            })
+            .filter(|(_, t)| !mapping_heaps.add(t.heap_index as u32))
+            .map(|(i, _)| i)
+            .copied()
+            .collect::<Vec<_>>();
+        Self { storage, mapping }
     }
-    fn with_memory_properties(mut self, memory_properties: &MemoryProperties) -> Self {
-        self.device_heap = Self::device_heap(memory_properties);
-        self.shared_heap = Self::shared_heap(memory_properties);
-        self.host_heap = Self::host_heap(memory_properties);
-        self
-    }
-    fn device_id(&self) -> Option<MemoryTypeId> {
-        self.device_heap.as_ref().map(|x| x.id)
-    }
-    fn shared_id(&self) -> Option<MemoryTypeId> {
-        self.shared_heap.as_ref().map(|x| x.id)
-    }
-    fn host_id(&self) -> Option<MemoryTypeId> {
-        self.host_heap.as_ref().map(|x| x.id)
+    fn storage_ids(&self) -> impl Iterator<Item = MemoryTypeId> + '_ {
+        self.storage.iter().map(|x| x.id)
     }
     fn storage_chunks(&self) -> usize {
-        let device_chunks = (self.device_heap.map_or(0, |x| x.size) / CHUNK_SIZE as u64) as usize;
-        let shared_chunks = (self.shared_heap.map_or(0, |x| x.size) / CHUNK_SIZE as u64) as usize;
-        (device_chunks + shared_chunks).max(256)
+        self.storage
+            .iter()
+            .map(|x| x.size / CHUNK_SIZE)
+            .sum::<u64>()
+            .min(256) as usize
     }
     fn storage_memory(&self) -> u64 {
         self.storage_chunks() as u64 * CHUNK_SIZE as u64
     }
     fn mapping_chunks(&self) -> usize {
-        let shared_chunks = (self.shared_heap.map_or(0, |x| x.size) / CHUNK_SIZE as u64) as usize;
-        let host_chunks = (self.host_heap.map_or(0, |x| x.size) / CHUNK_SIZE as u64) as usize;
-        (shared_chunks + host_chunks).max(256)
+        self.mapping
+            .iter()
+            .map(|x| x.size / CHUNK_SIZE)
+            .sum::<u64>()
+            .min(256) as usize
+    }
+    fn mapping_ids(&self) -> impl Iterator<Item = MemoryTypeId> + '_ {
+        self.mapping.iter().copied().map(|x| x.id)
     }
 }
 
 #[derive(Debug)]
 struct Allocator<B: Backend> {
-    device_id: Option<MemoryTypeId>,
-    shared_id: Option<MemoryTypeId>,
-    host_id: Option<MemoryTypeId>,
+    storage_ids: Vec<MemoryTypeId>,
+    mapping_ids: Vec<MemoryTypeId>,
     storage_chunks: Vec<StorageChunk<B>>,
     mapping_chunks: Vec<MappingChunk<B>>,
 }
 
 impl<B: Backend> Allocator<B> {
     fn new(_device: &B::Device, config: &AllocatorConfig) -> DeviceResult<Self> {
-        let device_id = config.device_id();
-        let shared_id = config.shared_id();
-        let host_id = config.host_id();
-        let storage_chunks = config.storage_chunks();
-        let mapping_chunks = config.mapping_chunks();
-        if storage_chunks < config.initial_storage_chunks {
+        let storage_ids = config.storage_ids().collect::<Vec<_>>();
+        let mapping_ids = config.mapping_ids().collect::<Vec<_>>();
+        if storage_ids.is_empty() {
             return Err(DeviceError::OutOfDeviceMemory);
         }
-        if mapping_chunks < config.initial_mapping_chunks {
+        if mapping_ids.is_empty() {
             return Err(DeviceError::OutOfHostMemory);
         }
         let storage_chunks: Vec<_> = repeat(())
@@ -1190,18 +1166,17 @@ impl<B: Backend> Allocator<B> {
             .take(config.mapping_chunks())
             .collect();
         Ok(Self {
-            device_id,
-            shared_id,
-            host_id,
+            storage_ids,
+            mapping_ids,
             storage_chunks,
             mapping_chunks,
         })
     }
-    fn storage_ids(&self) -> impl Iterator<Item = MemoryTypeId> {
-        self.device_id.into_iter().chain(self.shared_id)
+    fn storage_ids(&self) -> impl Iterator<Item = MemoryTypeId> + '_ {
+        self.storage_ids.iter().copied()
     }
-    fn mapping_ids(&self) -> impl Iterator<Item = MemoryTypeId> {
-        self.shared_id.into_iter().chain(self.host_id)
+    fn mapping_ids(&self) -> impl Iterator<Item = MemoryTypeId> + '_ {
+        self.mapping_ids.iter().copied()
     }
     /*fn alloc_storage_chunks(&self, device: &B::Device, count: usize) -> DeviceResult<()> {
         let mut allocated = 0;
@@ -2715,5 +2690,283 @@ impl From<MapError> for DeviceError {
             MapError::MappingFailed => Self::MappingFailed,
             MapError::Access => Self::Access,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gfx_hal::{
+        adapter::{MemoryHeap, MemoryType},
+        memory::HeapFlags,
+    };
+    use std::cell::Cell;
+
+    thread_local! {
+        pub(super) static ALLOCATOR_CONFIG_DIAGNOSTIC: Cell<bool> = Cell::default();
+    }
+
+    #[ignore]
+    #[test]
+    fn allocator_config_diagnostic() {
+        ALLOCATOR_CONFIG_DIAGNOSTIC.with(|a| a.set(true));
+        Engine::builder_iter().for_each(|e| {
+            dbg!(e);
+        });
+        ALLOCATOR_CONFIG_DIAGNOSTIC.with(|a| a.set(false));
+    }
+
+    #[test]
+    fn allocator_config_nv_gtx1060_vulkan() {
+        let memory_properties = MemoryProperties {
+            memory_types: vec![
+                MemoryType {
+                    properties: Properties::empty(),
+                    heap_index: 1,
+                },
+                MemoryType {
+                    properties: Properties::empty(),
+                    heap_index: 1,
+                },
+                MemoryType {
+                    properties: Properties::empty(),
+                    heap_index: 1,
+                },
+                MemoryType {
+                    properties: Properties::empty(),
+                    heap_index: 1,
+                },
+                MemoryType {
+                    properties: Properties::empty(),
+                    heap_index: 1,
+                },
+                MemoryType {
+                    properties: Properties::empty(),
+                    heap_index: 1,
+                },
+                MemoryType {
+                    properties: Properties::empty(),
+                    heap_index: 1,
+                },
+                MemoryType {
+                    properties: Properties::DEVICE_LOCAL,
+                    heap_index: 0,
+                },
+                MemoryType {
+                    properties: Properties::CPU_VISIBLE | Properties::COHERENT,
+                    heap_index: 1,
+                },
+                MemoryType {
+                    properties: Properties::CPU_VISIBLE
+                        | Properties::COHERENT
+                        | Properties::CPU_CACHED,
+                    heap_index: 1,
+                },
+                MemoryType {
+                    properties: Properties::DEVICE_LOCAL
+                        | Properties::CPU_VISIBLE
+                        | Properties::COHERENT,
+                    heap_index: 2,
+                },
+            ],
+            memory_heaps: vec![
+                MemoryHeap {
+                    size: 6_442_450_944,
+                    flags: HeapFlags::DEVICE_LOCAL,
+                },
+                MemoryHeap {
+                    size: 12_358_213_632,
+                    flags: HeapFlags::empty(),
+                },
+                MemoryHeap {
+                    size: 257_949_696,
+                    flags: HeapFlags::DEVICE_LOCAL,
+                },
+            ],
+        };
+        let expected = AllocatorConfig {
+            storage: vec![
+                HeapInfo {
+                    size: 6_442_450_944,
+                    id: MemoryTypeId(7),
+                },
+                HeapInfo {
+                    size: 257_949_696,
+                    id: MemoryTypeId(10),
+                },
+            ],
+            mapping: vec![HeapInfo {
+                size: 12_358_213_632,
+                id: MemoryTypeId(9),
+            }],
+        };
+        let config = AllocatorConfig::new(&memory_properties);
+        assert!(
+            config == expected,
+            "config:\n{:#?}\n != expected:\n{:#?}",
+            &config,
+            &expected
+        );
+    }
+
+    #[test]
+    fn allocator_config_amd_rtx580_vulkan() {
+        let memory_properties = MemoryProperties {
+            memory_types: vec![
+                MemoryType {
+                    properties: Properties::DEVICE_LOCAL,
+                    heap_index: 0,
+                },
+                MemoryType {
+                    properties: Properties::CPU_VISIBLE | Properties::COHERENT,
+                    heap_index: 1,
+                },
+                MemoryType {
+                    properties: Properties::DEVICE_LOCAL
+                        | Properties::CPU_VISIBLE
+                        | Properties::COHERENT,
+                    heap_index: 2,
+                },
+                MemoryType {
+                    properties: Properties::CPU_VISIBLE
+                        | Properties::COHERENT
+                        | Properties::CPU_CACHED,
+                    heap_index: 1,
+                },
+            ],
+            memory_heaps: vec![
+                MemoryHeap {
+                    size: 8_321_499_136,
+                    flags: HeapFlags::DEVICE_LOCAL,
+                },
+                MemoryHeap {
+                    size: 3_999_268_864,
+                    flags: HeapFlags::empty(),
+                },
+                MemoryHeap {
+                    size: 268_435_456,
+                    flags: HeapFlags::DEVICE_LOCAL,
+                },
+            ],
+        };
+        let expected = AllocatorConfig {
+            storage: vec![
+                HeapInfo {
+                    size: 8_321_499_136,
+                    id: MemoryTypeId(0),
+                },
+                HeapInfo {
+                    size: 268_435_456,
+                    id: MemoryTypeId(2),
+                },
+            ],
+            mapping: vec![HeapInfo {
+                size: 3_999_268_864,
+                id: MemoryTypeId(3),
+            }],
+        };
+        let config = AllocatorConfig::new(&memory_properties);
+        assert!(
+            config == expected,
+            "config:\n{:#?}\n != expected:\n{:#?}",
+            &config,
+            &expected
+        );
+    }
+
+    #[test]
+    fn allocator_config_amd_rtx580_dx12() {
+        let memory_properties = MemoryProperties {
+            memory_types: vec![
+                MemoryType {
+                    properties: Properties::DEVICE_LOCAL,
+                    heap_index: 0,
+                },
+                MemoryType {
+                    properties: Properties::CPU_VISIBLE | Properties::COHERENT,
+                    heap_index: 1,
+                },
+                MemoryType {
+                    properties: Properties::CPU_VISIBLE
+                        | Properties::COHERENT
+                        | Properties::CPU_CACHED,
+                    heap_index: 1,
+                },
+            ],
+            memory_heaps: vec![
+                MemoryHeap {
+                    size: 7_763_095_552,
+                    flags: HeapFlags::DEVICE_LOCAL,
+                },
+                MemoryHeap {
+                    size: 3_841_155_072,
+                    flags: HeapFlags::empty(),
+                },
+            ],
+        };
+        let expected = AllocatorConfig {
+            storage: vec![HeapInfo {
+                size: 7_763_095_552,
+                id: MemoryTypeId(0),
+            }],
+            mapping: vec![HeapInfo {
+                size: 3_841_155_072,
+                id: MemoryTypeId(2),
+            }],
+        };
+        let config = AllocatorConfig::new(&memory_properties);
+        assert!(
+            config == expected,
+            "config:\n{:#?}\n != expected:\n{:#?}",
+            &config,
+            &expected
+        );
+    }
+
+    #[test]
+    fn allocator_config_ms_basic_render_driver() {
+        let memory_properties = MemoryProperties {
+            memory_types: vec![
+                MemoryType {
+                    properties: Properties::DEVICE_LOCAL,
+                    heap_index: 0,
+                },
+                MemoryType {
+                    properties: Properties::DEVICE_LOCAL
+                        | Properties::CPU_VISIBLE
+                        | Properties::COHERENT
+                        | Properties::CPU_CACHED,
+                    heap_index: 0,
+                },
+                MemoryType {
+                    properties: Properties::DEVICE_LOCAL
+                        | Properties::CPU_VISIBLE
+                        | Properties::COHERENT
+                        | Properties::CPU_CACHED,
+                    heap_index: 0,
+                },
+            ],
+            memory_heaps: vec![MemoryHeap {
+                size: 3_841_155_072,
+                flags: HeapFlags::DEVICE_LOCAL,
+            }],
+        };
+        let expected = AllocatorConfig {
+            storage: vec![HeapInfo {
+                size: 3_841_155_072,
+                id: MemoryTypeId(0),
+            }],
+            mapping: vec![HeapInfo {
+                size: 3_841_155_072,
+                id: MemoryTypeId(2),
+            }],
+        };
+        let config = AllocatorConfig::new(&memory_properties);
+        assert!(
+            config == expected,
+            "config:\n{:#?}\n != expected:\n{:#?}",
+            &config,
+            &expected
+        );
     }
 }
