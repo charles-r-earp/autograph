@@ -32,7 +32,7 @@ jobs:
     - name: Check
       run: cargo check --tests --lib --benches --features full
     - name: Test 
-      run: cargo test --features ${{ matrix.features }}
+      run: cargo test --features "${{ matrix.features }}"
   lint:
     name: Lint
     runs-on: ubuntu-latest
