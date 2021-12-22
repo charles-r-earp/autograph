@@ -42,6 +42,7 @@ thiserror = "1.0.23"
 tinyvec = "1.2.0"
 approx = "0.5.0"
 prettytable-rs = "0.8.0"
+spirv_cross = { version = "0.23.1", features = ["msl", "hlsl"] }
 
 [dependencies.async-trait]
 optional = true

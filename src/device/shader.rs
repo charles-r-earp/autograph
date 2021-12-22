@@ -112,6 +112,34 @@ impl Module {
     pub fn descriptor_to_string(&self) -> String {
         format!("{:#?}", &self.descriptor)
     }
+
+    #[cfg(test)]
+    fn cross_compile<T: spirv_cross::spirv::Target>(&self) -> Result<Cow<str>>
+    where
+        spirv_cross::spirv::Ast<T>: spirv_cross::spirv::Parse<T> + spirv_cross::spirv::Compile<T>,
+    {
+        use anyhow::Context;
+        use spirv_cross::spirv::{Ast, Module};
+        let name: Cow<str> = self
+            .name()
+            .map_or_else(|| format!("{:?}", self).into(), Into::into);
+        let module = Module::from_words(bytemuck::cast_slice(&self.spirv));
+        Ok(Ast::<T>::parse(&module)
+            .with_context(|| format!("Parsing of {name} failed!", name = name))?
+            .compile()
+            .map(Into::into)
+            .with_context(|| format!("Compilation of {name} failed!", name = name))?)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn to_metal(&self) -> Result<Cow<str>> {
+        self.cross_compile::<spirv_cross::msl::Target>()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn to_hlsl(&self) -> Result<Cow<str>> {
+        self.cross_compile::<spirv_cross::hlsl::Target>()
+    }
 }
 
 impl Debug for Module {

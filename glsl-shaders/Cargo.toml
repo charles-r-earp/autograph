@@ -5,11 +5,6 @@ authors = ["charles-r-earp <charles.r.earp@gmail.com>"]
 edition = "2018"
 publish = false
 
-[features]
-# Compile but don't update autograph/src/shaders
-# Used on CI
-dry-run = []
-
 [build-dependencies]
 shaderc = "0.7.0"
 spirv_cross = { version = "0.23.1", features = ["msl", "hlsl"] }

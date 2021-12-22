@@ -104,13 +104,10 @@ fn compile_glsl(
         .join("src")
         .join("shaders")
         .join("glsl");
-    eprintln!("{:?}", glsl_path);
     validate_spirv(name, artifact.as_binary())?;
-    if !cfg!(feature = "dry-run") {
-        fs::create_dir_all(&glsl_path)?;
-        let fpath = glsl_path.join(&name).with_extension("spv");
-        fs::write(&fpath, artifact.as_binary_u8())?;
-    }
+    fs::create_dir_all(&glsl_path)?;
+    let fpath = glsl_path.join(&name).with_extension("spv");
+    fs::write(&fpath, artifact.as_binary_u8())?;
     Ok(())
 }
 

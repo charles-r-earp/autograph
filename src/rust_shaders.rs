@@ -11,3 +11,20 @@ pub(crate) fn core() -> Result<&'static Module> {
         )))
     })?)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn core_to_metal() -> Result<()> {
+        core()?.to_metal()?;
+        Ok(())
+    }
+
+    #[test]
+    fn core_to_hlsl() -> Result<()> {
+        core()?.to_hlsl()?;
+        Ok(())
+    }
+}

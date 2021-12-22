@@ -30,12 +30,10 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .join("shaders")
                 .join("rust");
             validate_spirv("core", bytemuck::cast_slice(&fs::read(&path)?))?;
-            if !cfg!(feature = "dry-run") {
-                fs::create_dir_all(&rust_path)?;
-                let rust_shader_path = rust_path.join("core.spv");
-                println!("cargo:rerun-if-changed={}", rust_shader_path.to_str().unwrap());
-                fs::copy(path, rust_shader_path)?;
-            }
+            fs::create_dir_all(&rust_path)?;
+            let rust_shader_path = rust_path.join("core.spv");
+            println!("cargo:rerun-if-changed={}", rust_shader_path.to_str().unwrap());
+            fs::copy(path, rust_shader_path)?;
         }
         e => unreachable!("{:?}", &e),
     }

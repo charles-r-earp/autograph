@@ -21,3 +21,24 @@ pub(crate) fn module(name: impl AsRef<str>) -> Result<&'static Module> {
         .ok_or_else(|| anyhow!("Module {:?} not found!", name))?;
     Ok(module)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn to_metal() -> Result<()> {
+        for module in modules()?.values() {
+            module.to_metal()?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn to_hlsl() -> Result<()> {
+        for module in modules()?.values() {
+            module.to_hlsl()?;
+        }
+        Ok(())
+    }
+}
