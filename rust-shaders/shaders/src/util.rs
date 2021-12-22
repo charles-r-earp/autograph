@@ -1,8 +1,4 @@
 //use spirv_std::glam::UVec4;
-use crate::atomic::{
-    atomic_i_add,
-    //atomic_f32_add,
-};
 
 /*
 pub(crate) fn u8x4_to_uvec4(x: u32) -> UVec4 {
@@ -50,7 +46,7 @@ impl<T: Copy> Store<T> for [T] {
         self[index] = value;
     }
 }
-
+/*
 pub(crate) trait AtomicAdd<T> {
     unsafe fn atomic_add<const SCOPE: u32, const SEMANTICS: u32>(&mut self, index: usize, value: T) -> T;
 }
@@ -66,13 +62,14 @@ impl AtomicAdd<i32> for [i32] {
         atomic_i_add::<i32, SCOPE, SEMANTICS>(&mut self[index], value)
     }
 }
+*/
 /*
 impl AtomicAdd<f32> for [f32] {
     unsafe fn atomic_add<const SCOPE: u32, const SEMANTICS: u32>(&mut self, index: usize, value: f32) -> f32 {
         atomic_f32_add::<SCOPE, SEMANTICS>(&mut self[index], value)
     }
 }*/
-
+/*
 pub mod tests {
     use super::*;
     use spirv_std::{
@@ -128,3 +125,4 @@ pub mod tests {
         }
     }*/
 }
+*/

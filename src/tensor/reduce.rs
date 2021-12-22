@@ -516,7 +516,7 @@ mod tests {
         tensor_argmax::<f32, _>([22, 23], Axis(1))
     }
 
-    async fn atomic_add<T: Scalar + core::iter::Sum>(n: usize) -> Result<()> {
+    async fn atomic_add<T: Scalar + core::iter::Sum>(n: usize, entry: &str) -> Result<()> {
         let x_vec = (1..=n)
             .into_iter()
             .map(|x| T::from_usize(x).unwrap())
@@ -525,8 +525,8 @@ mod tests {
         let device = Device::new()?;
         let _s = device.acquire().await;
         let x = Buffer::from(x_vec).into_device(device.clone()).await?;
-        let mut y = Buffer::<T>::zeros(device, 1)?;
-        let entry = format!("util::tests::atomic_add_{}", T::scalar_name());
+        let mut y = Buffer::<T>::zeros(device.clone(), 1)?;
+        let entry = format!("atomic::tests::{}", entry);
         let builder = rust_shaders::core()?
             .compute_pass(entry)?
             .slice(x.as_slice())?
@@ -540,18 +540,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn atomic_add_u32() -> Result<()> {
-        for n in [4, 67, 1021] {
-            atomic_add::<u32>(n).await?;
-        }
+    async fn atomic_add_f32() -> Result<()> {
+        atomic_add::<f32>(4, "atomic_add_f32").await?;
         Ok(())
     }
 
     #[tokio::test]
-    async fn atomic_add_i32() -> Result<()> {
-        for n in [4, 67, 1021] {
-            atomic_add::<i32>(n).await?;
-        }
+    async fn atomic_add_f32_2() -> Result<()> {
+        atomic_add::<f32>(4, "atomic_add_f32_2").await?;
         Ok(())
     }
 }

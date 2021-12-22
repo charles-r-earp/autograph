@@ -1,5 +1,5 @@
 use crate::{
-    atomic::{atomic_compare_exchange, /*atomic_u32_add_f32*/},
+    atomic::AtomicF32,
     autobind,
 };
 use spirv_std::{
@@ -207,28 +207,12 @@ macro_rules! impl_gemm {
                             {
                                 let _splitk = $splitk;
                             }
-
-                            /*unsafe { TODO: Use this instead, wasn't producing correct output.
-                                atomic_u32_add_f32::<{Scope::Device as u32}, {Semantics::NONE.bits()}>(c, idx, y);
-                            }*/
-
-                            let mut previous: u32;
-                            loop {
-                                previous = c[idx];
-                                let value = (T::from_bits(previous) + y).to_bits();
-                                if unsafe {
-                                    atomic_compare_exchange::<u32, {Scope::Device as u32}, {Semantics::NONE.bits()}, {Semantics::NONE.bits()}>(&mut c[idx], value, previous)
-                                } == previous {
-                                    break;
-                                }
-                            }
-
                             #[cfg(feature = "false")]
                         )?
                         {
                             c[idx] *= beta;
-                            c[idx] += y;
                         }
+                        c[idx] += y;
                     }}
                 }}
             }}
@@ -245,6 +229,6 @@ impl_gemm! {
     gemm_bias_f32_unr8_mica2_micb2<f32, TC=f32, UNR=8, MICA=2, LA=1, MICB=2, LB=1, bias=true>,
     gemm_f32_unr8_mica4_micb4<f32, TC=f32, UNR=8, MICA=4, LA=2, MICB=4, LB=2>,
     gemm_bias_f32_unr8_mica4_micb4<f32, TC=f32, UNR=8, MICA=4, LA=2, MICB=4, LB=2, bias=true>,
-    gemm_f32_splitk256_unr16_mica1_micb1<@splitk=256, f32, TC=u32, UNR=16, MICA=1, LA=1, MICB=1, LB=1>,
-    gemm_bias_f32_splitk256_unr16_mica1_micb1<@splitk=256, f32, TC=u32, UNR=16, MICA=1, LA=1, MICB=1, LB=1, bias=true>,
+    gemm_f32_splitk256_unr16_mica1_micb1<@splitk=256, f32, TC=AtomicF32, UNR=16, MICA=1, LA=1, MICB=1, LB=1>,
+    gemm_bias_f32_splitk256_unr16_mica1_micb1<@splitk=256, f32, TC=AtomicF32, UNR=16, MICA=1, LA=1, MICB=1, LB=1, bias=true>,
 }

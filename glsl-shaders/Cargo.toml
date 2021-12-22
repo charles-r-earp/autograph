@@ -3,8 +3,13 @@ name = "glsl-shaders"
 version = "0.1.0"
 authors = ["charles-r-earp <charles.r.earp@gmail.com>"]
 edition = "2018"
+publish = false
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[features]
+# Compile but don't update autograph/src/shaders
+# Used on CI
+dry-run = []
 
 [build-dependencies]
 shaderc = "0.7.0"
+spirv_cross = { version = "0.23.1", features = ["msl", "hlsl"] }

@@ -117,7 +117,7 @@ impl Store<f32> for [bf16x2] {
             values[index & 1] = value;
             let value = bf16x2::from_f32x2(values).to_bits();
             if unsafe {
-                atomic_compare_exchange::<u32, {Scope::Device as u32}, {Semantics::NONE.bits()}, {Semantics::NONE.bits()}>(self[idx].as_bits_mut(), value, previous)
+                atomic_compare_exchange::<u32, {Scope::QueueFamily as u32}, {Semantics::NONE.bits()}, {Semantics::NONE.bits()}>(self[idx].as_bits_mut(), value, previous)
             } == previous {
                 break;
             }

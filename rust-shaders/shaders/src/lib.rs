@@ -8,11 +8,11 @@
 #![deny(warnings)]
 
 
-pub mod util;
+mod util;
 mod byte;
 mod short;
 mod half;
-mod atomic;
+pub mod atomic;
 pub mod fill;
 pub mod cast;
 pub mod activation;

@@ -1,8 +1,11 @@
 //! Adapted from https://github.com/EmbarkStudios/rust-gpu/blob/atomics/crates/spirv-std/src/arch/atomics.rs
 
+use crate::autobind;
 use spirv_std::{
     // scalar::Scalar,
+    memory::{Scope, Semantics},
     integer::Integer,
+    glam::UVec3,
 };
 
 /// Atomically load through `ptr` using the given `SEMANTICS`. All subparts of
@@ -188,6 +191,7 @@ pub(crate) unsafe fn atomic_compare_exchange_f32<
 /// 3) store the new value back through `ptr`.
 ///
 /// The result is the Original Value.
+#[cfg(feature = "false")]
 #[doc(alias = "OpAtomicIAdd")]
 #[inline]
 pub(crate) unsafe fn atomic_i_add<I: Integer, const SCOPE: u32, const SEMANTICS: u32>(
@@ -213,19 +217,70 @@ pub(crate) unsafe fn atomic_i_add<I: Integer, const SCOPE: u32, const SEMANTICS:
     old
 }
 
-/*
+
 // Adapted from https://github.com/ROCmSoftwarePlatform/MIOpenGEMM/blob/master/demokernels/tC0_tA0_tB0_colMaj1_m1000_n2000_k3000_lda1100_ldb3200_ldc1300_ws100000000_f32/A_MIC8_PAD1_PLU0_LIW0_MIW1_WOS1__B_MIC6_PAD1_PLU1_LIW0_MIW1_WOS1__C_UNR8_GAL3_PUN1_ICE2_NAW16_UFO0_MAC256_SKW10/cw_alpha.cl
-pub(crate) unsafe fn atomic_f32_add<const SCOPE: u32, const SEMANTICS: u32>(
-    ptr: &mut f32,
+unsafe fn atomic_f32_add<const SCOPE: u32, const SEMANTICS: u32>(
+    ptr: &mut u32,
     value: f32,
 ) -> f32 {
-    let mut previous: f32;
+    let mut previous: u32;
     loop {
         previous = *ptr;
-        let value = (f32::from_bits(previous) + value).bits();
-        if atomic_compare_exchange_f32::<SCOPE, SEMANTICS, SEMANTICS>(ptr, previous, value) == previous {
-            return previous;
+        let value = (f32::from_bits(previous) + value).to_bits();
+        if atomic_compare_exchange::<u32, SCOPE, SEMANTICS, SEMANTICS>(ptr, value, previous) == previous {
+            return f32::from_bits(previous);
         }
     }
 }
-*/
+
+#[repr(transparent)]
+pub struct AtomicF32(u32);
+
+impl core::ops::AddAssign<f32> for AtomicF32 {
+    #[inline]
+    fn add_assign(&mut self, rhs: f32) {
+        unsafe {
+            atomic_f32_add::<{Scope::QueueFamily as u32}, {Semantics::NONE.bits()}>(&mut self.0, rhs);
+        }
+    }
+}
+
+pub mod tests {
+    use super::*;
+
+    #[autobind]
+    #[spirv(compute(threads(1)))]
+    pub fn atomic_add_f32(
+        #[spirv(workgroup_id)]
+        group_id: UVec3,
+        #[spirv(storage_buffer)]
+        x: &[f32],
+        #[spirv(storage_buffer)]
+        y: &mut [AtomicF32],
+    ) {
+        y[0] += x[group_id.x as usize];
+    }
+
+    #[autobind]
+    #[spirv(compute(threads(1)))]
+    pub fn atomic_add_f32_2(
+        #[spirv(workgroup_id)]
+        group_id: UVec3,
+        #[spirv(storage_buffer)]
+        x: &[f32],
+        #[spirv(storage_buffer)]
+        y: &mut [u32],
+    ) {
+        let value = x[group_id.x as usize];
+        let mut previous: u32;
+        loop {
+            previous = y[0];
+            let value = (f32::from_bits(previous) + value).to_bits();
+            if unsafe {
+                atomic_compare_exchange::<u32, {Scope::Device as u32}, {Semantics::NONE.bits()}, {Semantics::NONE.bits()}>(&mut y[0], value, previous)
+            } == previous {
+                break;
+            }
+        }
+    }
+}

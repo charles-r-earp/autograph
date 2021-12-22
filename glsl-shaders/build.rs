@@ -105,9 +105,26 @@ fn compile_glsl(
         .join("shaders")
         .join("glsl");
     eprintln!("{:?}", glsl_path);
-    fs::create_dir_all(&glsl_path)?;
-    let fpath = glsl_path.join(&name).with_extension("spv");
-    fs::write(&fpath, artifact.as_binary_u8())?;
+    validate_spirv(name, artifact.as_binary())?;
+    if !cfg!(feature = "dry-run") {
+        fs::create_dir_all(&glsl_path)?;
+        let fpath = glsl_path.join(&name).with_extension("spv");
+        fs::write(&fpath, artifact.as_binary_u8())?;
+    }
+    Ok(())
+}
+
+fn validate_spirv(name: &str, spirv: &[u32]) -> Result<()> {
+    use spirv_cross::{spirv, hlsl, msl};
+    let module = spirv::Module::from_words(spirv);
+    spirv::Ast::<msl::Target>::parse(&module)
+        .map_err(|e| format!("Metal parsing of {name} failed: {e}", name=name, e=e))?
+        .compile()
+        .map_err(|e| format!("Metal compilation of {name} failed: {e}", name=name, e=e))?;
+    spirv::Ast::<hlsl::Target>::parse(&module)
+        .map_err(|e| format!("HLSL parsing of {name} failed: {e}", name=name, e=e))?
+        .compile()
+        .map_err(|e| format!("HLSL compilation of {name} failed: {e}", name=name, e=e))?;
     Ok(())
 }
 
