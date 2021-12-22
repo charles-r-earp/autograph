@@ -31,6 +31,8 @@ jobs:
       run: cargo fetch --target ${{ matrix.target }}
     - name: Check
       run: cargo check --tests --lib --benches --features full
+    - name: Validate Shaders
+      run: (cd glsl-shaders && cargo build --features dry-run) && (cd rust-shaders && cargo build --features dry-run)
     - name: Test 
       run: cargo test --features ${{ matrix.features }}
   lint:
