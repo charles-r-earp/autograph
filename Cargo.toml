@@ -126,7 +126,7 @@ gfx-backend-vulkan = "0.9.0"
 
 [target."cfg(any(target_os = \"ios\", target_os = \"macos\"))"]
 [target."cfg(any(target_os = \"ios\", target_os = \"macos\"))".dependencies]
-gfx-backend-metal = "0.9.0"
+gfx-backend-metal = { version = "0.9.0", features = ["cross"] }
 
 [target."cfg(any(target_os = \"ios\", target_os = \"macos\"))".dependencies.gfx-backend-vulkan]
 optional = true
