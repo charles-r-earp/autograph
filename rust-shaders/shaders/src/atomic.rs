@@ -240,7 +240,7 @@ impl core::ops::AddAssign<f32> for AtomicF32 {
     #[inline]
     fn add_assign(&mut self, rhs: f32) {
         unsafe {
-            atomic_f32_add::<{Scope::QueueFamily as u32}, {Semantics::NONE.bits()}>(&mut self.0, rhs);
+            atomic_f32_add::<{Scope::Device as u32}, {Semantics::NONE.bits()}>(&mut self.0, rhs);
         }
     }
 }
@@ -259,28 +259,5 @@ pub mod tests {
         y: &mut [AtomicF32],
     ) {
         y[0] += x[group_id.x as usize];
-    }
-
-    #[autobind]
-    #[spirv(compute(threads(1)))]
-    pub fn atomic_add_f32_2(
-        #[spirv(workgroup_id)]
-        group_id: UVec3,
-        #[spirv(storage_buffer)]
-        x: &[f32],
-        #[spirv(storage_buffer)]
-        y: &mut [u32],
-    ) {
-        let value = x[group_id.x as usize];
-        let mut previous: u32;
-        loop {
-            previous = y[0];
-            let value = (f32::from_bits(previous) + value).to_bits();
-            if unsafe {
-                atomic_compare_exchange::<u32, {Scope::Device as u32}, {Semantics::NONE.bits()}, {Semantics::NONE.bits()}>(&mut y[0], value, previous)
-            } == previous {
-                break;
-            }
-        }
     }
 }

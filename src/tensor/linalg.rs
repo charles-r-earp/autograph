@@ -10,7 +10,11 @@ fn gemm_impl<T: Scalar>(
     beta: T,
     c: &mut TensorViewMut2<T>,
 ) -> Result<()> {
+    use crate::device::Api::*;
     use ScalarType::*;
+
+    let api = c.device().info().map_or(Vulkan, |info| info.api());
+
     if !matches!(T::scalar_type(), U32 | I32 | F32 | BF16) {
         bail!("{} dot not implemented!", elem_type_name::<T>());
     }
@@ -54,19 +58,25 @@ fn gemm_impl<T: Scalar>(
 
     let a0 = 0f32;
 
-    let (builder, ts, wpt, splitk) = match T::scalar_type() {
-        BF16 => {
+    let (builder, ts, wpt, splitk) = match (api, T::scalar_type()) {
+        (DX12, _) | (_, BF16) => {
             // TODO: Porting to Rust requires atomics
             let ts = 16;
             let wpt = 1;
-            let name = format!("gemm{}_bf16", if bias.is_some() { "_bias" } else { "" },);
+            let name = format!(
+                "gemm{bias}_{ty}",
+                bias = if bias.is_some() { "_bias" } else { "" },
+                ty = T::scalar_name()
+            );
             let builder = crate::glsl_shaders::module(name)?.compute_pass("main")?;
             (builder, ts, wpt, None)
         }
         _ => {
             let ts = 16;
             let splitk = 256;
-            let splitk = if k >= (m * n).max(splitk * 2) {
+            // DX12 / HLSL does not appear to support device atomics
+            // Metal does?
+            let splitk = if matches!(api, Vulkan | Metal) && k >= (m * n).max(splitk * 2) {
                 Some(splitk)
             } else {
                 None
@@ -110,8 +120,9 @@ fn gemm_impl<T: Scalar>(
     };
     let builder = builder.slice_mut(c.as_raw_slice_mut())?;
 
-    let builder = match T::scalar_type() {
-        BF16 => builder.push([alpha.to_f32().unwrap(), beta.to_f32().unwrap(), a0])?,
+    let builder = match (api, T::scalar_type()) {
+        (_, BF16) => builder.push([alpha.to_f32().unwrap(), beta.to_f32().unwrap(), a0])?,
+        (DX12, _) => builder.push([alpha, beta])?.push(a0)?,
         _ => builder.push([alpha, beta])?,
     };
     let builder = builder
@@ -120,7 +131,7 @@ fn gemm_impl<T: Scalar>(
         .push([rsb, csb])?
         .push([rsc, csc])?;
 
-    let work_size = if T::scalar_type() == BF16 {
+    let work_size = if api == DX12 || T::scalar_type() == BF16 {
         [m, n, 1]
     } else {
         let global_x = m / wpt + if m % (ts * wpt) != 0 { ts } else { 0 };

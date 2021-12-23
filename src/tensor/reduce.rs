@@ -539,15 +539,10 @@ mod tests {
         Ok(())
     }
 
+    #[cfg_attr(windows, ignore)]
     #[tokio::test]
     async fn atomic_add_f32() -> Result<()> {
         atomic_add::<f32>(4, "atomic_add_f32").await?;
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn atomic_add_f32_2() -> Result<()> {
-        atomic_add::<f32>(4, "atomic_add_f32_2").await?;
         Ok(())
     }
 }

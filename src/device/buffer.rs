@@ -1696,7 +1696,12 @@ mod tests {
             };
         }
 
-        impl_scale_tests! { (u8, u16, bf16, u32, i32, f32) => (bf16, u32, i32, f32) }
+        #[cfg(not(windows))]
+        mod not_windows {
+            impl_scale_tests! { (u8, u16, bf16, u32, i32, f32) => (bf16) }
+        }
+
+        impl_scale_tests! { (u8, u16, bf16, u32, i32, f32) => (u32, i32, f32) }
     }
     /*
     #[cfg(feature = "device_tests")]
