@@ -1698,6 +1698,8 @@ mod tests {
 
         #[cfg(not(windows))]
         mod not_windows {
+            use super::*;
+
             impl_scale_tests! { (u8, u16, bf16, u32, i32, f32) => (bf16) }
         }
 
