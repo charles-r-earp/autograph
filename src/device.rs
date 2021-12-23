@@ -723,9 +723,9 @@ impl Device {
         Self { base: None }
     }
     fn build(builder: &DeviceBuilder) -> Result<Self> {
-        #[cfg(test)]
+        #[cfg(all(test, feature = "device_tests"))]
         let mut guard = TEST_DEVICE.lock();
-        #[cfg(test)]
+        #[cfg(all(test, feature = "device_tests"))]
         if let Some(base) = guard.as_ref() {
             let device = Self {
                 base: Some(base.clone()),
@@ -743,7 +743,7 @@ impl Device {
             modules: AtomicBitSet::new(),
         });
 
-        #[cfg(test)]
+        #[cfg(all(test, feature = "device_tests"))]
         guard.replace(base.clone());
 
         Ok(Self { base: Some(base) })
