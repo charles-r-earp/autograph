@@ -1,4 +1,91 @@
+use crate::{
+    autobind,
+    util::{Load, Store},
+};
 use spirv_std::glam::UVec3;
+use num_traits::Num;
+
+#[repr(C)]
+pub struct ReorderPushConsts2<T> {
+    bs: u32,
+    ih: u32,
+    iw: u32,
+    rsx: u32,
+    csx: u32,
+    beta: T,
+    oh: u32,
+    ow: u32,
+    rsy: u32,
+    csy: u32,
+}
+
+fn reorder_2d<T, X, Y>(
+    group_id: UVec3,
+    local_id: UVec3,
+    x: &[X],
+    y: &mut [Y],
+    push_consts: &ReorderPushConsts2<T>,
+) where T: Num + Copy, [X]: Load<T>, [Y]: Store<T> {
+    let bs = push_consts.bs as usize;
+    let ih = push_consts.ih as usize;
+    let iw = push_consts.iw as usize;
+    let rsx = push_consts.rsx as usize;
+    let csx = push_consts.csx as usize;
+    let beta = push_consts.beta;
+    let oh = push_consts.oh as usize;
+    let ow = push_consts.ow as usize;
+    let rsy = push_consts.rsy as usize;
+    let csy = push_consts.csy as usize;
+    let group_id = group_id.x as usize;
+    let groups_h = oh / 16 + if oh % 16 != 0 { 1 } else { 0 };
+    let groups_w = ow / 16 + if ow % 16 != 0 { 1 } else { 0 };
+    let groups_hw = groups_h * groups_w;
+    let bid = group_id / groups_hw;
+    let group_hw = group_id % groups_hw;
+    let group_h = group_hw / groups_w;
+    let group_w = group_hw % groups_w;
+    let local_id = local_id.x as usize;
+    let local_h = local_id / 16;
+    let local_w = local_id % 16;
+    let hid = group_h * 16 + local_h;
+    let wid = group_w * 16 + local_w;
+
+    if bid < bs { if hid < oh { if wid < ow {
+        let y_idx = bid * oh * ow + hid * rsy + wid * csy;
+        let x = if hid < ih {
+            if wid < iw {
+                let x_idx = bid * ih * iw + hid * rsx + wid * csx;
+                x.load(x_idx)
+            } else {
+                T::zero()
+            }
+        } else {
+            T::zero()
+        };
+        y.store(y_idx, beta * y.load(y_idx) + x);
+    }}}
+}
+
+#[autobind]
+#[spirv(compute(threads(256)))]
+pub fn reorder_2d_f32_f32(
+    #[spirv(workgroup_id)]
+    group_id: UVec3,
+    #[spirv(local_invocation_id)]
+    local_id: UVec3,
+    #[spirv(storage_buffer)] x: &[f32],
+    #[spirv(storage_buffer)] y: &mut [f32],
+    #[spirv(push_constant)] push_consts: &ReorderPushConsts2<f32>,
+) {
+    reorder_2d(
+        group_id,
+        local_id,
+        x,
+        y,
+        push_consts,
+    );
+}
+
 
 #[repr(C)]
 pub struct AsStandardLayoutPushConsts4 {
