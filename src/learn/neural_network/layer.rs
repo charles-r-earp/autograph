@@ -17,7 +17,7 @@ use crate::{
         },
         Tensor, TensorD,
     },
-    util::{eclid_gcd, type_eq},
+    util::type_eq,
 };
 use anyhow::bail;
 #[doc(hidden)]
@@ -27,7 +27,10 @@ pub use autograph_derive::*;
 use ndarray::{Dim, Dimension, IntoDimension, Ix1, Ix4, IxDyn};
 use rand::distributions::{Distribution, Uniform};
 use serde::{Deserialize, Serialize};
-use std::fmt::{self, Debug};
+use std::{
+    fmt::{self, Debug},
+    marker::PhantomData,
+};
 
 mod sealed {
     pub trait PoolKindBase {}
@@ -531,14 +534,14 @@ impl PoolingKind {
 }
 
 /// Marker trait for [`PoolBase`].
-pub trait PoolKind: Default + Send + Sync + 'static + PoolKindBase {
+pub trait PoolKind: Send + Sync + 'static + PoolKindBase {
     #[doc(hidden)]
     fn kind() -> PoolingKind;
 }
 
 /// Marker for [`MaxPool`].
-#[derive(Default, Clone, Serialize, Deserialize)]
-pub struct PoolMax {}
+#[derive(Clone)]
+pub enum PoolMax {}
 
 impl PoolKindBase for PoolMax {}
 
@@ -549,8 +552,8 @@ impl PoolKind for PoolMax {
 }
 
 /// Marker for [`MeanPool`].
-#[derive(Default, Clone, Serialize, Deserialize)]
-pub struct PoolMean {}
+#[derive(Clone)]
+pub enum PoolMean {}
 
 impl PoolKindBase for PoolMean {}
 
@@ -566,7 +569,8 @@ pub struct PoolBase<K: PoolKind> {
     kernel: IxDyn,
     strides: IxDyn,
     padding: IxDyn,
-    kind: K,
+    dilation: IxDyn,
+    _m: PhantomData<K>,
 }
 
 /// MaxPool
@@ -585,6 +589,7 @@ impl<K: PoolKind> PoolBase<K> {
     /// Defaults:
     /// - strides: 1
     /// - padding: 0
+    /// - dilation: 1
     pub fn from_kernel<E>(kernel: E) -> Self
     where
         E: IntoDimension,
@@ -592,11 +597,13 @@ impl<K: PoolKind> PoolBase<K> {
         let kernel = kernel.into_dimension().into_dyn();
         let strides = vec![1; kernel.ndim()].into_dimension();
         let padding = IxDyn::zeros(kernel.ndim());
+        let dilation = vec![1; kernel.ndim()].into_dimension();
         Self {
             kernel,
             strides,
             padding,
-            kind: K::default(),
+            dilation,
+            _m: PhantomData::default(),
         }
     }
     /// Adds `strides`.
@@ -621,13 +628,6 @@ impl<K: PoolKind> PoolBase<K> {
                     self.kernel.slice()
                 );
             }
-        }
-        if K::kind() == PoolingKind::Mean && strides != self.kernel {
-            bail!(
-                "MeanPool with kernel {:?} != strides {:?} not yet implemented!",
-                self.kernel.slice(),
-                strides.slice()
-            );
         }
         self.strides = strides;
         Ok(self)
@@ -658,6 +658,33 @@ impl<K: PoolKind> PoolBase<K> {
         self.padding = padding;
         Ok(self)
     }
+    /* // TODO Implement Forward and tests
+    /// Adds `dilation`.
+    ///
+    /// If dilation are 1 dimensional, they may be broadcasted to the dimensionality of the kernel.
+    ///
+    /// **Errors**
+    ///
+    /// If the dilation is not 1 dimensional and a different dimensionality than the kernel.
+    pub fn with_dilation<E>(mut self, dilation: E) -> Result<Self>
+    where
+        E: IntoDimension,
+    {
+        let mut dilation = dilation.into_dimension().into_dyn();
+        if dilation.ndim() != self.kernel.ndim() {
+            if let Some(d) = Ix1::from_dimension(&dilation).map(Dimension::into_pattern) {
+                dilation = vec![d; self.kernel.ndim()].into_dimension();
+            } else {
+                bail!(
+                    "Dilation {:?} does not match kernel {:?}!",
+                    dilation.slice(),
+                    self.kernel.slice()
+                );
+            }
+        }
+        self.dilation = dilation;
+        Ok(self)
+    }*/
 }
 
 impl<K: PoolKind> Debug for PoolBase<K> {
@@ -677,6 +704,9 @@ impl<K: PoolKind> Debug for PoolBase<K> {
         if self.padding.slice().iter().any(|x| *x != 0) {
             builder.field("padding", &self.padding.slice());
         }
+        if self.dilation.slice().iter().any(|x| *x != 1) {
+            builder.field("dilation", &self.strides.slice());
+        }
         builder.finish()
     }
 }
@@ -691,10 +721,11 @@ fn pool_forward(
     kernel: &IxDyn,
     strides: &IxDyn,
     padding: &IxDyn,
+    dilation: &IxDyn, // TOOD
 ) -> Result<(Option<TensorD<u32>>, FloatTensorD)> {
     debug_assert!(input.is_standard_layout());
     debug_assert_eq!(kernel.ndim() + 2, input.ndim());
-
+    assert!(dilation.slice().iter().copied().all(|x| x == 1));
     let float_type = input.float_type();
     match kernel.ndim() {
         2 => {
@@ -742,6 +773,7 @@ fn pool_forward(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn pool_backward(
     kind: PoolingKind,
     input_grad: &mut FloatTensorViewMutD,
@@ -750,16 +782,27 @@ fn pool_backward(
     kernel: &IxDyn,
     strides: &IxDyn,
     padding: &IxDyn,
+    dilation: &IxDyn,
 ) -> Result<()> {
+    use crate::device::Api::*;
     debug_assert_eq!(kernel.ndim() + 2, input_grad.ndim());
+
+    let api = input_grad.device().info().map_or(Vulkan, |info| info.api());
+    let atomic = kernel != strides;
+    if api == DX12 && atomic {
+        bail!("DX12 does not support device atomics!");
+    }
+
     let output_grad = output_grad.into_standard_layout()?;
-    match (kind, kernel.ndim()) {
-        (PoolingKind::Max, 2) => {
+    match kernel.ndim() {
+        2 => {
             let (bs, ic, ih, iw) = input_grad.view().into_dimensionality::<Ix4>()?.dim();
             let oh = output_grad.shape()[2];
             let ow = output_grad.shape()[3];
             let builder = rust_shaders::core()?.compute_pass(&format!(
-                "pool::max_pool_2d_backward_{}",
+                "pool::{}_pool_2d_backward{}_{}",
+                kind.as_str(),
+                if atomic { "_atomic" } else { "" },
                 input_grad.float_type().as_str()
             ))?;
             let builder = if let Some(indices) = indices {
@@ -767,63 +810,27 @@ fn pool_backward(
             } else {
                 builder
             };
-            let bs = bs * ic;
             let builder = builder
                 .float_slice_mut(input_grad.as_raw_slice_mut())?
                 .float_slice(output_grad.as_raw_slice())?
-                .push(bs as u32)?
+                .push((bs * ic) as u32)?
                 .push([ih as u32, iw as u32])?
                 .push([oh as u32, ow as u32])?;
-            unsafe {
-                builder.submit([bs as u32, oh as u32, ow as u32])?;
-            }
-        }
-        (PoolingKind::Mean, 2) => {
-            let (bs, ic, ih, iw) = input_grad.view().into_dimensionality::<Ix4>()?.dim();
-            let dilation = [1, 1].into_dimension();
-            let oh = output_grad.shape()[2];
-            let ow = output_grad.shape()[3];
-            let (s_bez_h, d_bez_h, gcd_h) = eclid_gcd(strides[0], dilation[0]);
-            let (s_bez_w, d_bez_w, gcd_w) = eclid_gcd(strides[1], dilation[1]);
-            let builder = rust_shaders::core()?.compute_pass(&format!(
-                "pool::mean_pool_2d_backward_{}",
-                input_grad.float_type().as_str()
-            ))?;
-            let builder = if let Some(indices) = indices {
-                builder.slice(indices.as_raw_slice())?
+            let builder = if kind == PoolingKind::Mean {
+                builder
+                    .push([kernel[0] as u32, kernel[1] as u32])?
+                    .push([strides[0] as u32, strides[0] as u32])?
+                    .push([padding[0] as u32, padding[1] as u32])?
+                    .push([dilation[0] as u32, dilation[1] as u32])?
             } else {
                 builder
             };
-            let builder = builder
-                .float_slice_mut(input_grad.as_raw_slice_mut())?
-                .float_slice(output_grad.as_raw_slice())?
-                .push(bs as u32)?
-                .push(ic as u32)?
-                .push([ih as u32, iw as u32])?
-                .push([oh as u32, ow as u32])?
-                .push([kernel[0] as u32, kernel[1] as u32])?
-                .push([strides[0] as u32, strides[1] as u32])?
-                .push([padding[0] as u32, padding[1] as u32])?
-                .push([dilation[0] as u32, dilation[1] as u32])?;
-            let builder = if kind == PoolingKind::Max {
-                builder
-                    .push([s_bez_h as u32, s_bez_w as u32])?
-                    .push([d_bez_h as u32, d_bez_w as u32])?
-                    .push([gcd_h as u32, gcd_w as u32])?
-            } else {
-                builder
-            };
-            let global_x = (bs * ic) as u32;
-            let global_y = match kind {
-                PoolingKind::Max => {
-                    let h = (ih - 1) / gcd_h + 1;
-                    let w = (iw - 1) / gcd_w + 1;
-                    (h * w) as u32
-                }
-                PoolingKind::Mean => (oh * ow) as u32,
-            };
+            let groups_bc = bs * ic;
+            let groups_h = oh / 16 + if oh % 16 != 0 { 1 } else { 0 };
+            let groups_w = ow / 16 + if ow % 16 != 0 { 1 } else { 0 };
+            let global_size = (groups_bc * groups_h * groups_w * 256) as u32;
             unsafe {
-                builder.submit([global_x, global_y, 1])?;
+                builder.submit([global_size, 1, 1])?;
             }
         }
         _ => bail!("Unimplemented!"),
@@ -841,6 +848,7 @@ struct PoolBackward {
     kernel: IxDyn,
     strides: IxDyn,
     padding: IxDyn,
+    dilation: IxDyn,
 }
 
 impl Backward for PoolBackward {
@@ -853,6 +861,7 @@ impl Backward for PoolBackward {
             &self.kernel,
             &self.strides,
             &self.padding,
+            &self.dilation,
         )
     }
 }
@@ -867,6 +876,7 @@ impl<K: PoolKind> Forward for PoolBase<K> {
             &self.kernel,
             &self.strides,
             &self.padding,
+            &self.dilation,
         )?;
         let mut output = Variable::from(output).with_training(input.training());
         if let Some(input_grad) = input.grad() {
@@ -880,6 +890,7 @@ impl<K: PoolKind> Forward for PoolBase<K> {
                 kernel: self.kernel.clone(),
                 strides: self.strides.clone(),
                 padding: self.padding.clone(),
+                dilation: self.dilation.clone(),
             });
         }
         Ok(output)
@@ -1009,7 +1020,9 @@ mod tests {
         kernel: &IxDyn,
         strides: &IxDyn,
         padding: &IxDyn,
+        dilation: &IxDyn, // TODO
     ) -> ArrayD<f32> {
+        assert!(dilation.slice().iter().copied().all(|x| x == 1));
         let x = x.into_dimensionality::<Ix4>().unwrap();
         let (bs, ic, ih, iw) = x.dim();
         let oh = (ih + 2 * padding[0] - kernel[0]) / strides[0] + 1;
@@ -1060,6 +1073,7 @@ mod tests {
             &pool.kernel,
             &pool.strides,
             &pool.padding,
+            &pool.dilation,
         )
         .map(|y| T::from_f32(*y).unwrap());
         let device = Device::new()?;
@@ -1076,6 +1090,7 @@ mod tests {
             &pool.kernel,
             &pool.strides,
             &pool.padding,
+            &pool.dilation,
         )?
         .1
         .cast_into::<T>()?
@@ -1092,6 +1107,11 @@ mod tests {
             &MeanPool::from_kernel([2, 2]).with_strides(2)?,
         )
         .await?;
+        pool::<f32, _>(
+            &[1, 1, 2, 20],
+            &MeanPool::from_kernel([1, 2]).with_strides(1)?,
+        )
+        .await?;
         Ok(())
     }
 
@@ -1100,6 +1120,11 @@ mod tests {
         pool::<f32, _>(
             &[1, 1, 4, 4],
             &MaxPool::from_kernel([2, 2]).with_strides(2)?,
+        )
+        .await?;
+        pool::<f32, _>(
+            &[1, 1, 2, 20],
+            &MaxPool::from_kernel([1, 2]).with_strides(1)?,
         )
         .await?;
         Ok(())
@@ -1112,7 +1137,9 @@ mod tests {
         kernel: &IxDyn,
         strides: &IxDyn,
         padding: &IxDyn,
+        dilation: &IxDyn, // TODO
     ) -> ArrayD<f32> {
+        assert!(dilation.slice().iter().copied().all(|x| x == 1));
         let x = x.view().into_dimensionality::<Ix4>().unwrap();
         let dy = dy.into_dimensionality::<Ix4>().unwrap();
         let mut dx = Array::<f32, _>::zeros(x.raw_dim());
@@ -1167,6 +1194,7 @@ mod tests {
             &pool.kernel,
             &pool.strides,
             &pool.padding,
+            &pool.dilation,
         );
         let dy_vec = (1..=y_array.len())
             .into_iter()
@@ -1180,6 +1208,7 @@ mod tests {
             &pool.kernel,
             &pool.strides,
             &pool.padding,
+            &pool.dilation,
         )
         .map(|y| T::from_f32(*y).unwrap());
         let device = Device::new()?;
@@ -1197,6 +1226,7 @@ mod tests {
                 &pool.kernel,
                 &pool.strides,
                 &pool.padding,
+                &pool.dilation,
             )?
             .0
         } else {
@@ -1215,13 +1245,13 @@ mod tests {
             &pool.kernel,
             &pool.strides,
             &pool.padding,
+            &pool.dilation,
         )?;
         let dx = dx.cast_into::<T>()?.read().await?;
         assert_eq!(dx.as_array(), dx_array.view());
         Ok(())
     }
 
-    #[cfg_attr(windows, ignore)]
     #[tokio::test]
     async fn max_pool_2d_backward_f32() -> Result<()> {
         pool_backward::<f32, _>(
@@ -1235,8 +1265,39 @@ mod tests {
         )
         .await?;
         pool_backward::<f32, _>(
+            &[2, 4, 9, 9],
+            &MaxPool::from_kernel([3, 3]).with_strides(3)?,
+        )
+        .await?;
+        Ok(())
+    }
+
+    #[cfg_attr(windows, ignore)]
+    #[tokio::test]
+    async fn max_pool_2d_backward_atomic_f32() -> Result<()> {
+        pool_backward::<f32, _>(
             &[1, 1, 4, 4],
             &MaxPool::from_kernel([2, 2]).with_strides(1)?,
+        )
+        .await?;
+        pool_backward::<f32, _>(
+            &[1, 1, 2, 20],
+            &MaxPool::from_kernel([1, 2]).with_strides(1)?,
+        )
+        .await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn mean_pool_2d_backward_f32() -> Result<()> {
+        pool_backward::<f32, _>(
+            &[1, 1, 4, 4],
+            &MaxPool::from_kernel([2, 2]).with_strides(2)?,
+        )
+        .await?;
+        pool_backward::<f32, _>(
+            &[2, 1, 4, 4],
+            &MaxPool::from_kernel([2, 2]).with_strides(2)?,
         )
         .await?;
         pool_backward::<f32, _>(
@@ -1247,17 +1308,17 @@ mod tests {
         Ok(())
     }
 
-    #[ignore]
+    #[cfg_attr(windows, ignore)]
     #[tokio::test]
-    async fn mean_pool_2d_backward_f32() -> Result<()> {
+    async fn mean_pool_2d_backward_atomic_f32() -> Result<()> {
         pool_backward::<f32, _>(
             &[1, 1, 4, 4],
-            &MeanPool::from_kernel([2, 2]).with_strides([2, 2])?,
+            &MeanPool::from_kernel([2, 2]).with_strides(1)?,
         )
         .await?;
         pool_backward::<f32, _>(
-            &[2, 4, 9, 9],
-            &MeanPool::from_kernel([3, 3]).with_strides(3)?,
+            &[1, 1, 2, 20],
+            &MeanPool::from_kernel([1, 2]).with_strides(1)?,
         )
         .await?;
         Ok(())

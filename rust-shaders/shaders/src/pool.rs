@@ -1,10 +1,8 @@
-use spirv_std::{
-    memory::{Scope, Semantics},
-    glam::UVec3,
-};
+use spirv_std::glam::UVec3;
 use crate::{
     autobind,
-    atomic::atomic_compare_exchange,
+    atomic::AtomicF32,
+    util::Load,
 };
 
 #[repr(C)]
@@ -291,7 +289,6 @@ pub fn max_pool_2d_backward_f32(
     }}}}
 }*/
 
-
 #[repr(C)]
 pub struct MaxPoolBackwardPushConsts2 {
     bs: u32,
@@ -301,47 +298,91 @@ pub struct MaxPoolBackwardPushConsts2 {
     ow: u32,
 }
 
-// TOOD: flatten to threads(256) and move atomic impl to type / trait / function abstraction
-#[autobind]
-#[spirv(compute(threads(1, 16, 16)))]
-pub fn max_pool_2d_backward_f32(
-    #[spirv(global_invocation_id)]
-    global_id: UVec3,
-    #[spirv(storage_buffer)] ix: &[u32],
-    #[spirv(storage_buffer)] dx: &mut [u32],
-    #[spirv(storage_buffer)] dy: &[f32],
-    #[spirv(push_constant)]
+fn max_pool_2d_backward<T, DX, DY>(
+    group_id: UVec3,
+    local_id: UVec3,
+    ix: &[u32],
+    dx: &mut [DX],
+    dy: &[DY],
     push_consts: &MaxPoolBackwardPushConsts2
-) {
+) where T: Copy, DX: core::ops::AddAssign<T>, [DY]: Load<T> {
     let bs = push_consts.bs as usize;
     let ih = push_consts.ih as usize;
     let iw = push_consts.iw as usize;
     let oh = push_consts.oh as usize;
     let ow = push_consts.ow as usize;
-    let bid = global_id.x as usize;
-    let hid = global_id.y as usize;
-    let wid = global_id.z as usize;
+    let group_id = group_id.x as usize;
+    let groups_h = oh / 16 + if oh % 16 != 0 { 1 } else { 0 };
+    let groups_w = ow / 16 + if ow % 16 != 0 { 1 } else { 0 };
+    let groups_hw = groups_h * groups_w;
+    let bid = group_id / groups_hw;
+    let group_hw = group_id % groups_hw;
+    let group_h = group_hw / groups_w;
+    let group_w = group_hw % groups_w;
+    let local_id = local_id.x as usize;
+    let local_h = local_id / 16;
+    let local_w = local_id % 16;
+    let hid = group_h * 16 + local_h;
+    let wid = group_w * 16 + local_w;
     if bid < bs { if hid < oh { if wid < ow {
         let y_idx = bid * oh * ow + hid * ow + wid;
         let x_idx = bid * ih * iw + ix[y_idx] as usize;
-        // dx[x_idx] += dy[y_idx];
-        let mut previous: u32;
-        loop {
-            previous = dx[x_idx];
-            let value = (f32::from_bits(previous) + dy[y_idx]).to_bits();
-            if unsafe {
-                atomic_compare_exchange::<u32, {Scope::Device as u32}, {Semantics::NONE.bits()}, {Semantics::NONE.bits()}>(&mut dx[x_idx], value, previous)
-            } == previous {
-                break;
-            }
-        }
+        dx[x_idx] += dy.load(y_idx);
     }}}
 }
+
+// TOOD: flatten to threads(256) and move atomic impl to type / trait / function abstraction
+#[autobind]
+#[spirv(compute(threads(256)))]
+pub fn max_pool_2d_backward_f32(
+    #[spirv(workgroup_id)]
+    group_id: UVec3,
+    #[spirv(local_invocation_id)]
+    local_id: UVec3,
+    #[spirv(storage_buffer)] ix: &[u32],
+    #[spirv(storage_buffer)] dx: &mut [f32],
+    #[spirv(storage_buffer)] dy: &[f32],
+    #[spirv(push_constant)]
+    push_consts: &MaxPoolBackwardPushConsts2
+) {
+    max_pool_2d_backward(
+        group_id,
+        local_id,
+        ix,
+        dx,
+        dy,
+        push_consts,
+    );
+}
+
+// TOOD: flatten to threads(256) and move atomic impl to type / trait / function abstraction
+#[autobind]
+#[spirv(compute(threads(256)))]
+pub fn max_pool_2d_backward_atomic_f32(
+    #[spirv(workgroup_id)]
+    group_id: UVec3,
+    #[spirv(local_invocation_id)]
+    local_id: UVec3,
+    #[spirv(storage_buffer)] ix: &[u32],
+    #[spirv(storage_buffer)] dx: &mut [AtomicF32],
+    #[spirv(storage_buffer)] dy: &[f32],
+    #[spirv(push_constant)]
+    push_consts: &MaxPoolBackwardPushConsts2
+) {
+    max_pool_2d_backward(
+        group_id,
+        local_id,
+        ix,
+        dx,
+        dy,
+        push_consts,
+    );
+}
+
 
 #[repr(C)]
 pub struct MeanPoolBackwardPushConsts2 {
     bs: u32,
-    ic: u32,
     ih: u32,
     iw: u32,
     oh: u32,
@@ -356,18 +397,14 @@ pub struct MeanPoolBackwardPushConsts2 {
     dw: u32,
 }
 
-#[allow(unused_attributes)]
-#[spirv(compute(threads(8, 8)))]
-pub fn mean_pool_2d_backward_f32(
-    #[spirv(global_invocation_id)]
-    global_id: UVec3,
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] dx: &mut [f32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] dy: &[f32],
-    #[spirv(push_constant)]
+fn mean_pool_2d_backward<T, DX, DY>(
+    group_id: UVec3,
+    local_id: UVec3,
+    dx: &mut [DX],
+    dy: &[DY],
     push_consts: &MeanPoolBackwardPushConsts2
-) {
+) where T: Copy, DX: core::ops::AddAssign<T>, [DY]: Load<T> {
     let bs = push_consts.bs as usize;
-    let ic = push_consts.ic as usize;
     let ih = push_consts.ih as usize;
     let iw = push_consts.iw as usize;
     let oh = push_consts.oh as usize;
@@ -380,29 +417,72 @@ pub fn mean_pool_2d_backward_f32(
     let pw = push_consts.pw as usize;
     let dh = push_consts.dh as usize;
     let dw = push_consts.dw as usize;
-    let global_x = global_id.x as usize;
-    let global_y = global_id.y as usize;
-    let bid = global_x / ic;
-    let cid = global_x % ic;
-    let bidx = bid * ic * ih * iw;
-    let bidy = bid * ic * oh * ow;
-    let cidx = cid * ih * iw;
-    let cidy = cid * oh * ow;
-    let hidy = global_y / ow;
-    let widy = global_y % ow;
-
-    let dy = dy[bidy + cidy + hidy * ow + widy];
-
-    if bid < bs { if cid < ic { if hidy < oh { if widy < ow {
+    let group_id = group_id.x as usize;
+    let groups_h = oh / 16 + if oh % 16 != 0 { 1 } else { 0 };
+    let groups_w = ow / 16 + if ow % 16 != 0 { 1 } else { 0 };
+    let groups_hw = groups_h * groups_w;
+    let bid = group_id / groups_hw;
+    let group_hw = group_id % groups_hw;
+    let group_h = group_hw / groups_w;
+    let group_w = group_hw % groups_w;
+    let local_id = local_id.x as usize;
+    let local_h = local_id / 16;
+    let local_w = local_id % 16;
+    let hid = group_h * 16 + local_h;
+    let wid = group_w * 16 + local_w;
+    if bid < bs { if hid < oh { if wid < ow {
+        let y_idx = bid * oh * ow + hid * ow + wid;
+        let dy = dy.load(y_idx);
         for ki in 0 .. kh {
             for kj in 0 .. kw {
-                let hidx = (hidy * sh + ki * dh) as i32 - ph as i32;
-                let widx = (widy * sw + kj * dw) as i32 - pw as i32;
+                let hidx = (hid * sh + ki * dh) as i32 - ph as i32;
+                let widx = (wid * sw + kj * dw) as i32 - pw as i32;
                 if hidx >= 0 { if hidx < ih as i32 { if widx >= 0 { if widx < iw as i32 {
-                    // should be atomic add
-                    dx[bidx + cidx + hidx as usize * iw + widx as usize] += dy;
+                    dx[bid * ih * iw + hidx as usize * iw + widx as usize] += dy;
                 }}}}
             }
         }
-    }}}}
+    }}}
+}
+
+#[autobind]
+#[spirv(compute(threads(256)))]
+pub fn mean_pool_2d_backward_f32(
+    #[spirv(workgroup_id)]
+    group_id: UVec3,
+    #[spirv(local_invocation_id)]
+    local_id: UVec3,
+    #[spirv(storage_buffer)] dx: &mut [f32],
+    #[spirv(storage_buffer)] dy: &[f32],
+    #[spirv(push_constant)]
+    push_consts: &MeanPoolBackwardPushConsts2
+) {
+    mean_pool_2d_backward(
+        group_id,
+        local_id,
+        dx,
+        dy,
+        push_consts,
+    );
+}
+
+#[autobind]
+#[spirv(compute(threads(256)))]
+pub fn mean_pool_2d_backward_atomic_f32(
+    #[spirv(workgroup_id)]
+    group_id: UVec3,
+    #[spirv(local_invocation_id)]
+    local_id: UVec3,
+    #[spirv(storage_buffer)] dx: &mut [AtomicF32],
+    #[spirv(storage_buffer)] dy: &[f32],
+    #[spirv(push_constant)]
+    push_consts: &MeanPoolBackwardPushConsts2
+) {
+    mean_pool_2d_backward(
+        group_id,
+        local_id,
+        dx,
+        dy,
+        push_consts,
+    );
 }
