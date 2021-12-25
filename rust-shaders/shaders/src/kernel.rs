@@ -1,9 +1,11 @@
 use spirv_std::glam::UVec3;
 use crate::{
     autobind,
+    atomic::AtomicF32,
     half::bf16x2,
-    util::{Load, Store},
+    util::{Load, Store, group_barrier},
 };
+use crunchy::unroll;
 
 #[repr(C)]
 pub struct Im2ColPushConsts2 {
@@ -316,4 +318,118 @@ pub fn col2im_2d_convolution_f32(
     push_consts: &Col2ImPushConsts2,
 ) {
     col2im_2d_f32_impl(false, global_id, x, y, push_consts);
+}
+
+
+#[repr(C)]
+pub struct Conv2dPushConsts {
+    ic: u32,
+    ih: u32,
+    iw: u32,
+    oc: u32,
+    oh: u32,
+    ow: u32,
+    kh: u32,
+    kw: u32,
+    sh: u32,
+    sw: u32,
+    ph: u32,
+    pw: u32,
+    dh: u32,
+    dw: u32,
+}
+
+#[autobind]
+#[spirv(compute(threads(1, 16, 16)))]
+pub fn conv_2d_f32(
+    #[spirv(workgroup_id)]
+    group_id: UVec3,
+    #[spirv(local_invocation_id)]
+    local_id: UVec3,
+    #[spirv(storage_buffer)] x: &[f32],
+    #[spirv(workgroup)] x_tile: &mut [[f32; 20]; 20],
+    #[spirv(storage_buffer)] w: &[f32],
+    #[spirv(storage_buffer)] y: &mut [AtomicF32],
+    #[spirv(push_constant)] push_consts: &Conv2dPushConsts,
+) {
+    let ic = push_consts.ic as usize;
+    let ih = push_consts.ih as usize;
+    let iw = push_consts.iw as usize;
+    let oc = push_consts.oc as usize;
+    let oh = push_consts.oh as usize;
+    let ow = push_consts.ow as usize;
+    let group_boc = group_id.x as usize;
+    let groups_oc = oc; // / 256 + if oc % 256 != 0 { 1 } else { 0 };
+    let group_b = group_boc / groups_oc;
+    let group_oc = group_boc % groups_oc;
+    let group_ic = group_id.y as usize;
+    let groups_w = ow / 16 + if ow % 16 != 0 { 1 } else { 0 };
+    let group_hw = group_id.z as usize;
+    let group_h = group_hw / groups_w;
+    let group_w = group_hw % groups_w;
+    let local_z = local_id.y as usize;
+    let local_hw = local_id.z as usize;
+    let local_h = local_hw / 4;
+    let local_w = local_hw % 4;
+    let local_id = (local_id.x * local_id.y) as usize;
+
+    let x_row = group_h * 20;
+    let x_col = group_w * 20;
+    let x_idx = group_b * ic * ih * iw + (group_ic * 16) * ih * iw + x_row * iw + x_col;
+
+    let w_idx = group_ic * oc * ih * iw + (group_oc * 16) * ih * iw;
+
+    let y_row = group_h * 16;
+    let y_col = group_w * 16;
+    let y_idx = group_b * oc * oh * ow + (group_oc * 256) * oh * ow + y_row * ow + y_col;
+
+    let mut w_micro: [[f32; 5]; 5];
+    let mut y_micro: [[f32; 4]; 4];
+
+    unroll! { for i in 0 .. 2 {
+        let u = local_id + i * 256;
+        if u < 400 {
+            let tile_row = u / 64;
+            let tile_col = u % 64;
+            let row = x_row + tile_row;
+            let col = x_col + tile_col;
+            let mut x_reg = 0.;
+            if row < ih { if col < iw {
+                x_reg = x[x_idx + tile_row * 20 + tile_col];
+            }}
+            x_tile[tile_row][tile_col] = x_reg;
+        }
+    }}
+    group_barrier();
+
+    for t in 0 .. 1 /* 16 */ {
+        let group_z = group_oc + t * 256;
+        if group_z < oc {
+            let z = group_z + local_z;
+            w_micro = w[w_idx + z];
+            y_micro = <[[f32; 4]; 4]>::default();
+            unroll! { for i in 0 .. 4 {
+                unroll! { for j in 0 .. 4 {
+                    unroll! { for ki in 0 .. 5 {
+                        unroll! { for kj in 0 .. 5 {
+                            let row = local_h + i * 5 + ki;
+                            let col = local_w + j * 5 + kj;
+                            y_micro[i][j] += x_tile[row][col] * w_micro[ki][kj];
+                        }}
+                    }}
+                }}
+            }}
+            unroll! { for u in 0 .. 16 {
+                if local_z == u {
+                    unroll! { for i in 0 .. 4 {
+                        unroll! { for j in 0 .. 4 {
+                            let row = local_h + i * 4;
+                            let col = local_w + j * 4;
+                            y[y_idx + z * oh * ow + row * ow + col] += y_micro[i][j];
+                        }}
+                    }}
+                }
+            }}
+        }
+    }
 }
