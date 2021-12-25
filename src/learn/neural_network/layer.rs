@@ -12,8 +12,8 @@ use crate::{
     scalar::FloatType,
     tensor::{
         float::{
-            FloatArcTensor, FloatArcTensorD, FloatTensor, FloatTensorD, FloatTensorViewD,
-            FloatTensorViewMutD,
+            FloatArcTensor, FloatArcTensorD, FloatTensor, FloatTensor4, FloatTensorD,
+            FloatTensorView4, FloatTensorViewD, FloatTensorViewMutD,
         },
         Tensor, TensorD,
     },
@@ -304,6 +304,42 @@ impl Debug for Conv {
     }
 }
 
+fn convolution_direct_forward(
+    input: &FloatTensorView4,
+    weight: &FloatTensorView4,
+) -> Result<FloatTensor4> {
+    assert!(input.is_standard_layout());
+    assert!(weight.is_standard_layout());
+    assert!(input.float_type() == FloatType::F32);
+    assert!(weight.float_type() == FloatType::F32);
+
+    let (bs, ic, ih, iw) = input.dim();
+    let (oc, _ic, kh, kw) = weight.dim();
+    assert_eq!(ic, _ic);
+    let oh = ih - kh + 1;
+    let ow = iw - kw + 1;
+
+    let mut output =
+        unsafe { FloatTensor::alloc(FloatType::F32, input.device(), [bs, oc, oh, ow])? };
+    assert_eq!([kh, kw], [5, 5]);
+    let entry = "kernel::conv_direct_5x5_f32";
+    let builder = rust_shaders::core()?
+        .compute_pass(entry)?
+        .float_slice(input.as_raw_slice())?
+        .float_slice(weight.as_raw_slice())?
+        .float_slice_mut(output.as_raw_slice_mut())?
+        .push([ic as u32, ih as u32, iw as u32])?
+        .push([oc as u32, oh as u32, ow as u32])?
+        .push([kh as u32, kw as u32])?;
+    let groups_h = oh / 16 + if oh % 16 != 0 { 1 } else { 0 };
+    let groups_w = ow / 16 + if ow % 16 != 0 { 1 } else { 0 };
+    let global_size = bs * oc * groups_h * groups_w * 256;
+    unsafe {
+        builder.submit([global_size as u32, 1, 1])?;
+    }
+    Ok(output)
+}
+
 impl Forward for Conv {
     fn forward(&self, input: VariableD) -> Result<VariableD> {
         smol::block_on(async {
@@ -314,6 +350,11 @@ impl Forward for Conv {
                 .into_dimensionality::<Ix4>()?;
             let (bs, ic, ih, iw) = input.dim();
             let weight = self.weight.clone().into_dimensionality::<Ix4>()?;
+
+            if std::env::var("conv_direct").as_deref() == Ok("1") {
+                convolution_direct_forward(&input.value().view(), &weight.value().view())?;
+            }
+
             let (oc, _ic, kh, kw) = weight.dim();
             debug_assert_eq!(_ic, ic);
             let weight = weight.into_shape([oc, ic * kh * kw])?;
@@ -905,10 +946,39 @@ mod tests {
         tensor::{Tensor, TensorView},
     };
     use half::bf16;
+    use ndarray::{azip, Array1, ArrayView1, ArrayViewMut1};
     use ndarray::{Array, ArrayD, ArrayViewD};
     use std::convert::TryFrom;
 
-    use ndarray::{azip, Array1, ArrayView1, ArrayViewMut1};
+    async fn convolution_direct<T: Float>(shape: [usize; 4], conv: &Conv) -> Result<()> {
+        let device = Device::new()?;
+        let conv = conv.clone().into_device(device.clone()).await?;
+        let x = FloatTensor::ones(T::float_type(), device.clone(), shape)?;
+        let w = FloatTensor::ones(T::float_type(), device, conv.weight.raw_dim())?
+            .into_dimensionality()?;
+        let y = convolution_direct_forward(&x.view(), &w.view())?
+            .cast_into::<f32>()?
+            .read()
+            .await?;
+        dbg!(y);
+        Ok(())
+    }
+
+    #[ignore]
+    #[tokio::test]
+    async fn convolution_direct_f32() -> Result<()> {
+        convolution_direct::<f32>(
+            [1, 1, 2, 2],
+            &Conv::from_inputs_outputs_kernel(1, 1, [2, 2]),
+        )
+        .await?;
+        convolution_direct::<f32>(
+            [1, 1, 16, 16],
+            &Conv::from_inputs_outputs_kernel(1, 1, [1, 1]),
+        )
+        .await?;
+        Ok(())
+    }
 
     fn array_relu<T: Scalar>(input: &ArrayView1<T>) -> Array1<T> {
         input.map(|x| {
