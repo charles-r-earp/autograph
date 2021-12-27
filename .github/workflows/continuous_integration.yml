@@ -34,7 +34,7 @@ jobs:
     - name: Test 
       run: cargo test --features "${{ matrix.features }}"
     - name: Test Atomics
-      if: ${{ matrix.os == "windows-latest" }}
+      if: ${{ matrix.os == 'windows-latest' }}
       continue-on-error: true
       run: cargo test --features "full device_tests" atomic_add_f32 -- --ignored
   lint:
