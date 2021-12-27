@@ -74,9 +74,9 @@ fn gemm_impl<T: Scalar>(
         _ => {
             let ts = 16;
             let splitk = 256;
-            // DX12 / HLSL does not appear to support device atomics
-            // Metal does?
-            let splitk = if matches!(api, Vulkan) && k >= (m * n).max(splitk * 2) {
+            // Metal only supports device atomics (without volatile) at 2.0 or above
+            // TODO: detect when atomics are supported, but recent OS's should work.
+            let splitk = if matches!(api, Vulkan | DX12) && k >= (m * n).max(splitk * 2) {
                 Some(splitk)
             } else {
                 None
