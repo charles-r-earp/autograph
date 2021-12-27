@@ -1696,11 +1696,7 @@ mod tests {
             };
         }
 
-        #[cfg(any(
-            all(unix, not(any(target_os = "ios", target_os = "macos"))),
-            feature = "gfx_backend_vulkan",
-            windows,
-        ))]
+        #[cfg(any(all(unix, not(any(target_os = "ios", target_os = "macos"))),))]
         mod vulkan {
             use super::*;
 
