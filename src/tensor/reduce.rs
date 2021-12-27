@@ -539,7 +539,14 @@ mod tests {
         Ok(())
     }
 
-    #[cfg_attr(windows, ignore)]
+    #[cfg_attr(
+        any(
+            all(unix, not(any(target_os = "ios", target_os = "macos"))),
+            feature = "gfx_backend_vulkan",
+            windows,
+        ),
+        ignore
+    )]
     #[tokio::test]
     async fn atomic_add_f32() -> Result<()> {
         atomic_add::<f32>(4, "atomic_add_f32").await?;

@@ -114,7 +114,10 @@ impl Module {
     }
 
     #[cfg(test)]
-    fn cross_compile<T: spirv_cross::spirv::Target>(&self) -> Result<Cow<str>>
+    fn cross_compile<T: spirv_cross::spirv::Target>(
+        &self,
+        options: <spirv_cross::spirv::Ast<T> as spirv_cross::spirv::Compile<T>>::CompilerOptions,
+    ) -> Result<Cow<str>>
     where
         spirv_cross::spirv::Ast<T>: spirv_cross::spirv::Parse<T> + spirv_cross::spirv::Compile<T>,
     {
@@ -124,21 +127,28 @@ impl Module {
             .name()
             .map_or_else(|| format!("{:?}", self).into(), Into::into);
         let module = Module::from_words(bytemuck::cast_slice(&self.spirv));
-        Ok(Ast::<T>::parse(&module)
-            .with_context(|| format!("Parsing of {name} failed!", name = name))?
+        let mut ast = Ast::<T>::parse(&module)
+            .with_context(|| format!("Parsing of {name} failed!", name = name))?;
+        ast.set_compiler_options(&options)?;
+        let output = ast
             .compile()
             .map(Into::into)
-            .with_context(|| format!("Compilation of {name} failed!", name = name))?)
+            .with_context(|| format!("Compilation of {name} failed!", name = name))?;
+        Ok(output)
     }
 
     #[cfg(test)]
     pub(crate) fn to_metal(&self) -> Result<Cow<str>> {
-        self.cross_compile::<spirv_cross::msl::Target>()
+        let mut options = spirv_cross::msl::CompilerOptions::default();
+        options.version = spirv_cross::msl::Version::V1_2;
+        self.cross_compile::<spirv_cross::msl::Target>(options)
     }
 
     #[cfg(test)]
     pub(crate) fn to_hlsl(&self) -> Result<Cow<str>> {
-        self.cross_compile::<spirv_cross::hlsl::Target>()
+        let mut options = spirv_cross::hlsl::CompilerOptions::default();
+        options.shader_model = spirv_cross::hlsl::ShaderModel::V5_1;
+        self.cross_compile::<spirv_cross::hlsl::Target>(options)
     }
 }
 

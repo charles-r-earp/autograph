@@ -76,7 +76,7 @@ fn gemm_impl<T: Scalar>(
             let splitk = 256;
             // DX12 / HLSL does not appear to support device atomics
             // Metal does?
-            let splitk = if matches!(api, Vulkan | Metal) && k >= (m * n).max(splitk * 2) {
+            let splitk = if matches!(api, Vulkan) && k >= (m * n).max(splitk * 2) {
                 Some(splitk)
             } else {
                 None

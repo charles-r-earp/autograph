@@ -1696,8 +1696,12 @@ mod tests {
             };
         }
 
-        #[cfg(not(windows))]
-        mod not_windows {
+        #[cfg(any(
+            all(unix, not(any(target_os = "ios", target_os = "macos"))),
+            feature = "gfx_backend_vulkan",
+            windows,
+        ))]
+        mod vulkan {
             use super::*;
 
             impl_scale_tests! { (u8, u16, bf16, u32, i32, f32) => (bf16) }

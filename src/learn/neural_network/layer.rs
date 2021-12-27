@@ -789,8 +789,8 @@ fn pool_backward(
 
     let api = input_grad.device().info().map_or(Vulkan, |info| info.api());
     let atomic = kernel != strides;
-    if api == DX12 && atomic {
-        bail!("DX12 does not support device atomics!");
+    if atomic && api != Vulkan {
+        bail!("{:?} does not support device atomics!", api);
     }
 
     let output_grad = output_grad.into_standard_layout()?;
@@ -1272,7 +1272,14 @@ mod tests {
         Ok(())
     }
 
-    #[cfg_attr(windows, ignore)]
+    #[cfg_attr(
+        any(
+            all(unix, not(any(target_os = "ios", target_os = "macos"))),
+            feature = "gfx_backend_vulkan",
+            windows,
+        ),
+        ignore
+    )]
     #[tokio::test]
     async fn max_pool_2d_backward_atomic_f32() -> Result<()> {
         pool_backward::<f32, _>(
@@ -1308,7 +1315,14 @@ mod tests {
         Ok(())
     }
 
-    #[cfg_attr(windows, ignore)]
+    #[cfg_attr(
+        any(
+            all(unix, not(any(target_os = "ios", target_os = "macos"))),
+            feature = "gfx_backend_vulkan",
+            windows,
+        ),
+        ignore
+    )]
     #[tokio::test]
     async fn mean_pool_2d_backward_atomic_f32() -> Result<()> {
         pool_backward::<f32, _>(
