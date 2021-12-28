@@ -8,4 +8,4 @@ publish = false
 [build-dependencies]
 bytemuck = "1.7.3"
 spirv-builder = { git = "https://github.com/EmbarkStudios/rust-gpu/" }
-spirv_cross = { version = "0.23.1", features = ["msl", "hlsl"] }
+spirv_cross = { version = "0.23.1", features = ["glsl", "msl", "hlsl"] }
