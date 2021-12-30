@@ -942,25 +942,65 @@ impl<K: PoolKind> Forward for PoolBase<K> {
 mod tests {
     use super::*;
     use crate::{
+        ops::{Im2Col, KernelArgs},
         scalar::{Float, Scalar},
         tensor::{Tensor, TensorView},
     };
+    use approx::assert_relative_eq;
     use half::bf16;
-    use ndarray::{azip, Array1, ArrayView1, ArrayViewMut1};
-    use ndarray::{Array, ArrayD, ArrayViewD};
+    use ndarray::{
+        azip, Array, Array1, Array4, ArrayD, ArrayView1, ArrayView4, ArrayViewD, ArrayViewMut1,
+    };
     use std::convert::TryFrom;
 
+    fn convolution_array(input: &ArrayView4<f32>, weight: &ArrayView4<f32>) -> Result<Array4<f32>> {
+        let (bs, ic, ih, iw) = input.dim();
+        let (oc, _ic, kh, kw) = weight.dim();
+        debug_assert_eq!(_ic, ic);
+        let weight = weight.view().into_shape([oc, ic * kh * kw])?;
+        let kernel = [kh, kw].into_dimension();
+        let args = KernelArgs {
+            strides: [1, 1].into_dimension(),
+            padding: [0, 0].into_dimension(),
+            dilation: [1, 1].into_dimension(),
+        };
+        let (oh, ow) = args.im2col_shape([ih, iw], &kernel).into_pattern();
+        let output = input.im2col(&kernel, KernelKind::Convolution, &args)?;
+        let output = output.dot(&weight.t());
+        let output = output
+            .into_shape(dbg!([bs, oh, ow, oc]))?
+            .permuted_axes([0, 3, 1, 2]);
+        Ok(output)
+    }
+
     async fn convolution_direct<T: Float>(shape: [usize; 4], conv: &Conv) -> Result<()> {
-        let device = Device::new()?;
-        let conv = conv.clone().into_device(device.clone()).await?;
-        let x = FloatTensor::ones(T::float_type(), device.clone(), shape)?;
-        let w = FloatTensor::ones(T::float_type(), device, conv.weight.raw_dim())?
+        let shape = shape.into_dimension();
+        let x_array = (1..=shape.size())
+            .into_iter()
+            .map(|x| x as f32)
+            .collect::<Array1<f32>>()
+            .into_shape(shape)?;
+        let w_array = (1..=conv.weight.len())
+            .into_iter()
+            .map(|x| x as f32)
+            .collect::<Array1<f32>>()
+            .into_shape(conv.weight.raw_dim())?
             .into_dimensionality()?;
+        let y_array = convolution_array(&x_array.view(), &w_array.view())?;
+        let device = Device::new()?;
+        let x = Tensor::from(x_array.map(|x| T::from(*x).unwrap()))
+            .into_device(device.clone())
+            .await?
+            .into_float();
+        let w = Tensor::from(w_array.map(|x| T::from(*x).unwrap()))
+            .into_device(device)
+            .await?
+            .into_float();
         let y = convolution_direct_forward(&x.view(), &w.view())?
             .cast_into::<f32>()?
             .read()
             .await?;
-        dbg!(y);
+        assert_relative_eq!(y.as_array(), y_array.view());
         Ok(())
     }
 
@@ -968,13 +1008,13 @@ mod tests {
     #[tokio::test]
     async fn convolution_direct_f32() -> Result<()> {
         convolution_direct::<f32>(
-            [1, 1, 2, 2],
-            &Conv::from_inputs_outputs_kernel(1, 1, [2, 2]),
+            [1, 1, 8, 8],
+            &Conv::from_inputs_outputs_kernel(1, 1, [5, 5]),
         )
         .await?;
         convolution_direct::<f32>(
-            [1, 1, 16, 16],
-            &Conv::from_inputs_outputs_kernel(1, 1, [1, 1]),
+            [1, 3, 7, 9],
+            &Conv::from_inputs_outputs_kernel(3, 2, [5, 5]),
         )
         .await?;
         Ok(())
