@@ -380,7 +380,7 @@ pub fn conv_direct_5x5_f32(
     let local_col = local_id % 16;
 
     let x_idx = group_b * ic * ih * iw;
-    let w_idx = group_oc * ic * ih * iw;
+    let w_idx = group_oc * ic * kh * kw;
 
     let mut x_micro = <[[f32; 5]; 5]>::default();
     let mut w_micro = <[[f32; 5]; 5]>::default();
@@ -410,7 +410,7 @@ pub fn conv_direct_5x5_f32(
         }}
         w_tile[local_row][local_col] = if local_row < kh {
             if local_col < kw {
-                w[w_idx + ic_idx * ih * iw + local_row * kw + local_col]
+                w[w_idx + ic_idx * kh * kw + local_row * kw + local_col]
             } else {
                 0.
             }

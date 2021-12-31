@@ -968,7 +968,7 @@ mod tests {
         let output = input.im2col(&kernel, KernelKind::Convolution, &args)?;
         let output = output.dot(&weight.t());
         let output = output
-            .into_shape(dbg!([bs, oh, ow, oc]))?
+            .into_shape([bs, oh, ow, oc])?
             .permuted_axes([0, 3, 1, 2]);
         Ok(output)
     }
