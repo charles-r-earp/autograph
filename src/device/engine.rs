@@ -625,7 +625,7 @@ engine_methods! {
 #[derive(Clone, Copy, Debug)]
 struct ChunkId(u8);
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct BlockId(u32);
 
 impl BlockId {
@@ -729,56 +729,35 @@ impl<B: Backend> ChunkBase<B> {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 struct StorageBlocks {
-    blocks: BitSet,
+    blocks: Vec<BlockRange>,
 }
 
 impl StorageBlocks {
     fn alloc(&mut self, len: BlockLen) -> Option<BlockId> {
-        let len = len.0;
-        let mut block = 0;
-        let mut end = len;
-        'outer: while end <= BLOCKS {
-            #[allow(clippy::mut_range_bound)]
-            for i in block..end {
-                if self.blocks.contains(i) {
-                    block = i + 1;
-                    end = block + len;
-                    continue 'outer;
-                }
+        let mut id = BlockId(0);
+        for (i, block) in self.blocks.iter().enumerate() {
+            if id.0 + len.0 < block.block.0 {
+                self.blocks.insert(i, BlockRange::new(id, len));
+                return Some(id);
+            } else {
+                id.0 = block.block.0 + block.len.0;
             }
-            self.blocks.extend(block..end);
-            return Some(BlockId(block));
         }
-        None
+        if id.0 + len.0 < BLOCKS {
+            self.blocks.push(BlockRange::new(id, len));
+            Some(id)
+        } else {
+            None
+        }
     }
     fn dealloc(&mut self, range: BlockRange) {
-        for b in range.block.0..range.block.0 + range.len.0 {
-            debug_assert!(self.blocks.contains(b), "{:?} {} \n{:?}", range, b, self);
-            self.blocks.remove(b);
+        let index = self.blocks.iter().position(|x| x.block == range.block);
+        debug_assert!(index.is_some(), "{:?}\n{:?}", range, self);
+        if let Some(index) = index {
+            self.blocks.remove(index);
         }
-    }
-}
-
-impl Debug for StorageBlocks {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let n = (0..BLOCKS)
-            .into_iter()
-            .rev()
-            .find_map(|i| {
-                if self.blocks.contains(i) {
-                    Some(i + 1)
-                } else {
-                    None
-                }
-            })
-            .unwrap_or(0);
-        let s = (0..n)
-            .into_iter()
-            .map(|i| if self.blocks.contains(i) { '1' } else { '0' })
-            .collect::<String>();
-        f.debug_struct("StorageBlocks").field("blocks", &s).finish()
     }
 }
 
