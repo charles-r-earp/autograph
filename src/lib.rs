@@ -36,6 +36,9 @@ pub mod error {
 /// Devices.
 pub mod device;
 
+/// Shaders
+pub mod shader;
+
 mod util;
 
 #[allow(unused)]

@@ -1,9 +1,6 @@
 use crate::{
-    device::{
-        buffer::{ArcBuffer, Buffer, CowBuffer, Slice, SliceMut},
-        builders::ComputePassBuilder,
-        Device,
-    },
+    buffer::{ArcBuffer, Buffer, CowBuffer, Slice, SliceMut},
+    device::{builders::ComputePassBuilder, Device},
     result::Result,
     scalar::{Float, FloatType, Scalar},
 };

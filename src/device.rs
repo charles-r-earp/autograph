@@ -20,8 +20,6 @@ use engine::{builders::EngineBuilder, Engine, ReadGuard, ReadGuardFuture, MAX_AL
 
 #[doc(hidden)]
 pub mod buffer;
-#[doc(hidden)]
-pub use buffer::{ArcBuffer, Buffer, BufferBase, CowBuffer, Data, DataMut, Slice, SliceMut};
 
 #[doc(hidden)]
 pub mod shader;

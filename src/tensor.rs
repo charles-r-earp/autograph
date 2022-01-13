@@ -1,10 +1,8 @@
 use crate::{
-    device::{
-        buffer::{
-            ArcBuffer, Buffer, CowBuffer, ReadGuard as BufferReadGuard, Slice, SliceMut, SliceRepr,
-        },
-        Device,
+    buffer::{
+        ArcBuffer, Buffer, CowBuffer, ReadGuard as BufferReadGuard, Slice, SliceMut, SliceRepr,
     },
+    device::Device,
     error::Error,
     glsl_shaders,
     result::Result,
