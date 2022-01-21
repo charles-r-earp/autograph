@@ -124,3 +124,4 @@ tensor = ["ndarray"]
 [target."cfg(any(target_os = \"ios\", target_os = \"macos\"))"]
 [target."cfg(any(target_os = \"ios\", target_os = \"macos\"))".dependencies]
 ash-molten = "0.12.0"
+#ash = "0.35.1"

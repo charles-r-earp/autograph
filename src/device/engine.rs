@@ -63,19 +63,53 @@ use vulkano::{
     sync::{now, AccessFlags, Fence, FenceSignalFuture, FenceWaitError, GpuFuture, PipelineStages},
 };
 
+#[cfg(any(target_os = "ios", target_os = "macos"))]
+mod molten {
+    use std::os::raw::{c_char, c_void};
+    use vulkano::{
+        instance::{loader::Loader, Instance},
+        VulkanObject,
+    };
+
+    pub(super) struct AshMoltenLoader;
+
+    unsafe impl Loader for AshMoltenLoader {
+        fn get_instance_proc_addr(
+            &self,
+            instance: <Instance as VulkanObject>::Object,
+            name: *const c_char,
+        ) -> *const c_void {
+            ash_molten::load().get_instance_proc_addr(Instance, name)
+        }
+    }
+}
+#[cfg(any(target_os = "ios", target_os = "macos"))]
+use molten::AshMoltenLoader;
+
 fn instance() -> Result<Arc<Instance>, InstanceCreationError> {
     static INSTANCE: OnceCell<Arc<Instance>> = OnceCell::new();
     INSTANCE
         .get_or_try_init(|| {
             let app_info = vulkano::app_info_from_cargo_toml!();
             let extensions = InstanceExtensions::none();
+            let version = Version::major_minor(1, 1);
             let layers = [];
-            Instance::new(
-                Some(&app_info),
-                Version::major_minor(1, 1),
-                &extensions,
-                layers,
-            )
+            #[allow(unused_mut)]
+            let mut instance = Instance::new(Some(&app_info), version, &extensions, layers);
+            #[cfg(any(target_os = "ios", target_os = "macos"))]
+            {
+                use vulkano::instance::loader::FunctionPointers;
+                if instance.is_err() {
+                    instance = Instance::with_loader(
+                        FunctionPointers::new(Box::new(AshMoltenLoader)),
+                        Some(&app_info),
+                        version,
+                        &extensions,
+                        layers,
+                    )
+                }
+            }
+            instance
         })
         .map(Arc::clone)
 }
@@ -833,5 +867,17 @@ impl Runner {
                 }
             }
         }
+    }
+}
+
+#[cfg(any(target_os = "ios", target_os = "macos"))]
+#[cfg(test)]
+mod tests {
+    use crate::result::Result;
+
+    #[test]
+    fn instance() -> Result<()> {
+        super::instance()?;
+        Ok(())
     }
 }
