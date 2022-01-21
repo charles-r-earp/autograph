@@ -65,23 +65,16 @@ use vulkano::{
 
 #[cfg(any(target_os = "ios", target_os = "macos"))]
 mod molten {
-    use crate::result::Result;
+    use ash::vk::Instance;
     use std::os::raw::{c_char, c_void};
-    use vulkano::{
-        instance::{loader::Loader, Instance},
-        VulkanObject,
-    };
+    use vulkano::instance::loader::Loader;
 
     pub(super) struct AshMoltenLoader;
 
     unsafe impl Loader for AshMoltenLoader {
-        fn get_instance_proc_addr(
-            &self,
-            instance: <Instance as VulkanObject>::Object,
-            name: *const c_char,
-        ) -> *const c_void {
+        fn get_instance_proc_addr(&self, instance: Instance, name: *const c_char) -> *const c_void {
             let ptr = ash_molten::load()
-                .get_instance_proc_addr(instance, name)
+                .get_instance_proc_addr(unsafe { std::mem::transmute(instance) }, name)
                 .expect("Unable to load MoltenVK!");
             unsafe { std::mem::transmute(ptr) }
         }
