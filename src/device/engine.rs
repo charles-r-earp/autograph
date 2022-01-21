@@ -73,9 +73,12 @@ mod molten {
 
     unsafe impl Loader for AshMoltenLoader {
         fn get_instance_proc_addr(&self, instance: Instance, name: *const c_char) -> *const c_void {
-            let ptr = ash_molten::load()
-                .get_instance_proc_addr(unsafe { std::mem::transmute(instance) }, name)
-                .expect("Unable to load MoltenVK!");
+            let entry = ash_molten::load();
+            let ptr = unsafe {
+                entry
+                    .get_instance_proc_addr(std::mem::transmute(instance), name)
+                    .expect("Unable to load MoltenVK!")
+            };
             unsafe { std::mem::transmute(ptr) }
         }
     }
