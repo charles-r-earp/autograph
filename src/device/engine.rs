@@ -81,7 +81,7 @@ mod molten {
             name: *const c_char,
         ) -> *const c_void {
             let ptr = ash_molten::load()
-                .get_instance_proc_addr(Instance, name)
+                .get_instance_proc_addr(instance, name)
                 .expect("Unable to load MoltenVK!");
             unsafe { transmute(ptr) }
         }
