@@ -83,7 +83,7 @@ mod molten {
             let ptr = ash_molten::load()
                 .get_instance_proc_addr(instance, name)
                 .expect("Unable to load MoltenVK!");
-            unsafe { transmute(ptr) }
+            unsafe { std::mem::transmute(ptr) }
         }
     }
 }
