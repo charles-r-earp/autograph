@@ -18,13 +18,10 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            features: full
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            features: "full device_tests"
           - os: macos-latest
             target: x86_64-apple-darwin
-            features: full
     steps:
     - uses: actions/checkout@v2
     - name: cargo fetch
@@ -32,7 +29,7 @@ jobs:
     - name: Check
       run: cargo check --tests --lib --benches --features full
     - name: Test 
-      run: cargo test --features "${{ matrix.features }}"
+      run: cargo test --features full
   lint:
     name: Lint
     runs-on: ubuntu-latest
@@ -45,4 +42,5 @@ jobs:
       - name: cargo fetch
         run: cargo fetch
       - name: Clippy
+        if: false
         run: RUSTFLAGS="-Dwarnings" cargo clippy -- -D warnings
