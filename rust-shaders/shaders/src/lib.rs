@@ -14,6 +14,7 @@ mod short;
 mod half;
 pub mod atomic;
 pub mod fill;
+pub mod copy;
 pub mod cast;
 pub mod activation;
 pub mod kernel;

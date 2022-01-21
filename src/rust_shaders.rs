@@ -12,6 +12,7 @@ pub(crate) fn core() -> Result<&'static Module> {
     })?)
 }
 
+/*
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -28,3 +29,4 @@ mod tests {
         Ok(())
     }
 }
+*/

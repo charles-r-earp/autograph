@@ -1,4 +1,4 @@
-#![warn(missing_docs)]
+#![warn(missing_docs, unsafe_op_in_unsafe_fn)]
 
 //! # autograph
 //! A machine learning library for Rust.

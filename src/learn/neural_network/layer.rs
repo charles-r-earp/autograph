@@ -784,14 +784,9 @@ fn pool_backward(
     padding: &IxDyn,
     dilation: &IxDyn,
 ) -> Result<()> {
-    use crate::device::Api::*;
     debug_assert_eq!(kernel.ndim() + 2, input_grad.ndim());
 
-    let api = input_grad.device().info().map_or(Vulkan, |info| info.api());
     let atomic = kernel != strides;
-    if atomic && api == Metal {
-        bail!("Metal does not support device atomics!");
-    }
 
     let output_grad = output_grad.into_standard_layout()?;
     match kernel.ndim() {

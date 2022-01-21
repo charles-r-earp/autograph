@@ -1,9 +1,7 @@
-use super::{
-    len_checked, BufferHandle, BufferId, Device, DeviceBase, ReadGuard as RawReadGuard, Result,
-    WriteOnly,
-};
 use crate::{
     buffer::{ArcBuffer, CowBuffer},
+    device::{BufferBinding, Device, DeviceBase, StorageBuffer, StorageBufferReadGuard},
+    result::Result,
     rust_shaders,
     scalar::{Scalar, ScalarType},
     util::{elem_type_name, type_eq},
@@ -16,7 +14,6 @@ use std::{
     marker::PhantomData,
     mem::{forget, size_of, transmute},
     ops::{Deref, DerefMut},
-    sync::Arc,
 };
 
 mod sealed {
@@ -232,8 +229,8 @@ unsafe impl<S: Data> Send for HostBufferBase<S> {}
 unsafe impl<S: Data> Sync for HostBufferBase<S> {}
 
 pub(super) struct DeviceBufferBase<S: Data> {
-    device: Arc<DeviceBase>,
-    id: BufferId,
+    device: DeviceBase,
+    storage: StorageBuffer,
     offset: usize,
     len: usize,
     _m: PhantomData<S>,
@@ -244,45 +241,11 @@ pub(super) type DeviceSlice<'a, T> = DeviceBufferBase<SliceRepr<'a, T>>;
 pub(super) type DeviceSliceMut<'a, T> = DeviceBufferBase<SliceMutRepr<'a, T>>;
 
 impl<T, S: Data<Elem = T>> DeviceBufferBase<S> {
-    unsafe fn from_raw_parts(
-        device: Arc<DeviceBase>,
-        id: BufferId,
-        offset: usize,
-        len: usize,
-    ) -> Self {
-        Self {
-            device,
-            id,
-            offset,
-            len,
-            _m: PhantomData::default(),
-        }
-    }
-    pub(super) fn handle(&self) -> BufferHandle {
-        BufferHandle::new_unchecked::<T>(self.id, self.offset, self.len)
-    }
-    pub(super) fn device(&self) -> &Arc<DeviceBase> {
-        &self.device
+    pub(super) fn device(&self) -> DeviceBase {
+        self.device.clone()
     }
     fn len(&self) -> usize {
         self.len
-    }
-    /*fn try_write<'a, T2, E, F>(&'a mut self, f: F) -> Result<Result<T2, E>>
-        where S: DataMut, T2: 'a, E: 'a, F: FnOnce(WriteOnly<[T]>) -> Result<T2, E> {
-        Ok(self.device.try_write(self.handle(), |slice| {
-            f(slice.cast_slice_mut())
-        })?)
-    }*/
-    fn write<'a, T2, F>(&'a mut self, f: F) -> Result<T2>
-    where
-        T: Pod,
-        S: DataMut,
-        T2: 'a,
-        F: FnOnce(WriteOnly<[T]>) -> T2,
-    {
-        Ok(self
-            .device
-            .write(self.handle(), |slice| f(slice.cast_slice_mut()))?)
     }
     fn into_owned(self) -> Result<DeviceBuffer<T>> {
         if S::OWNED {
@@ -296,65 +259,163 @@ impl<T, S: Data<Elem = T>> DeviceBufferBase<S> {
         buffer.copy_from_slice(self.as_slice())?;
         Ok(buffer)
     }
-    async fn into_device(self, device: Arc<DeviceBase>) -> Result<DeviceBuffer<T>>
+    async fn into_device(self, device: DeviceBase) -> Result<DeviceBuffer<T>>
     where
         T: Pod,
     {
-        if Arc::ptr_eq(self.device(), &device) {
+        if self.device == device {
             self.into_owned()
         } else {
-            let buffer = unsafe { DeviceBuffer::alloc(device, self.len)? };
+            /*let buffer = unsafe { DeviceBuffer::alloc(device, self.len)? };
             let guard_fut = self.device.read(self.handle())?;
             buffer.device.transfer(self.handle(), guard_fut).await?;
-            Ok(buffer)
+            Ok(buffer)*/
+            todo!()
         }
     }
     async fn read(self) -> Result<DeviceReadGuard<S>>
     where
         T: Pod,
     {
-        let guard = self.device.read(self.handle())?.finish().await?;
+        let guard = self
+            .device
+            .download(
+                self.storage.clone(),
+                self.offset * size_of::<T>(),
+                self.len * size_of::<T>(),
+            )
+            .await?;
         Ok(DeviceReadGuard {
             _buffer: self,
             guard,
         })
     }
     fn as_slice(&self) -> DeviceSlice<T> {
-        unsafe { DeviceSlice::from_raw_parts(self.device.clone(), self.id, self.offset, self.len) }
+        DeviceSlice {
+            device: self.device.clone(),
+            storage: self.storage.clone(),
+            offset: self.offset,
+            len: self.len,
+            _m: PhantomData::default(),
+        }
     }
     fn slice_impl(&self, offset: usize, len: usize) -> DeviceSlice<T> {
         assert!(offset <= len);
         assert!(offset + len <= self.len());
-        unsafe {
-            DeviceSlice::from_raw_parts(self.device.clone(), self.id, self.offset + offset, len)
+        DeviceSlice {
+            device: self.device.clone(),
+            storage: self.storage.clone(),
+            offset: self.offset + offset,
+            len: len,
+            _m: PhantomData::default(),
         }
     }
     fn as_slice_mut(&mut self) -> DeviceSliceMut<T>
     where
         S: DataMut,
     {
-        unsafe {
-            DeviceSliceMut::from_raw_parts(self.device.clone(), self.id, self.offset, self.len)
+        DeviceSliceMut {
+            device: self.device.clone(),
+            storage: self.storage.clone(),
+            offset: self.offset,
+            len: self.len,
+            _m: PhantomData::default(),
         }
     }
     fn copy_from_slice(&mut self, slice: DeviceSlice<T>) -> Result<()>
     where
         S: DataMut,
     {
-        Ok(self.device.copy(slice.handle(), self.handle())?)
+        assert!(self.len == slice.len(), "{} != {}", self.len, slice.len);
+        let size = self.len * size_of::<T>();
+        let n = if size % 4 != 0 {
+            size / 4 + 1
+        } else {
+            size / 4
+        };
+        let lhs: DeviceSliceMut<u8> = DeviceSliceMut {
+            device: self.device.clone(),
+            storage: self.storage.clone(),
+            offset: self.offset * size_of::<T>(),
+            len: self.len * size_of::<T>(),
+            _m: PhantomData::default(),
+        };
+        let rhs: DeviceSlice<u8> = DeviceSlice {
+            device: slice.device.clone(),
+            storage: slice.storage.clone(),
+            offset: slice.offset * size_of::<T>(),
+            len: slice.len * size_of::<T>(),
+            _m: PhantomData::default(),
+        };
+        let builder = rust_shaders::core()?
+            .compute_pass("copy::copy_u32")?
+            .slice(rhs.into())?
+            .slice_mut(lhs.into())?
+            .push(n as u32)?;
+        unsafe {
+            builder.submit([n as u32, 1, 1])?;
+        }
+        Ok(())
     }
 }
 
 impl<T> DeviceBuffer<T> {
-    unsafe fn alloc(device: Arc<DeviceBase>, len: usize) -> Result<Self> {
-        let id = device.alloc(len_checked::<T>(len)?)?;
-        Ok(Self::from_raw_parts(device, id, 0, len))
+    unsafe fn alloc(device: DeviceBase, len: usize) -> Result<Self> {
+        let storage = unsafe { device.alloc(len * size_of::<T>())? };
+        Ok(Self {
+            device,
+            storage,
+            offset: 0,
+            len,
+            _m: PhantomData::default(),
+        })
+    }
+    fn upload(device: DeviceBase, slice: &[T]) -> Result<Self>
+    where
+        T: Pod,
+    {
+        let storage = device.upload(bytemuck::cast_slice(slice))?;
+        Ok(Self {
+            device,
+            storage,
+            offset: 0,
+            len: slice.len(),
+            _m: PhantomData::default(),
+        })
+    }
+}
+
+impl<T> DeviceSlice<'_, T> {
+    pub(super) fn binding(&self) -> BufferBinding {
+        BufferBinding {
+            storage: self.storage.clone(),
+            offset: self.offset * size_of::<T>(),
+            len: self.len * size_of::<T>(),
+            mutable: false,
+        }
+    }
+}
+
+impl<T> DeviceSliceMut<'_, T> {
+    pub(super) fn binding_mut(&self) -> BufferBinding {
+        BufferBinding {
+            storage: self.storage.clone(),
+            offset: self.offset * size_of::<T>(),
+            len: self.len * size_of::<T>(),
+            mutable: true,
+        }
     }
 }
 
 impl<T> Clone for DeviceSlice<'_, T> {
     fn clone(&self) -> Self {
-        unsafe { Self::from_raw_parts(self.device.clone(), self.id, self.offset, self.len) }
+        DeviceSlice {
+            device: self.device.clone(),
+            storage: self.storage.clone(),
+            offset: self.offset,
+            len: self.len,
+            _m: PhantomData::default(),
+        }
     }
 }
 
@@ -372,29 +433,21 @@ impl<T: Pod + Serialize, S: Data<Elem = T>> Serialize for DeviceBufferBase<S> {
 impl<T, S: Data<Elem = T>> Debug for DeviceBufferBase<S> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("DeviceBufferBase")
-            .field("device", &self.device.id)
+            //.field("device", &self.device.id)
             .field("len", &self.len)
             .field("elem", &elem_type_name::<T>())
             .finish()
     }
 }
 
-impl<S: Data> Drop for DeviceBufferBase<S> {
-    fn drop(&mut self) {
-        if S::OWNED {
-            self.device.dealloc(self.id);
-        }
-    }
-}
-
 struct DeviceReadGuard<S: Data> {
     _buffer: DeviceBufferBase<S>,
-    guard: RawReadGuard,
+    guard: StorageBufferReadGuard,
 }
 
 impl<T: Pod, S: Data<Elem = T>> DeviceReadGuard<S> {
     fn as_slice(&self) -> &[T] {
-        bytemuck::cast_slice(self.guard.deref())
+        bytemuck::cast_slice(&self.guard)
     }
 }
 
@@ -415,7 +468,6 @@ enum DynBufferBase<S: Data> {
 
 type DynBuffer<T> = DynBufferBase<OwnedRepr<T>>;
 type DynSlice<'a, T> = DynBufferBase<SliceRepr<'a, T>>;
-//type DynSliceMut<'a, T> = DynBufferBase<SliceMutRepr<'a, T>>;
 
 impl<T> Clone for DynSlice<'_, T> {
     fn clone(&self) -> Self {
@@ -478,27 +530,24 @@ impl<T> Buffer<T> {
     /// The buffer will not be initialized.
     ///
     /// **Errors**
-    /// - AllocationTooLarge: Device allocations are limited to 256 MB per Buffer.
-    /// - OutOfDeviceMemory: Device memory is exhausted.
-    /// - DeviceLost: The device panicked or disconnected.
+    /// - Out of device memory.
     ///
     /// # Note
     /// - For constructing a buffer on the host, prefer [`Buffer::from`].
-    /// - See [`.zeros()`](BufferBase::zeros) for a safe alternative.
+    /// - See [`Buffer::zeros()`](BufferBase::zeros) for a safe alternative.
     pub unsafe fn alloc(device: Device, len: usize) -> Result<Self>
     where
         T: Default + Copy,
     {
         Ok(match device.into_base() {
-            Some(device) => DeviceBuffer::alloc(device, len)?.into(),
+            Some(device) => unsafe { DeviceBuffer::alloc(device, len)?.into() },
             None => HostBuffer::from(vec![T::default(); len]).into(),
         })
     }
     /// Creates a buffer with length `len` filled with `elem`.
     ///
     /// **Errors**
-    /// - AllocationTooLarge: Device allocations are limited to 256 MB per Buffer.
-    /// - OutOfDeviceMemory: Device memory is exhausted.
+    /// - Out of device memory.
     /// - DeviceLost: The device panicked or disconnected.
     pub fn from_elem(device: Device, len: usize, elem: T) -> Result<Self>
     where
@@ -516,8 +565,7 @@ impl<T> Buffer<T> {
     /// Creates a buffer with length `len` filled with 0's.
     ///
     /// **Errors**
-    /// - AllocationTooLarge: Device allocations are limited to 256 MB per Buffer.
-    /// - OutOfDeviceMemory: Device memory is exhausted.
+    /// - Out of device memory.
     /// - DeviceLost: The device panicked or disconnected.
     pub fn zeros(device: Device, len: usize) -> Result<Self>
     where
@@ -553,11 +601,9 @@ impl<T, S: Data<Elem = T>> BufferBase<S> {
         match (self.base, device.into_base()) {
             (DynBufferBase::Host(buffer), None) => Ok(buffer.into_owned().into()),
             (DynBufferBase::Host(src), Some(device)) => {
-                let mut buffer = unsafe { DeviceBuffer::alloc(device, src.len())? };
-                buffer.write(|mut slice| slice.copy_from_slice(&src))?;
-                Ok(buffer.into())
+                Ok(DeviceBuffer::upload(device, &src)?.into())
             }
-            (DynBufferBase::Device(src), Some(device)) => Ok(src.into_device(device).await?.into()),
+            (DynBufferBase::Device(src), Some(device)) => todo!(), // Ok(src.into_device(device).await?.into()),
             (DynBufferBase::Device(src), None) => {
                 let buffer = HostBuffer::from(src.read().await?.to_vec());
                 Ok(buffer.into())
@@ -689,7 +735,7 @@ impl<T, S: Data<Elem = T>> BufferBase<S> {
     pub fn device(&self) -> Device {
         match &self.base {
             DynBufferBase::Host(_) => Device::host(),
-            DynBufferBase::Device(buffer) => Device::from(buffer.device().clone()),
+            DynBufferBase::Device(buffer) => Device::from(buffer.device.clone()),
         }
     }
     /// The length of the buffer.
@@ -719,54 +765,6 @@ impl<T, S: Data<Elem = T>> BufferBase<S> {
             DynBufferBase::Host(_) => None,
             DynBufferBase::Device(buffer) => Some(buffer),
         }
-    }
-    /// Fills the buffer with `elem`.
-    ///
-    /// **Errors**
-    /// - Not supported on the host.
-    /// - The device panicked or disconnected.
-    /// - The operation could not be performed.
-    pub fn fill(&mut self, elem: T) -> Result<()>
-    where
-        T: Scalar,
-        S: DataMut,
-    {
-        let n = self.len() as u32;
-        let size = size_of::<T>();
-        let core = crate::rust_shaders::core()?;
-        let (builder, gs) = match size {
-            1 => {
-                let builder = core.compute_pass("fill::fill_u32")?;
-                let n = if n % 4 == 0 { n / 4 } else { n / 4 + 1 };
-                let builder = builder.push(n)?.push([elem; 4])?;
-                (builder, n)
-            }
-            2 => {
-                let builder = core.compute_pass("fill::fill_u32")?;
-                let n = if n % 2 == 0 { n / 2 } else { n / 2 + 1 };
-                let builder = builder.push(n)?.push([elem; 2])?;
-                (builder, n)
-            }
-            4 if n % 2 == 0 => {
-                let builder = core.compute_pass("fill::fill_u32x2")?;
-                let n = n / 2;
-                let builder = builder.push(n)?.push([elem; 2])?;
-                (builder, n)
-            }
-            4 => {
-                let builder = core.compute_pass("fill::fill_u32")?;
-                let builder = builder.push(n)?.push(elem)?;
-                (builder, n)
-            }
-            8 => {
-                let builder = core.compute_pass("fill::fill_u32x2")?;
-                let builder = builder.push(n)?.push(elem)?;
-                (builder, n)
-            }
-            _ => unreachable!(),
-        };
-        let builder = builder.slice_mut(self.as_slice_mut())?;
-        unsafe { builder.submit([gs, 1, 1]) }
     }
 }
 
@@ -941,7 +939,7 @@ impl<T: Pod, S: Data<Elem = T>> ReadGuardBase<S> {
     fn into_vec(self) -> Vec<T> {
         match self {
             Self::Host(buffer) => buffer.into_vec(),
-            Self::Device(guard) => guard.as_slice().to_vec(),
+            Self::Device(guard) => todo!(), // guard.as_slice().to_vec(),
         }
     }
     fn as_slice(&self) -> &[T] {

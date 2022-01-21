@@ -10,12 +10,9 @@ fn gemm_impl<T: Scalar>(
     beta: T,
     c: &mut TensorViewMut2<T>,
 ) -> Result<()> {
-    use crate::device::Api::*;
     use ScalarType::*;
 
-    let api = c.device().info().map_or(Vulkan, |info| info.api());
-
-    if !matches!(T::scalar_type(), U32 | I32 | F32 | BF16) {
+    if !matches!(T::scalar_type(), U32 | I32 | F32) {
         bail!("{} dot not implemented!", elem_type_name::<T>());
     }
 
@@ -56,50 +53,31 @@ fn gemm_impl<T: Scalar>(
     let [rsc, csc]: [isize; 2] = c.strides().try_into().unwrap();
     let [rsc, csc] = [rsc as u32, csc as u32];
 
-    let a0 = 0f32;
-
-    let (builder, ts, wpt, splitk) = match (api, T::scalar_type()) {
-        (DX12, _) | (_, BF16) => {
-            // TODO: Porting to Rust requires atomics
-            let ts = 16;
-            let wpt = 1;
-            let name = format!(
-                "gemm{bias}_{ty}",
-                bias = if bias.is_some() { "_bias" } else { "" },
-                ty = T::scalar_name()
-            );
-            let builder = crate::glsl_shaders::module(name)?.compute_pass("main")?;
-            (builder, ts, wpt, None)
-        }
-        _ => {
-            let ts = 16;
-            let splitk = 256;
-            // Metal only supports device atomics (without volatile) at 2.0 or above
-            // TODO: detect when atomics are supported, but recent OS's should work.
-            let splitk = if matches!(api, Vulkan | DX12) && k >= (m * n).max(splitk * 2) {
-                Some(splitk)
-            } else {
-                None
-            };
-            let wpt = if splitk.is_none() && T::scalar_type() == F32 {
-                u32::min(m / ts, n / ts).min(4).max(1)
-            } else {
-                1
-            };
-            let unr = if wpt == 1 { 16 } else { 8 };
-            let entry = format!(
-                "linalg::gemm{}_{}{}_unr{}_mica{}_micb{}",
-                if bias.is_some() { "_bias" } else { "" },
-                elem_type_name::<T>(),
-                splitk.map_or(String::new(), |splitk| format!("_splitk{}", splitk)),
-                unr,
-                wpt,
-                wpt,
-            );
-            let builder = crate::rust_shaders::core()?.compute_pass(entry)?;
-            (builder, ts, wpt, splitk)
-        }
+    let ts = 16;
+    let splitk = 256;
+    // Metal only supports device atomics (without volatile) at 2.0 or above
+    // TODO: detect when atomics are supported, but recent OS's should work.
+    let splitk = if k >= (m * n).max(splitk * 2) {
+        Some(splitk)
+    } else {
+        None
     };
+    let wpt = if splitk.is_none() && T::scalar_type() == F32 {
+        u32::min(m / ts, n / ts).min(4).max(1)
+    } else {
+        1
+    };
+    let unr = if wpt == 1 { 16 } else { 8 };
+    let entry = format!(
+        "linalg::gemm{}_{}{}_unr{}_mica{}_micb{}",
+        if bias.is_some() { "_bias" } else { "" },
+        elem_type_name::<T>(),
+        splitk.map_or(String::new(), |splitk| format!("_splitk{}", splitk)),
+        unr,
+        wpt,
+        wpt,
+    );
+    let builder = crate::rust_shaders::core()?.compute_pass(entry)?;
 
     if splitk.is_some() {
         let builder = crate::rust_shaders::core()?
@@ -119,19 +97,14 @@ fn gemm_impl<T: Scalar>(
         builder
     };
     let builder = builder.slice_mut(c.as_raw_slice_mut())?;
-
-    let builder = match (api, T::scalar_type()) {
-        (_, BF16) => builder.push([alpha.to_f32().unwrap(), beta.to_f32().unwrap(), a0])?,
-        (DX12, _) => builder.push([alpha, beta])?.push(a0)?,
-        _ => builder.push([alpha, beta])?,
-    };
     let builder = builder
+        .push([alpha, beta])?
         .push([m, k, n])?
         .push([rsa, csa])?
         .push([rsb, csb])?
         .push([rsc, csc])?;
 
-    let work_size = if api == DX12 || T::scalar_type() == BF16 {
+    let work_size = if T::scalar_type() == BF16 {
         [m, n, 1]
     } else {
         let global_x = m / wpt + if m % (ts * wpt) != 0 { ts } else { 0 };
@@ -328,14 +301,14 @@ mod tests {
         tensor_dot_f32_m25_k611_n6_N_N => (25, 611, 6, N, N),
     );
 
-    test_dot!(
+    /*test_dot!(
         bf16;
         tensor_dot_bf16_m21_k31_n41_N_N => (21, 31, 41, N, N),
         tensor_dot_bf16_m121_k131_n141_N_N => (121, 131, 141, N, N),
         tensor_dot_bf16_m121_k131_n141_T_N => (121, 131, 141, T, N),
         tensor_dot_bf16_m121_k131_n141_N_T => (121, 131, 141, N, T),
         tensor_dot_bf16_m121_k131_n141_T_T => (121, 131, 141, T, T),
-    );
+    );*/
 
     #[cfg(feature = "bench")]
     mod bench {

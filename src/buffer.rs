@@ -3,7 +3,7 @@
 //! This example shows the basics of creating buffers, executing compute, and reading back the results.
 /*!```no_run
 use autograph::{
-    result::Result, device::{Device, Module}, buffer::{Buffer, Slice},
+    result::Result, device::Device, shader::Module, buffer::{Buffer, Slice},
  };
  #[tokio::main]
  async fn main() -> Result<()> {
@@ -53,15 +53,69 @@ use bytemuck::Pod;
 use serde::{de::Deserializer, ser::Serializer, Deserialize, Serialize};
 use std::{
     fmt::{self, Debug},
-    mem::transmute,
+    mem::{size_of, transmute},
     sync::Arc,
 };
 
 #[doc(inline)]
-pub use crate::device::buffer::*;
+pub use crate::device::buffer::{
+    Buffer, BufferBase, Data, DataMut, OwnedRepr, ReadGuard, Slice, SliceMut, SliceMutRepr,
+    SliceRepr,
+};
 
 /// Float buffers.
 pub mod float;
+
+impl<T, S: Data<Elem = T>> BufferBase<S> {
+    /// Fills the buffer with `elem`.
+    ///
+    /// **Errors**
+    /// - Not supported on the host.
+    /// - The device panicked or disconnected.
+    /// - The operation could not be performed.
+    pub fn fill(&mut self, elem: T) -> Result<()>
+    where
+        T: Scalar,
+        S: DataMut,
+    {
+        let n = self.len() as u32;
+        let size = size_of::<T>();
+        let core = crate::rust_shaders::core()?;
+        let (builder, gs) = match size {
+            1 => {
+                let builder = core.compute_pass("fill::fill_u32")?;
+                let n = if n % 4 == 0 { n / 4 } else { n / 4 + 1 };
+                let builder = builder.push(n)?.push([elem; 4])?;
+                (builder, n)
+            }
+            2 => {
+                let builder = core.compute_pass("fill::fill_u32")?;
+                let n = if n % 2 == 0 { n / 2 } else { n / 2 + 1 };
+                let builder = builder.push(n)?.push([elem; 2])?;
+                (builder, n)
+            }
+            4 if n % 2 == 0 => {
+                let builder = core.compute_pass("fill::fill_u32x2")?;
+                let n = n / 2;
+                let builder = builder.push(n)?.push([elem; 2])?;
+                (builder, n)
+            }
+            4 => {
+                let builder = core.compute_pass("fill::fill_u32")?;
+                let builder = builder.push(n)?.push(elem)?;
+                (builder, n)
+            }
+            8 => {
+                let builder = core.compute_pass("fill::fill_u32x2")?;
+                let builder = builder.push(n)?.push(elem)?;
+                (builder, n)
+            }
+            _ => unreachable!(),
+        };
+        let builder = builder.slice_mut(self.as_slice_mut())?;
+        unsafe { builder.submit([gs, 1, 1]) }
+    }
+}
 
 /// Shared Buffer
 #[derive(Clone)]
@@ -555,6 +609,16 @@ mod tests {
         let slice = Slice::from(x.as_ref());
         let buffer: Buffer<u32> = bincode::deserialize(&bincode::serialize(&slice)?)?;
         assert_eq!(x.as_ref(), buffer.read().await?.as_slice());
+        Ok(())
+    }
+
+    #[cfg(feature = "device_tests")]
+    #[tokio::test]
+    async fn device_buffer_from_vec() -> Result<()> {
+        let device = Device::new()?;
+        Buffer::<u32>::from(vec![1, 2, 3, 4])
+            .into_device(device)
+            .await?;
         Ok(())
     }
 

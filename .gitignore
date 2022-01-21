@@ -22,5 +22,7 @@ src/main.rs
 *target*
 *plot.png*
 *_trainer.bincode*
+*perf.data*
+*flamegraph.svg*
 
 #**/*.rs.bk

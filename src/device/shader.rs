@@ -5,7 +5,7 @@ use parking_lot::Mutex;
 use rspirv::{
     binary::{Disassemble, Parser},
     dr::{Loader, Operand},
-    spirv::{Decoration, ExecutionMode, ExecutionModel, Op, StorageClass, Word},
+    spirv::{Capability, Decoration, ExecutionMode, ExecutionModel, Op, StorageClass, Word},
     sr::Constant,
 };
 use serde::{de::Error as _, Deserialize, Deserializer, Serialize};
@@ -18,7 +18,6 @@ use std::{
 type Result<T, E = anyhow::Error> = std::result::Result<T, E>;
 
 pub(super) const PUSH_CONSTANT_SIZE: usize = 256;
-pub(super) const SPECIALIZATION_SIZE: usize = 32;
 
 static MODULE_IDS: Lazy<Mutex<BitSet>> = Lazy::new(Mutex::default);
 
@@ -60,7 +59,7 @@ pub struct Module {
     pub(super) descriptor: ModuleDescriptor,
     #[serde(skip_serializing, deserialize_with = "ModuleId::deserialize_create")]
     pub(super) id: ModuleId,
-    name: String,
+    pub(super) name: Option<String>,
 }
 
 impl Module {
@@ -81,22 +80,15 @@ impl Module {
             spirv,
             descriptor,
             id,
-            name: String::new(),
+            name: None,
         })
     }
     /// Names the module.
     ///
     /// The name will be used in error messages.
     pub fn with_name(mut self, name: impl Into<String>) -> Self {
-        self.name = name.into();
+        self.name.replace(name.into());
         self
-    }
-    pub(super) fn name(&self) -> Option<&str> {
-        if !self.name.is_empty() {
-            Some(self.name.as_str())
-        } else {
-            None
-        }
     }
     #[doc(hidden)]
     pub fn rspirv_module(&self) -> rspirv::dr::Module {
@@ -113,6 +105,7 @@ impl Module {
         format!("{:#?}", &self.descriptor)
     }
 
+    /*
     #[cfg(test)]
     fn cross_compile<T: spirv_cross::spirv::Target>(
         &self,
@@ -149,12 +142,12 @@ impl Module {
         let mut options = spirv_cross::hlsl::CompilerOptions::default();
         options.shader_model = spirv_cross::hlsl::ShaderModel::V5_1;
         self.cross_compile::<spirv_cross::hlsl::Target>(options)
-    }
+    }*/
 }
 
 impl Debug for Module {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        if let Some(name) = self.name() {
+        if let Some(name) = self.name.as_ref() {
             f.debug_tuple("Module").field(&name).finish()
         } else {
             f.debug_tuple("Module").field(&self.id.0).finish()

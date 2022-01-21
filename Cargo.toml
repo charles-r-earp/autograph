@@ -28,8 +28,6 @@ version = "1.0.126"
 [dependencies]
 anyhow = "1.0.37"
 bincode = "1.3.3"
-crossbeam-channel = "0.5.1"
-crossbeam-utils = "0.8.5"
 derive_more = "0.99.11"
 gfx-hal = "0.9.0"
 hibitset = { version = "0.6.3", default-features = false }
@@ -42,7 +40,10 @@ thiserror = "1.0.23"
 tinyvec = "1.2.0"
 approx = "0.5.0"
 prettytable-rs = "0.8.0"
-spirv_cross = { version = "0.23.1", features = ["msl", "hlsl"] }
+vulkano = "0.27.1"
+dashmap = "5.0.0"
+fxhash = "0.2.1"
+crossbeam-channel = "0.5.2"
 
 [dependencies.async-trait]
 optional = true
@@ -120,20 +121,6 @@ neural_network = ["learn", "rand", "async-trait", "derive"]
 learn = ["tensor"]
 tensor = ["ndarray"]
 
-[target]
-[target."cfg(all(unix, not(target_os = \"ios\"), not(target_os = \"macos\")))"]
-[target."cfg(all(unix, not(target_os = \"ios\"), not(target_os = \"macos\")))".dependencies]
-gfx-backend-vulkan = "0.9.0"
-
 [target."cfg(any(target_os = \"ios\", target_os = \"macos\"))"]
 [target."cfg(any(target_os = \"ios\", target_os = \"macos\"))".dependencies]
-gfx-backend-metal = { version = "0.9.0", features = ["cross"] }
-
-[target."cfg(any(target_os = \"ios\", target_os = \"macos\"))".dependencies.gfx-backend-vulkan]
-optional = true
-version = "0.9.0"
-
-[target."cfg(windows)"]
-[target."cfg(windows)".dependencies]
-gfx-backend-dx12 = "0.9.0"
-gfx-backend-vulkan = "0.9.0"
+ash-molten = "0.12.0"

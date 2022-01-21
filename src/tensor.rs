@@ -461,12 +461,12 @@ impl<T, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     /// See [`Buffer::alloc()`](crate::device::buffer::BufferBase::alloc()).
     pub unsafe fn alloc<Sh>(device: Device, shape: Sh) -> Result<Self>
     where
-        T: Default + Copy,
+        T: Default + Copy + Pod + Scalar, // Default + Copy,
         S: DataOwned,
         Sh: ShapeBuilder<Dim = D>,
     {
         let (dim, strides) = dim_strides_from_shape(shape.into_shape());
-        let data = S::from_buffer(Buffer::alloc(device, dim.size())?);
+        let data = S::from_buffer(Buffer::zeros(device, dim.size())?);
         Ok(Self { dim, strides, data })
     }
     /// Creates a tensor on `device` with `shape` filled with `elem`.
