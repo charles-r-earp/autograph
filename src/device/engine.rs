@@ -125,14 +125,13 @@ fn physical_device_type_index(device_type: PhysicalDeviceType) -> u8 {
 }
 
 fn required_device_features() -> Features {
-    Features {
-        vulkan_memory_model: true,
-        ..Features::none()
-    }
+    Features { ..Features::none() }
 }
 
 fn optimal_device_features() -> Features {
     Features {
+        vulkan_memory_model: true,
+        vulkan_memory_model_device_scope: true,
         ..required_device_features()
     }
 }
@@ -179,7 +178,8 @@ impl Engine {
                     }
                 } else {
                     Err(anyhow!(
-                        "Device doesn't support required_features! {:#?}",
+                        "Device doesn't support required features! Supported features = {:#?}\nRequired features = {:#?}",
+                        physical_device.supported_features(),
                         required_device_features()
                     ))
                 }
@@ -188,8 +188,7 @@ impl Engine {
         for queue_family in queue_families.iter() {
             if let &Ok((physical_device, compute_family, transfer_family)) = queue_family {
                 let device_extensions = physical_device.required_extensions();
-                let device_features = physical_device
-                    .supported_features()
+                let device_features = dbg!(physical_device.supported_features())
                     .intersection(&optimal_device_features());
                 let (device, mut queues) = Device::new(
                     physical_device,
