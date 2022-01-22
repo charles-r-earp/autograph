@@ -1366,7 +1366,13 @@ mod tests {
         if type_eq::<T, bf16>() {
             assert_relative_eq!(y_array, y_true, epsilon = 0.01, max_relative = 0.01);
         } else {
-            assert_relative_eq!(y_array, y_true, max_relative = 0.000_001);
+            if !approx::relative_eq!(y_array, y_true, max_relative = 0.000_001) {
+                let arrays = y_array
+                    .outer_iter()
+                    .zip(y_true.outer_iter())
+                    .collect::<Vec<_>>();
+                panic!("!relative_eq {:#?}", arrays);
+            }
         }
         Ok(())
     }
