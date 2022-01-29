@@ -31,7 +31,7 @@ use vulkano::{
     },
     command_buffer::{
         pool::{UnsafeCommandPool, UnsafeCommandPoolAlloc},
-        submit::SubmitCommandBufferBuilder,
+        submit::{SubmitCommandBufferBuilder, SubmitCommandBufferError},
         sys::{
             UnsafeCommandBuffer, UnsafeCommandBufferBuilder,
             UnsafeCommandBufferBuilderPipelineBarrier,
@@ -60,7 +60,8 @@ use vulkano::{
         spirv::ExecutionModel, DescriptorRequirements, EntryPointInfo, ShaderExecution,
         ShaderInterface, ShaderModule, ShaderStages,
     },
-    sync::{now, AccessFlags, Fence, FenceSignalFuture, FenceWaitError, GpuFuture, PipelineStages},
+    sync::{AccessFlags, Fence, PipelineStages, Semaphore},
+    OomError,
 };
 
 #[cfg(any(target_os = "ios", target_os = "macos"))]
@@ -169,9 +170,10 @@ impl Engine {
                                 .find(|x| x.supports_compute())
                         })
                     {
-                        let transfer_family = physical_device.queue_families().find(|x| {
+                        let mut transfer_family = physical_device.queue_families().find(|x| {
                             x.id() != compute_family.id() && x.explicitly_supports_transfers()
                         });
+                        transfer_family.take();
                         Ok((physical_device, compute_family, transfer_family))
                     } else {
                         Err(anyhow!("Device doesn't support compute!"))
@@ -197,13 +199,13 @@ impl Engine {
                     once((compute_family, 1.)).chain(transfer_family.map(|x| (x, 0.))),
                 )?;
                 let compute_queue = queues.next().expect("Compute queue not found!");
-                //let transfer_queue = None; // queues.next();
+                let transfer_queue = queues.next();
                 let upload_buffer_pool = CpuBufferPool::upload(device.clone());
                 let shader_modules = DashMap::<_, _, FxBuildHasher>::default();
                 let compute_cache = DashMap::<_, _, FxBuildHasher>::default();
-                let (op_sender, op_receiver) = bounded(100);
+                let (op_sender, op_receiver) = bounded(400);
                 let done = Arc::new(AtomicBool::new(false));
-                let runner = Runner::new(compute_queue, op_receiver, done.clone())?;
+                let runner = Runner::new(compute_queue, transfer_queue, op_receiver, done.clone())?;
                 std::thread::spawn(move || runner.run());
                 let engine = Arc::new(Self {
                     device,
@@ -630,11 +632,153 @@ impl WriteCommandBuffer for Download {
     }
 }
 
+struct CommandBuffer {
+    alloc: UnsafeCommandPoolAlloc,
+    command_buffer: UnsafeCommandBuffer,
+}
+
+impl CommandBuffer {
+    fn builder(alloc: UnsafeCommandPoolAlloc) -> Result<CommandBufferBuilder, OomError> {
+        let builder = unsafe {
+            UnsafeCommandBufferBuilder::new(
+                &alloc,
+                CommandBufferLevel::Primary,
+                CommandBufferUsage::OneTimeSubmit,
+            )?
+        };
+        Ok(CommandBufferBuilder { alloc, builder })
+    }
+}
+
+struct CommandBufferBuilder {
+    alloc: UnsafeCommandPoolAlloc,
+    builder: UnsafeCommandBufferBuilder,
+}
+
+impl CommandBufferBuilder {
+    fn build(self) -> Result<CommandBuffer, OomError> {
+        Ok(CommandBuffer {
+            alloc: self.alloc,
+            command_buffer: self.builder.build()?,
+        })
+    }
+}
+
+struct CommandBufferBuilderArray {
+    compute_queue: Arc<Queue>,
+    transfer_queue: Option<Arc<Queue>>,
+    compute: CommandBufferBuilder,
+    transfer: Option<[CommandBufferBuilder; 2]>,
+}
+
+impl CommandBufferBuilderArray {
+    fn new(
+        compute_queue: Arc<Queue>,
+        transfer_queue: Option<Arc<Queue>>,
+        compute_command_pool: &mut UnsafeCommandPool,
+        transfer_command_pool: Option<&mut UnsafeCommandPool>,
+    ) -> Result<Self> {
+        let compute = {
+            let secondary = false;
+            let count = 1;
+            let alloc = compute_command_pool
+                .alloc_command_buffers(secondary, count)?
+                .next()
+                .expect("No command buffer!");
+            CommandBuffer::builder(alloc)?
+        };
+        let transfer = if let Some(transfer_command_pool) = transfer_command_pool {
+            let secondary = false;
+            let count = 2;
+            let mut alloc_iter = transfer_command_pool.alloc_command_buffers(secondary, count)?;
+            let upload_alloc = alloc_iter.next().expect("No command buffer!");
+            let upload = CommandBuffer::builder(upload_alloc)?;
+            let download_alloc = alloc_iter.next().expect("No command buffer!");
+            let download = CommandBuffer::builder(download_alloc)?;
+            Some([upload, download])
+        } else {
+            None
+        };
+        Ok(Self {
+            compute_queue,
+            transfer_queue,
+            compute,
+            transfer,
+        })
+    }
+    fn upload_builder_mut(&mut self) -> &mut UnsafeCommandBufferBuilder {
+        self.transfer
+            .as_mut()
+            .map_or(&mut self.compute.builder, |transfer| {
+                &mut transfer[0].builder
+            })
+    }
+    fn compute_builder_mut(&mut self) -> &mut UnsafeCommandBufferBuilder {
+        &mut self.compute.builder
+    }
+    fn download_builder_mut(&mut self) -> &mut UnsafeCommandBufferBuilder {
+        self.transfer
+            .as_mut()
+            .map_or(&mut self.compute.builder, |transfer| {
+                &mut transfer[1].builder
+            })
+    }
+    fn submit(self, semaphores: &[Semaphore], fence: &Fence) -> Result<Vec<CommandBuffer>> {
+        if let Some((transfer_queue, [upload_builder, download_builder])) =
+            self.transfer_queue.zip(self.transfer)
+        {
+            let upload = upload_builder.build()?;
+            let mut builder = SubmitCommandBufferBuilder::new();
+            unsafe {
+                builder.add_command_buffer(&upload.command_buffer);
+                builder.add_signal_semaphore(&semaphores[0]);
+            }
+            builder.submit(&transfer_queue)?;
+            let compute = self.compute.build()?;
+            let mut builder = SubmitCommandBufferBuilder::new();
+            let stages = PipelineStages {
+                compute_shader: true,
+                ..PipelineStages::none()
+            };
+            unsafe {
+                builder.add_command_buffer(&compute.command_buffer);
+                builder.add_wait_semaphore(&semaphores[0], stages);
+                builder.add_signal_semaphore(&semaphores[1]);
+            }
+            builder.submit(&self.compute_queue)?;
+            let download = download_builder.build()?;
+            let mut builder = SubmitCommandBufferBuilder::new();
+            let stages = PipelineStages {
+                transfer: true,
+                ..PipelineStages::none()
+            };
+            unsafe {
+                builder.add_command_buffer(&download.command_buffer);
+                builder.add_wait_semaphore(&semaphores[1], stages);
+                builder.set_fence_signal(fence);
+            }
+            builder.submit(&transfer_queue)?;
+            Ok(vec![upload, compute, download])
+        } else {
+            let compute = self.compute.build()?;
+            let mut builder = SubmitCommandBufferBuilder::new();
+            unsafe {
+                builder.add_command_buffer(&compute.command_buffer);
+                builder.set_fence_signal(fence);
+            }
+            builder.submit(&self.compute_queue)?;
+            Ok(vec![compute])
+        }
+    }
+}
+
 struct Frame {
-    device: Arc<Device>,
-    queue: Arc<Queue>,
-    command_pool: UnsafeCommandPool,
-    command_buffer: Option<(UnsafeCommandPoolAlloc, UnsafeCommandBuffer)>,
+    compute_queue: Arc<Queue>,
+    compute_command_pool: UnsafeCommandPool,
+    transfer_queue: Option<Arc<Queue>>,
+    transfer_command_pool: Option<UnsafeCommandPool>,
+    command_buffers: Vec<CommandBuffer>,
+    semaphores: Vec<Semaphore>,
     fence: Fence,
     uploads: Vec<Upload>,
     computes: Vec<Compute>,
@@ -643,22 +787,38 @@ struct Frame {
 }
 
 impl Frame {
-    fn new(queue: Arc<Queue>) -> Result<Self> {
-        let device = queue.device().clone();
+    fn new(compute_queue: Arc<Queue>, transfer_queue: Option<Arc<Queue>>) -> Result<Self> {
+        let device = compute_queue.device();
         let transient = true;
         let reset_cb = false;
-        let command_pool =
-            UnsafeCommandPool::new(device.clone(), queue.family(), transient, reset_cb)?;
+        let compute_command_pool =
+            UnsafeCommandPool::new(device.clone(), compute_queue.family(), transient, reset_cb)?;
+        let transfer_command_pool = transfer_queue
+            .as_ref()
+            .map(|transfer_queue| {
+                UnsafeCommandPool::new(device.clone(), transfer_queue.family(), transient, reset_cb)
+            })
+            .transpose()?;
+        let semaphores = if transfer_queue.is_some() {
+            vec![
+                Semaphore::from_pool(device.clone())?,
+                Semaphore::from_pool(device.clone())?,
+            ]
+        } else {
+            Vec::new()
+        };
         let fence = Fence::alloc_signaled(device.clone())?;
         let uploads = Vec::new();
         let computes = Vec::new();
         let downloads = Vec::new();
         let syncs = Vec::new();
         Ok(Self {
-            device,
-            queue,
-            command_pool,
-            command_buffer: None,
+            compute_queue,
+            compute_command_pool,
+            transfer_queue,
+            transfer_command_pool,
+            command_buffers: Vec::new(),
+            semaphores,
             fence,
             uploads,
             computes,
@@ -683,13 +843,16 @@ impl Frame {
         }
     }
     fn submit(&mut self, ops: impl Iterator<Item = Op>) -> Result<()> {
+        use std::time::Instant;
         assert!(self.fence.ready()?);
         self.fence.reset()?;
-        if let Some((command_pool_alloc, command_buffer)) = self.command_buffer.take() {
-            std::mem::drop(command_buffer);
-            std::mem::drop(command_pool_alloc);
+        self.command_buffers.clear();
+        unsafe {
+            self.compute_command_pool.reset(false)?;
+        }
+        if let Some(transfer_command_pool) = self.transfer_command_pool.as_mut() {
             unsafe {
-                self.command_pool.reset(false)?;
+                transfer_command_pool.reset(false)?;
             }
         }
         for op in ops {
@@ -708,20 +871,14 @@ impl Frame {
                 }
             }
         }
-        let secondary = false;
-        let count = 1;
-        let command_pool_alloc = self
-            .command_pool
-            .alloc_command_buffers(secondary, count)?
-            .next()
-            .expect("No command buffer!");
-        let mut builder = unsafe {
-            UnsafeCommandBufferBuilder::new(
-                &command_pool_alloc,
-                CommandBufferLevel::Primary,
-                CommandBufferUsage::OneTimeSubmit,
-            )?
-        };
+        //let encode = Instant::now();
+        let mut builder_array = CommandBufferBuilderArray::new(
+            self.compute_queue.clone(),
+            self.transfer_queue.clone(),
+            &mut self.compute_command_pool,
+            self.transfer_command_pool.as_mut(),
+        )?;
+        let mut builder = builder_array.upload_builder_mut();
         {
             let source = PipelineStages {
                 transfer: true,
@@ -745,6 +902,7 @@ impl Frame {
                 upload.write(&mut builder);
             }
         }
+        let mut builder = builder_array.compute_builder_mut();
         {
             let source = PipelineStages {
                 transfer: true,
@@ -766,6 +924,7 @@ impl Frame {
                 }
             }
         }
+        let mut builder = builder_array.download_builder_mut();
         {
             let source = PipelineStages {
                 transfer: true,
@@ -806,21 +965,20 @@ impl Frame {
                 builder.pipeline_barrier(&barrier);
             }
         }
-        let command_buffer = builder.build()?;
-        let mut builder = SubmitCommandBufferBuilder::new();
-        unsafe {
-            builder.add_command_buffer(&command_buffer);
-            builder.set_fence_signal(&self.fence);
-        }
-        let result = builder.submit(&self.queue);
-        self.command_buffer
-            .replace((command_pool_alloc, command_buffer));
-        if let Err(err) = result {
-            for mut sync in self.syncs.drain(..) {
-                sync.store(Err(anyhow::Error::new(err)));
+        //dbg!(encode.elapsed());
+        //let submit = Instant::now();
+        match builder_array.submit(&self.semaphores, &self.fence) {
+            Ok(command_buffers) => {
+                self.command_buffers = command_buffers;
+            }
+            Err(err) => {
+                for mut sync in self.syncs.drain(..) {
+                    sync.store(Err(anyhow!("Submit error! {}", &err)));
+                }
+                return Err(anyhow::Error::msg(err));
             }
         }
-        result?;
+        //dbg!(submit.elapsed());
         Ok(())
     }
 }
@@ -833,11 +991,16 @@ struct Runner {
 }
 
 impl Runner {
-    fn new(queue: Arc<Queue>, op_receiver: Receiver<Op>, done: Arc<AtomicBool>) -> Result<Self> {
-        let n_frames = 3;
+    fn new(
+        compute_queue: Arc<Queue>,
+        transfer_queue: Option<Arc<Queue>>,
+        op_receiver: Receiver<Op>,
+        done: Arc<AtomicBool>,
+    ) -> Result<Self> {
+        let n_frames = 2;
         let mut ready_frames = VecDeque::with_capacity(n_frames);
         for _ in 0..n_frames {
-            ready_frames.push_back(Frame::new(queue.clone())?);
+            ready_frames.push_back(Frame::new(compute_queue.clone(), transfer_queue.clone())?);
         }
         let pending_frames = VecDeque::with_capacity(n_frames);
         Ok(Self {
@@ -850,10 +1013,9 @@ impl Runner {
     fn run(mut self) {
         while !self.done.load(Ordering::Acquire) {
             if let Some(frame) = self.ready_frames.front_mut() {
-                let ops = self.op_receiver.try_iter().collect::<Vec<_>>();
-                if !ops.is_empty() {
+                if let Some(op) = self.op_receiver.try_iter().next() {
                     frame
-                        .submit(ops.into_iter())
+                        .submit(once(op).chain(self.op_receiver.try_iter()))
                         .expect("Frame::submit failed!");
                     self.pending_frames.extend(self.ready_frames.pop_front());
                 }
