@@ -466,7 +466,7 @@ impl<T, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
         Sh: ShapeBuilder<Dim = D>,
     {
         let (dim, strides) = dim_strides_from_shape(shape.into_shape());
-        let data = S::from_buffer(Buffer::zeros(device, dim.size())?);
+        let data = S::from_buffer(unsafe { Buffer::alloc(device, dim.size())? });
         Ok(Self { dim, strides, data })
     }
     /// Creates a tensor on `device` with `shape` filled with `elem`.
