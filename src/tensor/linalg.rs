@@ -178,7 +178,6 @@ impl<T: Scalar, S1: Data<Elem = T>, S2: Data<Elem = T>, S3: DataMut<Elem = T>>
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
-    use half::bf16;
     use ndarray::Array2;
 
     #[allow(unused)]

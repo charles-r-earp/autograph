@@ -6,23 +6,21 @@ use crate::{
     result::Result,
 };
 use anyhow::{anyhow, bail};
-use crossbeam_channel::{bounded, Receiver, Sender};
+use crossbeam_channel::{unbounded, Receiver, Sender};
 use dashmap::DashMap;
 use fxhash::FxBuildHasher;
 use once_cell::sync::OnceCell;
-use smol::lock::{Mutex, MutexGuardArc};
+use parking_lot::{Mutex, RwLock};
 use std::{
     collections::VecDeque,
     future::Future,
-    iter,
     iter::once,
-    mem::{drop, take, transmute},
-    ops::Deref,
+    mem::transmute,
+    ops::{Deref, Range},
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, Weak,
+        Arc,
     },
-    time::Duration,
 };
 use vulkano::{
     buffer::{
@@ -31,22 +29,17 @@ use vulkano::{
     },
     command_buffer::{
         pool::{UnsafeCommandPool, UnsafeCommandPoolAlloc},
-        submit::{SubmitCommandBufferBuilder, SubmitCommandBufferError},
+        submit::SubmitCommandBufferBuilder,
         sys::{
             UnsafeCommandBuffer, UnsafeCommandBufferBuilder,
             UnsafeCommandBufferBuilderPipelineBarrier,
         },
-        AutoCommandBufferBuilder, CommandBufferLevel, CommandBufferUsage, PrimaryCommandBuffer,
+        CommandBufferLevel, CommandBufferUsage,
     },
     descriptor_set::{
         builder::DescriptorSetBuilder,
         layout::{DescriptorDesc, DescriptorSetDesc, DescriptorSetLayout, DescriptorType},
-        pool::{
-            standard::StdDescriptorPoolAlloc, DescriptorPool, DescriptorPoolAlloc,
-            StdDescriptorPool,
-        },
-        sys::{DescriptorWrite, UnsafeDescriptorSet},
-        DescriptorSet, DescriptorSetResources, DescriptorSetWithOffsets,
+        pool::{standard::StdDescriptorPoolAlloc, DescriptorPool, DescriptorPoolAlloc},
     },
     device::{
         physical::{PhysicalDevice, PhysicalDeviceType},
@@ -54,13 +47,12 @@ use vulkano::{
     },
     instance::{Instance, InstanceCreationError, InstanceExtensions, Version},
     memory::pool::StdMemoryPool,
-    memory::DeviceMemoryAllocError,
     pipeline::{layout::PipelineLayoutPcRange, ComputePipeline, PipelineBindPoint, PipelineLayout},
     shader::{
         spirv::ExecutionModel, DescriptorRequirements, EntryPointInfo, ShaderExecution,
         ShaderInterface, ShaderModule, ShaderStages,
     },
-    sync::{AccessFlags, Fence, PipelineStages, Semaphore},
+    sync::{AccessFlags, Fence, PipelineStages},
     OomError,
 };
 
@@ -140,23 +132,27 @@ fn optimal_device_features() -> Features {
 pub(super) struct Engine {
     device: Arc<Device>,
     upload_buffer_pool: CpuBufferPool<u8>,
+    storage_allocator: StorageAllocator,
     shader_modules: DashMap<ModuleId, Arc<ShaderModule>, FxBuildHasher>,
     compute_cache: DashMap<(ModuleId, EntryId), ComputeCache, FxBuildHasher>,
     op_sender: Sender<Op>,
     done: Arc<AtomicBool>,
+    index: usize,
 }
 
 impl Engine {
     pub(super) fn new() -> Result<Arc<Self>> {
         let instance = instance()?;
-        let mut physical_devices = PhysicalDevice::enumerate(&instance).collect::<Vec<_>>();
+        let mut physical_devices = PhysicalDevice::enumerate(&instance)
+            .enumerate()
+            .collect::<Vec<_>>();
         if physical_devices.is_empty() {
             bail!("No device!");
         }
-        physical_devices.sort_by_key(|x| physical_device_type_index(x.properties().device_type));
+        physical_devices.sort_by_key(|x| physical_device_type_index(x.1.properties().device_type));
         let queue_families = physical_devices
             .into_iter()
-            .map(|physical_device| {
+            .map(|(i, physical_device)| {
                 if physical_device
                     .supported_features()
                     .is_superset_of(&required_device_features())
@@ -170,11 +166,7 @@ impl Engine {
                                 .find(|x| x.supports_compute())
                         })
                     {
-                        let mut transfer_family = physical_device.queue_families().find(|x| {
-                            x.id() != compute_family.id() && x.explicitly_supports_transfers()
-                        });
-                        transfer_family.take();
-                        Ok((physical_device, compute_family, transfer_family))
+                        Ok((i, physical_device, compute_family))
                     } else {
                         Err(anyhow!("Device doesn't support compute!"))
                     }
@@ -188,28 +180,33 @@ impl Engine {
             })
             .collect::<Vec<_>>();
         for queue_family in queue_families.iter() {
-            if let &Ok((physical_device, compute_family, transfer_family)) = queue_family {
+            if let &Ok((index, physical_device, compute_family)) = queue_family {
                 let device_extensions = physical_device.required_extensions();
-                let device_features = dbg!(physical_device.supported_features())
+                let device_features = physical_device
+                    .supported_features()
                     .intersection(&optimal_device_features());
                 let (device, mut queues) = Device::new(
                     physical_device,
                     &device_features,
                     device_extensions,
-                    once((compute_family, 1.)).chain(transfer_family.map(|x| (x, 0.))),
+                    once((compute_family, 1.)),
                 )?;
-                let compute_queue = queues.next().expect("Compute queue not found!");
-                let transfer_queue = queues.next();
+                let queue = queues.next().expect("Compute queue not found!");
                 let upload_buffer_pool = CpuBufferPool::upload(device.clone());
+                let initial_chunks = 1;
+                let storage_allocator =
+                    StorageAllocator::with_initial_chunks(device.clone(), initial_chunks)?;
                 let shader_modules = DashMap::<_, _, FxBuildHasher>::default();
                 let compute_cache = DashMap::<_, _, FxBuildHasher>::default();
-                let (op_sender, op_receiver) = bounded(400);
+                let (op_sender, op_receiver) = unbounded();
                 let done = Arc::new(AtomicBool::new(false));
-                let runner = Runner::new(compute_queue, transfer_queue, op_receiver, done.clone())?;
+                let mut runner = Runner::new(queue, op_receiver, done.clone())?;
                 std::thread::spawn(move || runner.run());
                 let engine = Arc::new(Self {
+                    index,
                     device,
                     upload_buffer_pool,
+                    storage_allocator,
                     shader_modules,
                     compute_cache,
                     op_sender,
@@ -224,35 +221,25 @@ impl Engine {
             .expect("No queue families!");
         Err(err.expect_err("Expected unsupported device error!"))
     }
-    pub(super) unsafe fn alloc(self: &Arc<Self>, len: usize) -> Result<StorageBuffer> {
-        let usage = BufferUsage {
-            transfer_source: true,
-            transfer_destination: true,
-            storage_buffer: true,
-            ..BufferUsage::none()
-        };
-        let len = (len / 4) * 4 + if len % 4 != 0 { 4 } else { 0 };
-        let device_local = DeviceLocalBuffer::array(
-            self.device.clone(),
-            len as u64,
-            usage,
-            self.device.active_queue_families(),
-        )?;
-        Ok(StorageBuffer { device_local })
+    pub(super) fn index(&self) -> usize {
+        self.index
     }
-    pub(super) fn upload(self: &Arc<Self>, data: &[u8]) -> Result<StorageBuffer> {
+    pub(super) unsafe fn alloc(&self, len: usize) -> Result<Arc<StorageBuffer>> {
+        self.storage_allocator.alloc(len)
+    }
+    pub(super) fn upload(self: &Arc<Self>, data: &[u8]) -> Result<Arc<StorageBuffer>> {
         self.upload_buffer_pool.reserve(data.len() as u64)?;
         let sub_buffer = self.upload_buffer_pool.chunk(data.iter().copied())?;
         let storage = unsafe { self.alloc(data.len())? };
         self.op_sender.send(Op::Upload(Upload {
             src: sub_buffer,
-            dst: storage.device_local.into_buffer_slice(),
+            dst: storage.as_slice(),
         }))?;
         Ok(storage)
     }
     pub(super) fn download(
         self: &Arc<Self>,
-        storage: StorageBuffer,
+        storage: Arc<StorageBuffer>,
         offset: usize,
         len: usize,
     ) -> Result<impl Future<Output = Result<StorageBufferReadGuard>>> {
@@ -267,19 +254,17 @@ impl Engine {
             host_cached,
             (0..len).map(|_| 0u8),
         )?;
-        let start = offset as u64;
-        let end = start + len as u64;
         let device_slice = storage
-            .device_local
-            .slice(start..end)
+            .slice(offset..offset + len)
             .expect("Device slice not large enough!");
+        let sync = SyncFuture::default();
         self.op_sender.send(Op::Download(Download {
             src: device_slice,
             dst: cpu_buffer.clone(),
+            sync: sync.clone(),
         }))?;
-        let fut = self.sync()?;
         Ok(async move {
-            fut.await?;
+            sync.wait().await?;
             let guard = cpu_buffer.read()?;
             let guard = unsafe { transmute(guard) }; // convert to 'static
             Ok(StorageBufferReadGuard {
@@ -346,11 +331,8 @@ impl Engine {
             let start = (start / 4) * 4 + if start % 4 != 0 { 4 } else { 0 };
             let end = buffer.offset + buffer.len;
             let end = (end / 4) * 4 + if end % 4 != 0 { 4 } else { 0 };
-            let start = start as u64;
-            let end = end as u64;
             let slice = buffer
                 .storage
-                .device_local
                 .slice(start..end)
                 .expect("Slice out of bounds!");
             builder.add_buffer(slice.clone())?;
@@ -367,7 +349,7 @@ impl Engine {
         }
         self.op_sender.send(Op::Compute(Compute {
             descriptor_set,
-            descriptor_set_layout: compute_cache.descriptor_set_layout,
+            _descriptor_set_layout: compute_cache.descriptor_set_layout,
             pipeline_layout: compute_cache.pipeline_layout,
             compute_pipeline: compute_cache.compute_pipeline,
             push_constants: compute_pass.push_constants,
@@ -377,15 +359,9 @@ impl Engine {
         Ok(())
     }
     pub(super) fn sync(&self) -> Result<impl Future<Output = Result<()>>> {
-        let mut sync = Arc::new(Mutex::default());
-        self.op_sender
-            .send(Op::SyncGuard(SyncGuard::new(sync.try_lock_arc().unwrap())))?;
-        Ok(async move {
-            sync.lock().await;
-            while Arc::get_mut(&mut sync).is_none() {}
-            let sync = Arc::try_unwrap(sync).ok().map(Mutex::into_inner).flatten();
-            sync.ok_or_else(|| anyhow!("Disconnected!"))?
-        })
+        let sync = SyncFuture::default();
+        self.op_sender.send(Op::Sync(sync.clone()))?;
+        Ok(async move { sync.wait().await })
     }
 }
 
@@ -396,9 +372,45 @@ impl Drop for Engine {
     }
 }
 
-#[derive(Clone)]
 pub(super) struct StorageBuffer {
-    device_local: Arc<DeviceLocalBuffer<[u8]>>,
+    chunk: Arc<StorageChunk>,
+    offset: u32,
+    size: u32,
+}
+
+impl StorageBuffer {
+    fn as_slice(&self) -> Arc<BufferSlice<[u8], DeviceLocalBuffer<[u8]>>> {
+        self.chunk
+            .device_local
+            .slice(self.offset as u64..(self.offset + self.size) as u64)
+            .expect("Slice out of bounds!")
+    }
+    #[allow(clippy::type_complexity)]
+    fn slice(
+        &self,
+        range: Range<usize>,
+    ) -> Option<Arc<BufferSlice<[u8], DeviceLocalBuffer<[u8]>>>> {
+        let offset = self.offset as usize;
+        let start = offset + range.start;
+        let end = offset + range.end;
+        if end <= start + self.size as usize {
+            self.chunk.device_local.slice(start as u64..end as u64)
+        } else {
+            None
+        }
+    }
+}
+
+impl Drop for StorageBuffer {
+    fn drop(&mut self) {
+        let start = self.offset as u32;
+        let mut blocks = self.chunk.blocks.lock();
+        let index = blocks
+            .iter()
+            .position(|block| block.start == start)
+            .expect("Block not found!");
+        blocks.remove(index);
+    }
 }
 
 pub(super) struct StorageBufferReadGuard {
@@ -412,25 +424,109 @@ impl Deref for StorageBufferReadGuard {
         &self.guard
     }
 }
-/*
-async fn wait_for_fence(fence: &Fence) -> Result<()> {
-    loop {
-        let result = fence.wait(Some(Duration::default()));
-        match result {
-            Ok(()) => {
-                break;
-            }
-            Err(FenceWaitError::Timeout) => {
-                smol::future::yield_now().await;
-            }
-            Err(err) => {
-                return Err(err.into())
+
+#[derive(Clone, Copy, Debug)]
+struct StorageBlock {
+    start: u32,
+    end: u32,
+}
+
+struct StorageChunk {
+    device_local: Arc<DeviceLocalBuffer<[u8]>>,
+    blocks: Mutex<Vec<StorageBlock>>,
+}
+
+impl StorageChunk {
+    fn new(device: Arc<Device>, size: usize) -> Result<Arc<Self>> {
+        let usage = BufferUsage {
+            transfer_source: true,
+            transfer_destination: true,
+            storage_buffer: true,
+            ..BufferUsage::none()
+        };
+        let device_local = DeviceLocalBuffer::array(
+            device.clone(),
+            size as u64,
+            usage,
+            device.active_queue_families(),
+        )?;
+        let blocks = Mutex::default();
+        Ok(Arc::new(Self {
+            device_local,
+            blocks,
+        }))
+    }
+    fn alloc(self: &Arc<Self>, size: usize) -> Option<Arc<StorageBuffer>> {
+        let mut blocks = self.blocks.lock();
+        let mut start = 0;
+        let size = (size / 4) * 4 + if size % 4 != 0 { 4 } else { 0 };
+        let block_size = (size as u32 / 128) * 128 + if size % 128 != 0 { 128 } else { 0 };
+        for (i, block) in blocks.iter().enumerate() {
+            if start + block_size <= block.start {
+                blocks.insert(
+                    i,
+                    StorageBlock {
+                        start,
+                        end: start + block_size,
+                    },
+                );
+                return Some(Arc::new(StorageBuffer {
+                    chunk: self.clone(),
+                    offset: start,
+                    size: size as u32,
+                }));
+            } else {
+                start = block.end;
             }
         }
+        if (start + block_size) as u64 <= self.device_local.size() {
+            blocks.push(StorageBlock {
+                start,
+                end: start + block_size,
+            });
+            Some(Arc::new(StorageBuffer {
+                chunk: self.clone(),
+                offset: start,
+                size: size as u32,
+            }))
+        } else {
+            None
+        }
     }
-    Ok(())
 }
-*/
+
+struct StorageAllocator {
+    device: Arc<Device>,
+    chunks: RwLock<Vec<Arc<StorageChunk>>>,
+}
+
+impl StorageAllocator {
+    const CHUNK_SIZE: usize = 256_000_000;
+    fn with_initial_chunks(device: Arc<Device>, initial_chunks: usize) -> Result<Self> {
+        let mut chunks = Vec::with_capacity(initial_chunks);
+        for _ in 0..initial_chunks {
+            chunks.push(StorageChunk::new(device.clone(), Self::CHUNK_SIZE)?);
+        }
+        let chunks = RwLock::new(chunks);
+        Ok(Self { device, chunks })
+    }
+    fn alloc(&self, size: usize) -> Result<Arc<StorageBuffer>> {
+        if size > Self::CHUNK_SIZE {
+            bail!("Buffer is too large {} B! Max buffer size is 256 MB!", size);
+        }
+        let mut chunks = self.chunks.write();
+        for chunk in chunks.iter() {
+            if let Some(buffer) = chunk.alloc(size) {
+                return Ok(buffer);
+            }
+        }
+        let chunk = StorageChunk::new(self.device.clone(), Self::CHUNK_SIZE)?;
+        let buffer = chunk.alloc(size).expect("Unable to allocate buffer!");
+        chunks.push(chunk);
+        Ok(buffer)
+    }
+}
+
 fn shader_module(device: Arc<Device>, module: &Module) -> Result<Arc<ShaderModule>> {
     let bytes = module.spirv.as_ref();
     let version = Version::major_minor(1, 1);
@@ -509,7 +605,7 @@ enum Op {
     Upload(Upload),
     Compute(Compute),
     Download(Download),
-    SyncGuard(SyncGuard),
+    Sync(SyncFuture),
 }
 
 struct Upload {
@@ -527,7 +623,7 @@ impl WriteCommandBuffer for Upload {
 
 struct Compute {
     descriptor_set: StdDescriptorPoolAlloc,
-    descriptor_set_layout: Arc<DescriptorSetLayout>,
+    _descriptor_set_layout: Arc<DescriptorSetLayout>,
     compute_pipeline: Arc<ComputePipeline>,
     pipeline_layout: Arc<PipelineLayout>,
     work_groups: [u32; 3],
@@ -537,7 +633,7 @@ struct Compute {
 
 impl WriteCommandBuffer for Compute {
     unsafe fn write(&self, builder: &mut UnsafeCommandBufferBuilder) {
-        let mut barrier = unsafe { UnsafeCommandBufferBuilderPipelineBarrier::new() };
+        let mut barrier = UnsafeCommandBufferBuilderPipelineBarrier::new();
         for slice in self.slices.iter() {
             let source_stage = PipelineStages {
                 compute_shader: true,
@@ -559,7 +655,7 @@ impl WriteCommandBuffer for Compute {
             };
             let by_region = false;
             let queue_transfer = None;
-            let offset = 0;
+            let offset = slice.slice.offset();
             let size = slice.slice.len();
             unsafe {
                 barrier.add_buffer_memory_barrier(
@@ -606,22 +702,34 @@ impl WriteCommandBuffer for Compute {
     }
 }
 
-struct SyncGuard {
-    guard: MutexGuardArc<Option<Result<()>>>,
+#[derive(Default, Clone, Debug)]
+struct SyncFuture {
+    signal: Arc<AtomicBool>,
 }
 
-impl SyncGuard {
-    fn new(guard: MutexGuardArc<Option<Result<()>>>) -> Self {
-        Self { guard }
+impl SyncFuture {
+    fn signal(&self) {
+        self.signal.store(true, Ordering::Relaxed);
     }
-    fn store(&mut self, result: Result<()>) {
-        self.guard.replace(result);
+    async fn wait(mut self) -> Result<()> {
+        loop {
+            if let Some(guard) = Arc::get_mut(&mut self.signal) {
+                if *guard.get_mut() {
+                    return Ok(());
+                } else {
+                    return Err(anyhow!("Device disconnected!"));
+                }
+            } else {
+                smol::future::yield_now().await;
+            }
+        }
     }
 }
 
 struct Download {
     src: Arc<BufferSlice<[u8], DeviceLocalBuffer<[u8]>>>,
     dst: Arc<CpuAccessibleBuffer<[u8]>>,
+    sync: SyncFuture,
 }
 
 impl WriteCommandBuffer for Download {
@@ -633,7 +741,7 @@ impl WriteCommandBuffer for Download {
 }
 
 struct CommandBuffer {
-    alloc: UnsafeCommandPoolAlloc,
+    _alloc: UnsafeCommandPoolAlloc,
     command_buffer: UnsafeCommandBuffer,
 }
 
@@ -658,296 +766,121 @@ struct CommandBufferBuilder {
 impl CommandBufferBuilder {
     fn build(self) -> Result<CommandBuffer, OomError> {
         Ok(CommandBuffer {
-            alloc: self.alloc,
+            _alloc: self.alloc,
             command_buffer: self.builder.build()?,
         })
     }
 }
 
-struct CommandBufferBuilderArray {
-    compute_queue: Arc<Queue>,
-    transfer_queue: Option<Arc<Queue>>,
-    compute: CommandBufferBuilder,
-    transfer: Option<[CommandBufferBuilder; 2]>,
-}
-
-impl CommandBufferBuilderArray {
-    fn new(
-        compute_queue: Arc<Queue>,
-        transfer_queue: Option<Arc<Queue>>,
-        compute_command_pool: &mut UnsafeCommandPool,
-        transfer_command_pool: Option<&mut UnsafeCommandPool>,
-    ) -> Result<Self> {
-        let compute = {
-            let secondary = false;
-            let count = 1;
-            let alloc = compute_command_pool
-                .alloc_command_buffers(secondary, count)?
-                .next()
-                .expect("No command buffer!");
-            CommandBuffer::builder(alloc)?
-        };
-        let transfer = if let Some(transfer_command_pool) = transfer_command_pool {
-            let secondary = false;
-            let count = 2;
-            let mut alloc_iter = transfer_command_pool.alloc_command_buffers(secondary, count)?;
-            let upload_alloc = alloc_iter.next().expect("No command buffer!");
-            let upload = CommandBuffer::builder(upload_alloc)?;
-            let download_alloc = alloc_iter.next().expect("No command buffer!");
-            let download = CommandBuffer::builder(download_alloc)?;
-            Some([upload, download])
-        } else {
-            None
-        };
-        Ok(Self {
-            compute_queue,
-            transfer_queue,
-            compute,
-            transfer,
-        })
-    }
-    fn upload_builder_mut(&mut self) -> &mut UnsafeCommandBufferBuilder {
-        self.transfer
-            .as_mut()
-            .map_or(&mut self.compute.builder, |transfer| {
-                &mut transfer[0].builder
-            })
-    }
-    fn compute_builder_mut(&mut self) -> &mut UnsafeCommandBufferBuilder {
-        &mut self.compute.builder
-    }
-    fn download_builder_mut(&mut self) -> &mut UnsafeCommandBufferBuilder {
-        self.transfer
-            .as_mut()
-            .map_or(&mut self.compute.builder, |transfer| {
-                &mut transfer[1].builder
-            })
-    }
-    fn submit(self, semaphores: &[Semaphore], fence: &Fence) -> Result<Vec<CommandBuffer>> {
-        if let Some((transfer_queue, [upload_builder, download_builder])) =
-            self.transfer_queue.zip(self.transfer)
-        {
-            let upload = upload_builder.build()?;
-            let mut builder = SubmitCommandBufferBuilder::new();
-            unsafe {
-                builder.add_command_buffer(&upload.command_buffer);
-                builder.add_signal_semaphore(&semaphores[0]);
-            }
-            builder.submit(&transfer_queue)?;
-            let compute = self.compute.build()?;
-            let mut builder = SubmitCommandBufferBuilder::new();
-            let stages = PipelineStages {
-                compute_shader: true,
-                ..PipelineStages::none()
-            };
-            unsafe {
-                builder.add_command_buffer(&compute.command_buffer);
-                builder.add_wait_semaphore(&semaphores[0], stages);
-                builder.add_signal_semaphore(&semaphores[1]);
-            }
-            builder.submit(&self.compute_queue)?;
-            let download = download_builder.build()?;
-            let mut builder = SubmitCommandBufferBuilder::new();
-            let stages = PipelineStages {
-                transfer: true,
-                ..PipelineStages::none()
-            };
-            unsafe {
-                builder.add_command_buffer(&download.command_buffer);
-                builder.add_wait_semaphore(&semaphores[1], stages);
-                builder.set_fence_signal(fence);
-            }
-            builder.submit(&transfer_queue)?;
-            Ok(vec![upload, compute, download])
-        } else {
-            let compute = self.compute.build()?;
-            let mut builder = SubmitCommandBufferBuilder::new();
-            unsafe {
-                builder.add_command_buffer(&compute.command_buffer);
-                builder.set_fence_signal(fence);
-            }
-            builder.submit(&self.compute_queue)?;
-            Ok(vec![compute])
-        }
-    }
-}
-
 struct Frame {
-    compute_queue: Arc<Queue>,
-    compute_command_pool: UnsafeCommandPool,
-    transfer_queue: Option<Arc<Queue>>,
-    transfer_command_pool: Option<UnsafeCommandPool>,
-    command_buffers: Vec<CommandBuffer>,
-    semaphores: Vec<Semaphore>,
+    queue: Arc<Queue>,
+    command_pool: UnsafeCommandPool,
+    command_buffer: Option<CommandBuffer>,
+    command_buffer_builder: Option<CommandBufferBuilder>,
     fence: Fence,
-    uploads: Vec<Upload>,
-    computes: Vec<Compute>,
+    ops: Vec<Op>,
     downloads: Vec<Download>,
-    syncs: Vec<SyncGuard>,
+    syncs: Vec<SyncFuture>,
 }
 
 impl Frame {
-    fn new(compute_queue: Arc<Queue>, transfer_queue: Option<Arc<Queue>>) -> Result<Self> {
-        let device = compute_queue.device();
+    fn new(queue: Arc<Queue>) -> Result<Self> {
+        let device = queue.device();
         let transient = true;
         let reset_cb = false;
-        let compute_command_pool =
-            UnsafeCommandPool::new(device.clone(), compute_queue.family(), transient, reset_cb)?;
-        let transfer_command_pool = transfer_queue
-            .as_ref()
-            .map(|transfer_queue| {
-                UnsafeCommandPool::new(device.clone(), transfer_queue.family(), transient, reset_cb)
-            })
-            .transpose()?;
-        let semaphores = if transfer_queue.is_some() {
-            vec![
-                Semaphore::from_pool(device.clone())?,
-                Semaphore::from_pool(device.clone())?,
-            ]
-        } else {
-            Vec::new()
-        };
+        let command_pool =
+            UnsafeCommandPool::new(device.clone(), queue.family(), transient, reset_cb)?;
         let fence = Fence::alloc_signaled(device.clone())?;
-        let uploads = Vec::new();
-        let computes = Vec::new();
+        let ops = Vec::new();
         let downloads = Vec::new();
         let syncs = Vec::new();
-        Ok(Self {
-            compute_queue,
-            compute_command_pool,
-            transfer_queue,
-            transfer_command_pool,
-            command_buffers: Vec::new(),
-            semaphores,
+        let mut frame = Self {
+            queue,
+            command_pool,
+            command_buffer: None,
+            command_buffer_builder: None,
             fence,
-            uploads,
-            computes,
+            ops,
             downloads,
             syncs,
-        })
+        };
+        frame.begin()?;
+        Ok(frame)
     }
     fn poll(&mut self) -> Result<bool> {
-        let result = self.fence.ready();
-        match result {
-            Ok(true) | Err(_) => {
-                self.uploads.clear();
-                self.computes.clear();
-                self.downloads.clear();
-                for mut sync in self.syncs.drain(..) {
-                    let result = result.map(|_| ()).map_err(|err| anyhow::Error::new(err));
-                    sync.store(result);
-                }
-                result.map_err(Into::into)
+        if self.is_empty() {
+            Ok(true)
+        } else if self.fence.ready()? {
+            self.ops.clear();
+            self.syncs.extend(self.downloads.drain(..).map(|x| x.sync));
+            for sync in self.syncs.drain(..) {
+                sync.signal();
             }
-            Ok(false) => Ok(false),
+            self.begin()?;
+            Ok(true)
+        } else {
+            Ok(false)
         }
     }
-    fn submit(&mut self, ops: impl Iterator<Item = Op>) -> Result<()> {
-        use std::time::Instant;
+    /*fn len(&self) -> usize {
+        self.ops.len() + self.downloads.len() + self.syncs.len()
+    }*/
+    fn is_empty(&self) -> bool {
+        self.ops.is_empty() && self.downloads.is_empty() && self.syncs.is_empty()
+    }
+    fn begin(&mut self) -> Result<()> {
         assert!(self.fence.ready()?);
-        self.fence.reset()?;
-        self.command_buffers.clear();
+        self.command_buffer.take();
         unsafe {
-            self.compute_command_pool.reset(false)?;
+            self.command_pool.reset(false)?;
         }
-        if let Some(transfer_command_pool) = self.transfer_command_pool.as_mut() {
-            unsafe {
-                transfer_command_pool.reset(false)?;
-            }
-        }
-        for op in ops {
-            match op {
-                Op::Upload(x) => {
-                    self.uploads.push(x);
-                }
-                Op::Compute(x) => {
-                    self.computes.push(x);
-                }
-                Op::Download(x) => {
-                    self.downloads.push(x);
-                }
-                Op::SyncGuard(x) => {
-                    self.syncs.push(x);
-                }
-            }
-        }
-        //let encode = Instant::now();
-        let mut builder_array = CommandBufferBuilderArray::new(
-            self.compute_queue.clone(),
-            self.transfer_queue.clone(),
-            &mut self.compute_command_pool,
-            self.transfer_command_pool.as_mut(),
-        )?;
-        let mut builder = builder_array.upload_builder_mut();
-        {
-            let source = PipelineStages {
-                transfer: true,
-                compute_shader: true,
-                ..PipelineStages::none()
-            };
-            let destination = PipelineStages {
-                transfer: true,
-                compute_shader: true,
-                ..PipelineStages::none()
-            };
-            let by_region = false;
-            unsafe {
-                let mut barrier = UnsafeCommandBufferBuilderPipelineBarrier::new();
-                barrier.add_execution_dependency(source, destination, by_region);
-                builder.pipeline_barrier(&barrier);
-            }
-        }
-        for upload in self.uploads.iter() {
-            unsafe {
-                upload.write(&mut builder);
-            }
-        }
-        let mut builder = builder_array.compute_builder_mut();
-        {
-            let source = PipelineStages {
-                transfer: true,
-                ..PipelineStages::none()
-            };
-            let destination = PipelineStages {
-                compute_shader: true,
-                ..PipelineStages::none()
-            };
-            let by_region = false;
-            unsafe {
-                let mut barrier = UnsafeCommandBufferBuilderPipelineBarrier::new();
-                barrier.add_execution_dependency(source, destination, by_region);
-                builder.pipeline_barrier(&barrier);
-            }
-            for compute in self.computes.iter() {
+        let secondary = false;
+        let count = 1;
+        let alloc = self
+            .command_pool
+            .alloc_command_buffers(secondary, count)?
+            .next()
+            .expect("No command buffer!");
+        self.command_buffer_builder
+            .replace(CommandBuffer::builder(alloc)?);
+        Ok(())
+    }
+    fn encode(&mut self, op: Op) -> Result<()> {
+        let builder = &mut self
+            .command_buffer_builder
+            .as_mut()
+            .expect("No builder!")
+            .builder;
+        match op {
+            Op::Upload(ref upload) => {
                 unsafe {
-                    compute.write(&mut builder);
+                    upload.write(builder);
                 }
+                self.ops.push(op);
             }
-        }
-        let mut builder = builder_array.download_builder_mut();
-        {
-            let source = PipelineStages {
-                transfer: true,
-                compute_shader: true,
-                ..PipelineStages::none()
-            };
-            let destination = PipelineStages {
-                transfer: true,
-                ..PipelineStages::none()
-            };
-            let by_region = false;
-            unsafe {
-                let mut barrier = UnsafeCommandBufferBuilderPipelineBarrier::new();
-                barrier.add_execution_dependency(source, destination, by_region);
-                builder.pipeline_barrier(&barrier);
-            }
-            for download in self.downloads.iter() {
+            Op::Compute(ref compute) => {
                 unsafe {
-                    download.write(&mut builder);
+                    compute.write(builder);
                 }
+                self.ops.push(op);
+            }
+            Op::Download(download) => {
+                unsafe {
+                    download.write(builder);
+                }
+                self.downloads.push(download);
+            }
+            Op::Sync(sync) => {
+                self.syncs.push(sync);
             }
         }
-        {
+        Ok(())
+    }
+    fn submit(&mut self) -> Result<()> {
+        debug_assert!(self.fence.ready()?);
+        self.fence.reset()?;
+        let mut builder = self.command_buffer_builder.take().expect("No builder!");
+        if !self.syncs.is_empty() {
             let source = PipelineStages {
                 transfer: true,
                 compute_shader: true,
@@ -962,70 +895,61 @@ impl Frame {
             unsafe {
                 let mut barrier = UnsafeCommandBufferBuilderPipelineBarrier::new();
                 barrier.add_execution_dependency(source, destination, by_region);
-                builder.pipeline_barrier(&barrier);
+                builder.builder.pipeline_barrier(&barrier);
             }
         }
-        //dbg!(encode.elapsed());
-        //let submit = Instant::now();
-        match builder_array.submit(&self.semaphores, &self.fence) {
-            Ok(command_buffers) => {
-                self.command_buffers = command_buffers;
-            }
-            Err(err) => {
-                for mut sync in self.syncs.drain(..) {
-                    sync.store(Err(anyhow!("Submit error! {}", &err)));
-                }
-                return Err(anyhow::Error::msg(err));
-            }
+        let command_buffer = builder.build()?;
+        let mut builder = SubmitCommandBufferBuilder::new();
+        unsafe {
+            builder.add_command_buffer(&command_buffer.command_buffer);
+            builder.set_fence_signal(&self.fence);
         }
-        //dbg!(submit.elapsed());
+        builder.submit(&self.queue)?;
+        self.command_buffer.replace(command_buffer);
         Ok(())
     }
 }
 
 struct Runner {
     op_receiver: Receiver<Op>,
-    ready_frames: VecDeque<Frame>,
-    pending_frames: VecDeque<Frame>,
+    ready: VecDeque<Frame>,
+    pending: VecDeque<Frame>,
     done: Arc<AtomicBool>,
 }
 
 impl Runner {
-    fn new(
-        compute_queue: Arc<Queue>,
-        transfer_queue: Option<Arc<Queue>>,
-        op_receiver: Receiver<Op>,
-        done: Arc<AtomicBool>,
-    ) -> Result<Self> {
-        let n_frames = 2;
-        let mut ready_frames = VecDeque::with_capacity(n_frames);
-        for _ in 0..n_frames {
-            ready_frames.push_back(Frame::new(compute_queue.clone(), transfer_queue.clone())?);
+    fn new(queue: Arc<Queue>, op_receiver: Receiver<Op>, done: Arc<AtomicBool>) -> Result<Self> {
+        let mut ready = VecDeque::with_capacity(3);
+        for _ in 0..3 {
+            ready.push_back(Frame::new(queue.clone())?);
         }
-        let pending_frames = VecDeque::with_capacity(n_frames);
+        let pending = VecDeque::with_capacity(2);
         Ok(Self {
             op_receiver,
-            ready_frames,
-            pending_frames,
+            ready,
+            pending,
             done,
         })
     }
-    fn run(mut self) {
+    fn run(&mut self) {
         while !self.done.load(Ordering::Acquire) {
-            if let Some(frame) = self.ready_frames.front_mut() {
-                if let Some(op) = self.op_receiver.try_iter().next() {
-                    frame
-                        .submit(once(op).chain(self.op_receiver.try_iter()))
-                        .expect("Frame::submit failed!");
-                    self.pending_frames.extend(self.ready_frames.pop_front());
+            if let Ok(op) = self.op_receiver.try_recv() {
+                self.ready
+                    .front_mut()
+                    .expect("No frame!")
+                    .encode(op)
+                    .expect("Frame::encode failed!");
+            }
+            if let Some(pending) = self.pending.front_mut() {
+                if pending.poll().expect("Frame::poll failed!") {
+                    self.ready
+                        .push_back(self.pending.pop_front().expect("No frame!"));
                 }
             }
-            while let Some(frame) = self.pending_frames.front_mut() {
-                if frame.poll().expect("Frame::poll failed!") {
-                    self.ready_frames.extend(self.pending_frames.pop_front());
-                } else {
-                    break;
-                }
+            if self.pending.len() < 2 && !self.ready.front().expect("No frame!").is_empty() {
+                let mut frame = self.ready.pop_front().expect("No frame!");
+                frame.submit().expect("Frame::submit failed!");
+                self.pending.push_back(frame);
             }
         }
     }

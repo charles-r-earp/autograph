@@ -156,7 +156,7 @@ impl<T> ArcBuffer<T> {
     where
         T: Default + Copy,
     {
-        Ok(Buffer::alloc(device, len)?.into())
+        Ok(unsafe { Buffer::alloc(device, len)?.into() })
     }
     /// Creates a buffer with length `len` filled with `elem`.
     ///
@@ -385,7 +385,7 @@ impl<T> CowBuffer<'_, T> {
     where
         T: Default + Copy,
     {
-        Ok(Buffer::alloc(device, len)?.into())
+        Ok(unsafe { Buffer::alloc(device, len)?.into() })
     }
     /// Creates a buffer with length `len` filled with `elem`.
     ///

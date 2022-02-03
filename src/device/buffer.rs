@@ -14,6 +14,7 @@ use std::{
     marker::PhantomData,
     mem::{forget, size_of, transmute},
     ops::{Deref, DerefMut},
+    sync::Arc,
 };
 
 mod sealed {
@@ -230,7 +231,7 @@ unsafe impl<S: Data> Sync for HostBufferBase<S> {}
 
 pub(super) struct DeviceBufferBase<S: Data> {
     device: DeviceBase,
-    storage: StorageBuffer,
+    storage: Arc<StorageBuffer>,
     offset: usize,
     len: usize,
     _m: PhantomData<S>,
@@ -255,7 +256,7 @@ impl<T, S: Data<Elem = T>> DeviceBufferBase<S> {
         }
     }
     fn to_owned(&self) -> Result<DeviceBuffer<T>> {
-        let mut buffer = unsafe { DeviceBuffer::alloc(self.device().clone(), self.len())? };
+        let mut buffer = unsafe { DeviceBuffer::alloc(self.device(), self.len())? };
         buffer.copy_from_slice(self.as_slice())?;
         Ok(buffer)
     }
@@ -306,7 +307,7 @@ impl<T, S: Data<Elem = T>> DeviceBufferBase<S> {
             device: self.device.clone(),
             storage: self.storage.clone(),
             offset: self.offset + offset,
-            len: len,
+            len,
             _m: PhantomData::default(),
         }
     }
@@ -603,7 +604,7 @@ impl<T, S: Data<Elem = T>> BufferBase<S> {
             (DynBufferBase::Host(src), Some(device)) => {
                 Ok(DeviceBuffer::upload(device, &src)?.into())
             }
-            (DynBufferBase::Device(src), Some(device)) => todo!(), // Ok(src.into_device(device).await?.into()),
+            (DynBufferBase::Device(src), Some(device)) => Ok(src.into_device(device).await?.into()),
             (DynBufferBase::Device(src), None) => {
                 let buffer = HostBuffer::from(src.read().await?.to_vec());
                 Ok(buffer.into())
@@ -939,7 +940,7 @@ impl<T: Pod, S: Data<Elem = T>> ReadGuardBase<S> {
     fn into_vec(self) -> Vec<T> {
         match self {
             Self::Host(buffer) => buffer.into_vec(),
-            Self::Device(guard) => todo!(), // guard.as_slice().to_vec(),
+            Self::Device(guard) => guard.as_slice().to_vec(),
         }
     }
     fn as_slice(&self) -> &[T] {

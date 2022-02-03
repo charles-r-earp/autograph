@@ -335,7 +335,7 @@ impl<S: FloatData, D: Dimension> FloatTensorBase<S, D> {
         Sh: ShapeBuilder<Dim = D>,
     {
         let (dim, strides) = dim_strides_from_shape(shape.into_shape());
-        let data = S::from_buffer(FloatBuffer::alloc(float_type, device, dim.size())?);
+        let data = S::from_buffer(unsafe { FloatBuffer::alloc(float_type, device, dim.size())? });
         Ok(Self { dim, strides, data })
     }
     /// Creates a float tensor on `device` with `shape` filled with `elem`.

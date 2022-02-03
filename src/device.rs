@@ -1,9 +1,4 @@
-use crate::{
-    buffer::{Slice, SliceMut},
-    result::Result,
-    shader::Module,
-};
-use bytemuck::Pod;
+use crate::{result::Result, shader::Module};
 #[cfg(all(test, feature = "device_tests"))]
 use smol::lock::SemaphoreGuard;
 use std::{
@@ -23,7 +18,7 @@ pub mod buffer;
 
 #[doc(hidden)]
 pub mod shader;
-use shader::{EntryId, ModuleId};
+use shader::EntryId;
 
 /// Device builders.
 pub mod builders {
@@ -123,12 +118,12 @@ pub mod builders {
                     bail!(
                         "Provided slice at binding {} is on {:?} but previous slices are on {:?}!",
                         self.buffers.len(),
-                        Device::from(device.clone()),
+                        Device::from(device),
                         Device::from(current_device.clone()),
                     );
                 }
             } else {
-                self.device.replace(device.clone());
+                self.device.replace(device);
             }
             self.check_num_buffers(self.buffers.len() + 1, false)?;
             let declared_mutable = *self.descriptor.buffers.get(self.buffers.len()).unwrap();
@@ -244,7 +239,7 @@ pub mod builders {
                 entry: self.descriptor.id,
                 entry_name: self.entry,
                 work_groups,
-                local_size,
+                //local_size,
                 buffers: self.buffers,
                 push_constants: self.push_constants,
             };
@@ -267,7 +262,7 @@ pub mod builders {
 }
 
 struct BufferBinding {
-    storage: StorageBuffer,
+    storage: Arc<StorageBuffer>,
     offset: usize,
     len: usize,
     mutable: bool,
@@ -278,7 +273,7 @@ struct ComputePass<'a> {
     entry: EntryId,
     entry_name: String,
     work_groups: [u32; 3],
-    local_size: [u32; 3],
+    //local_size: [u32; 3],
     buffers: Vec<BufferBinding>,
     push_constants: Vec<u8>,
 }
@@ -293,15 +288,18 @@ impl DeviceBase {
             engine: Engine::new()?,
         })
     }
-    unsafe fn alloc(&self, len: usize) -> Result<StorageBuffer> {
+    fn index(&self) -> usize {
+        self.engine.index()
+    }
+    unsafe fn alloc(&self, len: usize) -> Result<Arc<StorageBuffer>> {
         unsafe { self.engine.alloc(len) }
     }
-    fn upload(&self, data: &[u8]) -> Result<StorageBuffer> {
+    fn upload(&self, data: &[u8]) -> Result<Arc<StorageBuffer>> {
         self.engine.upload(data)
     }
     fn download(
         &self,
-        storage: StorageBuffer,
+        storage: Arc<StorageBuffer>,
         offset: usize,
         len: usize,
     ) -> impl Future<Output = Result<StorageBufferReadGuard>> {
@@ -458,7 +456,7 @@ impl Device {
 impl Debug for Device {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         if let Some(base) = self.base.as_ref() {
-            f.write_str(&format!("Device({})", "todo"))
+            f.write_str(&format!("Device({})", base.index()))
         } else {
             f.write_str("Host")
         }

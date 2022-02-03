@@ -5,7 +5,7 @@ use parking_lot::Mutex;
 use rspirv::{
     binary::{Disassemble, Parser},
     dr::{Loader, Operand},
-    spirv::{Capability, Decoration, ExecutionMode, ExecutionModel, Op, StorageClass, Word},
+    spirv::{Decoration, ExecutionMode, ExecutionModel, Op, StorageClass, Word},
     sr::Constant,
 };
 use serde::{de::Error as _, Deserialize, Deserializer, Serialize};
@@ -178,9 +178,11 @@ impl EntryDescriptor {
     pub(super) fn push_constant_size(&self) -> usize {
         self.push_constant_size as usize
     }
+    /*
     pub(super) fn specialization_size(&self) -> usize {
         self.spec_constants.iter().map(|x| x.spec_type.size()).sum()
     }
+    */
 }
 
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
@@ -200,13 +202,14 @@ pub(super) enum SpecType {
 }
 
 impl SpecType {
+    /*
     pub(super) fn size(&self) -> usize {
         use SpecType::*;
         match self {
             U32 | I32 | F32 => 4,
             U64 | I64 | F64 => 8,
         }
-    }
+    }*/
 }
 
 #[derive(Clone, Debug)]
