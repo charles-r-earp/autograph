@@ -332,7 +332,7 @@ Specify the profile feature for autograph if it is a dependency as `autograph/pr
 
 # Development Platforms
 1. Ubuntu 18.04 | (Vulkan) NVidia GeForce GTX 1060 with Max-Q Design
-2. Wondows 10 Home | (Vulkan + DX12) AMD RX 580 / (DX12) Microsoft Basic Render Driver.
+2. Windows 10 Home | (Vulkan + DX12) AMD RX 580 / (DX12) Microsoft Basic Render Driver.
 
 Shaders are tested on Github Actions:
 - Windows Server 2019 | (DX12) Microsoft Basic Render Driver.
