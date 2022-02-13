@@ -2,26 +2,41 @@ use crate::result::Result;
 use crossbeam_channel::{unbounded as unbounded_channel, Receiver, Sender};
 use parking_lot::Mutex;
 use std::{
+    borrow::Cow,
     collections::HashMap,
     env,
     fs::File,
+    io::Write,
     sync::{Arc, Weak},
     time::{Duration, Instant},
 };
 
 static PROFILER: Mutex<Option<Weak<Profiler>>> = parking_lot::const_mutex(None);
 
+#[derive(Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
+pub(super) enum TransferKind {
+    HostToDevice,
+    //DeviceToDevice,
+    DeviceToHost,
+}
+
+pub(super) struct TransferMetrics {
+    pub(super) kind: TransferKind,
+    pub(super) size: usize,
+    pub(super) duration: Duration,
+}
+
 #[derive(Debug)]
 pub(super) struct ComputePassMetrics {
     pub(super) module_id: u32,
-    pub(super) module_name: String,
+    pub(super) module_name: Option<String>,
     pub(super) entry_name: String,
     pub(super) invocations: usize,
-    pub(super) start: Duration,
-    pub(super) end: Duration,
+    pub(super) duration: Duration,
 }
 
 enum Msg {
+    Transfer(TransferMetrics),
     #[allow(unused)]
     ComputePass(ComputePassMetrics),
 }
@@ -62,6 +77,9 @@ impl Profiler {
             }
         }
     }
+    pub(super) fn transfer(&self, transfer: TransferMetrics) {
+        let _ = self.sender.send(Msg::Transfer(transfer));
+    }
     pub(super) fn compute_pass(&self, compute_pass: ComputePassMetrics) {
         let _ = self.sender.send(Msg::ComputePass(compute_pass));
     }
@@ -75,6 +93,16 @@ fn run(receiver: Receiver<Msg>, mut file: File) {
     while !disconnected {
         match receiver.try_recv() {
             Ok(msg) => match msg {
+                Msg::Transfer(metrics) => {
+                    let mut entry = summary
+                        .transfers
+                        .entry(metrics.kind)
+                        .or_insert_with(TransferEntry::default);
+                    entry.calls += 1;
+                    entry.bytes += metrics.size;
+                    entry.total_time += metrics.duration;
+                    updated = false;
+                }
                 Msg::ComputePass(metrics) => {
                     let mut entry = summary
                         .compute_passes
@@ -85,9 +113,7 @@ fn run(receiver: Receiver<Msg>, mut file: File) {
                         })
                         .or_insert_with(ComputePassEntry::default);
                     entry.invocations += metrics.invocations;
-                    if metrics.end > metrics.start {
-                        entry.total_time += metrics.end - metrics.start;
-                    }
+                    entry.total_time += metrics.duration;
                     updated = false;
                 }
             },
@@ -108,10 +134,17 @@ fn run(receiver: Receiver<Msg>, mut file: File) {
     }
 }
 
+#[derive(Default, Debug)]
+struct TransferEntry {
+    calls: usize,
+    bytes: usize,
+    total_time: Duration,
+}
+
 #[derive(Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
 struct ComputePassKey {
     module_id: u32,
-    module_name: String,
+    module_name: Option<String>,
     entry_name: String,
 }
 
@@ -124,6 +157,7 @@ struct ComputePassEntry {
 #[derive(Default, Debug)]
 struct Summary {
     compute_passes: HashMap<ComputePassKey, ComputePassEntry>,
+    transfers: HashMap<TransferKind, TransferEntry>,
 }
 
 impl Summary {
@@ -144,14 +178,21 @@ impl Summary {
         let total = compute_passes
             .iter()
             .map(|(_, entry)| entry.total_time)
-            .sum::<Duration>()
-            .as_secs_f32();
+            .sum::<Duration>();
         table.extend(compute_passes.iter().rev().map(|(key, entry)| {
-            let percent = format!("{:.2?} %", (100. * entry.total_time.as_secs_f32()) / total);
+            let module_name: Cow<str> = key
+                .module_name
+                .as_ref()
+                .map(|name| name.into())
+                .unwrap_or_else(|| format!("Module({})", key.module_id).into());
+            let percent = format!(
+                "{:.2?} %",
+                (100. * entry.total_time.as_secs_f32()) / total.as_secs_f32()
+            );
             let mean_time = format!("{:.2?}", entry.total_time / entry.invocations as u32);
             let total_time = format!("{:.2?}", entry.total_time);
             row![
-                key.module_name,
+                module_name,
                 key.entry_name,
                 percent,
                 entry.invocations.to_string(),
@@ -160,6 +201,26 @@ impl Summary {
             ]
         }));
         table.print(file)?;
+        file.write(format!("Total compute time: {:.2?}\n", total).as_bytes())?;
+        let mut transfers = self.transfers.iter().collect::<Vec<_>>();
+        transfers.sort_by_key(|(_, entry)| entry.total_time);
+        let total = transfers
+            .iter()
+            .map(|(_, entry)| entry.total_time)
+            .sum::<Duration>();
+        let mut table = Table::new();
+        table.set_titles(row!["Transfer", "Calls", "Speed", "Total Time",]);
+        table.extend(transfers.iter().rev().map(|(key, entry)| {
+            let kind = format!("{:?}", key);
+            let speed = format!(
+                "{:.2} GB/s",
+                (entry.bytes as f32 / 1_000_000_000.) / entry.total_time.as_secs_f32()
+            );
+            let total_time = format!("{:.2?}", entry.total_time);
+            row![kind, entry.calls, speed, total_time,]
+        }));
+        table.print(file)?;
+        file.write(format!("Total transfer time: {:.2?}\n", total).as_bytes())?;
         Ok(())
     }
 }

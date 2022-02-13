@@ -239,7 +239,8 @@ pub mod builders {
                 entry: self.descriptor.id,
                 entry_name: self.entry,
                 work_groups,
-                //local_size,
+                #[cfg(feature = "profile")]
+                local_size,
                 buffers: self.buffers,
                 push_constants: self.push_constants,
             };
@@ -273,7 +274,8 @@ struct ComputePass<'a> {
     entry: EntryId,
     entry_name: String,
     work_groups: [u32; 3],
-    //local_size: [u32; 3],
+    #[cfg(feature = "profile")]
+    local_size: [u32; 3],
     buffers: Vec<BufferBinding>,
     push_constants: Vec<u8>,
 }

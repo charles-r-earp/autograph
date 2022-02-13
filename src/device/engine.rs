@@ -1,3 +1,5 @@
+#[cfg(feature = "profile")]
+use super::profiler::{ComputePassMetrics, TransferKind, TransferMetrics};
 use crate::{
     device::{
         shader::{EntryId, Module, ModuleId},
@@ -5,12 +7,15 @@ use crate::{
     },
     result::Result,
 };
+
 use anyhow::{anyhow, bail};
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use dashmap::DashMap;
 use fxhash::FxBuildHasher;
 use once_cell::sync::OnceCell;
 use parking_lot::{Mutex, RwLock};
+#[cfg(feature = "profile")]
+use std::time::Duration;
 use std::{
     collections::VecDeque,
     future::Future,
@@ -54,6 +59,11 @@ use vulkano::{
     },
     sync::{AccessFlags, Fence, PipelineStages},
     OomError,
+};
+#[cfg(feature = "profile")]
+use vulkano::{
+    query::{QueryPool, QueryResultFlags, QueryType},
+    sync::PipelineStage,
 };
 
 #[cfg(any(target_os = "ios", target_os = "macos"))]
@@ -355,6 +365,14 @@ impl Engine {
             push_constants: compute_pass.push_constants,
             work_groups: compute_pass.work_groups,
             slices,
+            #[cfg(feature = "profile")]
+            module_id: compute_pass.module.id,
+            #[cfg(feature = "profile")]
+            module_name: compute_pass.module.name.clone(),
+            #[cfg(feature = "profile")]
+            entry_name: compute_pass.entry_name,
+            #[cfg(feature = "profile")]
+            local_size: compute_pass.local_size,
         }))?;
         Ok(())
     }
@@ -629,6 +647,14 @@ struct Compute {
     work_groups: [u32; 3],
     push_constants: Vec<u8>,
     slices: Vec<ComputeSlice>,
+    #[cfg(feature = "profile")]
+    module_id: ModuleId,
+    #[cfg(feature = "profile")]
+    module_name: Option<String>,
+    #[cfg(feature = "profile")]
+    entry_name: String,
+    #[cfg(feature = "profile")]
+    local_size: [u32; 3],
 }
 
 impl WriteCommandBuffer for Compute {
@@ -771,6 +797,127 @@ impl CommandBufferBuilder {
         })
     }
 }
+#[cfg(feature = "profile")]
+enum ProfileEntry {
+    Upload {
+        size: usize,
+    },
+    Compute {
+        module_id: u32,
+        module_name: Option<String>,
+        entry_name: String,
+        invocations: usize,
+    },
+    Download {
+        size: usize,
+    },
+}
+
+#[cfg(feature = "profile")]
+struct Profiler {
+    profiler: Arc<super::profiler::Profiler>,
+    device: Arc<Device>,
+    query_pool: Arc<QueryPool>,
+    entries: Vec<ProfileEntry>,
+}
+
+#[cfg(feature = "profile")]
+impl Profiler {
+    fn new(
+        profiler: Arc<super::profiler::Profiler>,
+        device: Arc<Device>,
+        capacity: usize,
+    ) -> Result<Self> {
+        let query_pool =
+            QueryPool::new(device.clone(), QueryType::Timestamp, (capacity * 2) as u32)?;
+        let entries = Vec::with_capacity(capacity);
+        Ok(Self {
+            profiler,
+            device,
+            query_pool,
+            entries,
+        })
+    }
+    fn begin(&mut self) -> Result<()> {
+        if !self.entries.is_empty() {
+            let mut results = vec![0u64; self.entries.len() * 2];
+            let flags = QueryResultFlags {
+                wait: true,
+                ..QueryResultFlags::default()
+            };
+            self.query_pool
+                .queries_range(0..(self.entries.len() * 2) as u32)
+                .expect("No queries!")
+                .get_results(&mut results, flags)?;
+            let results: &[[u64; 2]] = bytemuck::cast_slice(&results);
+            let period = self.device.physical_device().properties().timestamp_period;
+            for (entry, [before, after]) in self.entries.drain(..).zip(results.iter().copied()) {
+                let duration =
+                    Duration::from_nanos(((after - before) as f64 * period as f64) as u64);
+                match entry {
+                    ProfileEntry::Upload { size } => {
+                        self.profiler.transfer(TransferMetrics {
+                            kind: TransferKind::HostToDevice,
+                            size,
+                            duration,
+                        });
+                    }
+                    ProfileEntry::Compute {
+                        module_id,
+                        module_name,
+                        entry_name,
+                        invocations,
+                    } => {
+                        self.profiler.compute_pass(ComputePassMetrics {
+                            module_id,
+                            module_name,
+                            entry_name,
+                            invocations,
+                            duration,
+                        });
+                    }
+                    ProfileEntry::Download { size } => {
+                        self.profiler.transfer(TransferMetrics {
+                            kind: TransferKind::DeviceToHost,
+                            size,
+                            duration,
+                        });
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+    unsafe fn before(&mut self, entry: &ProfileEntry, builder: &mut UnsafeCommandBufferBuilder) {
+        let index = self.entries.len() * 2;
+        let query = self
+            .query_pool
+            .query(index as u32)
+            .expect("Query out of range!");
+        let stage = match &entry {
+            ProfileEntry::Upload { .. } | ProfileEntry::Download { .. } => PipelineStage::Transfer,
+            ProfileEntry::Compute { .. } => PipelineStage::ComputeShader,
+        };
+        unsafe {
+            builder.write_timestamp(query, stage);
+        }
+    }
+    unsafe fn after(&mut self, entry: ProfileEntry, builder: &mut UnsafeCommandBufferBuilder) {
+        let index = self.entries.len() * 2 + 1;
+        let query = self
+            .query_pool
+            .query(index as u32)
+            .expect("Query out of range!");
+        let stage = match &entry {
+            ProfileEntry::Upload { .. } | ProfileEntry::Download { .. } => PipelineStage::Transfer,
+            ProfileEntry::Compute { .. } => PipelineStage::ComputeShader,
+        };
+        unsafe {
+            builder.write_timestamp(query, stage);
+        }
+        self.entries.push(entry);
+    }
+}
 
 struct Frame {
     queue: Arc<Queue>,
@@ -781,9 +928,12 @@ struct Frame {
     ops: Vec<Op>,
     downloads: Vec<Download>,
     syncs: Vec<SyncFuture>,
+    #[cfg(feature = "profile")]
+    profiler: Option<Profiler>,
 }
 
 impl Frame {
+    const MAX_OPS: usize = 400;
     fn new(queue: Arc<Queue>) -> Result<Self> {
         let device = queue.device();
         let transient = true;
@@ -794,6 +944,10 @@ impl Frame {
         let ops = Vec::new();
         let downloads = Vec::new();
         let syncs = Vec::new();
+        #[cfg(feature = "profile")]
+        let profiler = super::profiler::Profiler::get()
+            .map(|profiler| Profiler::new(profiler?, device.clone(), Self::MAX_OPS))
+            .transpose()?;
         let mut frame = Self {
             queue,
             command_pool,
@@ -803,6 +957,8 @@ impl Frame {
             ops,
             downloads,
             syncs,
+            #[cfg(feature = "profile")]
+            profiler,
         };
         frame.begin()?;
         Ok(frame)
@@ -822,14 +978,18 @@ impl Frame {
             Ok(false)
         }
     }
-    /*fn len(&self) -> usize {
+    fn len(&self) -> usize {
         self.ops.len() + self.downloads.len() + self.syncs.len()
-    }*/
+    }
     fn is_empty(&self) -> bool {
         self.ops.is_empty() && self.downloads.is_empty() && self.syncs.is_empty()
     }
     fn begin(&mut self) -> Result<()> {
         assert!(self.fence.ready()?);
+        #[cfg(feature = "profile")]
+        if let Some(profiler) = self.profiler.as_mut() {
+            profiler.begin()?;
+        }
         self.command_buffer.take();
         unsafe {
             self.command_pool.reset(false)?;
@@ -853,20 +1013,88 @@ impl Frame {
             .builder;
         match op {
             Op::Upload(ref upload) => {
+                #[cfg(feature = "profile")]
+                let entry = if self.profiler.is_some() {
+                    Some(ProfileEntry::Upload {
+                        size: upload.dst.len() as usize,
+                    })
+                } else {
+                    None
+                };
+                #[cfg(feature = "profile")]
+                if let Some((profiler, entry)) = self.profiler.as_mut().zip(entry.as_ref()) {
+                    unsafe {
+                        profiler.before(&entry, builder);
+                    }
+                }
                 unsafe {
                     upload.write(builder);
+                }
+                #[cfg(feature = "profile")]
+                if let Some((profiler, entry)) = self.profiler.as_mut().zip(entry) {
+                    unsafe {
+                        profiler.after(entry, builder);
+                    }
                 }
                 self.ops.push(op);
             }
             Op::Compute(ref compute) => {
+                #[cfg(feature = "profile")]
+                let entry = if self.profiler.is_some() {
+                    Some(ProfileEntry::Compute {
+                        module_id: compute.module_id.0,
+                        module_name: compute.module_name.clone(),
+                        entry_name: compute.entry_name.clone(),
+                        invocations: compute
+                            .work_groups
+                            .iter()
+                            .zip(compute.local_size.iter())
+                            .map(|(wg, ls)| (wg * ls) as usize)
+                            .product(),
+                    })
+                } else {
+                    None
+                };
+                #[cfg(feature = "profile")]
+                if let Some((profiler, entry)) = self.profiler.as_mut().zip(entry.as_ref()) {
+                    unsafe {
+                        profiler.before(&entry, builder);
+                    }
+                }
                 unsafe {
                     compute.write(builder);
+                }
+                #[cfg(feature = "profile")]
+                if let Some((profiler, entry)) = self.profiler.as_mut().zip(entry) {
+                    unsafe {
+                        profiler.after(entry, builder);
+                    }
                 }
                 self.ops.push(op);
             }
             Op::Download(download) => {
+                #[cfg(feature = "profile")]
+                let entry = if self.profiler.is_some() {
+                    Some(ProfileEntry::Download {
+                        size: download.src.len() as usize,
+                    })
+                } else {
+                    None
+                };
+                #[cfg(feature = "profile")]
+                if let Some((profiler, entry)) = self.profiler.as_mut().zip(entry.as_ref()) {
+                    unsafe {
+                        profiler.before(&entry, builder);
+                    }
+                }
                 unsafe {
                     download.write(builder);
+                }
+                #[cfg(feature = "profile")]
+                if let Some((profiler, entry)) = self.profiler.as_mut().zip(entry) {
+                    unsafe {
+                        profiler.after(entry, builder);
+                    }
                 }
                 self.downloads.push(download);
             }
@@ -933,12 +1161,13 @@ impl Runner {
     }
     fn run(&mut self) {
         while !self.done.load(Ordering::Acquire) {
-            if let Ok(op) = self.op_receiver.try_recv() {
-                self.ready
-                    .front_mut()
-                    .expect("No frame!")
-                    .encode(op)
-                    .expect("Frame::encode failed!");
+            {
+                let frame = self.ready.front_mut().expect("No frame!");
+                if frame.len() < Frame::MAX_OPS {
+                    if let Ok(op) = self.op_receiver.try_recv() {
+                        frame.encode(op).expect("Frame::encode failed!");
+                    }
+                }
             }
             if let Some(pending) = self.pending.front_mut() {
                 if pending.poll().expect("Frame::poll failed!") {
