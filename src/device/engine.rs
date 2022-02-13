@@ -1183,15 +1183,3 @@ impl Runner {
         }
     }
 }
-
-#[cfg(any(target_os = "ios", target_os = "macos"))]
-#[cfg(test)]
-mod tests {
-    use crate::result::Result;
-
-    #[test]
-    fn instance() -> Result<()> {
-        super::instance()?;
-        Ok(())
-    }
-}
