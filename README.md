@@ -270,7 +270,7 @@ See the [Neural Network MNIST](examples/neural-network-mnist) example.
 +-----------+------------+---------------+-----------------------+----------------------------------+
 ```
 
-See the [Neural Network](benchmarks/neural-network) benchark.
+See the [Neural Network](benchmarks/neural-network) benchmark.
 
 # Profiling
 Currently requires nightly and feature "profile". Set the AUTOGRAPH_PROFILE environmental variable to 1 or True to produce a table of statistics for compute passes that are executed.
@@ -330,9 +330,9 @@ Will create a file "autograph_profile_summary.txt" like this:
 ### Note
 Specify the profile feature for autograph if it is a dependency as `autograph/profile`.
 
-# Developement Platforms
+# Development Platforms
 1. Ubuntu 18.04 | (Vulkan) NVidia GeForce GTX 1060 with Max-Q Design
-2. Wondows 10 Home | (Vulkan + DX12) AMD RX 580 / (DX12) Microsoft Basic Render Driver.
+2. Windows 10 Home | (Vulkan + DX12) AMD RX 580 / (DX12) Microsoft Basic Render Driver.
 
 Shaders are tested on Github Actions:
 - Windows Server 2019 | (DX12) Microsoft Basic Render Driver.
