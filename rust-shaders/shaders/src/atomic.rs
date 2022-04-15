@@ -2,7 +2,7 @@
 
 use crate::autobind;
 use spirv_std::{
-    // scalar::Scalar,
+    //scalar::Scalar,
     memory::{Scope, Semantics},
     integer::Integer,
     glam::UVec3,

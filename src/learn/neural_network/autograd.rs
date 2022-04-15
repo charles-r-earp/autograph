@@ -770,7 +770,7 @@ impl<D: Dimension, N: Node> VertexBase<D, N> {
     ///
     /// Typically this method should be called in [`Optimizer::update()`](super::optimizer::Optimizer::update()), after one or more backwards passes.
     pub fn take_grad(&mut self) -> Option<FloatTensor<D>> {
-        if let Some(grad) = self.grad.as_mut().map(Arc::get_mut).flatten() {
+        if let Some(grad) = self.grad.as_mut().and_then(Arc::get_mut) {
             assert_eq!(
                 self.value.strides(),
                 bytemuck::cast_slice(self.value.raw_dim().default_strides().slice())
@@ -809,8 +809,7 @@ impl<D: Dimension, N: Node> VertexBase<D, N> {
             )?);
             let input_grad = self
                 .grad()
-                .map(|g| g.try_into_variable().ok())
-                .flatten()
+                .and_then(|g| g.try_into_variable().ok())
                 .map(VariableGradient::into_dyn);
             if let Some(node) = output.node.as_variable_mut() {
                 node.training = self.node.as_variable().unwrap().training;
@@ -1010,7 +1009,7 @@ impl Backward for DotBackward {
                 &mut dw.zeroed_mut()?,
             )?;
         }
-        if let Some(db) = self.bias.as_ref().map(Vertex::grad).flatten() {
+        if let Some(db) = self.bias.as_ref().and_then(Vertex::grad) {
             let mut db = db.lock();
             bias_backward(&mut db.zeroed_mut()?, &dy.view())?;
         }

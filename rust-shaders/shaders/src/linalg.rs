@@ -1,10 +1,9 @@
 use crate::{
     atomic::AtomicF32,
     autobind,
+    util::group_barrier,
 };
 use spirv_std::{
-    memory::{Scope, Semantics},
-    arch::control_barrier,
     glam::UVec3,
 };
 use num_traits::Zero;
@@ -47,12 +46,6 @@ pub struct GemmPushConsts<T> {
     csb: u32,
     rsc: u32,
     csc: u32,
-}
-
-fn group_barrier() {
-    unsafe {
-        control_barrier::<{Scope::Workgroup as u32}, {Scope::Workgroup as u32}, {Semantics::NONE.bits()}>();
-    }
 }
 
 macro_rules! impl_gemm {
