@@ -328,9 +328,8 @@ fn convolution_direct_forward(
         .float_slice(input.as_raw_slice())?
         .float_slice(weight.as_raw_slice())?
         .float_slice_mut(output.as_raw_slice_mut())?
-        .push([ic as u32, ih as u32, iw as u32])?
-        .push([oc as u32, oh as u32, ow as u32])?
-        .push([kh as u32, kw as u32])?;
+        .push([bs as u32, ic as u32, ih as u32, iw as u32])?
+        .push([oc as u32, oh as u32, ow as u32])?;
     let groups_h = oh / 16 + if oh % 16 != 0 { 1 } else { 0 };
     let groups_w = ow / 16 + if ow % 16 != 0 { 1 } else { 0 };
     let global_size = bs * oc * groups_h * groups_w * 256;
@@ -365,14 +364,10 @@ fn convolution_direct_backward_weight(
         .float_slice(input.as_raw_slice())?
         .float_slice_mut(weight_grad.as_raw_slice_mut())?
         .float_slice(output_grad.as_raw_slice())?
-        .push([ic as u32, ih as u32, iw as u32])?
-        .push([oc as u32, oh as u32, ow as u32])?
-        .push([kh as u32, kw as u32])?;
-    let groups_h = oh / 16 + if oh % 16 != 0 { 1 } else { 0 };
-    let groups_w = ow / 16 + if ow % 16 != 0 { 1 } else { 0 };
-    let global_size = bs * oc * groups_h * groups_w * 256;
+        .push([bs as u32, ic as u32, ih as u32, iw as u32])?
+        .push([oc as u32, oh as u32, ow as u32])?;
     unsafe {
-        builder.submit([global_size as u32, 1, 1])?;
+        builder.submit([(oc * ic) as u32, 1, 1])?;
     }
     Ok(())
 }
@@ -391,7 +386,6 @@ impl Forward for Conv {
             if std::env::var("conv_direct").as_deref() == Ok("1") && !input.requires_grad() {
                 let output =
                     convolution_direct_forward(&input.value().view(), &weight.value().view())?;
-
                 #[derive(Autograd)]
                 #[autograph(crate)]
                 struct ConvolutionDirectBackward {
@@ -422,11 +416,13 @@ impl Forward for Conv {
                     }
                 }
 
-                let output =
-                    Variable::from(output.into_dyn()).with_backward(ConvolutionDirectBackward {
+                let mut output = Variable::from(output.into_dyn());
+                if input.requires_grad() || weight.requires_grad() {
+                    output = output.with_backward(ConvolutionDirectBackward {
                         input: input.into_dyn(),
                         weight: weight.into_dyn(),
                     });
+                }
                 return Ok(output);
             }
 
@@ -1050,6 +1046,7 @@ mod tests {
 
     async fn convolution_direct<T: Float>(shape: [usize; 4], conv: &Conv) -> Result<()> {
         let shape = shape.into_dimension();
+        dbg!(shape);
         let x_array = (1..=shape.size())
             .into_iter()
             .map(|x| x as f32)
@@ -1079,7 +1076,6 @@ mod tests {
         Ok(())
     }
 
-    #[ignore]
     #[tokio::test]
     async fn convolution_direct_f32() -> Result<()> {
         convolution_direct::<f32>(
@@ -1090,6 +1086,11 @@ mod tests {
         convolution_direct::<f32>(
             [1, 3, 7, 9],
             &Conv::from_inputs_outputs_kernel(3, 2, [5, 5]),
+        )
+        .await?;
+        convolution_direct::<f32>(
+            [1, 6, 12, 12],
+            &Conv::from_inputs_outputs_kernel(6, 16, [5, 5]),
         )
         .await?;
         Ok(())
@@ -1118,9 +1119,11 @@ mod tests {
             .t()
             .dot(&output_grad)
             .t()
+            .as_standard_layout()
+            .to_owned()
             .into_shape(conv.weight.raw_dim())?
             .into_dimensionality()?
-            .into_owned();
+            .map(|&x| x * (1f32 / bs as f32));
         Ok(weight_grad)
     }
 
@@ -1128,18 +1131,14 @@ mod tests {
         shape: [usize; 4],
         conv: &Conv,
     ) -> Result<()> {
+        dbg!(shape);
         let shape = shape.into_dimension();
         let x_array = (1..=shape.size())
             .into_iter()
             .map(|x| x as f32)
             .collect::<Array1<f32>>()
             .into_shape(shape)?;
-        let w_array = (1..=conv.weight.len())
-            .into_iter()
-            .map(|x| x as f32)
-            .collect::<Array1<f32>>()
-            .into_shape(conv.weight.raw_dim())?
-            .into_dimensionality()?;
+        let w_array = Array::zeros(conv.weight.raw_dim()).into_dimensionality()?;
         let dy_array = convolution_array(&x_array.view(), &w_array.view())?;
         let mut dy_array = Array::zeros(dy_array.raw_dim());
         for (i, dy) in dy_array.iter_mut().enumerate() {
@@ -1162,11 +1161,10 @@ mod tests {
         Ok(())
     }
 
-    #[ignore]
     #[tokio::test]
     async fn convolution_direct_backward_weight_f32() -> Result<()> {
         convolution_direct_backward_weight::<f32>(
-            [1, 1, 8, 8],
+            [1, 1, 5, 7],
             &Conv::from_inputs_outputs_kernel(1, 1, [5, 5]),
         )
         .await?;
