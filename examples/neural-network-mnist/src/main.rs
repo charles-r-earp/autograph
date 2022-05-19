@@ -141,7 +141,7 @@ async fn main() -> Result<()> {
 
     // Create a device.
     let device = Device::new()?;
-    //println!("{:#?}", device.info());
+    println!("{:#?}", device);
 
 
     fn save_path(name: &str, save: bool) -> Option<PathBuf> {

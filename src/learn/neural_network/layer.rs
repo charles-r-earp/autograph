@@ -1,19 +1,23 @@
 use super::{
-    autograd::{Autograd, Backward, Parameter, ParameterD, Variable, VariableD, VariableGradientD},
+    autograd::{
+        Autograd, Backward, Parameter, ParameterD, Variable, VariableD, VariableGradient,
+        VariableGradientD,
+    },
     optimizer::Optimizer,
 };
 use crate::{
     buffer::{float::FloatBuffer, Buffer},
     device::Device,
-    linalg::DotBias,
-    ops::{Im2Col, KernelArgs, KernelKind},
+    linalg::{Dot, DotAcc, DotBias},
+    ops::{Col2Im, Im2Col, KernelArgs, KernelKind},
     result::Result,
     rust_shaders,
     scalar::FloatType,
     tensor::{
         float::{
-            FloatArcTensor, FloatArcTensorD, FloatTensor, FloatTensor4, FloatTensorD,
-            FloatTensorView4, FloatTensorViewD, FloatTensorViewMut4, FloatTensorViewMutD,
+            FloatArcTensor, FloatArcTensor2, FloatArcTensorD, FloatTensor, FloatTensor4,
+            FloatTensorD, FloatTensorView4, FloatTensorViewD, FloatTensorViewMut4,
+            FloatTensorViewMutD,
         },
         Tensor, TensorD,
     },
@@ -339,6 +343,39 @@ fn convolution_direct_forward(
     Ok(output)
 }
 
+fn convolution_direct_backward(
+    input_grad: &mut FloatTensorViewMut4,
+    weight: &FloatTensorView4,
+    output_grad: &FloatTensorView4,
+) -> Result<()> {
+    assert!(input_grad.is_standard_layout());
+    assert!(weight.is_standard_layout());
+    assert!(input_grad.float_type() == FloatType::F32);
+    assert!(weight.float_type() == FloatType::F32);
+    assert!(output_grad.float_type() == FloatType::F32);
+    assert!(output_grad.is_standard_layout());
+
+    let (bs, ic, ih, iw) = input_grad.dim();
+    let (oc, _ic, kh, kw) = weight.dim();
+    let (_bs, _oc, oh, ow) = output_grad.dim();
+    assert_eq!(bs, _bs);
+    assert_eq!(ic, _ic);
+    assert_eq!(oc, _oc);
+    assert_eq!([kh, kw], [5, 5]);
+    let entry = "kernel::conv_direct_backward_5x5_f32";
+    let builder = rust_shaders::core()?
+        .compute_pass(entry)?
+        .float_slice_mut(input_grad.as_raw_slice_mut())?
+        .float_slice(weight.as_raw_slice())?
+        .float_slice(output_grad.as_raw_slice())?
+        .push([bs as u32, ic as u32, ih as u32, iw as u32])?
+        .push([oc as u32, oh as u32, ow as u32])?;
+    unsafe {
+        builder.submit([(bs * oc * ic) as u32, 1, 1])?;
+    }
+    Ok(())
+}
+
 fn convolution_direct_backward_weight(
     input: &FloatTensorView4,
     weight_grad: &mut FloatTensorViewMut4,
@@ -372,6 +409,101 @@ fn convolution_direct_backward_weight(
     Ok(())
 }
 
+#[derive(Autograd)]
+#[autograph(crate)]
+struct ConvolutionDirectBackward {
+    //#[autograph(vertex)]
+    //input: VariableD,
+    input: Option<FloatArcTensorD>,
+    #[autograph(optional_gradient)]
+    input_grad: Option<VariableGradientD>,
+    #[autograph(vertex)]
+    weight: ParameterD,
+}
+
+impl Backward for ConvolutionDirectBackward {
+    fn backward(&self, output_grad: FloatTensorD) -> Result<()> {
+        let output_grad = output_grad.into_dimensionality()?;
+        if let Some(weight_grad) = self.weight.grad() {
+            let input = self
+                .input
+                .as_ref()
+                .expect("input required for weight_grad!")
+                .view()
+                .into_dimensionality()?;
+            let mut weight_grad = weight_grad.lock();
+            let mut weight_grad = weight_grad.zeroed_mut()?.into_dimensionality()?;
+            convolution_direct_backward_weight(&input, &mut weight_grad, &output_grad.view())?;
+        }
+        if let Some(input_grad) = self.input_grad.as_ref() {
+            let weight = self.weight.value().view().into_dimensionality()?;
+            let mut input_grad = input_grad.lock();
+            let mut input_grad = input_grad.zeroed_mut()?.into_dimensionality()?;
+            if false {
+                convolution_direct_backward(&mut input_grad, &weight, &output_grad.view())?;
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Autograd)]
+#[autograph(crate)]
+struct ConvolutionGemmBackward {
+    #[autograph(optional_gradient)]
+    input_grad: Option<VariableGradientD>,
+    input_im2col: Option<FloatArcTensor2>,
+    #[autograph(vertex)]
+    weight: ParameterD,
+    strides: IxDyn,
+    padding: IxDyn,
+    dilation: IxDyn,
+}
+
+impl Backward for ConvolutionGemmBackward {
+    fn backward(&self, output_grad: FloatTensorD) -> Result<()> {
+        let output_grad = output_grad.into_dimensionality()?;
+        let (bs, oc, oh, ow) = output_grad.dim();
+        let output_grad = output_grad
+            .permuted_axes([0, 2, 3, 1])
+            .into_standard_layout()?
+            .into_shape([bs * oh * ow, oc])?;
+        use std::convert::TryInto;
+        let [_, ic, kh, kw]: [usize; 4] = self.weight.shape().try_into().unwrap();
+        let kernel = [kh, kw].into_dimension();
+        let args = KernelArgs {
+            strides: Dim::from_dimension(&self.strides).unwrap(),
+            padding: Dim::from_dimension(&self.padding).unwrap(),
+            dilation: Dim::from_dimension(&self.dilation).unwrap(),
+        };
+        if let Some(weight_grad) = self.weight.grad() {
+            let input_im2col = self
+                .input_im2col
+                .as_ref()
+                .expect("im2col required for computing weight_grad!");
+            let mut weight_grad = weight_grad.lock();
+            let weight_grad = weight_grad.zeroed_mut()?.into_shape([oc, ic * kh * kw])?;
+            input_im2col.t().dot_acc(
+                1f32,
+                &output_grad.view(),
+                &mut weight_grad.reversed_axes(),
+            )?;
+        }
+        if let Some(input_grad) = self.input_grad.as_ref() {
+            let weight = self.weight.value().view().into_shape([oc, ic * kh * kw])?;
+            let ih = input_grad.shape()[2];
+            let iw = input_grad.shape()[3];
+            let shape = [ih, iw].into_dimension();
+            let grad = output_grad
+                .dot(&weight)?
+                .col2im(&shape, &kernel, KernelKind::Convolution, &args)?
+                .into_dyn();
+            input_grad.lock().add_assign(grad)?;
+        }
+        Ok(())
+    }
+}
+
 impl Forward for Conv {
     fn forward(&self, input: VariableD) -> Result<VariableD> {
         smol::block_on(async {
@@ -382,75 +514,123 @@ impl Forward for Conv {
                 .into_dimensionality::<Ix4>()?;
             let (bs, ic, ih, iw) = input.dim();
             let weight = self.weight.clone().into_dimensionality::<Ix4>()?;
+            let (oc, _ic, kh, kw) = weight.dim();
+            debug_assert_eq!(_ic, ic);
+            if std::env::var("conv_direct").as_deref() == Ok("1") {
+                let output =
+                    convolution_direct_forward(&input.value().view(), &weight.value().view())?;
+                let mut output = Variable::from(output.into_dyn()).with_training(input.training());
+                if input.requires_grad() || (weight.requires_grad() && input.training()) {
+                    // TODO: Fix this
+                    let input_value = if weight.requires_grad() && input.training() {
+                        Some(input.value().view().into_shared()?.into_dyn())
+                    } else {
+                        None
+                    };
+                    output = output.with_backward(ConvolutionDirectBackward {
+                        input: input_value,
+                        input_grad: input.grad().map(VariableGradient::into_dyn),
+                        weight: weight.into_dyn(),
+                    });
+                }
+                Ok(output)
+            } else {
+                let weight = weight.into_shape([oc, ic * kh * kw])?;
+                let kernel = [kh, kw].into_dimension();
+                let args = KernelArgs {
+                    strides: Dim::from_dimension(&self.strides).unwrap(),
+                    padding: Dim::from_dimension(&self.padding).unwrap(),
+                    dilation: Dim::from_dimension(&self.dilation).unwrap(),
+                };
+                let (oh, ow) = args.im2col_shape([ih, iw], &kernel).into_pattern();
+                let input_im2col = input
+                    .value()
+                    .im2col(&kernel, KernelKind::Convolution, &args)?
+                    .into_shared()?;
+                let output = input_im2col
+                    .dot(&weight.value().t())?
+                    .into_shape([bs, oh, ow, oc])?
+                    .permuted_axes([0, 3, 1, 2])
+                    .into_standard_layout()?
+                    .into_dyn();
+                let mut output = Variable::from(output).with_training(input.training());
+                if input.requires_grad() || (weight.requires_grad() && input.training()) {
+                    let input_im2col = if weight.requires_grad() && input.training() {
+                        Some(input_im2col)
+                    } else {
+                        None
+                    };
+                    output = output.with_backward(ConvolutionGemmBackward {
+                        input_grad: input.grad().map(VariableGradient::into_dyn),
+                        input_im2col,
+                        weight: self.weight.clone(),
+                        strides: self.strides.clone(),
+                        padding: self.padding.clone(),
+                        dilation: self.dilation.clone(),
+                    });
+                }
+                Ok(output)
+            }
+        })
+    }
+}
 
+/*
+impl Forward for Conv {
+    fn forward(&self, input: VariableD) -> Result<VariableD> {
+        smol::block_on(async {
+            // TODO: convert input to float type of weight
+            let input = input
+                .into_device(self.weight.device())
+                .await?
+                .into_dimensionality::<Ix4>()?;
+            let (bs, ic, ih, iw) = input.dim();
+            let weight = self.weight.clone().into_dimensionality::<Ix4>()?;
             if std::env::var("conv_direct").as_deref() == Ok("1") && !input.requires_grad() {
                 let output =
                     convolution_direct_forward(&input.value().view(), &weight.value().view())?;
-                #[derive(Autograd)]
-                #[autograph(crate)]
-                struct ConvolutionDirectBackward {
-                    #[autograph(vertex)]
-                    input: VariableD,
-                    #[autograph(vertex)]
-                    weight: ParameterD,
-                }
-
-                impl Backward for ConvolutionDirectBackward {
-                    fn backward(&self, output_grad: FloatTensorD) -> Result<()> {
-                        let output_grad = output_grad.into_dimensionality()?;
-                        if let Some(weight_grad) = self.weight.grad() {
-                            let input = self.input.value().view().into_dimensionality()?;
-                            let mut weight_grad = weight_grad.lock();
-                            let mut weight_grad =
-                                weight_grad.zeroed_mut()?.into_dimensionality()?;
-                            convolution_direct_backward_weight(
-                                &input,
-                                &mut weight_grad,
-                                &output_grad.view(),
-                            )?;
-                        }
-                        if let Some(_input_grad) = self.input.grad() {
-                            todo!()
-                        }
-                        Ok(())
-                    }
-                }
-
-                let mut output = Variable::from(output.into_dyn());
+                let mut output = Variable::from(output.into_dyn()).with_training(input.training());
                 if input.requires_grad() || weight.requires_grad() {
                     output = output.with_backward(ConvolutionDirectBackward {
                         input: input.into_dyn(),
                         weight: weight.into_dyn(),
                     });
                 }
-                return Ok(output);
+                Ok(output)
+            } else {
+                let (oc, _ic, kh, kw) = weight.dim();
+                debug_assert_eq!(_ic, ic);
+                let weight = weight.into_shape([oc, ic * kh * kw])?;
+                let kernel = [kh, kw].into_dimension();
+                let args = KernelArgs {
+                    strides: Dim::from_dimension(&self.strides).unwrap(),
+                    padding: Dim::from_dimension(&self.padding).unwrap(),
+                    dilation: Dim::from_dimension(&self.dilation).unwrap(),
+                };
+                let (oh, ow) = args.im2col_shape([ih, iw], &kernel).into_pattern();
+                let input_im2col = input.value().im2col(&kernel, KernelKind::Convolution, &args)?.into_shared()?;
+                let output = input_im2col.dot(&weight.value().t())?
+                    .into_shape([bs, oh, ow, oc])?
+                    .permuted_axes([0, 3, 1, 2])
+                    .to_standard_layout_shared()?
+                    .into_dyn();
+                let mut output = Variable::from(output).with_training(input.training());
+                if input.requires_grad() || weight.requires_grad() {
+                    output = output.with_backward(ConvolutionGemmBackward {
+                        input: input.into_dyn(),
+                        input_im2col: Some(input_im2col),
+                        weight: self.weight.clone(),
+                        strides: self.strides.clone(),
+                        padding: self.padding.clone(),
+                        dilation: self.dilation.clone(),
+                    });
+                }
+                Ok(output)
             }
-
-            let (oc, _ic, kh, kw) = weight.dim();
-            debug_assert_eq!(_ic, ic);
-            let weight = weight.into_shape([oc, ic * kh * kw])?;
-            let bias = self
-                .bias
-                .clone()
-                .map(Parameter::into_dimensionality)
-                .transpose()?;
-            let kernel = [kh, kw].into_dimension();
-            let args = KernelArgs {
-                strides: Dim::from_dimension(&self.strides).unwrap(),
-                padding: Dim::from_dimension(&self.padding).unwrap(),
-                dilation: Dim::from_dimension(&self.dilation).unwrap(),
-            };
-            let (oh, ow) = args.im2col_shape([ih, iw], &kernel).into_pattern();
-            let output = input.im2col(&kernel, KernelKind::Convolution, &args)?;
-            let output = output.dot_bias(&weight.t(), bias.as_ref())?;
-            let output = output
-                .into_shape([bs, oh, ow, oc])?
-                .nhwc_into_nchw()?
-                .into_dyn();
-            Ok(output)
         })
     }
 }
+*/
 
 /// Dense / fully connected layer.
 #[derive(Layer, Clone, Debug, Serialize, Deserialize)]

@@ -963,6 +963,7 @@ impl Backward for NHWCIntoNCHWBackward {
 }
 
 impl Variable4 {
+    /*
     pub(super) fn nhwc_into_nchw(self) -> Result<Self> {
         if !self.is_standard_layout() {
             bail!("Must be standard_layout!");
@@ -979,6 +980,7 @@ impl Variable4 {
         }
         Ok(output)
     }
+    */
 }
 
 #[derive(Autograd)]
