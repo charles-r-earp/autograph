@@ -1184,8 +1184,7 @@ fn cross_entropy_loss(input: &FloatTensorView2, target: &FloatTensorView2) -> Re
     let input = input.as_standard_layout()?;
     let target = target.as_standard_layout()?;
     let name = format!("criterion::cross_entropy_loss_{}", float_type.as_str());
-    let builder = rust_shaders::core()?
-        .compute_pass(name)?
+    let builder = rust_shaders::compute_pass(name)?
         .float_slice(input.as_raw_slice())?
         .float_slice(target.as_raw_slice())?
         .float_slice_mut(output.as_raw_slice_mut())?
@@ -1213,16 +1212,15 @@ fn cross_entropy_loss_backward(
         bail!("Not yet implemented!");
     }
 
-    let builder = rust_shaders::core()?
-        .compute_pass(&format!(
-            "criterion::cross_entropy_loss_backward_{}",
-            float_type.as_str()
-        ))?
-        .float_slice(input_slice.as_slice())?
-        .float_slice_mut(input_grad.as_raw_slice_mut())?
-        .float_slice(target_slice.as_slice())?
-        .float_slice(output_grad_slice.as_slice())?
-        .push([n, nclasses])?;
+    let builder = rust_shaders::compute_pass(&format!(
+        "criterion::cross_entropy_loss_backward_{}",
+        float_type.as_str()
+    ))?
+    .float_slice(input_slice.as_slice())?
+    .float_slice_mut(input_grad.as_raw_slice_mut())?
+    .float_slice(target_slice.as_slice())?
+    .float_slice(output_grad_slice.as_slice())?
+    .push([n, nclasses])?;
     unsafe { builder.submit([n, 1, 1]) }
 }
 

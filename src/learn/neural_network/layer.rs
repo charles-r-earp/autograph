@@ -327,8 +327,7 @@ fn convolution_direct_forward(
         unsafe { FloatTensor::alloc(FloatType::F32, input.device(), [bs, oc, oh, ow])? };
     assert_eq!([kh, kw], [5, 5]);
     let entry = "kernel::conv_direct_5x5_f32";
-    let builder = rust_shaders::core()?
-        .compute_pass(entry)?
+    let builder = rust_shaders::compute_pass(entry)?
         .float_slice(input.as_raw_slice())?
         .float_slice(weight.as_raw_slice())?
         .float_slice_mut(output.as_raw_slice_mut())?
@@ -363,8 +362,7 @@ fn convolution_direct_backward(
     assert_eq!(oc, _oc);
     assert_eq!([kh, kw], [5, 5]);
     let entry = "kernel::conv_direct_backward_5x5_f32";
-    let builder = rust_shaders::core()?
-        .compute_pass(entry)?
+    let builder = rust_shaders::compute_pass(entry)?
         .float_slice_mut(input_grad.as_raw_slice_mut())?
         .float_slice(weight.as_raw_slice())?
         .float_slice(output_grad.as_raw_slice())?
@@ -396,8 +394,7 @@ fn convolution_direct_backward_weight(
     assert_eq!(oc, _oc);
     assert_eq!([kh, kw], [5, 5]);
     let entry = "kernel::conv_direct_backward_weight_5x5_f32";
-    let builder = rust_shaders::core()?
-        .compute_pass(entry)?
+    let builder = rust_shaders::compute_pass(entry)?
         .float_slice(input.as_raw_slice())?
         .float_slice_mut(weight_grad.as_raw_slice_mut())?
         .float_slice(output_grad.as_raw_slice())?
@@ -727,11 +724,11 @@ fn relu(input: &FloatTensorViewD) -> Result<FloatTensorD> {
         }
         FloatType::F32 => n,
     };
-    let builder = rust_shaders::core()?
-        .compute_pass(&format!("activation::relu_{}", float_type.as_str(),))?
-        .float_slice(input.as_raw_slice())?
-        .float_slice_mut(output.as_raw_slice_mut())?
-        .push(n)?;
+    let builder =
+        rust_shaders::compute_pass(&format!("activation::relu_{}", float_type.as_str(),))?
+            .float_slice(input.as_raw_slice())?
+            .float_slice_mut(output.as_raw_slice_mut())?
+            .push(n)?;
     unsafe {
         builder.submit([ws, 1, 1])?;
     }
@@ -760,15 +757,14 @@ fn relu_backward(
         FloatType::F32 => n,
     };
     let output_grad_slice = output_grad.to_slice()?;
-    let builder = rust_shaders::core()?
-        .compute_pass(&format!(
-            "activation::relu_backward_{}",
-            float_type.as_str(),
-        ))?
-        .float_slice(input.to_slice()?.as_slice())?
-        .float_slice_mut(input_grad.as_raw_slice_mut())?
-        .float_slice(output_grad_slice.as_slice())?
-        .push(n)?;
+    let builder = rust_shaders::compute_pass(&format!(
+        "activation::relu_backward_{}",
+        float_type.as_str(),
+    ))?
+    .float_slice(input.to_slice()?.as_slice())?
+    .float_slice_mut(input_grad.as_raw_slice_mut())?
+    .float_slice(output_grad_slice.as_slice())?
+    .push(n)?;
     unsafe { builder.submit([ws, 1, 1]) }
 }
 
@@ -1035,14 +1031,13 @@ fn pool_forward(
                 None
             };
             let bs = bs * ic;
-            let builder = rust_shaders::core()?
-                .compute_pass(&format!(
-                    "pool::{}_pool{}_2d_{}",
-                    kind.as_str(),
-                    indices.as_ref().map_or("", |_| "_indices"),
-                    float_type.as_str()
-                ))?
-                .float_slice(input.as_raw_slice())?;
+            let builder = rust_shaders::compute_pass(&format!(
+                "pool::{}_pool{}_2d_{}",
+                kind.as_str(),
+                indices.as_ref().map_or("", |_| "_indices"),
+                float_type.as_str()
+            ))?
+            .float_slice(input.as_raw_slice())?;
             let builder = if let Some(indices) = indices.as_mut() {
                 builder.slice_mut(indices.as_raw_slice_mut())?
             } else {
@@ -1086,7 +1081,7 @@ fn pool_backward(
             let (bs, ic, ih, iw) = input_grad.view().into_dimensionality::<Ix4>()?.dim();
             let oh = output_grad.shape()[2];
             let ow = output_grad.shape()[3];
-            let builder = rust_shaders::core()?.compute_pass(&format!(
+            let builder = rust_shaders::compute_pass(&format!(
                 "pool::{}_pool_2d_backward{}_{}",
                 kind.as_str(),
                 if atomic { "_atomic" } else { "" },

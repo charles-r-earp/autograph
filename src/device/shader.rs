@@ -786,7 +786,7 @@ mod tests {
         Module::from_spirv(
             include_bytes!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
-                "/src/shaders/rust/core.spv"
+                "/src/shaders/rust/fill::fill_u32.spv"
             ))
             .as_ref(),
         )?;

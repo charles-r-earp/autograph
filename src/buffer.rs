@@ -78,35 +78,35 @@ impl<T, S: Data<Elem = T>> BufferBase<S> {
         T: Scalar,
         S: DataMut,
     {
+        use crate::rust_shaders::compute_pass;
         let n = self.len() as u32;
         let size = size_of::<T>();
-        let core = crate::rust_shaders::core()?;
         let (builder, gs) = match size {
             1 => {
-                let builder = core.compute_pass("fill::fill_u32")?;
+                let builder = compute_pass("fill::fill_u32")?;
                 let n = if n % 4 == 0 { n / 4 } else { n / 4 + 1 };
                 let builder = builder.push(n)?.push([elem; 4])?;
                 (builder, n)
             }
             2 => {
-                let builder = core.compute_pass("fill::fill_u32")?;
+                let builder = compute_pass("fill::fill_u32")?;
                 let n = if n % 2 == 0 { n / 2 } else { n / 2 + 1 };
                 let builder = builder.push(n)?.push([elem; 2])?;
                 (builder, n)
             }
             4 if n % 2 == 0 => {
-                let builder = core.compute_pass("fill::fill_u32x2")?;
+                let builder = compute_pass("fill::fill_u32x2")?;
                 let n = n / 2;
                 let builder = builder.push(n)?.push([elem; 2])?;
                 (builder, n)
             }
             4 => {
-                let builder = core.compute_pass("fill::fill_u32")?;
+                let builder = compute_pass("fill::fill_u32")?;
                 let builder = builder.push(n)?.push(elem)?;
                 (builder, n)
             }
             8 => {
-                let builder = core.compute_pass("fill::fill_u32x2")?;
+                let builder = compute_pass("fill::fill_u32x2")?;
                 let builder = builder.push(n)?.push(elem)?;
                 (builder, n)
             }

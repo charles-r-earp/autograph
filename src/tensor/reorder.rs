@@ -46,8 +46,7 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
             };
             let mut output = unsafe { Tensor::alloc(self.device(), self.raw_dim())? };
             let name = format!("reorder::as_standard_layout_{}d_{}", ndim, ty);
-            let mut builder = rust_shaders::core()?
-                .compute_pass(&name)?
+            let mut builder = rust_shaders::compute_pass(&name)?
                 .slice(self.as_raw_slice())?
                 .slice_mut(output.as_raw_slice_mut())?;
             for (d, s) in self
@@ -114,7 +113,7 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
             T::scalar_name(),
             T2::scalar_name(),
         );
-        let builder = rust_shaders::core()?.compute_pass(entry)?;
+        let builder = rust_shaders::compute_pass(entry)?;
         let (builder, global_size) = match (
             (self.shape(), self.strides()),
             (output.shape(), output.strides()),

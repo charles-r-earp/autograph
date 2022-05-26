@@ -77,11 +77,9 @@ fn gemm_impl<T: Scalar>(
         wpt,
         wpt,
     );
-    let builder = crate::rust_shaders::core()?.compute_pass(entry)?;
-
+    let builder = crate::rust_shaders::compute_pass(entry)?;
     if splitk.is_some() {
-        let builder = crate::rust_shaders::core()?
-            .compute_pass("linalg::c_beta_f32")?
+        let builder = crate::rust_shaders::compute_pass("linalg::c_beta_f32")?
             .slice_mut(c.as_raw_slice_mut())?
             .push(m * n)?
             .push(beta)?;

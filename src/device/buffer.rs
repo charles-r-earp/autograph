@@ -348,8 +348,7 @@ impl<T, S: Data<Elem = T>> DeviceBufferBase<S> {
             len: slice.len * size_of::<T>(),
             _m: PhantomData::default(),
         };
-        let builder = rust_shaders::core()?
-            .compute_pass("copy::copy_u32")?
+        let builder = rust_shaders::compute_pass("copy::copy_u32")?
             .slice(rhs.into())?
             .slice_mut(lhs.into())?
             .push(n as u32)?;
@@ -909,8 +908,7 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
                 }
             };*/
             let entry = format!("cast::scale_{}_{}", T::scalar_name(), T2::scalar_name());
-            let builder = rust_shaders::core()?
-                .compute_pass(entry)?
+            let builder = rust_shaders::compute_pass(entry)?
                 .slice(self.as_slice())?
                 .slice_mut(output.as_slice_mut())?
                 .push(n)?;

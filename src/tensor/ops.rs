@@ -49,22 +49,21 @@ impl<T: Float, S: Data<Elem = T>> Im2Col<Ix2> for TensorBase<S, Ix4> {
         let dilation = &args.dilation;
         let (oh, ow) = args.im2col_shape([ih, iw], kernel).into_pattern();
         let mut output = unsafe { Tensor::alloc(input.device(), [bs * oh * ow, ic * kh * kw])? };
-        let builder = rust_shaders::core()?
-            .compute_pass(&format!(
-                "kernel::im2col_2d_{}_{}",
-                kind.as_str(),
-                T::scalar_name()
-            ))?
-            .slice(input.as_raw_slice())?
-            .slice_mut(output.as_raw_slice_mut())?
-            .push(bs as u32)?
-            .push(ic as u32)?
-            .push([ih as u32, iw as u32])?
-            .push([oh as u32, ow as u32])?
-            .push([kh as u32, kw as u32])?
-            .push([strides[0] as u32, strides[1] as u32])?
-            .push([padding[0] as u32, padding[1] as u32])?
-            .push([dilation[0] as u32, dilation[1] as u32])?;
+        let builder = rust_shaders::compute_pass(&format!(
+            "kernel::im2col_2d_{}_{}",
+            kind.as_str(),
+            T::scalar_name()
+        ))?
+        .slice(input.as_raw_slice())?
+        .slice_mut(output.as_raw_slice_mut())?
+        .push(bs as u32)?
+        .push(ic as u32)?
+        .push([ih as u32, iw as u32])?
+        .push([oh as u32, ow as u32])?
+        .push([kh as u32, kw as u32])?
+        .push([strides[0] as u32, strides[1] as u32])?
+        .push([padding[0] as u32, padding[1] as u32])?
+        .push([dilation[0] as u32, dilation[1] as u32])?;
         let work_size = {
             //let oh = (oh / 16) * 16 + if oh % 16 != 0 { 16 } else { 0 };
             //let ow = (ow / 16) * 16 + if ow % 16 != 0 { 16 } else { 0 };
@@ -111,25 +110,24 @@ impl<T: Float, S: Data<Elem = T>> Col2Im<Ix2> for TensorBase<S, Ix2> {
         let (s_bez_h, d_bez_h, gcd_h) = eclid_gcd(strides[0], dilation[0]);
         let (s_bez_w, d_bez_w, gcd_w) = eclid_gcd(strides[1], dilation[1]);
         let mut output = unsafe { Tensor::alloc(input.device(), [bs, ic, oh, ow])? };
-        let builder = rust_shaders::core()?
-            .compute_pass(&format!(
-                "kernel::col2im_2d_{}_{}",
-                kind.as_str(),
-                T::scalar_name()
-            ))?
-            .slice(input.as_raw_slice())?
-            .slice_mut(output.as_raw_slice_mut())?
-            .push(bs as u32)?
-            .push(ic as u32)?
-            .push([ih as u32, iw as u32])?
-            .push([oh as u32, ow as u32])?
-            .push([kh as u32, kw as u32])?
-            .push([strides[0] as u32, strides[1] as u32])?
-            .push([padding[0] as u32, padding[1] as u32])?
-            .push([dilation[0] as u32, dilation[1] as u32])?
-            .push([s_bez_h as u32, s_bez_w as u32])?
-            .push([d_bez_h as u32, d_bez_w as u32])?
-            .push([gcd_h as u32, gcd_w as u32])?;
+        let builder = rust_shaders::compute_pass(&format!(
+            "kernel::col2im_2d_{}_{}",
+            kind.as_str(),
+            T::scalar_name()
+        ))?
+        .slice(input.as_raw_slice())?
+        .slice_mut(output.as_raw_slice_mut())?
+        .push(bs as u32)?
+        .push(ic as u32)?
+        .push([ih as u32, iw as u32])?
+        .push([oh as u32, ow as u32])?
+        .push([kh as u32, kw as u32])?
+        .push([strides[0] as u32, strides[1] as u32])?
+        .push([padding[0] as u32, padding[1] as u32])?
+        .push([dilation[0] as u32, dilation[1] as u32])?
+        .push([s_bez_h as u32, s_bez_w as u32])?
+        .push([d_bez_h as u32, d_bez_w as u32])?
+        .push([gcd_h as u32, gcd_w as u32])?;
         let h = (oh - 1) / gcd_h + 1;
         let w = (ow - 1) / gcd_w + 1;
         unsafe {

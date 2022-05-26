@@ -527,8 +527,7 @@ mod tests {
         let x = Buffer::from(x_vec).into_device(device.clone()).await?;
         let mut y = Buffer::<T>::zeros(device.clone(), 1)?;
         let entry = format!("atomic::tests::{}", entry);
-        let builder = rust_shaders::core()?
-            .compute_pass(entry)?
+        let builder = rust_shaders::compute_pass(entry)?
             .slice(x.as_slice())?
             .slice_mut(y.as_slice_mut())?;
         unsafe {

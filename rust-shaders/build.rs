@@ -1,4 +1,4 @@
-use spirv_builder::{SpirvBuilder, ModuleResult, Capability};
+use spirv_builder::{SpirvBuilder, Capability, MetadataPrintout};
 use std::{
     error::Error,
     path::PathBuf,
@@ -52,20 +52,19 @@ fn validate_spirv(name: &str, spirv: &[u32]) -> Result<(), Box<dyn Error>> {
 fn main() -> Result<(), Box<dyn Error>> {
     let result = SpirvBuilder::new("shaders", "spirv-unknown-vulkan1.1")
         .capability(Capability::VulkanMemoryModelDeviceScopeKHR)
+        .multimodule(true)
+        .print_metadata(MetadataPrintout::DependencyOnly)
         .build()?;
-    match result.module {
-        ModuleResult::SingleModule(path) => {
-            let rust_path = PathBuf::from("../")
-                .join("src")
-                .join("shaders")
-                .join("rust");
-            validate_spirv("core", bytemuck::cast_slice(&fs::read(&path)?))?;
-            fs::create_dir_all(&rust_path)?;
-            let rust_shader_path = rust_path.join("core.spv");
-            println!("cargo:rerun-if-changed={}", rust_shader_path.to_str().unwrap());
-            fs::copy(path, rust_shader_path)?;
-        }
-        e => unreachable!("{:?}", &e),
+    for (name, path) in result.module.unwrap_multi() {
+        let rust_path = PathBuf::from("../")
+            .join("src")
+            .join("shaders")
+            .join("rust");
+        validate_spirv(&name, bytemuck::cast_slice(&fs::read(&path)?))?;
+        fs::create_dir_all(&rust_path)?;
+        let rust_shader_path = rust_path.join(&name).with_extension("spv");
+        println!("cargo:rerun-if-changed={}", rust_shader_path.to_str().unwrap());
+        fs::copy(path, rust_shader_path)?;
     }
     Ok(())
 }
