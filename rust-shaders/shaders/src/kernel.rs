@@ -3,7 +3,6 @@ use crate::{
     autobind,
     half::bf16x2,
     util::{Load, Store, group_barrier},
-    atomic::AtomicF32,
 };
 use crunchy::unroll;
 
@@ -446,6 +445,7 @@ pub fn conv_direct_5x5_f32(
     }}
 }
 
+/*
 #[autobind]
 #[spirv(compute(threads(1, 256)))]
 pub fn conv_direct_backward_5x5_f32(
@@ -526,18 +526,95 @@ pub fn conv_direct_backward_5x5_f32(
         }}
     }}
 }
+*/
 
 #[autobind]
 #[spirv(compute(threads(1, 256)))]
+pub fn conv_direct_backward_5x5_f32(
+    #[spirv(workgroup_id)]
+    group_id: UVec3,
+    #[spirv(local_invocation_id)]
+    local_id: UVec3,
+    #[spirv(storage_buffer)] dx: &mut [[[f32; 5]; 5]],
+    #[spirv(storage_buffer)] w: &[[[f32; 5]; 5]],
+    #[spirv(workgroup)] dy_tile: &mut [[f32; 32 + 1]; 8],
+    #[spirv(storage_buffer)] dy: &[f32],
+    #[spirv(push_constant)] push_consts: &ConvDirect2dPushConsts,
+) {
+    let ic = push_consts.ic as usize;
+    let ih = push_consts.ih as usize;
+    let iw = push_consts.iw as usize;
+    let oc = push_consts.oc as usize;
+    let oh = push_consts.oh as usize;
+    let ow = push_consts.ow as usize;
+    //let kh = 5;
+    //let kw = 5;
+
+    let group_id = group_id.x as usize;
+    let group_b = group_id / ic;
+    let group_ic = group_id % ic;
+
+    let local_id = local_id.y as usize;
+    let local_row = local_id / 32;
+    let local_col = local_id % 32;
+
+    let x_idx = group_b * ic * ih * iw + group_ic * ih * iw;
+
+    let mut dx_micro = <[[f32; 5]; 5]>::default();
+    let mut w_micro = <[[f32; 5]; 5]>::default();
+    let mut dy_micro: f32;
+
+    let mut row = 0;
+    while row < oh {
+        let mut col = 0;
+        while col < ow {
+            let global_row = row + local_row;
+            let global_col = col + local_col;
+            for oc_idx in 0 .. oc {
+                unroll! { for ki in 0 .. 5 {
+                    unroll! { for kj in 0 .. 5 {
+                        w_micro[ki][kj] = w[oc_idx * ic + group_ic][ki][kj];
+                    }}
+                }}
+                group_barrier();
+                dy_tile[local_row][local_col] = if global_row < oh && global_col < ow {
+                    dy[group_b * oc * oh * ow + oc_idx * oh * ow + global_row * ow + global_col]
+                } else {
+                    0.
+                };
+                group_barrier();
+                dy_micro = dy_tile[local_row][local_col];
+                unroll! { for ki in 0 .. 5 {
+                    unroll! { for kj in 0 .. 5 {
+                        dx_micro[ki][kj] += dy_micro * w_micro[ki][kj];
+                    }}
+                }}
+            }
+            unroll! { for ki in 0 .. 5 {
+                unroll! { for kj in 0 .. 5 {
+                    let x_row = global_row + ki;
+                    let x_col = global_col + kj;
+                    if x_row < ih && x_col < iw {
+                        dx[x_idx + x_row * iw + x_col][ki][kj] = dx_micro[ki][kj];
+                    }
+                }}
+            }}
+            col += 32;
+        }
+        row += 8;
+    }
+}
+
+#[autobind]
+#[spirv(compute(threads(16, 16, 1)))]
 pub fn conv_direct_backward_weight_5x5_f32(
     #[spirv(workgroup_id)]
     group_id: UVec3,
     #[spirv(local_invocation_id)]
     local_id: UVec3,
     #[spirv(storage_buffer)] x: &[f32],
-    #[spirv(workgroup)] x_tile: &mut [[f32; 20 + 1]; 20],
-    #[spirv(storage_buffer)] dw: &mut [[[AtomicF32; 5]; 5]],
-    //#[spirv(workgroup)] dw_tile: &mut [[f32; 5]; 5],
+    #[spirv(workgroup)] x_tile: &mut [[f32; 32 + 5]; 16],
+    #[spirv(storage_buffer)] dw: &mut [f32],
     #[spirv(storage_buffer)] dy: &[f32],
     #[spirv(push_constant)] push_consts: &ConvDirect2dPushConsts,
 ) {
@@ -548,83 +625,92 @@ pub fn conv_direct_backward_weight_5x5_f32(
     let oc = push_consts.oc as usize;
     let oh = push_consts.oh as usize;
     let ow = push_consts.ow as usize;
-    let group_id = group_id.x as usize;
-    let group_oc = group_id / ic;
-    let group_ic = group_id % ic;
-    let local_id = local_id.y as usize;
-    let local_row = local_id / 16;
-    let local_col = local_id % 16;
-    let mut x_micro = <[[f32; 5]; 5]>::default();
+    let group_b = group_id.x as usize;
+    let local_b = local_id.x as usize;
+    let group_oc = group_id.y as usize;
+    let group_ic = group_id.z as usize;
+    let local_oc = local_id.y as usize;
+    let global_b = group_b * 16 + local_b;
+    let global_oc = group_oc * 16 + local_oc;
+    let global_ic = group_ic;
+
+    let mut x_micro = <[f32; 5]>::default();
     let mut dw_micro = <[[f32; 5]; 5]>::default();
-    let mut dy_micro: f32;
-    let scale = 1f32 / bs as f32;
-    for batch in 0 .. bs {
-        let mut row = 0;
-        while row < oh {
-            let yrow = row + local_row;
-            let mut col = 0;
-            while col < ow {
-                let ycol = col + local_col;
-                unroll! { for i in 0 .. 2 {
-                    unroll! { for j in 0 .. 2 {
-                        let xrow = yrow + i * 16;
-                        let xcol = ycol + j * 16;
-                        if local_row + i * 16 < 20 && local_col + j * 16 < 20 {
-                            x_tile[local_row + i * 16][local_col + j * 16] = if xrow < ih && xcol < iw {
-                                x[batch * ic * ih * iw + group_ic * ih * iw + xrow * iw + xcol]
-                            } else {
-                                0f32
-                            };
-                        }
-                    }}
-                }}
-                group_barrier();
-                unroll! { for ki in 0 .. 5 {
-                    unroll! { for kj in 0 .. 5 {
-                        x_micro[ki][kj] = x_tile[ki + local_row][kj + local_col];
-                    }}
-                }}
-                dy_micro = if yrow < oh && ycol < ow {
-                    dy[batch * oc * oh * ow + group_oc * oh * ow + yrow * ow + ycol]
+    let mut dy_micro = <[f32; 5]>::default();
+
+    x_tile[local_b][local_oc + 5] = 0f32;
+
+    for row in 0 .. ih {
+        let mut col = 0;
+        while col < iw {
+            group_barrier();
+            unroll! { for u in 0 .. 2 {
+                let local_col = local_oc + u * 16;
+                let global_col = col + local_col;
+                x_tile[local_b][local_col] = if global_b < bs && global_col < iw {
+                    x[global_b * ic * ih * iw + global_ic * ih * iw + row * iw + global_col]
                 } else {
                     0f32
                 };
-                dy_micro *= scale;
-                unroll! { for ki in 0 .. 5 {
+            }}
+            group_barrier();
+            if global_b < bs && global_oc < oc {
+                let ncols = if col + 32 <= iw { 32 } else { ih - col };
+                for j in 0 .. ncols {
                     unroll! { for kj in 0 .. 5 {
-                        dw_micro[ki][kj] += x_micro[ki][kj] * dy_micro;
+                        x_micro[kj] = x_tile[local_b][j + kj];
                     }}
-                }}
-                group_barrier();
-                col += 16;
-            }
-            row += 16;
-        }
-    }
-    unroll! { for ki in 0 .. 5 {
-        unroll! { for kj in 0 .. 5 {
-            dw[group_id][ki][kj] += dw_micro[ki][kj];
-        }}
-    }}
-    /*
-    let mut u = 0;
-    while u < 256 {
-        if local_id >= u && local_id < u + 25 {
-            for i in 0 .. 25 {
-                let r = i + local_id - u;
-                let ki = r / 5;
-                let kj = r % 5;
-                if u == 0 && i == 0 {
-                    dw_tile[ki][kj] = dw_micro[ki][kj];
-                } else if u == 250 && i == 24 {
-                    dw[group_id][ki][kj] += dw_tile[ki][kj] + dw_micro[ki][kj];
-                } else {
-                    dw_tile[ki][kj] += dw_micro[ki][kj];
+                    unroll! { for ki in 0 .. 5 {
+                        dy_micro[ki] = if ki <= row && row - ki < oh && col + j < ow {
+                            dy[group_b * oc * oh * ow + global_oc * oh * ow + (row - ki) * ow + (col + j)]
+                        } else {
+                            0f32
+                        };
+                    }}
+                    unroll! { for ki in 0 .. 5 {
+                        unroll! { for kj in 0 .. 5 {
+                            dw_micro[ki][kj] += dy_micro[ki] * x_micro[kj];
+                        }}
+                    }}
                 }
             }
+            col += 32;
         }
-        u += 25;
-        group_barrier();
     }
-    */
+    if global_b < bs && global_oc < oc {
+        unroll! { for ki in 0 .. 5 {
+            unroll! { for kj in 0 .. 5 {
+                dw[global_oc * ic * 25 * bs + global_ic * 25 * bs + ki * 5 * bs + kj * bs + global_b] = dw_micro[ki][kj];
+            }}
+        }}
+    }
+}
+
+#[repr(C)]
+pub struct ReducePushConsts {
+    bs: u32,
+    n: u32,
+    alpha: f32,
+}
+
+#[autobind]
+#[spirv(compute(threads(128)))]
+pub fn reduce_f32(
+    #[spirv(global_invocation_id)]
+    global_id: UVec3,
+    #[spirv(storage_buffer)] x: &[f32],
+    #[spirv(storage_buffer)] y: &mut [f32],
+    #[spirv(push_constant)] push_consts: &ReducePushConsts,
+) {
+    let bs = push_consts.bs as usize;
+    let n = push_consts.n as usize;
+    let alpha = push_consts.alpha;
+    let global_id = global_id.x as usize;
+    if global_id < bs {
+        let mut acc = 0f32;
+        for i in 0 .. n {
+            acc += alpha * x[global_id * n + i];
+        }
+        y[global_id] += acc;
+    }
 }

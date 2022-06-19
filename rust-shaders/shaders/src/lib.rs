@@ -16,6 +16,7 @@ pub mod atomic;
 pub mod fill;
 pub mod copy;
 pub mod cast;
+pub mod reduce;
 pub mod activation;
 pub mod kernel;
 pub mod reorder;
