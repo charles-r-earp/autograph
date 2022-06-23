@@ -49,31 +49,43 @@ impl<T: Float, S: Data<Elem = T>> Im2Col<Ix2> for TensorBase<S, Ix4> {
         let dilation = &args.dilation;
         let (oh, ow) = args.im2col_shape([ih, iw], kernel).into_pattern();
         let mut output = unsafe { Tensor::alloc(input.device(), [bs * oh * ow, ic * kh * kw])? };
-        let builder = rust_shaders::compute_pass(&format!(
+        // let conv_5x5 = strides.into_pattern() == (1, 1) && padding.into_pattern() == (0, 0) && dilation.into_pattern() == (1, 1) && (kh, kw) == (5, 5);
+        let entry = format!(
             "kernel::im2col_2d_{}_{}",
             kind.as_str(),
+            //if conv_5x5 { "_5x5" } else { "" },
             T::scalar_name()
-        ))?
-        .slice(input.as_raw_slice())?
-        .slice_mut(output.as_raw_slice_mut())?
-        .push(bs as u32)?
-        .push(ic as u32)?
-        .push([ih as u32, iw as u32])?
-        .push([oh as u32, ow as u32])?
-        .push([kh as u32, kw as u32])?
-        .push([strides[0] as u32, strides[1] as u32])?
-        .push([padding[0] as u32, padding[1] as u32])?
-        .push([dilation[0] as u32, dilation[1] as u32])?;
+        );
+        let builder = rust_shaders::compute_pass(&entry)?
+            .slice(input.as_raw_slice())?
+            .slice_mut(output.as_raw_slice_mut())?
+            .push(bs as u32)?
+            .push(ic as u32)?
+            .push([ih as u32, iw as u32])?
+            .push([oh as u32, ow as u32])?
+            .push([kh as u32, kw as u32])?
+            .push([strides[0] as u32, strides[1] as u32])?
+            .push([padding[0] as u32, padding[1] as u32])?
+            .push([dilation[0] as u32, dilation[1] as u32])?;
         let work_size = {
             //let oh = (oh / 16) * 16 + if oh % 16 != 0 { 16 } else { 0 };
             //let ow = (ow / 16) * 16 + if ow % 16 != 0 { 16 } else { 0 };
             /*let ohw = oh * ow;
             //let ohw = (ohw / 256) * 256 + if ohw % 256 != 0 { 256 } else { 0 };*/
-            let gh = oh / 16 + if oh % 16 != 0 { 1 } else { 0 };
-            let gw = ow / 16 + if ow % 16 != 0 { 1 } else { 0 };
-            let ohw = gh * gw * 256;
-            [(bs * ic * ohw) as u32, 1, 1]
+
+            /*if conv_5x5 {
+                let gh = oh / 32 + if oh % 32 != 0 { 1 } else { 0 };
+                let gw = ow / 32 + if ow % 32 != 0 { 1 } else { 0 };
+                let ohw = gh * gw * 256;
+                [(bs * ic) as u32, ohw as u32, 1]
+            } else {
+                let gh = oh / 16 + if oh % 16 != 0 { 1 } else { 0 };
+                let gw = ow / 16 + if ow % 16 != 0 { 1 } else { 0 };
+                let ohw = gh * gw * 256;
+                [(bs * ic * ohw) as u32, 1, 1]
+            }*/
             //[(bs * ic) as u32, ohw as u32, 1]
+            [(bs * oh * ow * ic * kh * kw) as u32, 1, 1]
         };
         unsafe {
             builder.submit(work_size)?;
@@ -338,6 +350,13 @@ mod tests {
         im2col::<f32, _, _, _, _>(
             [1, 1, 15, 20],
             [2, 2],
+            KernelKind::Convolution,
+            &KernelArgs::default(),
+        )
+        .await?;
+        im2col::<f32, _, _, _, _>(
+            [1, 1, 5, 16],
+            [5, 5],
             KernelKind::Convolution,
             &KernelArgs::default(),
         )
