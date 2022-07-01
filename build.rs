@@ -75,7 +75,7 @@ fn generate_modules() -> Result<()> {
             .strip_suffix(".spv")
             .unwrap();
         let module = Module::from_spirv(fs::read(spirv_path)?)?.with_name(name);
-        rust_modules.insert(name.to_string(), module);
+        rust_modules.insert(name.replace("__", "::"), module);
     }
     let rust_modules_path = out_dir
         .join("shaders")
