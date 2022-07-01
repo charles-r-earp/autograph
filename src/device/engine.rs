@@ -933,7 +933,8 @@ struct Frame {
 }
 
 impl Frame {
-    const MAX_OPS: usize = 400;
+    // TODO: Increasing MAX_OPS improves performace but risks running out of memory.
+    const MAX_OPS: usize = 1_000; // 400;
     fn new(queue: Arc<Queue>) -> Result<Self> {
         let device = queue.device();
         let transient = true;
@@ -1147,11 +1148,13 @@ struct Runner {
 
 impl Runner {
     fn new(queue: Arc<Queue>, op_receiver: Receiver<Op>, done: Arc<AtomicBool>) -> Result<Self> {
-        let mut ready = VecDeque::with_capacity(3);
-        for _ in 0..3 {
+        // TODO: Freezes after a while with 3 frames, maybe need semaphore?
+        let nframes = 2;
+        let mut ready = VecDeque::with_capacity(nframes);
+        for _ in 0..nframes {
             ready.push_back(Frame::new(queue.clone())?);
         }
-        let pending = VecDeque::with_capacity(2);
+        let pending = VecDeque::with_capacity(ready.len());
         Ok(Self {
             op_receiver,
             ready,
@@ -1168,6 +1171,13 @@ impl Runner {
                         frame.encode(op).expect("Frame::encode failed!");
                     }
                 }
+                if let Some(frame) = self.ready.front_mut() {
+                    if frame.len() < Frame::MAX_OPS {
+                        if let Ok(op) = self.op_receiver.try_recv() {
+                            frame.encode(op).expect("Frame::encode failed!");
+                        }
+                    }
+                }
             }
             if let Some(pending) = self.pending.front_mut() {
                 if pending.poll().expect("Frame::poll failed!") {
@@ -1175,7 +1185,7 @@ impl Runner {
                         .push_back(self.pending.pop_front().expect("No frame!"));
                 }
             }
-            if self.pending.len() < 2 && !self.ready.front().expect("No frame!").is_empty() {
+            if self.ready.len() >= 2 && !self.ready.front().expect("No frame!").is_empty() {
                 let mut frame = self.ready.pop_front().expect("No frame!");
                 frame.submit().expect("Frame::submit failed!");
                 self.pending.push_back(frame);
