@@ -122,6 +122,33 @@ fn im2col_2d<T>(global_id: UVec3, x: &[T], y: &mut [T], push_consts: &Im2ColPush
     }
 }
 
+
+#[autobind]
+#[spirv(compute(threads(1024)))]
+pub fn im2col_2d_convolution_f32_1024(
+    #[spirv(global_invocation_id)]
+    global_id: UVec3,
+    #[spirv(storage_buffer)] x: &[f32],
+    #[spirv(storage_buffer)] y: &mut [f32],
+    #[spirv(push_constant)]
+    push_consts: &Im2ColPushConsts2,
+) {
+    im2col_2d(global_id, x, y, push_consts);
+}
+
+#[autobind]
+#[spirv(compute(threads(1024)))]
+pub fn im2col_2d_convolution_f32_64(
+    #[spirv(global_invocation_id)]
+    global_id: UVec3,
+    #[spirv(storage_buffer)] x: &[f32],
+    #[spirv(storage_buffer)] y: &mut [f32],
+    #[spirv(push_constant)]
+    push_consts: &Im2ColPushConsts2,
+) {
+    im2col_2d(global_id, x, y, push_consts);
+}
+
 #[autobind]
 #[spirv(compute(threads(256)))]
 pub fn im2col_2d_convolution_bf16(
@@ -147,78 +174,10 @@ pub fn im2col_2d_convolution_f32(
 ) {
     im2col_2d(global_id, x, y, push_consts);
 }
-
-#[autobind]
-#[spirv(compute(threads(1, 256)))]
-pub fn im2col_2d_convolution_5x5_f32(
-    #[spirv(workgroup_id)]
-    group_id: UVec3,
-    #[spirv(local_invocation_id)]
-    local_id: UVec3,
-    #[spirv(workgroup)] x_tile: &mut [[f32; 36 + 5]; 36 + 5],
-    #[spirv(storage_buffer)] x: &[f32],
-    #[spirv(storage_buffer)] y: &mut [f32],
-    #[spirv(push_constant)]
-    push_consts: &Im2ColPushConsts2,
-) {
-    //let bs = push_consts.bs as usize;
-    let ic = push_consts.ic as usize;
-    let ih = push_consts.ih as usize;
-    let iw = push_consts.iw as usize;
-    let oh = push_consts.oh as usize;
-    let ow = push_consts.ow as usize;
-    //let kh = push_consts.kh as usize;
-    //let kw = push_consts.kw as usize;
-    let group_bc = group_id.x as usize;
-    let group_hw = group_id.y as usize;
-    //let groups_h = oh / 32 + if oh % 32 != 0 { 1 } else { 0 };
-    let groups_w = ow / 32 + if ow % 32 != 0 { 1 } else { 0 };
-    let group_b = group_bc / ic;
-    let group_ic = group_bc % ic;
-    let group_row = group_hw / groups_w;
-    let group_col = group_hw % groups_w;
-    let local_id = local_id.y as usize;
-    let local_row = local_id / 32;
-    let local_col = local_id % 32;
-    let kh = 5;
-    let kw = 5;
-    unroll! { for i in 0 .. 5 {
-        unroll! { for j in 0 .. 2 {
-            let tile_row = local_row + i * 8;
-            let tile_col = local_col + j * 32;
-            let row = group_row * 32 + tile_row;
-            let col = group_col * 32 + tile_col;
-            x_tile[tile_row][tile_col] = if row < ih && col < iw && tile_row < 36 && tile_col < 36 {
-                x[group_b * ic * ih * iw + group_ic * ih * iw + row * iw + col]
-            } else {
-                1f32
-            }
-        }}
-    }}
-    group_barrier();
-    unroll! { for i in 0 .. 4 {
-        unroll! { for j in 0 .. 1 {
-            let tile_row = local_row + i * 8;
-            let tile_col = local_col + j * 32;
-            let row = group_row * 32 + tile_row;
-            let col = group_col * 32 + tile_col;
-            let y_idx = (group_b * oh * ow * ic + row * ow * ic + col * ic + group_ic) * kh * kw;
-            if row < oh && col < ow {
-                unroll! { for ki in 0 .. 5 {
-                    unroll! { for kj in 0 .. 5 {
-                        let k_idx = ki * kw + kj;
-                        y[y_idx + k_idx] = x_tile[tile_row + ki][tile_col + kj];
-                    }}
-                }}
-            }
-        }}
-    }}
-}
-
-
 /*
-fn im2col_2d<T>(kernel_flip: bool, group_id: UVec3, local_id: UVec3, x: &[T], y: &mut [T], push_consts: &Im2ColPushConsts2)
-    where T: Copy, [T]: Store<f32> {
+// Adapted from https://github.com/ROCmSoftwarePlatform/MIOpen/blob/develop/src/kernels/MIOpenIm2d2Col.cl
+fn im2col_2d_v2<T, const N: usize>(group_id: UVec3, local_id: UVec3, x: &[T], x_tile: &mut [f32; N], y: &mut [T], push_consts: &Im2ColPushConsts2)
+    where T: Copy + Default, [T]: Store<f32> {
     let bs = push_consts.bs as usize;
     let ic = push_consts.ic as usize;
     let ih = push_consts.ih as usize;
@@ -233,70 +192,91 @@ fn im2col_2d<T>(kernel_flip: bool, group_id: UVec3, local_id: UVec3, x: &[T], y:
     let pw = push_consts.pw as usize;
     let dh = push_consts.dh as usize;
     let dw = push_consts.dw as usize;
-    /*let group_id = group_id.x as usize;
-    let groups_h = oh / 16 + if oh % 16 != 0 { 1 } else { 0 };
-    let groups_w = ow / 16 + if ow % 16 != 0 { 1 } else { 0 };
-    let groups_hw = groups_h * groups_w;
-    let group_bc = group_id / groups_hw;
-    let group_hw = group_id % groups_hw;
-    let group_h = group_hw / ow;
-    let group_w = group_hw % ow;
+    let group_id = group_id.x as usize;
     let local_id = local_id.x as usize;
-    let local_h = local_id / ow;
-    let local_w = local_id % ow;*/
-    let group_bc = group_id.x as usize;
-    let group_hw = group_id.y as usize;
-    let groups_w = ow / 16 + if ow % 16 != 0 { 1 } else { 0 };
-    let group_h = group_hw / groups_w;
-    let group_w = group_hw % groups_w;
-    let local_id = local_id.y as usize;
-    let local_h = local_id / 16;
-    let local_w = local_id % 16;
+    let global_id = group_id * 256 + local_id;
 
-    let bid = group_bc / ic;
-    let cid = group_bc % ic;
-    let bidx = bid * ic * ih * iw;
-    let bidy = bid * oh * ow * ic * kh * kw;
-    let cidx = cid * ih * iw;
-    let cidy = cid * kh * kw;
-    let hid = group_h * 16 + local_h;
-    let wid = group_w * 16 + local_w;
-    let patch_idx = (hid * ow + wid) * ic * kh * kw;
-    if bid < bs { if cid < ic { if hid < oh { if wid < ow {
-        for ki in 0 .. kh {
-            for kj in 0 .. kw {
-                let hidx = -(ph as isize) + (ki * dh + sh * hid) as isize;
-                let widx = -(pw as isize) + (kj * dw + sw * wid) as isize;
-                let mut val = 0.;
-                if hidx >= 0 { if hidx < ih as isize { if widx >= 0 { if widx < iw as isize {
-                    val = x.load(bidx + cidx + (hidx as usize) * iw + widx as usize);
-                }}}}
-                let mut kidx = ki * kw + kj;
-                if kernel_flip {
-                    kidx = kh * kw - (kidx + 1);
-                }
-                y.store(bidy + patch_idx + cidy + kidx, val);
-            }
+    let start = {
+        let get_x_index = |global_index| {
+            let bcid = global_index / (oh * ow * kh * kw);
+            let hwkid = global_index % (oh * ow * kh * kw);
+            //let bid = bcid / ic;
+            //let cid = bcid % ic;
+            let hwid = hwkid / (kh * kw);
+            let kid = hwkid % (kh * kw);
+            let hid = hwid / ow;
+            let wid = hwid % ow;
+            let ki = kid / kw;
+            let kj = kid % kw;
+
+            let hidx = -(ph as i32) + (ki * dh + sh * hid) as i32;
+            let hidx = if hidx < 0 {
+                0
+            } else if hidx as usize >= oh {
+                oh - 1
+            } else {
+                hidx as usize
+            };
+            let widx = -(pw as i32) + (kj * dw + sw * wid) as i32;
+            let widx = if widx < 0 {
+                0
+            } else if widx as usize >= oh {
+                ow - 1
+            } else {
+                widx as usize
+            };
+            bcid * ih * iw + hidx * ow + widx
+        };
+        let start = get_x_index(group_id * 256);
+        let end = get_x_index(group_id * 256 + 255);
+        let mut index = 0;
+        while start + index <= end {
+            x_tile[index + local_id] = x.load(start + index + local_id);
+            index += 256;
         }
-    }}}}
+        start
+    };
+
+    if global_id < bs * oh * ow * ic * kh * kw {
+        let bcid = global_id / (oh * ow * kh * kw);
+        let hwkid = global_id % (oh * ow * kh * kw);
+        let bid = bcid / ic;
+        let cid = bcid % ic;
+        let hwid = hwkid / (kh * kw);
+        let kid = hwkid % (kh * kw);
+        let hid = hwid / ow;
+        let wid = hwid % ow;
+        let ki = kid / kw;
+        let kj = kid % kw;
+        let hidx = -(ph as i32) + (ki * dh + sh * hid) as i32;
+        let widx = -(pw as i32) + (kj * dw + sw * wid) as i32;
+        let val = if hidx >= 0 && hidx < ih as i32 && widx >= 0 && widx < iw as i32 {
+            let index = bcid * ih * iw + hidx as usize * iw + widx as usize;
+            x_tile[index - start]
+        } else {
+            0.
+        };
+        let y_idx = bid * oh * ow * ic * kh * kw + hid * ow * ic * kh * kw + wid * ic * kh * kw + cid * kh * kw + kid;
+        y.store(y_idx, val);
+    }
 }
 
 #[autobind]
-#[spirv(compute(threads(1, 256)))]
-pub fn im2col_2d_convolution_f32(
+#[spirv(compute(threads(256)))]
+pub fn im2col_2d_convolution_f32_v2(
     #[spirv(workgroup_id)]
     group_id: UVec3,
     #[spirv(local_invocation_id)]
     local_id: UVec3,
     #[spirv(storage_buffer)] x: &[f32],
+    #[spirv(workgroup)] x_tile: &mut [f32; 32*32],
     #[spirv(storage_buffer)] y: &mut [f32],
     #[spirv(push_constant)]
     push_consts: &Im2ColPushConsts2,
 ) {
-    im2col_2d(false, group_id, local_id, x, y, push_consts);
+    im2col_2d_v2(group_id, local_id, x, x_tile, y, push_consts);
 }
 */
-
 #[repr(C)]
 pub struct Col2ImPushConsts2 {
     bs: u32,

@@ -100,6 +100,7 @@ version = "1.0.126"
 approx = "0.4.0"
 rusty-hook = "0.11.2"
 spirv_cross = { version = "0.23.1", features = ["msl"] }
+paste = "1.0.7"
 
 [dev-dependencies.ndarray]
 features = ["approx"]
@@ -110,7 +111,7 @@ features = ["full"]
 version = "1.14.0"
 
 [features]
-bench = []
+bench = ["device_tests"]
 profile = []
 derive = ["autograph_derive"]
 device_tests = []
