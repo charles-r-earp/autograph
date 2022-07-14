@@ -505,7 +505,6 @@ mod tests {
     async fn compute_distances<T: Float + From<u8>>(m: usize, k: usize, n: usize) -> Result<()> {
         use num_traits::ToPrimitive;
         let device = Device::new()?;
-        let _s = device.acquire().await;
         let v1: Vec<T> = (1..=100)
             .into_iter()
             .cycle()

@@ -1487,7 +1487,6 @@ mod tests {
             .collect::<Array1<_>>();
         let y_array = array_relu(&x_array.view());
         let device = Device::new()?;
-        let _s = device.acquire().await;
         let x = TensorView::try_from(x_array.view())?
             .into_device(device)
             .await?;
@@ -1543,7 +1542,6 @@ mod tests {
             &dy_array.view(),
         );
         let device = Device::new()?;
-        let _s = device.acquire().await;
         let x = TensorView::try_from(x_array.view())?
             .into_device(device.clone())
             .await?;
@@ -1637,7 +1635,6 @@ mod tests {
         )
         .map(|y| T::from_f32(*y).unwrap());
         let device = Device::new()?;
-        let _s = device.acquire().await;
         let x = Tensor::from(x_array.map(|x| T::from_f32(*x).unwrap()))
             .into_device(device)
             .await?
@@ -1772,7 +1769,6 @@ mod tests {
         )
         .map(|y| T::from_f32(*y).unwrap());
         let device = Device::new()?;
-        let _s = device.acquire().await;
         let x = Tensor::from(x_array.map(|x| T::from_f32(*x).unwrap()))
             .into_device(device.clone())
             .await?

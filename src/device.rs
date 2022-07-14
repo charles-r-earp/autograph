@@ -1,6 +1,4 @@
 use crate::{result::Result, shader::Module};
-#[cfg(all(test, feature = "device_tests"))]
-use smol::lock::SemaphoreGuard;
 use std::{
     fmt::{self, Debug},
     future::Future,
@@ -343,87 +341,12 @@ impl Device {
     pub fn new() -> Result<Self> {
         Ok(Self::from(DeviceBase::new()?))
     }
-    /*
-    /// Enumerates available [`DeviceBuilder`]'s.
-    ///
-    /// See also [`new()`](Device::new()).
-    ///
-    /// # Example
-    ///```no_run
-    /// # use autograph::{result::Result, device::{Device, Api, DeviceType}};
-    /// # fn main() -> Result<()> {
-    /// use anyhow::anyhow;
-    /// // Filter for a Vulkan DiscreteGpu with 4 GB of device memory
-    /// let device = Device::builder_iter()
-    ///     .find(|builder| {
-    ///         let info = builder.info();
-    ///         info.api() == Api::Vulkan
-    ///             && info.device_type() == DeviceType::DiscreteGpu
-    ///             && info.memory() >= 4_000_000_000
-    ///     })
-    ///     .ok_or(anyhow!("No valid device!"))?
-    ///     .build()?;
-    /// # Ok(())
-    /// # }
-    ///```
-    pub fn builder_iter() -> impl Iterator<Item = DeviceBuilder> {
-        #[allow(clippy::let_and_return)]
-        let iter = Engine::builder_iter().map(EngineBuilder::into);
-        #[cfg(test)]
-        {
-            use std::env;
-            let name = env::var("AUTOGRAPH_TEST_DEVICE");
-            let api = env::var("AUTOGRAPH_TEST_DEVICE_API");
-            iter.filter(move |b: &DeviceBuilder| {
-                let info = b.info();
-                if let Ok(name) = name.as_ref() {
-                    if info.name() != name {
-                        return false;
-                    }
-                }
-                if let Ok(api) = api.as_ref() {
-                    if format!("{:?}", info.api()).as_str() != api {
-                        return false;
-                    }
-                }
-                true
-            })
-        }
-        #[cfg(not(test))]
-        iter
-    }*/
     /// Returns a host device.
     ///
     /// The host is stateless and trivially constructable. That is, all [`host()`](Device::host())'s are equivalent. The host supports basic operations like initialization and copying. It does not support shader execution, so most computations will fail.
     pub fn host() -> Self {
         Self { base: None }
     }
-    /*fn build(builder: &DeviceBuilder) -> Result<Self> {
-        #[cfg(all(test, feature = "device_tests"))]
-        let mut guard = TEST_DEVICE.lock();
-        #[cfg(all(test, feature = "device_tests"))]
-        if let Some(base) = guard.as_ref() {
-            let device = Self {
-                base: Some(base.clone()),
-            };
-            smol::block_on(device.sync()).map_err(|_| anyhow!("Device had a previous error!"))?;
-            return Ok(device);
-        }
-
-        let id = DeviceId::create()?;
-        let engine = builder.with_device_id(id).engine_builder.build()?;
-        let base = Arc::new(DeviceBase {
-            id,
-            engine,
-            info: builder.info().clone(),
-            modules: AtomicBitSet::new(),
-        });
-
-        #[cfg(all(test, feature = "device_tests"))]
-        guard.replace(base.clone());
-
-        Ok(Self { base: Some(base) })
-    }*/
     pub(crate) fn into_base(self) -> Option<DeviceBase> {
         self.base
     }
@@ -443,15 +366,6 @@ impl Device {
             }
             Ok(())
         }
-    }
-    #[cfg(all(test, feature = "device_tests"))]
-    pub(crate) async fn acquire(&self) -> Option<SemaphoreGuard<'static>> {
-        /*if self.base.is_some() {
-            Some(TEST_DEVICE_SEMAPHORE.acquire().await)
-        } else {
-            None
-        }*/
-        None
     }
 }
 

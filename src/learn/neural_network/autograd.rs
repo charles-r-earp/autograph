@@ -1290,7 +1290,6 @@ mod tests {
         let mut db_true = Array::from_elem(units, 1f32);
         array_bias_backward(&mut db_true.view_mut(), &dy_array.view());
         let device = Device::new()?;
-        let _s = device.acquire().await;
         let dy = CowTensor::from(dy_array.map(|x| T::from_f32(*x).unwrap()))
             .into_device(device.clone())
             .await?
@@ -1350,7 +1349,6 @@ mod tests {
             array_cross_entropy_loss(&x_array.view(), &t_array.view())
         };
         let device = Device::new()?;
-        let _s = device.acquire().await;
         let x = CowTensor::from(x_array.view())
             .into_device(device.clone())
             .await?
@@ -1412,7 +1410,6 @@ mod tests {
             array_cross_entropy_loss_backward(&x_array.view(), &t_array.view())
         };
         let device = Device::new()?;
-        let _s = device.acquire().await;
         let x = CowTensor::from(x_array.view())
             .into_device(device.clone())
             .await?

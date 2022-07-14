@@ -360,7 +360,6 @@ mod tests {
             let a1 = gen_array::<T, _>(dim.into_dimension())?;
             let y_true = a1.sum_axis(axis);
             let device = Device::new()?;
-            let _s = device.acquire().await;
             let t1 = TensorView::try_from(a1.view())?.into_device(device).await?;
             let t2 = t1.sum_axis(axis)?;
             let y = t2.read().await?;
@@ -379,7 +378,6 @@ mod tests {
             let a1_f32 = gen_array::<f32, _>(dim)?;
             let y_true = a1_f32.sum_axis(axis);
             let device = Device::new()?;
-            let _s = device.acquire().await;
             let t1 = Tensor::from(a1_bf16).into_device(device).await?;
             let t2 = t1.sum_axis(axis)?;
             let y = t2.read().await?.as_array().map(|x| x.to_f32());
@@ -399,7 +397,6 @@ mod tests {
             let a1 = gen_array::<T, _>(dim.into_dimension())?;
             let y_true = array_argmin(&a1.view(), axis);
             let device = Device::new()?;
-            let _s = device.acquire().await;
             let t1 = TensorView::try_from(a1.view())?.into_device(device).await?;
             let t2 = t1.argmin_axis::<u32>(axis)?;
             let y = t2.read().await?;
@@ -416,7 +413,6 @@ mod tests {
             let a1 = gen_array::<f32, _>(dim.into_dimension())?;
             let y_true = array_argmin(&a1.view(), axis);
             let device = Device::new()?;
-            let _s = device.acquire().await;
             let t1 = Tensor::from(a1.view().map(|x| bf16::from_f32(*x)))
                 .into_device(device)
                 .await?;
@@ -438,7 +434,6 @@ mod tests {
             let a1 = gen_array::<T, _>(dim.into_dimension())?;
             let y_true = array_argmax(&a1.view(), axis);
             let device = Device::new()?;
-            let _s = device.acquire().await;
             let t1 = TensorView::try_from(a1.view())?.into_device(device).await?;
             let t2 = t1.argmax_axis::<u32>(axis)?;
             let y = t2.read().await?;
@@ -455,7 +450,6 @@ mod tests {
             let a1 = gen_array::<f32, _>(dim.into_dimension())?;
             let y_true = array_argmax(&a1.view(), axis);
             let device = Device::new()?;
-            let _s = device.acquire().await;
             let t1 = Tensor::from(a1.view().map(|x| bf16::from_f32(*x)))
                 .into_device(device)
                 .await?;
@@ -593,7 +587,6 @@ mod tests {
             .collect::<Vec<_>>();
         let y_true = x_vec.iter().copied().sum::<T>();
         let device = Device::new()?;
-        let _s = device.acquire().await;
         let x = Buffer::from(x_vec).into_device(device.clone()).await?;
         let mut y = Buffer::<T>::zeros(device.clone(), 1)?;
         let entry = format!("atomic::tests::{}", entry);

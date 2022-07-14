@@ -1121,7 +1121,6 @@ mod tests {
     #[tokio::test]
     async fn tensor_serde_device() -> Result<()> {
         let device = Device::new()?;
-        let _s = device.acquire().await;
         tensor_serde(device).await
     }
 
@@ -1151,7 +1150,6 @@ mod tests {
         let x_array = Array::from(data);
         let y_true = array_scaled_cast(&x_array, alpha.into());
         let device = Device::new()?;
-        let _s = device.acquire().await;
         let x = CowTensor::from(x_array.view()).into_device(device).await?;
         let y = x.scale_into::<T2>((alpha as u8).into())?;
         let y_array = y.read().await?;
@@ -1306,7 +1304,6 @@ mod tests {
         let x_array = Array::from(data.clone());
         let y_true = to_one_hot(&x_array, nclasses);
         let device = Device::new()?;
-        let _s = device.acquire().await;
         let x = CowTensor::from(x_array.view()).into_device(device).await?;
         let y = x.to_one_hot::<T>(nclasses)?;
         let y_array = y.read().await?;

@@ -294,7 +294,6 @@ mod tests {
         let x_array = Array::from(x_vec).into_shape(input_dim)?;
         let y_array = x_array.im2col(&kernel, kind, args)?;
         let device = Device::new()?;
-        let _s = device.acquire().await;
         let x = Tensor::from(x_array.map(|x| T::from_f32(*x).unwrap()))
             .into_device(device)
             .await?;
@@ -392,7 +391,6 @@ mod tests {
         let x_array = Array::from(x_vec).into_shape(input_dim)?;
         let y_array = x_array.col2im(&shape, &kernel, kind, args)?;
         let device = Device::new()?;
-        let _s = device.acquire().await;
         let x = Tensor::from(x_array.map(|x| T::from_f32(*x).unwrap()))
             .into_device(device)
             .await?;

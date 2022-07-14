@@ -15,15 +15,15 @@ A machine learning library for Rust.
 To use **autograph** in your crate, add it as a dependency in Cargo.toml:
 ```
 [dependencies]
-autograph = "0.1.1"
+autograph = { git = "https://github.com/charles-r-earp/autograph" }
 ```
 
 # Requirements
 - Rust <https://www.rust-lang.org/>
-- A device (typically a gpu) with drivers for a supported API:
-    - Vulkan (All platforms) <https://www.vulkan.org/>
-    - Metal (MacOS / iOS) <https://developer.apple.com/metal/>
-    - DX12 (Windows) <https://docs.microsoft.com/windows/win32/directx>
+- A Vulkan <https://www.vulkan.org/> capable device (typically a gpu).
+
+## Apple
+MoltenVK <https://moltengl.com/moltenvk/> is provided on MacOS and iOS if no Vulkan drivers are detected.
 
 # Tests
 - To check that you have a valid device, run `cargo test device_new --features device_tests`.
@@ -329,16 +329,6 @@ Will create a file "autograph_profile_summary.txt" like this:
 ```
 ### Note
 Specify the profile feature for autograph if it is a dependency as `autograph/profile`.
-
-# Developement Platforms
-1. Ubuntu 18.04 | (Vulkan) NVidia GeForce GTX 1060 with Max-Q Design
-2. Wondows 10 Home | (Vulkan + DX12) AMD RX 580 / (DX12) Microsoft Basic Render Driver.
-
-Shaders are tested on Github Actions:
-- Windows Server 2019 | (DX12) Microsoft Basic Render Driver.
-
-## Metal
-Shaders are untested on Metal / Apple platforms. If you have problems, please create an issue!
 
 # License
 Dual-licensed to be compatible with the Rust project.
