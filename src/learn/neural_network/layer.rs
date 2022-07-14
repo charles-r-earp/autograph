@@ -1,18 +1,22 @@
 use super::{
-    autograd::{Autograd, Backward, Parameter, ParameterD, Variable, VariableD, VariableGradientD},
+    autograd::{
+        Autograd, Backward, Parameter, ParameterD, Variable, VariableD, VariableGradient,
+        VariableGradientD,
+    },
     optimizer::Optimizer,
 };
 use crate::{
     buffer::{float::FloatBuffer, Buffer},
     device::Device,
-    linalg::DotBias,
-    ops::{Im2Col, KernelArgs, KernelKind},
+    linalg::{Dot, DotAcc, DotBias},
+    ops::{Col2Im, Im2Col, KernelArgs, KernelKind},
     result::Result,
     rust_shaders,
     scalar::FloatType,
     tensor::{
         float::{
-            FloatArcTensor, FloatArcTensorD, FloatTensor, FloatTensorD, FloatTensorViewD,
+            FloatArcTensor, FloatArcTensor2, FloatArcTensorD, FloatTensor, FloatTensor4,
+            FloatTensorD, FloatTensorView4, FloatTensorViewD, FloatTensorViewMut4,
             FloatTensorViewMutD,
         },
         Tensor, TensorD,
@@ -304,6 +308,232 @@ impl Debug for Conv {
     }
 }
 
+fn convolution_direct_forward(
+    input: &FloatTensorView4,
+    weight: &FloatTensorView4,
+) -> Result<FloatTensor4> {
+    assert!(input.is_standard_layout());
+    assert!(weight.is_standard_layout());
+    assert!(input.float_type() == FloatType::F32);
+    assert!(weight.float_type() == FloatType::F32);
+
+    let (bs, ic, ih, iw) = input.dim();
+    let (oc, _ic, kh, kw) = weight.dim();
+    assert_eq!(ic, _ic);
+    let oh = ih - kh + 1;
+    let ow = iw - kw + 1;
+
+    let mut output =
+        unsafe { FloatTensor::alloc(FloatType::F32, input.device(), [bs, oc, oh, ow])? };
+    assert_eq!([kh, kw], [5, 5]);
+    let entry = "kernel::conv_direct_5x5_f32";
+    let builder = rust_shaders::compute_pass(entry)?
+        .float_slice(input.as_raw_slice())?
+        .float_slice(weight.as_raw_slice())?
+        .float_slice_mut(output.as_raw_slice_mut())?
+        .push([bs as u32, ic as u32, ih as u32, iw as u32])?
+        .push([oc as u32, oh as u32, ow as u32])?;
+    let groups_h = oh / 16 + if oh % 16 != 0 { 1 } else { 0 };
+    let groups_w = ow / 16 + if ow % 16 != 0 { 1 } else { 0 };
+    let global_size = bs * oc * groups_h * groups_w * 256;
+    unsafe {
+        builder.submit([global_size as u32, 1, 1])?;
+    }
+    Ok(output)
+}
+
+fn convolution_direct_backward(
+    input_grad: &mut FloatTensorViewMut4,
+    weight: &FloatTensorView4,
+    output_grad: &FloatTensorView4,
+) -> Result<()> {
+    assert!(input_grad.is_standard_layout());
+    assert!(weight.is_standard_layout());
+    assert!(input_grad.float_type() == FloatType::F32);
+    assert!(weight.float_type() == FloatType::F32);
+    assert!(output_grad.float_type() == FloatType::F32);
+    assert!(output_grad.is_standard_layout());
+
+    let (bs, ic, ih, iw) = input_grad.dim();
+    let (oc, _ic, kh, kw) = weight.dim();
+    let (_bs, _oc, oh, ow) = output_grad.dim();
+    assert_eq!(bs, _bs);
+    assert_eq!(ic, _ic);
+    assert_eq!(oc, _oc);
+    assert_eq!([kh, kw], [5, 5]);
+    let mut input_grad_tmp = unsafe {
+        FloatTensor::alloc(
+            input_grad.float_type(),
+            input_grad.device(),
+            [bs, ic, ih, iw, kh * kw],
+        )?
+    };
+    let entry = "kernel::conv_direct_backward_5x5_f32";
+    let builder = rust_shaders::compute_pass(entry)?
+        .float_slice_mut(input_grad_tmp.as_raw_slice_mut())?
+        .float_slice(weight.as_raw_slice())?
+        .float_slice(output_grad.as_raw_slice())?
+        .push([bs as u32, ic as u32, ih as u32, iw as u32])?
+        .push([oc as u32, oh as u32, ow as u32])?;
+    unsafe {
+        builder.submit([(bs * ic) as u32, 1, 1])?;
+    }
+    let len = input_grad.len() as u32;
+    let alpha = 1f32;
+    let builder = rust_shaders::compute_pass("kernel::reduce_f32")?
+        .float_slice(input_grad_tmp.as_raw_slice())?
+        .float_slice_mut(input_grad.as_raw_slice_mut())?
+        .push([len, (kh * kw) as u32])?
+        .push(alpha)?;
+    unsafe {
+        builder.submit([len, 1, 1])?;
+    }
+    Ok(())
+}
+
+fn convolution_direct_backward_weight(
+    input: &FloatTensorView4,
+    weight_grad: &mut FloatTensorViewMut4,
+    output_grad: &FloatTensorView4,
+) -> Result<()> {
+    assert!(input.is_standard_layout());
+    assert!(weight_grad.is_standard_layout());
+    assert!(input.float_type() == FloatType::F32);
+    assert!(weight_grad.float_type() == FloatType::F32);
+    assert!(output_grad.float_type() == FloatType::F32);
+    assert!(output_grad.is_standard_layout());
+    let (bs, ic, ih, iw) = input.dim();
+    let (oc, _ic, kh, kw) = weight_grad.dim();
+    let (_bs, _oc, oh, ow) = output_grad.dim();
+    assert_eq!(bs, _bs);
+    assert_eq!(ic, _ic);
+    assert_eq!(oc, _oc);
+    assert_eq!([kh, kw], [5, 5]);
+    let mut weight_grad_tmp = unsafe {
+        FloatTensor::alloc(
+            output_grad.float_type(),
+            output_grad.device(),
+            [oc, ic, kh, kw, bs],
+        )?
+    };
+    let entry = "kernel::conv_direct_backward_weight_5x5_f32";
+    let builder = rust_shaders::compute_pass(entry)?
+        .float_slice(input.as_raw_slice())?
+        .float_slice_mut(weight_grad_tmp.as_raw_slice_mut())?
+        .float_slice(output_grad.as_raw_slice())?
+        .push([bs as u32, ic as u32, ih as u32, iw as u32])?
+        .push([oc as u32, oh as u32, ow as u32])?;
+    let b_groups = bs / 16 + if bs % 16 != 0 { 1 } else { 0 };
+    unsafe {
+        builder.submit([(b_groups * 16) as u32, oc as u32, ic as u32])?;
+    }
+    //weight_grad_tmp.sum_axis_with(ndarray::Axis(4), weight_grad)?;
+    let len = (ic * oc * kh * kw) as u32;
+    let alpha = (bs as f32).recip();
+    let builder = rust_shaders::compute_pass("kernel::reduce_f32")?
+        .float_slice(weight_grad_tmp.as_raw_slice())?
+        .float_slice_mut(weight_grad.as_raw_slice_mut())?
+        .push([len, bs as u32])?
+        .push(alpha)?;
+    unsafe {
+        builder.submit([len, 1, 1])?;
+    }
+    Ok(())
+}
+
+#[derive(Autograd)]
+#[autograph(crate)]
+struct ConvolutionDirectBackward {
+    //#[autograph(vertex)]
+    //input: VariableD,
+    input: Option<FloatArcTensorD>,
+    #[autograph(optional_gradient)]
+    input_grad: Option<VariableGradientD>,
+    #[autograph(vertex)]
+    weight: ParameterD,
+}
+
+impl Backward for ConvolutionDirectBackward {
+    fn backward(&self, output_grad: FloatTensorD) -> Result<()> {
+        let output_grad = output_grad.into_dimensionality()?;
+        if let Some(weight_grad) = self.weight.grad() {
+            let input = self
+                .input
+                .as_ref()
+                .expect("input required for weight_grad!")
+                .view()
+                .into_dimensionality()?;
+            let mut weight_grad = weight_grad.lock();
+            let mut weight_grad = weight_grad.zeroed_mut()?.into_dimensionality()?;
+            convolution_direct_backward_weight(&input, &mut weight_grad, &output_grad.view())?;
+        }
+        if let Some(input_grad) = self.input_grad.as_ref() {
+            let weight = self.weight.value().view().into_dimensionality()?;
+            let mut input_grad = input_grad.lock();
+            let mut input_grad = input_grad.zeroed_mut()?.into_dimensionality()?;
+            convolution_direct_backward(&mut input_grad, &weight, &output_grad.view())?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Autograd)]
+#[autograph(crate)]
+struct ConvolutionGemmBackward {
+    #[autograph(optional_gradient)]
+    input_grad: Option<VariableGradientD>,
+    input_im2col: Option<FloatArcTensor2>,
+    #[autograph(vertex)]
+    weight: ParameterD,
+    strides: IxDyn,
+    padding: IxDyn,
+    dilation: IxDyn,
+}
+
+impl Backward for ConvolutionGemmBackward {
+    fn backward(&self, output_grad: FloatTensorD) -> Result<()> {
+        let output_grad = output_grad.into_dimensionality()?;
+        let (bs, oc, oh, ow) = output_grad.dim();
+        let output_grad = output_grad
+            .permuted_axes([0, 2, 3, 1])
+            .into_standard_layout()?
+            .into_shape([bs * oh * ow, oc])?;
+        use std::convert::TryInto;
+        let [_, ic, kh, kw]: [usize; 4] = self.weight.shape().try_into().unwrap();
+        let kernel = [kh, kw].into_dimension();
+        let args = KernelArgs {
+            strides: Dim::from_dimension(&self.strides).unwrap(),
+            padding: Dim::from_dimension(&self.padding).unwrap(),
+            dilation: Dim::from_dimension(&self.dilation).unwrap(),
+        };
+        if let Some(weight_grad) = self.weight.grad() {
+            let input_im2col = self
+                .input_im2col
+                .as_ref()
+                .expect("im2col required for computing weight_grad!");
+            let mut weight_grad = weight_grad.lock();
+            let weight_grad = weight_grad.zeroed_mut()?.into_shape([oc, ic * kh * kw])?;
+            input_im2col.t().dot_acc(
+                1f32,
+                &output_grad.view(),
+                &mut weight_grad.reversed_axes(),
+            )?;
+        }
+        if let Some(input_grad) = self.input_grad.as_ref() {
+            let weight = self.weight.value().view().into_shape([oc, ic * kh * kw])?;
+            let ih = input_grad.shape()[2];
+            let iw = input_grad.shape()[3];
+            let shape = [ih, iw].into_dimension();
+            let grad = output_grad
+                .dot(&weight)?
+                .col2im(&shape, &kernel, KernelKind::Convolution, &args)?
+                .into_dyn();
+            input_grad.lock().add_assign(grad)?;
+        }
+        Ok(())
+    }
+}
+
 impl Forward for Conv {
     fn forward(&self, input: VariableD) -> Result<VariableD> {
         smol::block_on(async {
@@ -316,29 +546,121 @@ impl Forward for Conv {
             let weight = self.weight.clone().into_dimensionality::<Ix4>()?;
             let (oc, _ic, kh, kw) = weight.dim();
             debug_assert_eq!(_ic, ic);
-            let weight = weight.into_shape([oc, ic * kh * kw])?;
-            let bias = self
-                .bias
-                .clone()
-                .map(Parameter::into_dimensionality)
-                .transpose()?;
-            let kernel = [kh, kw].into_dimension();
-            let args = KernelArgs {
-                strides: Dim::from_dimension(&self.strides).unwrap(),
-                padding: Dim::from_dimension(&self.padding).unwrap(),
-                dilation: Dim::from_dimension(&self.dilation).unwrap(),
-            };
-            let (oh, ow) = args.im2col_shape([ih, iw], &kernel).into_pattern();
-            let output = input.im2col(&kernel, KernelKind::Convolution, &args)?;
-            let output = output.dot_bias(&weight.t(), bias.as_ref())?;
-            let output = output
-                .into_shape([bs, oh, ow, oc])?
-                .nhwc_into_nchw()?
-                .into_dyn();
-            Ok(output)
+            if std::env::var("conv_direct").as_deref() == Ok("1") {
+                let output =
+                    convolution_direct_forward(&input.value().view(), &weight.value().view())?;
+                let mut output = Variable::from(output.into_dyn()).with_training(input.training());
+                if input.requires_grad() || (weight.requires_grad() && input.training()) {
+                    // TODO: Fix this
+                    let input_value = if weight.requires_grad() && input.training() {
+                        Some(input.value().view().into_shared()?.into_dyn())
+                    } else {
+                        None
+                    };
+                    output = output.with_backward(ConvolutionDirectBackward {
+                        input: input_value,
+                        input_grad: input.grad().map(VariableGradient::into_dyn),
+                        weight: weight.into_dyn(),
+                    });
+                }
+                Ok(output)
+            } else {
+                let weight = weight.into_shape([oc, ic * kh * kw])?;
+                let kernel = [kh, kw].into_dimension();
+                let args = KernelArgs {
+                    strides: Dim::from_dimension(&self.strides).unwrap(),
+                    padding: Dim::from_dimension(&self.padding).unwrap(),
+                    dilation: Dim::from_dimension(&self.dilation).unwrap(),
+                };
+                let (oh, ow) = args.im2col_shape([ih, iw], &kernel).into_pattern();
+                let input_im2col = input
+                    .value()
+                    .im2col(&kernel, KernelKind::Convolution, &args)?
+                    .into_shared()?;
+                let output = input_im2col
+                    .dot(&weight.value().t())?
+                    .into_shape([bs, oh, ow, oc])?
+                    .permuted_axes([0, 3, 1, 2])
+                    .into_standard_layout()?
+                    .into_dyn();
+                let mut output = Variable::from(output).with_training(input.training());
+                if input.requires_grad() || (weight.requires_grad() && input.training()) {
+                    let input_im2col = if weight.requires_grad() && input.training() {
+                        Some(input_im2col)
+                    } else {
+                        None
+                    };
+                    output = output.with_backward(ConvolutionGemmBackward {
+                        input_grad: input.grad().map(VariableGradient::into_dyn),
+                        input_im2col,
+                        weight: self.weight.clone(),
+                        strides: self.strides.clone(),
+                        padding: self.padding.clone(),
+                        dilation: self.dilation.clone(),
+                    });
+                }
+                Ok(output)
+            }
         })
     }
 }
+
+/*
+impl Forward for Conv {
+    fn forward(&self, input: VariableD) -> Result<VariableD> {
+        smol::block_on(async {
+            // TODO: convert input to float type of weight
+            let input = input
+                .into_device(self.weight.device())
+                .await?
+                .into_dimensionality::<Ix4>()?;
+            let (bs, ic, ih, iw) = input.dim();
+            let weight = self.weight.clone().into_dimensionality::<Ix4>()?;
+            if std::env::var("conv_direct").as_deref() == Ok("1") && !input.requires_grad() {
+                let output =
+                    convolution_direct_forward(&input.value().view(), &weight.value().view())?;
+                let mut output = Variable::from(output.into_dyn()).with_training(input.training());
+                if input.requires_grad() || weight.requires_grad() {
+                    output = output.with_backward(ConvolutionDirectBackward {
+                        input: input.into_dyn(),
+                        weight: weight.into_dyn(),
+                    });
+                }
+                Ok(output)
+            } else {
+                let (oc, _ic, kh, kw) = weight.dim();
+                debug_assert_eq!(_ic, ic);
+                let weight = weight.into_shape([oc, ic * kh * kw])?;
+                let kernel = [kh, kw].into_dimension();
+                let args = KernelArgs {
+                    strides: Dim::from_dimension(&self.strides).unwrap(),
+                    padding: Dim::from_dimension(&self.padding).unwrap(),
+                    dilation: Dim::from_dimension(&self.dilation).unwrap(),
+                };
+                let (oh, ow) = args.im2col_shape([ih, iw], &kernel).into_pattern();
+                let input_im2col = input.value().im2col(&kernel, KernelKind::Convolution, &args)?.into_shared()?;
+                let output = input_im2col.dot(&weight.value().t())?
+                    .into_shape([bs, oh, ow, oc])?
+                    .permuted_axes([0, 3, 1, 2])
+                    .to_standard_layout_shared()?
+                    .into_dyn();
+                let mut output = Variable::from(output).with_training(input.training());
+                if input.requires_grad() || weight.requires_grad() {
+                    output = output.with_backward(ConvolutionGemmBackward {
+                        input: input.into_dyn(),
+                        input_im2col: Some(input_im2col),
+                        weight: self.weight.clone(),
+                        strides: self.strides.clone(),
+                        padding: self.padding.clone(),
+                        dilation: self.dilation.clone(),
+                    });
+                }
+                Ok(output)
+            }
+        })
+    }
+}
+*/
 
 /// Dense / fully connected layer.
 #[derive(Layer, Clone, Debug, Serialize, Deserialize)]
@@ -435,11 +757,11 @@ fn relu(input: &FloatTensorViewD) -> Result<FloatTensorD> {
         }
         FloatType::F32 => n,
     };
-    let builder = rust_shaders::core()?
-        .compute_pass(&format!("activation::relu_{}", float_type.as_str(),))?
-        .float_slice(input.as_raw_slice())?
-        .float_slice_mut(output.as_raw_slice_mut())?
-        .push(n)?;
+    let builder =
+        rust_shaders::compute_pass(&format!("activation::relu_{}", float_type.as_str(),))?
+            .float_slice(input.as_raw_slice())?
+            .float_slice_mut(output.as_raw_slice_mut())?
+            .push(n)?;
     unsafe {
         builder.submit([ws, 1, 1])?;
     }
@@ -468,15 +790,14 @@ fn relu_backward(
         FloatType::F32 => n,
     };
     let output_grad_slice = output_grad.to_slice()?;
-    let builder = rust_shaders::core()?
-        .compute_pass(&format!(
-            "activation::relu_backward_{}",
-            float_type.as_str(),
-        ))?
-        .float_slice(input.to_slice()?.as_slice())?
-        .float_slice_mut(input_grad.as_raw_slice_mut())?
-        .float_slice(output_grad_slice.as_slice())?
-        .push(n)?;
+    let builder = rust_shaders::compute_pass(&format!(
+        "activation::relu_backward_{}",
+        float_type.as_str(),
+    ))?
+    .float_slice(input.to_slice()?.as_slice())?
+    .float_slice_mut(input_grad.as_raw_slice_mut())?
+    .float_slice(output_grad_slice.as_slice())?
+    .push(n)?;
     unsafe { builder.submit([ws, 1, 1]) }
 }
 
@@ -743,14 +1064,13 @@ fn pool_forward(
                 None
             };
             let bs = bs * ic;
-            let builder = rust_shaders::core()?
-                .compute_pass(&format!(
-                    "pool::{}_pool{}_2d_{}",
-                    kind.as_str(),
-                    indices.as_ref().map_or("", |_| "_indices"),
-                    float_type.as_str()
-                ))?
-                .float_slice(input.as_raw_slice())?;
+            let builder = rust_shaders::compute_pass(&format!(
+                "pool::{}_pool{}_2d_{}",
+                kind.as_str(),
+                indices.as_ref().map_or("", |_| "_indices"),
+                float_type.as_str()
+            ))?
+            .float_slice(input.as_raw_slice())?;
             let builder = if let Some(indices) = indices.as_mut() {
                 builder.slice_mut(indices.as_raw_slice_mut())?
             } else {
@@ -784,14 +1104,9 @@ fn pool_backward(
     padding: &IxDyn,
     dilation: &IxDyn,
 ) -> Result<()> {
-    use crate::device::Api::*;
     debug_assert_eq!(kernel.ndim() + 2, input_grad.ndim());
 
-    let api = input_grad.device().info().map_or(Vulkan, |info| info.api());
     let atomic = kernel != strides;
-    if atomic && api == Metal {
-        bail!("Metal does not support device atomics!");
-    }
 
     let output_grad = output_grad.into_standard_layout()?;
     match kernel.ndim() {
@@ -799,7 +1114,7 @@ fn pool_backward(
             let (bs, ic, ih, iw) = input_grad.view().into_dimensionality::<Ix4>()?.dim();
             let oh = output_grad.shape()[2];
             let ow = output_grad.shape()[3];
-            let builder = rust_shaders::core()?.compute_pass(&format!(
+            let builder = rust_shaders::compute_pass(&format!(
                 "pool::{}_pool_2d_backward{}_{}",
                 kind.as_str(),
                 if atomic { "_atomic" } else { "" },
@@ -901,14 +1216,259 @@ impl<K: PoolKind> Forward for PoolBase<K> {
 mod tests {
     use super::*;
     use crate::{
+        ops::{Im2Col, KernelArgs},
         scalar::{Float, Scalar},
         tensor::{Tensor, TensorView},
     };
+    use approx::assert_relative_eq;
     use half::bf16;
-    use ndarray::{Array, ArrayD, ArrayViewD};
+    use ndarray::{
+        azip, Array, Array1, Array4, ArrayD, ArrayView1, ArrayView4, ArrayViewD, ArrayViewMut1, Ix2,
+    };
     use std::convert::TryFrom;
 
-    use ndarray::{azip, Array1, ArrayView1, ArrayViewMut1};
+    fn convolution_array(input: &ArrayView4<f32>, weight: &ArrayView4<f32>) -> Result<Array4<f32>> {
+        let (bs, ic, ih, iw) = input.dim();
+        let (oc, _ic, kh, kw) = weight.dim();
+        debug_assert_eq!(_ic, ic);
+        let weight = weight.view().into_shape([oc, ic * kh * kw])?;
+        let kernel = [kh, kw].into_dimension();
+        let args = KernelArgs {
+            strides: [1, 1].into_dimension(),
+            padding: [0, 0].into_dimension(),
+            dilation: [1, 1].into_dimension(),
+        };
+        let (oh, ow) = args.im2col_shape([ih, iw], &kernel).into_pattern();
+        let output = input.im2col(&kernel, KernelKind::Convolution, &args)?;
+        let output = output.dot(&weight.t());
+        let output = output
+            .into_shape([bs, oh, ow, oc])?
+            .permuted_axes([0, 3, 1, 2]);
+        Ok(output)
+    }
+
+    async fn convolution_direct<T: Float>(shape: [usize; 4], conv: &Conv) -> Result<()> {
+        let shape = shape.into_dimension();
+        dbg!(shape);
+        let x_array = (1..=shape.size())
+            .into_iter()
+            .map(|x| x as f32)
+            .collect::<Array1<f32>>()
+            .into_shape(shape)?;
+        let w_array = (1..=conv.weight.len())
+            .into_iter()
+            .map(|x| x as f32)
+            .collect::<Array1<f32>>()
+            .into_shape(conv.weight.raw_dim())?
+            .into_dimensionality()?;
+        let y_array = convolution_array(&x_array.view(), &w_array.view())?;
+        let device = Device::new()?;
+        let x = Tensor::from(x_array.map(|x| T::from(*x).unwrap()))
+            .into_device(device.clone())
+            .await?
+            .into_float();
+        let w = Tensor::from(w_array.map(|x| T::from(*x).unwrap()))
+            .into_device(device)
+            .await?
+            .into_float();
+        let y = convolution_direct_forward(&x.view(), &w.view())?
+            .cast_into::<f32>()?
+            .read()
+            .await?;
+        assert_relative_eq!(y.as_array(), y_array.view());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn convolution_direct_f32() -> Result<()> {
+        convolution_direct::<f32>(
+            [1, 1, 8, 8],
+            &Conv::from_inputs_outputs_kernel(1, 1, [5, 5]),
+        )
+        .await?;
+        convolution_direct::<f32>(
+            [1, 3, 7, 9],
+            &Conv::from_inputs_outputs_kernel(3, 2, [5, 5]),
+        )
+        .await?;
+        convolution_direct::<f32>(
+            [1, 6, 12, 12],
+            &Conv::from_inputs_outputs_kernel(6, 16, [5, 5]),
+        )
+        .await?;
+        Ok(())
+    }
+
+    fn convolution_backward_array(
+        input_shape: Ix4,
+        weight: &ArrayView4<f32>,
+        output_grad: &ArrayView4<f32>,
+        conv: &Conv,
+    ) -> Result<Array4<f32>> {
+        let args = KernelArgs {
+            strides: Ix2::from_dimension(&conv.strides).expect("Must be 2d!"),
+            padding: Ix2::from_dimension(&conv.padding).expect("Must be 2d!"),
+            dilation: Ix2::from_dimension(&conv.dilation).expect("Must be 2d!"),
+        };
+        let (_oc, _ic, kh, kw) = weight.dim();
+        let kernel = [conv.weight.shape()[2], conv.weight.shape()[3]].into_dimension();
+        let (bs, ic, ih, iw) = input_shape.into_pattern();
+        let (_bs, oc, oh, ow) = output_grad.dim();
+        let output_grad = output_grad
+            .view()
+            .permuted_axes([0, 2, 3, 1])
+            .as_standard_layout()
+            .to_owned()
+            .into_shape([bs * oh * ow, oc])?;
+        let weight = weight.into_shape([oc, ic * kh * kw])?;
+        let input_grad = output_grad.dot(&weight).col2im(
+            &[ih, iw].into_dimension(),
+            &kernel,
+            KernelKind::Convolution,
+            &args,
+        )?;
+        Ok(input_grad)
+    }
+
+    async fn convolution_direct_backward<T: Float>(shape: [usize; 4], conv: &Conv) -> Result<()> {
+        let shape = shape.into_dimension();
+        let x_array = (1..=shape.size())
+            .into_iter()
+            .map(|x| x as f32)
+            .collect::<Array1<f32>>()
+            .into_shape(shape)?;
+        let w_array = (1..=conv.weight.len())
+            .into_iter()
+            .map(|x| x as f32)
+            .collect::<Array1<f32>>()
+            .into_shape(conv.weight.raw_dim())?
+            .into_dimensionality()?;
+        let dy_array = convolution_array(&x_array.view(), &w_array.view())?;
+        let dy_array = (1..=dy_array.len())
+            .into_iter()
+            .map(|x| x as f32)
+            .collect::<Array1<f32>>()
+            .into_shape(dy_array.raw_dim())?;
+        let dx_array = convolution_backward_array(shape, &w_array.view(), &dy_array.view(), conv)?;
+        let device = Device::new()?;
+        let w = Tensor::from(w_array.map(|x| T::from(*x).unwrap()))
+            .into_device(device.clone())
+            .await?
+            .into_float();
+        let mut dx = FloatTensor::zeros(T::float_type(), device.clone(), dx_array.raw_dim())?;
+        let dy = Tensor::from(dy_array.map(|x| T::from(*x).unwrap()))
+            .into_device(device)
+            .await?
+            .into_float();
+        super::convolution_direct_backward(&mut dx.view_mut(), &w.view(), &dy.view())?;
+        let dx = dx.cast_into::<f32>()?.read().await?;
+        assert_relative_eq!(dx.as_array(), dx_array.view());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn convolution_direct_backward_f32() -> Result<()> {
+        convolution_direct_backward::<f32>(
+            [1, 1, 5, 5],
+            &Conv::from_inputs_outputs_kernel(1, 1, [5, 5]),
+        )
+        .await?;
+        convolution_direct_backward::<f32>(
+            [1, 1, 8, 8],
+            &Conv::from_inputs_outputs_kernel(1, 1, [5, 5]),
+        )
+        .await?;
+        convolution_direct_backward::<f32>(
+            [1, 2, 5, 5],
+            &Conv::from_inputs_outputs_kernel(2, 1, [5, 5]),
+        )
+        .await?;
+        convolution_direct_backward::<f32>(
+            [2, 1, 5, 5],
+            &Conv::from_inputs_outputs_kernel(1, 1, [5, 5]),
+        )
+        .await?;
+        Ok(())
+    }
+
+    fn convolution_backward_weight_array(
+        input: &ArrayView4<f32>,
+        output_grad: &ArrayView4<f32>,
+        conv: &Conv,
+    ) -> Result<Array4<f32>> {
+        let args = KernelArgs {
+            strides: Ix2::from_dimension(&conv.strides).expect("Must be 2d!"),
+            padding: Ix2::from_dimension(&conv.padding).expect("Must be 2d!"),
+            dilation: Ix2::from_dimension(&conv.dilation).expect("Must be 2d!"),
+        };
+        let kernel = [conv.weight.shape()[2], conv.weight.shape()[3]].into_dimension();
+        let input = input.im2col(&kernel, KernelKind::Convolution, &args)?;
+        let (bs, oc, oh, ow) = output_grad.dim();
+        let output_grad = output_grad
+            .view()
+            .permuted_axes([0, 2, 3, 1])
+            .as_standard_layout()
+            .to_owned();
+        let output_grad = output_grad.into_shape([bs * oh * ow, oc])?;
+        let weight_grad = input
+            .t()
+            .dot(&output_grad)
+            .t()
+            .as_standard_layout()
+            .to_owned()
+            .into_shape(conv.weight.raw_dim())?
+            .into_dimensionality()?
+            .map(|&x| x * (1f32 / bs as f32));
+        Ok(weight_grad)
+    }
+
+    async fn convolution_direct_backward_weight<T: Float>(
+        shape: [usize; 4],
+        conv: &Conv,
+    ) -> Result<()> {
+        let shape = shape.into_dimension();
+        let x_array = (1..=shape.size())
+            .into_iter()
+            .map(|x| x as f32)
+            .collect::<Array1<f32>>()
+            .into_shape(shape)?;
+        let w_array = Array::zeros(conv.weight.raw_dim()).into_dimensionality()?;
+        let dy_array = convolution_array(&x_array.view(), &w_array.view())?;
+        let mut dy_array = Array::zeros(dy_array.raw_dim());
+        for (i, dy) in dy_array.iter_mut().enumerate() {
+            *dy = (i + 1) as f32;
+        }
+        let dw_array = convolution_backward_weight_array(&x_array.view(), &dy_array.view(), conv)?;
+        let device = Device::new()?;
+        let x = Tensor::from(x_array.map(|x| T::from(*x).unwrap()))
+            .into_device(device.clone())
+            .await?
+            .into_float();
+        let mut dw = FloatTensor::zeros(T::float_type(), device.clone(), dw_array.raw_dim())?;
+        let dy = Tensor::from(dy_array.map(|x| T::from(*x).unwrap()))
+            .into_device(device)
+            .await?
+            .into_float();
+        super::convolution_direct_backward_weight(&x.view(), &mut dw.view_mut(), &dy.view())?;
+        let dw = dw.cast_into::<f32>()?.read().await?;
+        assert_relative_eq!(dw.as_array(), dw_array.view());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn convolution_direct_backward_weight_f32() -> Result<()> {
+        convolution_direct_backward_weight::<f32>(
+            [1, 1, 5, 5],
+            &Conv::from_inputs_outputs_kernel(1, 1, [5, 5]),
+        )
+        .await?;
+        convolution_direct_backward_weight::<f32>(
+            [1, 3, 7, 9],
+            &Conv::from_inputs_outputs_kernel(3, 2, [5, 5]),
+        )
+        .await?;
+        Ok(())
+    }
 
     fn array_relu<T: Scalar>(input: &ArrayView1<T>) -> Array1<T> {
         input.map(|x| {
@@ -927,7 +1487,6 @@ mod tests {
             .collect::<Array1<_>>();
         let y_array = array_relu(&x_array.view());
         let device = Device::new()?;
-        let _s = device.acquire().await;
         let x = TensorView::try_from(x_array.view())?
             .into_device(device)
             .await?;
@@ -983,7 +1542,6 @@ mod tests {
             &dy_array.view(),
         );
         let device = Device::new()?;
-        let _s = device.acquire().await;
         let x = TensorView::try_from(x_array.view())?
             .into_device(device.clone())
             .await?;
@@ -1077,7 +1635,6 @@ mod tests {
         )
         .map(|y| T::from_f32(*y).unwrap());
         let device = Device::new()?;
-        let _s = device.acquire().await;
         let x = Tensor::from(x_array.map(|x| T::from_f32(*x).unwrap()))
             .into_device(device)
             .await?
@@ -1212,7 +1769,6 @@ mod tests {
         )
         .map(|y| T::from_f32(*y).unwrap());
         let device = Device::new()?;
-        let _s = device.acquire().await;
         let x = Tensor::from(x_array.map(|x| T::from_f32(*x).unwrap()))
             .into_device(device.clone())
             .await?

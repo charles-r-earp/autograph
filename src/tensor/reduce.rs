@@ -1,9 +1,10 @@
 use super::*;
+use crate::{rust_shaders, util::type_eq};
 use anyhow::bail;
 use ndarray::{Axis, Dimension, RemoveAxis};
 
 #[allow(unused)]
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 enum Reduction {
     Sum,
     Mean,
@@ -28,6 +29,75 @@ impl Reduction {
 }
 
 fn reduce<T1, T2, D>(
+    input: &TensorView<T1, D>,
+    output: &mut TensorViewMut<T2, D::Smaller>,
+    axis: Axis,
+    reduction: Reduction,
+    accumulate: bool,
+) -> Result<()>
+where
+    T1: Scalar,
+    T2: Scalar,
+    D: Dimension,
+{
+    let batch_size = output.len();
+    let n = input.shape()[axis.0];
+    if n >= 1000 && reduction == Reduction::Sum && type_eq::<T1, T2>() && type_eq::<T1, f32>() {
+        let mut tmp_dim = input.raw_dim();
+        tmp_dim[axis.0] = n / 256 + if n % 256 == 0 { 0 } else { 1 };
+        let mut tmp = unsafe { Tensor::<T1, D>::alloc(input.device(), tmp_dim)? };
+        reduce_partial(
+            input,
+            &mut tmp.view_mut(),
+            batch_size,
+            axis,
+            reduction,
+            accumulate,
+        )?;
+        reduce_final(&tmp.view(), output, axis, reduction, accumulate)?;
+    } else {
+        reduce_final(input, output, axis, reduction, accumulate)?;
+    }
+    Ok(())
+}
+
+fn reduce_partial<T1, T2, D>(
+    input: &TensorView<T1, D>,
+    output: &mut TensorViewMut<T2, D>,
+    batch_size: usize,
+    axis: Axis,
+    reduction: Reduction,
+    accumulate: bool,
+) -> Result<()>
+where
+    T1: Scalar,
+    T2: Scalar,
+    D: Dimension,
+{
+    if size_eq::<T2, u16>() && !accumulate {
+        output.as_raw_slice_mut().fill(T2::zero())?;
+    }
+    let name = format!(
+        "reduce::reduce_{}_partial_{}",
+        reduction.as_str(),
+        T1::scalar_name()
+    );
+    let stride_x = if axis.0 > 0 {
+        input.strides()[axis.0 - 1] as u32
+    } else {
+        1
+    };
+    let n = input.shape()[axis.0] as u32;
+    let stride_y = input.strides()[axis.0] as u32;
+    let accumulate = accumulate as u32;
+    let builder = rust_shaders::compute_pass(name)?
+        .slice(input.as_raw_slice())?
+        .slice_mut(output.as_raw_slice_mut())?
+        .push([stride_x, n, stride_y, accumulate])?;
+    unsafe { builder.submit([batch_size as u32, n, 1]) }
+}
+
+fn reduce_final<T1, T2, D>(
     input: &TensorView<T1, D>,
     output: &mut TensorViewMut<T2, D::Smaller>,
     axis: Axis,
@@ -290,7 +360,6 @@ mod tests {
             let a1 = gen_array::<T, _>(dim.into_dimension())?;
             let y_true = a1.sum_axis(axis);
             let device = Device::new()?;
-            let _s = device.acquire().await;
             let t1 = TensorView::try_from(a1.view())?.into_device(device).await?;
             let t2 = t1.sum_axis(axis)?;
             let y = t2.read().await?;
@@ -309,7 +378,6 @@ mod tests {
             let a1_f32 = gen_array::<f32, _>(dim)?;
             let y_true = a1_f32.sum_axis(axis);
             let device = Device::new()?;
-            let _s = device.acquire().await;
             let t1 = Tensor::from(a1_bf16).into_device(device).await?;
             let t2 = t1.sum_axis(axis)?;
             let y = t2.read().await?.as_array().map(|x| x.to_f32());
@@ -329,7 +397,6 @@ mod tests {
             let a1 = gen_array::<T, _>(dim.into_dimension())?;
             let y_true = array_argmin(&a1.view(), axis);
             let device = Device::new()?;
-            let _s = device.acquire().await;
             let t1 = TensorView::try_from(a1.view())?.into_device(device).await?;
             let t2 = t1.argmin_axis::<u32>(axis)?;
             let y = t2.read().await?;
@@ -346,7 +413,6 @@ mod tests {
             let a1 = gen_array::<f32, _>(dim.into_dimension())?;
             let y_true = array_argmin(&a1.view(), axis);
             let device = Device::new()?;
-            let _s = device.acquire().await;
             let t1 = Tensor::from(a1.view().map(|x| bf16::from_f32(*x)))
                 .into_device(device)
                 .await?;
@@ -368,7 +434,6 @@ mod tests {
             let a1 = gen_array::<T, _>(dim.into_dimension())?;
             let y_true = array_argmax(&a1.view(), axis);
             let device = Device::new()?;
-            let _s = device.acquire().await;
             let t1 = TensorView::try_from(a1.view())?.into_device(device).await?;
             let t2 = t1.argmax_axis::<u32>(axis)?;
             let y = t2.read().await?;
@@ -385,7 +450,6 @@ mod tests {
             let a1 = gen_array::<f32, _>(dim.into_dimension())?;
             let y_true = array_argmax(&a1.view(), axis);
             let device = Device::new()?;
-            let _s = device.acquire().await;
             let t1 = Tensor::from(a1.view().map(|x| bf16::from_f32(*x)))
                 .into_device(device)
                 .await?;
@@ -523,12 +587,10 @@ mod tests {
             .collect::<Vec<_>>();
         let y_true = x_vec.iter().copied().sum::<T>();
         let device = Device::new()?;
-        let _s = device.acquire().await;
         let x = Buffer::from(x_vec).into_device(device.clone()).await?;
         let mut y = Buffer::<T>::zeros(device.clone(), 1)?;
         let entry = format!("atomic::tests::{}", entry);
-        let builder = rust_shaders::core()?
-            .compute_pass(entry)?
+        let builder = rust_shaders::compute_pass(entry)?
             .slice(x.as_slice())?
             .slice_mut(y.as_slice_mut())?;
         unsafe {

@@ -33,12 +33,4 @@ mod tests {
         }
         Ok(())
     }
-
-    #[test]
-    fn to_hlsl() -> Result<()> {
-        for module in modules()?.values() {
-            module.to_hlsl()?;
-        }
-        Ok(())
-    }
 }

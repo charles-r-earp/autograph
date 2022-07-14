@@ -1,5 +1,8 @@
 //use spirv_std::glam::UVec4;
-
+use spirv_std::{
+    memory::{Scope, Semantics},
+    arch::control_barrier,
+};
 /*
 pub(crate) fn u8x4_to_uvec4(x: u32) -> UVec4 {
     UVec4::new(
@@ -26,6 +29,12 @@ pub(crate) fn vec4_to_bf16x4(x: Vec4) -> (u32, u32) {
     (vec2_to_bf16x2(x.xy()), vec2_to_bf16x2(x.zw()))
 }
 */
+
+pub(crate) fn group_barrier() {
+    unsafe {
+        control_barrier::<{Scope::Workgroup as u32}, {Scope::Workgroup as u32}, {Semantics::NONE.bits()}>();
+    }
+}
 
 pub(crate) trait Load<T> {
     fn load(&self, index: usize) -> T;

@@ -18,7 +18,6 @@ use std::{
 type Result<T, E = anyhow::Error> = std::result::Result<T, E>;
 
 pub(super) const PUSH_CONSTANT_SIZE: usize = 256;
-pub(super) const SPECIALIZATION_SIZE: usize = 32;
 
 static MODULE_IDS: Lazy<Mutex<BitSet>> = Lazy::new(Mutex::default);
 
@@ -60,7 +59,7 @@ pub struct Module {
     pub(super) descriptor: ModuleDescriptor,
     #[serde(skip_serializing, deserialize_with = "ModuleId::deserialize_create")]
     pub(super) id: ModuleId,
-    name: String,
+    pub(super) name: Option<String>,
 }
 
 impl Module {
@@ -81,22 +80,15 @@ impl Module {
             spirv,
             descriptor,
             id,
-            name: String::new(),
+            name: None,
         })
     }
     /// Names the module.
     ///
     /// The name will be used in error messages.
     pub fn with_name(mut self, name: impl Into<String>) -> Self {
-        self.name = name.into();
+        self.name.replace(name.into());
         self
-    }
-    pub(super) fn name(&self) -> Option<&str> {
-        if !self.name.is_empty() {
-            Some(self.name.as_str())
-        } else {
-            None
-        }
     }
     #[doc(hidden)]
     pub fn rspirv_module(&self) -> rspirv::dr::Module {
@@ -114,47 +106,41 @@ impl Module {
     }
 
     #[cfg(test)]
-    fn cross_compile<T: spirv_cross::spirv::Target>(
-        &self,
-        options: <spirv_cross::spirv::Ast<T> as spirv_cross::spirv::Compile<T>>::CompilerOptions,
-    ) -> Result<Cow<str>>
-    where
-        spirv_cross::spirv::Ast<T>: spirv_cross::spirv::Parse<T> + spirv_cross::spirv::Compile<T>,
-    {
+    pub(crate) fn to_metal(&self) -> Result<()> {
         use anyhow::Context;
-        use spirv_cross::spirv::{Ast, Module};
-        let name: Cow<str> = self
-            .name()
-            .map_or_else(|| format!("{:?}", self).into(), Into::into);
-        let module = Module::from_words(bytemuck::cast_slice(&self.spirv));
-        let mut ast = Ast::<T>::parse(&module)
-            .with_context(|| format!("Parsing of {name} failed!", name = name))?;
-        ast.set_compiler_options(&options)?;
-        let output = ast
-            .compile()
-            .map(Into::into)
-            .with_context(|| format!("Compilation of {name} failed!", name = name))?;
-        Ok(output)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn to_metal(&self) -> Result<Cow<str>> {
+        use spirv_cross::{
+            msl,
+            spirv::{Ast, ExecutionModel, Module},
+        };
         let mut options = spirv_cross::msl::CompilerOptions::default();
         options.version = spirv_cross::msl::Version::V1_2;
-        self.cross_compile::<spirv_cross::msl::Target>(options)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn to_hlsl(&self) -> Result<Cow<str>> {
-        let mut options = spirv_cross::hlsl::CompilerOptions::default();
-        options.shader_model = spirv_cross::hlsl::ShaderModel::V5_1;
-        self.cross_compile::<spirv_cross::hlsl::Target>(options)
+        let name: String = self
+            .name
+            .as_ref()
+            .map_or_else(|| format!("{:?}", self).into(), Into::into);
+        let module = Module::from_words(bytemuck::cast_slice(&self.spirv));
+        let mut ast = Ast::<msl::Target>::parse(&module)
+            .with_context(|| format!("Parsing of {name} failed!", name = name))?;
+        for entry in self.descriptor.entries.keys() {
+            options
+                .entry_point
+                .replace((entry.clone(), ExecutionModel::GlCompute));
+            ast.set_compiler_options(&options)?;
+            ast.compile().with_context(|| {
+                format!(
+                    "Compilation of {name}::{entry} failed!",
+                    name = name,
+                    entry = entry
+                )
+            })?;
+        }
+        Ok(())
     }
 }
 
 impl Debug for Module {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        if let Some(name) = self.name() {
+        if let Some(name) = self.name.as_ref() {
             f.debug_tuple("Module").field(&name).finish()
         } else {
             f.debug_tuple("Module").field(&self.id.0).finish()
@@ -192,9 +178,11 @@ impl EntryDescriptor {
     pub(super) fn push_constant_size(&self) -> usize {
         self.push_constant_size as usize
     }
+    /*
     pub(super) fn specialization_size(&self) -> usize {
         self.spec_constants.iter().map(|x| x.spec_type.size()).sum()
     }
+    */
 }
 
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
@@ -214,13 +202,14 @@ pub(super) enum SpecType {
 }
 
 impl SpecType {
+    /*
     pub(super) fn size(&self) -> usize {
         use SpecType::*;
         match self {
             U32 | I32 | F32 => 4,
             U64 | I64 | F64 => 8,
         }
-    }
+    }*/
 }
 
 #[derive(Clone, Debug)]
@@ -797,7 +786,7 @@ mod tests {
         Module::from_spirv(
             include_bytes!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
-                "/src/shaders/rust/core.spv"
+                "/src/shaders/rust/fill__fill_u32.spv"
             ))
             .as_ref(),
         )?;

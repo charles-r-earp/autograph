@@ -1,7 +1,7 @@
 use std::{
     any::TypeId,
-    hash::{BuildHasher, Hasher},
-    hint::unreachable_unchecked,
+    //hash::{BuildHasher, Hasher},
+    //hint::unreachable_unchecked,
     mem::size_of,
 };
 
@@ -20,7 +20,7 @@ pub(crate) fn type_eq<A: 'static, B: 'static>() -> bool {
 pub(crate) fn size_eq<A, B>() -> bool {
     size_of::<A>() == size_of::<B>()
 }
-
+/*
 pub(crate) trait UnwrapUnchecked {
     type Output;
     unsafe fn _unwrap_unchecked(self) -> Self::Output;
@@ -57,7 +57,7 @@ impl BuildHasher for U32Hasher {
     fn build_hasher(&self) -> Self {
         *self
     }
-}
+}*/
 
 // adapted from https://github.com/CNugteren/CLBlast/blob/master/src/utilities/utilities.cpp
 #[allow(clippy::many_single_char_names)]

@@ -1,30 +1,30 @@
-use crate::{device::shader::Module, result::Result};
+use crate::{
+    device::{builders::ComputePassBuilder, shader::Module},
+    result::Result,
+};
+use anyhow::anyhow;
 use once_cell::sync::OnceCell;
+use std::collections::HashMap;
 
-static CORE: OnceCell<Module> = OnceCell::new();
+static MODULES: OnceCell<HashMap<&'static str, Module>> = OnceCell::new();
 
-pub(crate) fn core() -> Result<&'static Module> {
-    Ok(CORE.get_or_try_init(|| {
+fn modules() -> Result<&'static HashMap<&'static str, Module>> {
+    Ok(MODULES.get_or_try_init(|| {
         bincode::deserialize(include_bytes!(concat!(
             env!("OUT_DIR"),
-            "/shaders/rust/core.bincode"
+            "/shaders/rust/modules.bincode",
         )))
     })?)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+pub(crate) fn module(name: impl AsRef<str>) -> Result<&'static Module> {
+    let name = name.as_ref();
+    let module = modules()?
+        .get(name)
+        .ok_or_else(|| anyhow!("Module {:?} not found!", name))?;
+    Ok(module)
+}
 
-    #[test]
-    fn core_to_metal() -> Result<()> {
-        core()?.to_metal()?;
-        Ok(())
-    }
-
-    #[test]
-    fn core_to_hlsl() -> Result<()> {
-        core()?.to_hlsl()?;
-        Ok(())
-    }
+pub(crate) fn compute_pass(name: impl AsRef<str>) -> Result<ComputePassBuilder<'static, 'static>> {
+    module(name.as_ref())?.compute_pass(name.as_ref())
 }

@@ -1,9 +1,6 @@
 use crate::{
-    device::{
-        buffer::{ArcBuffer, Buffer, CowBuffer, Slice, SliceMut},
-        builders::ComputePassBuilder,
-        Device,
-    },
+    buffer::{ArcBuffer, Buffer, CowBuffer, Slice, SliceMut},
+    device::{builders::ComputePassBuilder, Device},
     result::Result,
     scalar::{Float, FloatType, Scalar},
 };
@@ -166,8 +163,8 @@ macro_rules! impl_float_buffer_owned {
                 /// - See [`.zeros()`](FloatBuffer::zeros) for a safe alternative.
                 pub unsafe fn alloc(float_type: FloatType, device: Device, len: usize) -> Result<Self> {
                     match float_type {
-                        FloatType::BF16 => Ok(Self::BF16($buffer::alloc(device, len)?)),
-                        FloatType::F32 => Ok(Self::F32($buffer::alloc(device, len)?)),
+                        FloatType::BF16 => Ok(Self::BF16(unsafe { $buffer::alloc(device, len)? })),
+                        FloatType::F32 => Ok(Self::F32(unsafe { $buffer::alloc(device, len)?} )),
                     }
                 }
                 /// Creates a buffer with type `float_type` and length `len` filled with `elem`.

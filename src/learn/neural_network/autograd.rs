@@ -770,7 +770,7 @@ impl<D: Dimension, N: Node> VertexBase<D, N> {
     ///
     /// Typically this method should be called in [`Optimizer::update()`](super::optimizer::Optimizer::update()), after one or more backwards passes.
     pub fn take_grad(&mut self) -> Option<FloatTensor<D>> {
-        if let Some(grad) = self.grad.as_mut().map(Arc::get_mut).flatten() {
+        if let Some(grad) = self.grad.as_mut().and_then(Arc::get_mut) {
             assert_eq!(
                 self.value.strides(),
                 bytemuck::cast_slice(self.value.raw_dim().default_strides().slice())
@@ -809,8 +809,7 @@ impl<D: Dimension, N: Node> VertexBase<D, N> {
             )?);
             let input_grad = self
                 .grad()
-                .map(|g| g.try_into_variable().ok())
-                .flatten()
+                .and_then(|g| g.try_into_variable().ok())
                 .map(VariableGradient::into_dyn);
             if let Some(node) = output.node.as_variable_mut() {
                 node.training = self.node.as_variable().unwrap().training;
@@ -964,6 +963,7 @@ impl Backward for NHWCIntoNCHWBackward {
 }
 
 impl Variable4 {
+    /*
     pub(super) fn nhwc_into_nchw(self) -> Result<Self> {
         if !self.is_standard_layout() {
             bail!("Must be standard_layout!");
@@ -980,6 +980,7 @@ impl Variable4 {
         }
         Ok(output)
     }
+    */
 }
 
 #[derive(Autograd)]
@@ -1010,7 +1011,7 @@ impl Backward for DotBackward {
                 &mut dw.zeroed_mut()?,
             )?;
         }
-        if let Some(db) = self.bias.as_ref().map(Vertex::grad).flatten() {
+        if let Some(db) = self.bias.as_ref().and_then(Vertex::grad) {
             let mut db = db.lock();
             bias_backward(&mut db.zeroed_mut()?, &dy.view())?;
         }
@@ -1183,8 +1184,7 @@ fn cross_entropy_loss(input: &FloatTensorView2, target: &FloatTensorView2) -> Re
     let input = input.as_standard_layout()?;
     let target = target.as_standard_layout()?;
     let name = format!("criterion::cross_entropy_loss_{}", float_type.as_str());
-    let builder = rust_shaders::core()?
-        .compute_pass(name)?
+    let builder = rust_shaders::compute_pass(name)?
         .float_slice(input.as_raw_slice())?
         .float_slice(target.as_raw_slice())?
         .float_slice_mut(output.as_raw_slice_mut())?
@@ -1212,16 +1212,15 @@ fn cross_entropy_loss_backward(
         bail!("Not yet implemented!");
     }
 
-    let builder = rust_shaders::core()?
-        .compute_pass(&format!(
-            "criterion::cross_entropy_loss_backward_{}",
-            float_type.as_str()
-        ))?
-        .float_slice(input_slice.as_slice())?
-        .float_slice_mut(input_grad.as_raw_slice_mut())?
-        .float_slice(target_slice.as_slice())?
-        .float_slice(output_grad_slice.as_slice())?
-        .push([n, nclasses])?;
+    let builder = rust_shaders::compute_pass(&format!(
+        "criterion::cross_entropy_loss_backward_{}",
+        float_type.as_str()
+    ))?
+    .float_slice(input_slice.as_slice())?
+    .float_slice_mut(input_grad.as_raw_slice_mut())?
+    .float_slice(target_slice.as_slice())?
+    .float_slice(output_grad_slice.as_slice())?
+    .push([n, nclasses])?;
     unsafe { builder.submit([n, 1, 1]) }
 }
 
@@ -1291,7 +1290,6 @@ mod tests {
         let mut db_true = Array::from_elem(units, 1f32);
         array_bias_backward(&mut db_true.view_mut(), &dy_array.view());
         let device = Device::new()?;
-        let _s = device.acquire().await;
         let dy = CowTensor::from(dy_array.map(|x| T::from_f32(*x).unwrap()))
             .into_device(device.clone())
             .await?
@@ -1351,7 +1349,6 @@ mod tests {
             array_cross_entropy_loss(&x_array.view(), &t_array.view())
         };
         let device = Device::new()?;
-        let _s = device.acquire().await;
         let x = CowTensor::from(x_array.view())
             .into_device(device.clone())
             .await?
@@ -1366,7 +1363,13 @@ mod tests {
         if type_eq::<T, bf16>() {
             assert_relative_eq!(y_array, y_true, epsilon = 0.01, max_relative = 0.01);
         } else {
-            assert_relative_eq!(y_array, y_true, max_relative = 0.000_001);
+            if !approx::relative_eq!(y_array, y_true, max_relative = 0.000_001) {
+                let arrays = y_array
+                    .outer_iter()
+                    .zip(y_true.outer_iter())
+                    .collect::<Vec<_>>();
+                panic!("!relative_eq {:#?}", arrays);
+            }
         }
         Ok(())
     }
@@ -1407,7 +1410,6 @@ mod tests {
             array_cross_entropy_loss_backward(&x_array.view(), &t_array.view())
         };
         let device = Device::new()?;
-        let _s = device.acquire().await;
         let x = CowTensor::from(x_array.view())
             .into_device(device.clone())
             .await?

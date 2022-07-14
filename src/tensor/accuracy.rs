@@ -42,7 +42,6 @@ mod tests {
             .filter(|(x, t)| x == t)
             .count();
         let device = Device::new()?;
-        let _s = device.acquire().await;
         let x = Tensor::from(
             Slice::from(x_vec.as_slice())
                 .into_device(device.clone())

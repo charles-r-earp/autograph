@@ -1,29 +1,53 @@
 use super::*;
 use crate::linalg::{Dot, DotAcc, DotBias};
+use ndarray::Axis;
+
+fn c_beta<T: Scalar, D: Dimension>(beta: T, c: &mut TensorViewMut<T, D>) -> Result<()> {
+    let n = c.len() as u32;
+    let builder = crate::rust_shaders::compute_pass("linalg::c_beta_f32")?
+        .slice_mut(c.as_raw_slice_mut())?
+        .push(n)?
+        .push(beta)?;
+    unsafe { builder.submit([n, 1, 1]) }
+}
+
+fn bias_impl<T: Scalar>(bias: &TensorView1<T>, c: &mut TensorViewMut2<T>) -> Result<()> {
+    if T::scalar_type() != ScalarType::F32 {
+        bail!("{} bias not implemented!", elem_type_name::<T>());
+    }
+    let _oc = bias.dim();
+    let (bs, oc) = c.dim();
+    if _oc != oc {
+        bail!("bias != c_cols, {} != {}", _oc, oc);
+    }
+    let builder = crate::rust_shaders::compute_pass("linalg::bias_f32")?
+        .slice(bias.as_raw_slice())?
+        .slice_mut(c.as_raw_slice_mut())?
+        .push([bs as u32, oc as u32])?;
+    unsafe { builder.submit([(bs * oc) as u32, 1, 1]) }
+}
 
 #[allow(clippy::too_many_arguments, clippy::many_single_char_names)]
-fn gemm_impl<T: Scalar>(
+fn gemm<T: Scalar>(
     alpha: T,
     a: &TensorView2<T>,
     b: &TensorView2<T>,
-    bias: Option<&TensorView1<T>>,
     beta: T,
     c: &mut TensorViewMut2<T>,
 ) -> Result<()> {
-    use crate::device::Api::*;
     use ScalarType::*;
 
-    let api = c.device().info().map_or(Vulkan, |info| info.api());
-
-    if !matches!(T::scalar_type(), U32 | I32 | F32 | BF16) {
+    if !matches!(T::scalar_type(), U32 | I32 | F32) {
         bail!("{} dot not implemented!", elem_type_name::<T>());
     }
 
+    /*
     // Patch for custom 16 bit ops
     // If 16 bit is supported then this is unnecessary
     if size_eq::<T, u16>() && beta == T::zero() {
         c.as_raw_slice_mut().fill(T::default())?;
     }
+    */
 
     let (m, k) = a.dim();
     let (k2, n) = b.dim();
@@ -56,90 +80,63 @@ fn gemm_impl<T: Scalar>(
     let [rsc, csc]: [isize; 2] = c.strides().try_into().unwrap();
     let [rsc, csc] = [rsc as u32, csc as u32];
 
-    let a0 = 0f32;
-
-    let (builder, ts, wpt, splitk) = match (api, T::scalar_type()) {
-        (DX12, _) | (_, BF16) => {
-            // TODO: Porting to Rust requires atomics
-            let ts = 16;
-            let wpt = 1;
-            let name = format!(
-                "gemm{bias}_{ty}",
-                bias = if bias.is_some() { "_bias" } else { "" },
-                ty = T::scalar_name()
-            );
-            let builder = crate::glsl_shaders::module(name)?.compute_pass("main")?;
-            (builder, ts, wpt, None)
-        }
-        _ => {
-            let ts = 16;
-            let splitk = 256;
-            // Metal only supports device atomics (without volatile) at 2.0 or above
-            // TODO: detect when atomics are supported, but recent OS's should work.
-            let splitk = if matches!(api, Vulkan | DX12) && k >= (m * n).max(splitk * 2) {
-                Some(splitk)
-            } else {
-                None
-            };
-            let wpt = if splitk.is_none() && T::scalar_type() == F32 {
-                u32::min(m / ts, n / ts).min(4).max(1)
-            } else {
-                1
-            };
-            let unr = if wpt == 1 { 16 } else { 8 };
-            let entry = format!(
-                "linalg::gemm{}_{}{}_unr{}_mica{}_micb{}",
-                if bias.is_some() { "_bias" } else { "" },
-                elem_type_name::<T>(),
-                splitk.map_or(String::new(), |splitk| format!("_splitk{}", splitk)),
-                unr,
-                wpt,
-                wpt,
-            );
-            let builder = crate::rust_shaders::core()?.compute_pass(entry)?;
-            (builder, ts, wpt, splitk)
-        }
-    };
-
-    if splitk.is_some() {
-        let builder = crate::rust_shaders::core()?
-            .compute_pass("linalg::c_beta_f32")?
-            .slice_mut(c.as_raw_slice_mut())?
-            .push(m * n)?
-            .push(beta)?;
-        unsafe {
-            builder.submit([m * n, 1, 1])?;
-        }
-    };
-
-    let builder = builder.slice(a.as_raw_slice())?.slice(b.as_raw_slice())?;
-    let builder = if let Some(bias) = bias.as_ref() {
-        builder.slice(bias.as_raw_slice())?
+    let splitk = 512;
+    let (n_groups_k, [gm, gk, gn], [lm, lk, ln]) = if k > splitk {
+        let n_groups_k = k / splitk + if k % splitk != 0 { 1 } else { 0 };
+        (n_groups_k, [16, 1, 16], [1, 64, 1])
+    } else if m >= 64 && n <= 32 {
+        (1, [32, 1, 8], [4, 8, 4])
+    } else if n >= 64 && m <= 32 {
+        (1, [8, 1, 32], [4, 8, 4])
     } else {
-        builder
+        (1, [16, 1, 16], [4, 8, 4])
     };
-    let builder = builder.slice_mut(c.as_raw_slice_mut())?;
-
-    let builder = match (api, T::scalar_type()) {
-        (_, BF16) => builder.push([alpha.to_f32().unwrap(), beta.to_f32().unwrap(), a0])?,
-        (DX12, _) => builder.push([alpha, beta])?.push(a0)?,
-        _ => builder.push([alpha, beta])?,
-    };
-    let builder = builder
+    let tm = gm * lm;
+    let tk = gk * lk;
+    let tn = gn * ln;
+    let entry = format!(
+        "linalg::gemm_{}_tm{}_tk{}_tn{}_lm{}_lk{}_ln{}",
+        elem_type_name::<T>(),
+        tm,
+        tk,
+        tn,
+        lm,
+        lk,
+        ln,
+    );
+    let global_m = (m / tm + if m % tm != 0 { 1 } else { 0 }) * gm;
+    let global_n = (n / tn + if n % tn != 0 { 1 } else { 0 }) * gn;
+    let work_size = [(global_m * global_n * n_groups_k * gk) as u32, 1, 1];
+    let gemm_beta = if n_groups_k > 1 { T::zero() } else { beta };
+    let builder = crate::rust_shaders::compute_pass(entry)?
+        .slice(a.as_raw_slice())?
+        .slice(b.as_raw_slice())?
+        .push([alpha, gemm_beta])?
         .push([m, k, n])?
         .push([rsa, csa])?
         .push([rsb, csb])?
-        .push([rsc, csc])?;
-
-    let work_size = if api == DX12 || T::scalar_type() == BF16 {
-        [m, n, 1]
+        .push([rsc, csc])?
+        .push(n_groups_k)?;
+    if n_groups_k * gk > 1 {
+        let mut c_tmp = unsafe {
+            Tensor::alloc(
+                a.device(),
+                [m as usize, n as usize, (n_groups_k * gk) as usize],
+            )?
+        };
+        let builder = builder.slice_mut(c_tmp.as_raw_slice_mut())?;
+        unsafe {
+            builder.submit(work_size)?;
+        }
+        c_beta(beta, c)?;
+        c_tmp.sum_axis_with(Axis(2), c)?;
     } else {
-        let global_x = m / wpt + if m % (ts * wpt) != 0 { ts } else { 0 };
-        let global_y = n / wpt + if n % (ts * wpt) != 0 { ts } else { 0 };
-        let global_z = splitk.map_or(1, |splitk| k / splitk + if k % splitk != 0 { 1 } else { 0 });
-        [global_x * global_y * global_z, 1, 1]
-    };
-    unsafe { builder.submit(work_size) }
+        let builder = builder.slice_mut(c.as_raw_slice_mut())?;
+        unsafe {
+            builder.submit(work_size)?;
+        }
+    }
+    Ok(())
 }
 
 impl<T: Scalar, S1: Data<Elem = T>, S2: Data<Elem = T>> Dot<TensorBase<S2, Ix2>>
@@ -148,11 +145,10 @@ impl<T: Scalar, S1: Data<Elem = T>, S2: Data<Elem = T>> Dot<TensorBase<S2, Ix2>>
     type Output = Tensor2<T>;
     fn dot(&self, rhs: &TensorBase<S2, Ix2>) -> Result<Self::Output> {
         let mut output = unsafe { Tensor::alloc(self.device(), [self.dim().0, rhs.dim().1])? };
-        gemm_impl(
+        gemm(
             T::one(),
             &self.view(),
             &rhs.view(),
-            None,
             T::zero(),
             &mut output.view_mut(),
         )?;
@@ -169,14 +165,16 @@ impl<T: Scalar, S1: Data<Elem = T>, S2: Data<Elem = T>, S3: Data<Elem = T>>
         bias: Option<&TensorBase<S3, Ix1>>,
     ) -> Result<Self::Output> {
         let mut output = unsafe { Tensor::alloc(self.device(), [self.dim().0, rhs.dim().1])? };
-        gemm_impl(
+        gemm(
             T::one(),
             &self.view(),
             &rhs.view(),
-            bias.map(TensorBase::view).as_ref(),
             T::zero(),
             &mut output.view_mut(),
         )?;
+        if let Some(bias) = bias {
+            bias_impl(&bias.view(), &mut output.view_mut())?;
+        }
         Ok(output)
     }
 }
@@ -190,11 +188,10 @@ impl<T: Scalar, S1: Data<Elem = T>, S2: Data<Elem = T>, S3: DataMut<Elem = T>>
         rhs: &TensorBase<S2, Ix2>,
         output: &mut TensorBase<S3, Ix2>,
     ) -> Result<()> {
-        gemm_impl(
+        gemm(
             alpha,
             &self.view(),
             &rhs.view(),
-            None,
             T::one(),
             &mut output.view_mut(),
         )
@@ -204,9 +201,10 @@ impl<T: Scalar, S1: Data<Elem = T>, S2: Data<Elem = T>, S3: DataMut<Elem = T>>
 #[cfg(all(test, feature = "device_tests"))]
 mod tests {
     use super::*;
+    use crate::util::type_eq;
     use approx::assert_relative_eq;
-    use half::bf16;
     use ndarray::Array2;
+    use paste::paste;
 
     #[allow(unused)]
     #[derive(Clone, Copy, Debug)]
@@ -225,117 +223,98 @@ mod tests {
         Array2::from_shape_vec(dim, vec).unwrap()
     }
 
-    macro_rules! tensor_dot {
-        ($t1:ty, $t2:tt, $args:expr) => {{
-            let device = Device::new()?;
-            let _s = device.acquire().await;
-            let (m, k, n, a_t, b_t) = $args;
-            let dim1 = match a_t {
-                Transpose::N => [m, k],
-                Transpose::T => [k, m],
-            };
-            let dim2 = match b_t {
-                Transpose::N => [k, n],
-                Transpose::T => [n, k],
-            };
-            let a1 = gen_array::<$t1>(dim1);
-            let t1 = Tensor2::<$t2>::from(gen_array(dim1))
-                .into_device(device.clone())
-                .await?;
-            let (a1, t1) = match a_t {
-                Transpose::N => (a1.view(), t1.view()),
-                Transpose::T => (a1.t(), t1.t()),
-            };
-            let a2 = gen_array::<$t1>(dim2);
-            let t2 = Tensor2::<$t2>::from(gen_array(dim2))
-                .into_device(device.clone())
-                .await?;
-            let (a2, t2) = match b_t {
-                Transpose::N => (a2.view(), t2.view()),
-                Transpose::T => (a2.t(), t2.t()),
-            };
-            let a_true = a1.dot(&a2);
-            let t_out = t1.dot(&t2)?;
-            device.sync().await?;
-            let a_out = t_out.read().await?.into_array();
-            (a_true, a_out)
-        }};
-    }
-
-    macro_rules! check_arrays {
-        (f32 => ($a:expr, $b:expr)) => {
-            assert_relative_eq!($a, $b);
+    async fn tensor_dot<T: Scalar + From<u8>>(
+        [m, k, n]: [usize; 3],
+        [a_t, b_t]: [Transpose; 2],
+    ) -> Result<()> {
+        let device = Device::new()?;
+        let dim1 = match a_t {
+            Transpose::N => [m, k],
+            Transpose::T => [k, m],
         };
-        (bf16 => ($a:expr, $b:expr)) => {
-            let b = $b.map(|x| x.to_f32());
-            assert_relative_eq!($a, b, epsilon = 0.01, max_relative = 0.01);
+        let dim2 = match b_t {
+            Transpose::N => [k, n],
+            Transpose::T => [n, k],
         };
-        ($t:tt => ($a:expr, $b:expr)) => {
-            assert_eq!($a, $b);
+        let a1 = gen_array::<T>(dim1);
+        let t1 = CowTensor::from(a1.view())
+            .into_device(device.clone())
+            .await?;
+        let (a1, t1) = match a_t {
+            Transpose::N => (a1.view(), t1.view()),
+            Transpose::T => (a1.t(), t1.t()),
         };
+        let a2 = gen_array::<T>(dim2);
+        let t2 = CowTensor::from(a2.view())
+            .into_device(device.clone())
+            .await?;
+        let (a2, t2) = match b_t {
+            Transpose::N => (a2.view(), t2.view()),
+            Transpose::T => (a2.t(), t2.t()),
+        };
+        let a_true = a1.dot(&a2);
+        let a_out = t1.dot(&t2)?.read().await?.into_array();
+        if type_eq::<T, f32>() {
+            let a_true = a_true.map(|x| x.to_f32().unwrap());
+            let a_out = a_out.map(|x| x.to_f32().unwrap());
+            assert_relative_eq!(a_true, a_out);
+        } else {
+            assert_eq!(a_true, a_out);
+        }
+        Ok(())
     }
 
     macro_rules! test_dot {
-        (bf16; $($name:ident => $args:expr,)+) => (
-            $(
-                #[allow(non_snake_case)]
-                #[tokio::test]
-                async fn $name () -> Result<()> {
-                    let (a_true, a_out) = tensor_dot! { f32, bf16, $args };
-                    check_arrays!(bf16 => (a_true, a_out));
-                    Ok(())
-                }
-            )+
+        (@Outer $($args:tt)*) => (
+            test_dot! {
+                @Trans u32;
+                $(
+                    $args
+                )*
+            }
+            test_dot! {
+                @Trans i32;
+                $(
+                    $args
+                )*
+            }
+            test_dot! {
+                @Trans f32;
+                $(
+                    $args
+                )*
+            }
         );
-        ($t:tt; $($name:ident => $args:expr,)+) => (
-            $(
-                #[allow(non_snake_case)]
-                #[tokio::test]
-                async fn $name () -> Result<()> {
-                    let (a_true, a_out) = tensor_dot! { $t, $t, $args };
-                    check_arrays!($t => (a_true, a_out));
-                    Ok(())
-                }
-            )+
+        (@Trans $T:ty; $([$M:tt, $K:tt, $N:tt],)*) => (
+            test_dot! {
+                @Impl $T;
+                $(
+                    ([$M, $K, $N], [N, N]),
+                    ([$M, $K, $N], [T, N]),
+                    ([$M, $K, $N], [N, T]),
+                    ([$M, $K, $N], [T, T]),
+                )*
+            }
+        );
+        (@Impl $T:ty; $(([$M:tt, $K:tt, $N:tt], [$TA:tt, $TB:tt]),)*) => (
+            paste! {
+                $(
+                    #[allow(non_snake_case)]
+                    #[tokio::test]
+                    async fn [<tensor_dot_ $T _m $M _k $K _n $N _ $TA _ $TB>]() -> Result<()> {
+                        tensor_dot::<$T>([$M, $K, $N], [$TA, $TB]).await
+                    }
+                )*
+            }
         );
     }
 
-    test_dot!(
-        u32;
-        tensor_dot_u32_m21_k31_n41_N_N => (21, 31, 41, N, N),
-        tensor_dot_u32_m121_k131_n141_N_N => (121, 131, 141, N, N),
-        tensor_dot_u32_m121_k131_n141_T_N => (121, 131, 141, T, N),
-        tensor_dot_u32_m121_k131_n141_N_T => (121, 131, 141, N, T),
-        tensor_dot_u32_m121_k131_n141_T_T => (121, 131, 141, T, T),
-    );
-
-    test_dot!(
-        i32;
-        tensor_dot_i32_m21_k31_n41_N_N => (21, 31, 41, N, N),
-        tensor_dot_i32_m121_k131_n141_N_N => (121, 131, 141, N, N),
-        tensor_dot_i32_m121_k131_n141_T_N => (121, 131, 141, T, N),
-        tensor_dot_i32_m121_k131_n141_N_T => (121, 131, 141, N, T),
-        tensor_dot_i32_m121_k131_n141_T_T => (121, 131, 141, T, T),
-    );
-
-    test_dot!(
-        f32;
-        tensor_dot_f32_m21_k31_n41_N_N => (21, 31, 41, N, N),
-        tensor_dot_f32_m121_k131_n141_N_N => (121, 131, 141, N, N),
-        tensor_dot_f32_m121_k131_n141_T_N => (121, 131, 141, T, N),
-        tensor_dot_f32_m121_k131_n141_N_T => (121, 131, 141, N, T),
-        tensor_dot_f32_m121_k131_n141_T_T => (121, 131, 141, T, T),
-        tensor_dot_f32_m25_k611_n6_N_N => (25, 611, 6, N, N),
-    );
-
-    test_dot!(
-        bf16;
-        tensor_dot_bf16_m21_k31_n41_N_N => (21, 31, 41, N, N),
-        tensor_dot_bf16_m121_k131_n141_N_N => (121, 131, 141, N, N),
-        tensor_dot_bf16_m121_k131_n141_T_N => (121, 131, 141, T, N),
-        tensor_dot_bf16_m121_k131_n141_N_T => (121, 131, 141, N, T),
-        tensor_dot_bf16_m121_k131_n141_T_T => (121, 131, 141, T, T),
-    );
+    test_dot! {
+        @Outer
+        [21, 31, 41], [31, 41, 21],
+        [121, 131, 141], [131, 121, 141],
+        [7, 603, 19], [67, 543, 83],
+    }
 
     #[cfg(feature = "bench")]
     mod bench {
@@ -388,7 +367,13 @@ mod tests {
             tensor_dot_f32_m512_k512_n512_N_N => (512, 512, 512, N, N),
             tensor_dot_f32_m1024_k1024_n1024_N_N => (1024, 1024, 1024, N, N),
             tensor_dot_f32_m57600_k25_n6_N_N => (57600, 25, 6, N, N),
-            tensor_dot_f32_m25_k57600_n6_N_N => (25, 57600, 6, N, N),
+            tensor_dot_f32_m57600_k25_n6_N_T => (57600, 25, 6, N, T),
+            tensor_dot_f32_m57600_k25_n6_T_N => (57600, 25, 6, T, N),
+            tensor_dot_f32_m57600_k25_n6_T_T => (57600, 25, 6, T, T),
+            tensor_dot_f32_m25_k57600_n6_T_N => (25, 57600, 6, T, N),
+            tensor_dot_f32_m57600_k6_n25_N_T => (57600, 6, 25, N, T),
+            tensor_dot_f32_m6400_k150_n16_N_N => (6400, 150, 16, N, T),
+            tensor_dot_f32_m150_k6400_n16_T_N => (150, 6400, 16, T, N),
         );
     }
 }
