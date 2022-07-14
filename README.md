@@ -270,7 +270,7 @@ See the [Neural Network MNIST](examples/neural-network-mnist) example.
 +-----------+------------+---------------+-----------------------+----------------------------------+
 ```
 
-See the [Neural Network](benchmarks/neural-network) benchark.
+See the [Neural Network](benchmarks/neural-network) benchmark.
 
 # Profiling
 Currently requires nightly and feature "profile". Set the AUTOGRAPH_PROFILE environmental variable to 1 or True to produce a table of statistics for compute passes that are executed.
@@ -327,6 +327,7 @@ Will create a file "autograph_profile_summary.txt" like this:
 | accuracy_u8             | main                                         | 0.12 %  | 71552       | 20.00ns   | 1.44ms     |
 +-------------------------+----------------------------------------------+---------+-------------+-----------+------------+
 ```
+
 ### Note
 Specify the profile feature for autograph if it is a dependency as `autograph/profile`.
 
