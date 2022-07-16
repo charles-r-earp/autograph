@@ -6,7 +6,7 @@ use std::{
 };
 
 fn validate_spirv(name: &str, spirv: &[u32]) -> Result<(), Box<dyn Error>> {
-    use spirv_cross::{spirv::{self, ExecutionModel}, glsl, msl, hlsl};
+    use spirv_cross::{spirv::{self, ExecutionModel}, glsl, msl};
     let module = spirv::Module::from_words(spirv);
     let shader_dir = PathBuf::from(std::env::var("OUT_DIR")?).join("shaders").join(name);
     fs::create_dir_all(&shader_dir)?;
@@ -34,24 +34,15 @@ fn validate_spirv(name: &str, spirv: &[u32]) -> Result<(), Box<dyn Error>> {
         let entry_name = entry_point.name.replace("::", "__");
         fs::write(shader_dir.join(entry_name).with_extension("metal"), &metal)?;
     }
-    let mut hlsl_ast = spirv::Ast::<hlsl::Target>::parse(&module)
-        .map_err(|e| format!("HLSL parsing of {name} failed: {e}", name=name, e=e))?;
-    let mut hlsl_compiler_options = hlsl::CompilerOptions::default();
-    hlsl_compiler_options.shader_model = hlsl::ShaderModel::V5_1;
-    for entry_point in hlsl_ast.get_entry_points()? {
-        hlsl_compiler_options.entry_point.replace((entry_point.name.clone(), ExecutionModel::GlCompute));
-        hlsl_ast.set_compiler_options(&hlsl_compiler_options)?;
-        let hlsl = hlsl_ast.compile()
-            .map_err(|e| format!("HLSL compilation of {name}::{entry} failed: {e}", name=name, entry=&entry_point.name, e=e))?;
-        let entry_name = entry_point.name.replace("::", "__");
-        fs::write(shader_dir.join(entry_name).with_extension("hlsl"), &hlsl)?;
-    }
     Ok(())
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
     let result = SpirvBuilder::new("shaders", "spirv-unknown-vulkan1.1")
         .capability(Capability::VulkanMemoryModelDeviceScopeKHR)
+        .capability(Capability::Int16)
+        .capability(Capability::StorageBuffer16BitAccess)
+        .extension("VK_KHR_16bit_storage")
         .multimodule(true)
         .print_metadata(MetadataPrintout::DependencyOnly)
         .build()?;

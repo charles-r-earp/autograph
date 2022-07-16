@@ -30,6 +30,7 @@ pub use async_trait::async_trait;
 pub use autograph_derive::*;
 use ndarray::{Dim, Dimension, IntoDimension, Ix1, Ix4, IxDyn};
 use rand::distributions::{Distribution, Uniform};
+use rspirv::spirv::Capability;
 use serde::{Deserialize, Serialize};
 use std::{
     fmt::{self, Debug},
@@ -738,32 +739,29 @@ pub struct Relu {}
 fn relu(input: &FloatTensorViewD) -> Result<FloatTensorD> {
     let float_type = input.float_type();
     let device = input.device();
+    if float_type == FloatType::BF16
+        && (!device.supports_capability(Capability::Int16)
+            || !device.supports_capability(Capability::StorageBuffer16BitAccess))
+    {
+        bail!(
+            "bf16 relu requires capabilities Int16={} and StorageBuffer16BitAccess={}",
+            device.supports_capability(Capability::Int16),
+            device.supports_capability(Capability::StorageBuffer16BitAccess)
+        )
+    }
     let dim = input.raw_dim();
-    let mut output = match float_type {
-        FloatType::BF16 => FloatTensor::zeros(float_type, device, dim)?,
-        FloatType::F32 => unsafe { FloatTensor::alloc(float_type, device, dim)? },
-    };
+    let mut output = unsafe { FloatTensor::alloc(float_type, device, dim)? };
     unsafe {
         output = output.with_raw_strides(input.raw_strides());
     }
     let n = input.len() as u32;
-    let ws = match float_type {
-        FloatType::BF16 => {
-            if n % 2 == 0 {
-                n / 2
-            } else {
-                n / 2 + 1
-            }
-        }
-        FloatType::F32 => n,
-    };
     let builder =
         rust_shaders::compute_pass(&format!("activation::relu_{}", float_type.as_str(),))?
             .float_slice(input.as_raw_slice())?
             .float_slice_mut(output.as_raw_slice_mut())?
             .push(n)?;
     unsafe {
-        builder.submit([ws, 1, 1])?;
+        builder.submit([n, 1, 1])?;
     }
     Ok(output)
 }
@@ -778,17 +776,18 @@ fn relu_backward(
     debug_assert_eq!(input.raw_strides(), input_grad.raw_strides());
     debug_assert_eq!(input_grad.raw_strides(), output_grad.raw_strides());
     let float_type = input.float_type();
+    let device = input.device();
+    if float_type == FloatType::BF16
+        && (!device.supports_capability(Capability::Int16)
+            || !device.supports_capability(Capability::StorageBuffer16BitAccess))
+    {
+        bail!(
+            "bf16 relu_backward requires capabilities Int16={} and StorageBuffer16BitAccess={}",
+            device.supports_capability(Capability::Int16),
+            device.supports_capability(Capability::StorageBuffer16BitAccess)
+        )
+    }
     let n = input.len() as u32;
-    let ws = match float_type {
-        FloatType::BF16 => {
-            if n % 2 == 0 {
-                n / 2
-            } else {
-                n / 2 + 1
-            }
-        }
-        FloatType::F32 => n,
-    };
     let output_grad_slice = output_grad.to_slice()?;
     let builder = rust_shaders::compute_pass(&format!(
         "activation::relu_backward_{}",
@@ -798,7 +797,7 @@ fn relu_backward(
     .float_slice_mut(input_grad.as_raw_slice_mut())?
     .float_slice(output_grad_slice.as_slice())?
     .push(n)?;
-    unsafe { builder.submit([ws, 1, 1]) }
+    unsafe { builder.submit([n, 1, 1]) }
 }
 
 #[derive(Autograd)]
@@ -1499,7 +1498,7 @@ mod tests {
         Ok(())
     }
 
-    #[cfg_attr(windows, ignore)]
+    #[cfg(feature = "device_tests_16")]
     #[tokio::test]
     async fn relu_bf16() -> Result<()> {
         relu::<bf16>().await
@@ -1561,7 +1560,7 @@ mod tests {
         Ok(())
     }
 
-    #[cfg_attr(windows, ignore)]
+    #[cfg(feature = "device_tests_16")]
     #[tokio::test]
     async fn relu_backward_bf16() -> Result<()> {
         relu_backward::<bf16>().await

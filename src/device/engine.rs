@@ -14,6 +14,7 @@ use dashmap::DashMap;
 use fxhash::FxBuildHasher;
 use once_cell::sync::OnceCell;
 use parking_lot::{Mutex, RwLock};
+use rspirv::spirv::Capability;
 #[cfg(feature = "profile")]
 use std::time::Duration;
 use std::{
@@ -48,7 +49,7 @@ use vulkano::{
     },
     device::{
         physical::{PhysicalDevice, PhysicalDeviceType},
-        Device, DeviceOwned, Features, Queue,
+        Device, DeviceExtensions, DeviceOwned, Features, Queue,
     },
     instance::{Instance, InstanceCreationError, InstanceExtensions, Version},
     memory::pool::StdMemoryPool,
@@ -127,6 +128,13 @@ fn physical_device_type_index(device_type: PhysicalDeviceType) -> u8 {
     }
 }
 
+fn optimal_device_extensions() -> DeviceExtensions {
+    DeviceExtensions {
+        khr_16bit_storage: true,
+        ..DeviceExtensions::none()
+    }
+}
+
 fn required_device_features() -> Features {
     Features { ..Features::none() }
 }
@@ -135,7 +143,18 @@ fn optimal_device_features() -> Features {
     Features {
         vulkan_memory_model: true,
         vulkan_memory_model_device_scope: true,
+        storage_buffer16_bit_access: true,
+        shader_int16: true,
         ..required_device_features()
+    }
+}
+
+fn supports_capability(c: Capability, f: &Features) -> bool {
+    use Capability::*;
+    match c {
+        Int16 => f.shader_int16,
+        StorageBuffer16BitAccess => f.storage_buffer16_bit_access,
+        _ => false,
     }
 }
 
@@ -191,14 +210,17 @@ impl Engine {
             .collect::<Vec<_>>();
         for queue_family in queue_families.iter() {
             if let &Ok((index, physical_device, compute_family)) = queue_family {
-                let device_extensions = physical_device.required_extensions();
+                let required_device_extensions = physical_device.required_extensions();
+                let supported_device_extensions = physical_device.supported_extensions();
+                let device_extensions = supported_device_extensions
+                    .intersection(&required_device_extensions.union(&optimal_device_extensions()));
                 let device_features = physical_device
                     .supported_features()
                     .intersection(&optimal_device_features());
                 let (device, mut queues) = Device::new(
                     physical_device,
                     &device_features,
-                    device_extensions,
+                    &device_extensions,
                     once((compute_family, 1.)),
                 )?;
                 let queue = queues.next().expect("Compute queue not found!");
@@ -233,6 +255,17 @@ impl Engine {
     }
     pub(super) fn index(&self) -> usize {
         self.index
+    }
+    pub(super) fn capabilities(&self) -> impl Iterator<Item = Capability> {
+        let features = self.device.enabled_features().clone();
+        use Capability::*;
+        [Int16, StorageBuffer16BitAccess]
+            .iter()
+            .copied()
+            .filter(move |c| supports_capability(*c, &features))
+    }
+    pub(super) fn supports_capability(&self, c: Capability) -> bool {
+        supports_capability(c, self.device.enabled_features())
     }
     pub(super) unsafe fn alloc(&self, len: usize) -> Result<Arc<StorageBuffer>> {
         self.storage_allocator.alloc(len)

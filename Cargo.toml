@@ -18,7 +18,7 @@ bytemuck = "1.7.2"
 hibitset = { version = "0.6.3", default-features = false }
 once_cell = "1.8.0"
 parking_lot = "0.11.1"
-rspirv = "0.7.0"
+rspirv = "0.11.0"
 walkdir = "2.3.2"
 
 [build-dependencies.serde]
@@ -33,7 +33,7 @@ hibitset = { version = "0.6.3", default-features = false }
 num-traits = "0.2.14"
 once_cell = "1.8.0"
 parking_lot = "0.11.1"
-rspirv = "0.7.0"
+rspirv = "0.11.0"
 smol = "1.2.5"
 thiserror = "1.0.23"
 tinyvec = "1.2.0"
@@ -114,6 +114,7 @@ bench = ["device_tests"]
 profile = []
 derive = ["autograph_derive"]
 device_tests = []
+device_tests_16 = ["device_tests"]
 full = ["iris", "mnist", "kmeans", "neural_network"]
 iris = ["ndarray"]
 kmeans = ["learn", "rand"]

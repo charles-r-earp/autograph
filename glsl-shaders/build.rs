@@ -466,8 +466,6 @@ fn glsl_kmeans(compiler: &mut Compiler) -> Result<()> {
     Ok(())
 }
 
-
-
 fn main() -> Result<()> {
     let mut compiler = Compiler::new().unwrap();
     glsl_accuracy(&mut compiler)?;

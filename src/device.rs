@@ -1,4 +1,5 @@
 use crate::{result::Result, shader::Module};
+use rspirv::spirv::Capability;
 use std::{
     fmt::{self, Debug},
     future::Future,
@@ -291,6 +292,12 @@ impl DeviceBase {
     fn index(&self) -> usize {
         self.engine.index()
     }
+    fn capabilities(&self) -> impl Iterator<Item = Capability> {
+        self.engine.capabilities()
+    }
+    fn supports_capability(&self, c: Capability) -> bool {
+        self.engine.supports_capability(c)
+    }
     unsafe fn alloc(&self, len: usize) -> Result<Arc<StorageBuffer>> {
         unsafe { self.engine.alloc(len) }
     }
@@ -365,6 +372,24 @@ impl Device {
                 fut?.await?;
             }
             Ok(())
+        }
+    }
+
+    // TODO: make capabilities / supports_capability pub
+    #[allow(dead_code)]
+    pub(crate) fn capabilities(&self) -> impl Iterator<Item = Capability> {
+        self.base
+            .as_ref()
+            .map(|device| device.capabilities())
+            .into_iter()
+            .flatten()
+    }
+    #[allow(dead_code)]
+    pub(crate) fn supports_capability(&self, c: Capability) -> bool {
+        if let Some(device) = self.base.as_ref() {
+            device.supports_capability(c)
+        } else {
+            false
         }
     }
 }
