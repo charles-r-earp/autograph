@@ -289,14 +289,19 @@ impl DeviceBase {
             engine: Engine::new()?,
         })
     }
+    fn from_index(index: usize) -> Result<Self> {
+        Ok(Self {
+            engine: Engine::from_index(index)?,
+        })
+    }
     fn index(&self) -> usize {
         self.engine.index()
     }
     fn capabilities(&self) -> impl Iterator<Item = Capability> {
         self.engine.capabilities()
     }
-    fn supports_capability(&self, c: Capability) -> bool {
-        self.engine.supports_capability(c)
+    fn has_capability(&self, c: Capability) -> bool {
+        self.engine.has_capability(c)
     }
     unsafe fn alloc(&self, len: usize) -> Result<Arc<StorageBuffer>> {
         unsafe { self.engine.alloc(len) }
@@ -345,8 +350,24 @@ pub struct Device {
 
 impl Device {
     /// Creates a device.
+    ///
+    /// This is a simple way to get the best device, in a portable way. Sorts devices by type (GPU's first), and other criteria.
+    ///
+    /// See [`.from_index()`] for an explicit alternative.
+    ///
+    /// **Errors**
+    /// - No device.
+    /// - The device could not be created.
     pub fn new() -> Result<Self> {
         Ok(Self::from(DeviceBase::new()?))
+    }
+    /// Creates a device at `index`.
+    ///
+    /// **Errors**
+    /// - The index is out of bounds.
+    /// - The device could not be created.
+    pub fn from_index(index: usize) -> Result<Self> {
+        Ok(Self::from(DeviceBase::from_index(index)?))
     }
     /// Returns a host device.
     ///
@@ -374,20 +395,44 @@ impl Device {
             Ok(())
         }
     }
-
-    // TODO: make capabilities / supports_capability pub
-    #[allow(dead_code)]
-    pub(crate) fn capabilities(&self) -> impl Iterator<Item = Capability> {
+    /// The index of the device.
+    ///
+    /// The host returns None.
+    pub fn index(&self) -> Option<usize> {
+        self.base.as_ref().map(DeviceBase::index)
+    }
+    /// The enabled [`Capability`]'s.
+    ///
+    /// This method is primarily for reflection / debugging. See [`.has_capability`].
+    ///
+    /// The host does have capabilities.
+    pub fn capabilities(&self) -> impl Iterator<Item = Capability> {
         self.base
             .as_ref()
             .map(|device| device.capabilities())
             .into_iter()
             .flatten()
     }
-    #[allow(dead_code)]
-    pub(crate) fn supports_capability(&self, c: Capability) -> bool {
+    /// Whether `capability` is enabled.
+    ///
+    /// See [`.has_capabilities`].
+    ///
+    /// The host does have capabilities.
+    pub fn has_capability(&self, capability: Capability) -> bool {
         if let Some(device) = self.base.as_ref() {
-            device.supports_capability(c)
+            device.has_capability(capability)
+        } else {
+            false
+        }
+    }
+    /// Whether `capabilities` are enabled.
+    ///
+    /// See [`.has_capability`].
+    ///
+    /// The host does have capabilities.
+    pub fn has_capabilities(&self, capabilities: impl IntoIterator<Item = Capability>) -> bool {
+        if let Some(device) = self.base.as_ref() {
+            capabilities.into_iter().all(|c| device.has_capability(c))
         } else {
             false
         }

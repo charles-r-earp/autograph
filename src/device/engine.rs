@@ -48,7 +48,7 @@ use vulkano::{
         pool::{standard::StdDescriptorPoolAlloc, DescriptorPool, DescriptorPoolAlloc},
     },
     device::{
-        physical::{PhysicalDevice, PhysicalDeviceType},
+        physical::{PhysicalDevice, PhysicalDeviceType, QueueFamily},
         Device, DeviceExtensions, DeviceOwned, Features, Queue,
     },
     instance::{Instance, InstanceCreationError, InstanceExtensions, Version},
@@ -149,12 +149,35 @@ fn optimal_device_features() -> Features {
     }
 }
 
-fn supports_capability(c: Capability, f: &Features) -> bool {
+fn has_capability(c: Capability, f: &Features) -> bool {
     use Capability::*;
     match c {
         Int16 => f.shader_int16,
         StorageBuffer16BitAccess => f.storage_buffer16_bit_access,
         _ => false,
+    }
+}
+
+fn compute_family<'a>(physical_device: &'a PhysicalDevice) -> Result<QueueFamily<'a>> {
+    if physical_device
+        .supported_features()
+        .is_superset_of(&required_device_features())
+    {
+        physical_device
+            .queue_families()
+            .find(|x| !x.supports_graphics() && x.supports_compute())
+            .or_else(|| {
+                physical_device
+                    .queue_families()
+                    .find(|x| x.supports_compute())
+            })
+            .ok_or_else(|| anyhow!("Device doesn't support compute!"))
+    } else {
+        Err(anyhow!(
+            "Device doesn't support required features! Supported features = {:#?}\nRequired features = {:#?}",
+            physical_device.supported_features(),
+            required_device_features()
+        ))
     }
 }
 
@@ -166,95 +189,75 @@ pub(super) struct Engine {
     compute_cache: DashMap<(ModuleId, EntryId), ComputeCache, FxBuildHasher>,
     op_sender: Sender<Op>,
     done: Arc<AtomicBool>,
-    index: usize,
 }
 
 impl Engine {
     pub(super) fn new() -> Result<Arc<Self>> {
         let instance = instance()?;
-        let mut physical_devices = PhysicalDevice::enumerate(&instance)
-            .enumerate()
-            .collect::<Vec<_>>();
+        let mut physical_devices = PhysicalDevice::enumerate(&instance).collect::<Vec<_>>();
         if physical_devices.is_empty() {
             bail!("No device!");
         }
-        physical_devices.sort_by_key(|x| physical_device_type_index(x.1.properties().device_type));
-        let queue_families = physical_devices
-            .into_iter()
-            .map(|(i, physical_device)| {
-                if physical_device
-                    .supported_features()
-                    .is_superset_of(&required_device_features())
-                {
-                    if let Some(compute_family) = physical_device
-                        .queue_families()
-                        .find(|x| !x.supports_graphics() && x.supports_compute())
-                        .or_else(|| {
-                            physical_device
-                                .queue_families()
-                                .find(|x| x.supports_compute())
-                        })
-                    {
-                        Ok((i, physical_device, compute_family))
-                    } else {
-                        Err(anyhow!("Device doesn't support compute!"))
-                    }
+        physical_devices.sort_by_key(|x| physical_device_type_index(x.properties().device_type));
+        let (index, compute_family) = physical_devices
+            .iter()
+            .find_map(|physical_device| {
+                if let Ok(compute_family) = compute_family(physical_device) {
+                    Some((physical_device.index(), Ok(compute_family)))
                 } else {
-                    Err(anyhow!(
-                        "Device doesn't support required features! Supported features = {:#?}\nRequired features = {:#?}",
-                        physical_device.supported_features(),
-                        required_device_features()
-                    ))
+                    None
                 }
             })
-            .collect::<Vec<_>>();
-        for queue_family in queue_families.iter() {
-            if let &Ok((index, physical_device, compute_family)) = queue_family {
-                let required_device_extensions = physical_device.required_extensions();
-                let supported_device_extensions = physical_device.supported_extensions();
-                let device_extensions = supported_device_extensions
-                    .intersection(&required_device_extensions.union(&optimal_device_extensions()));
-                let device_features = physical_device
-                    .supported_features()
-                    .intersection(&optimal_device_features());
-                let (device, mut queues) = Device::new(
-                    physical_device,
-                    &device_features,
-                    &device_extensions,
-                    once((compute_family, 1.)),
-                )?;
-                let queue = queues.next().expect("Compute queue not found!");
-                let upload_buffer_pool = CpuBufferPool::upload(device.clone());
-                let initial_chunks = 1;
-                let storage_allocator =
-                    StorageAllocator::with_initial_chunks(device.clone(), initial_chunks)?;
-                let shader_modules = DashMap::<_, _, FxBuildHasher>::default();
-                let compute_cache = DashMap::<_, _, FxBuildHasher>::default();
-                let (op_sender, op_receiver) = unbounded();
-                let done = Arc::new(AtomicBool::new(false));
-                let mut runner = Runner::new(queue, op_receiver, done.clone())?;
-                std::thread::spawn(move || runner.run());
-                let engine = Arc::new(Self {
-                    index,
-                    device,
-                    upload_buffer_pool,
-                    storage_allocator,
-                    shader_modules,
-                    compute_cache,
-                    op_sender,
-                    done,
-                });
-                return Ok(engine);
-            }
-        }
-        let err = queue_families
-            .into_iter()
-            .next()
-            .expect("No queue families!");
-        Err(err.expect_err("Expected unsupported device error!"))
+            .unwrap_or_else(|| {
+                let physical_device = physical_devices.first().unwrap();
+                (physical_device.index(), compute_family(physical_device))
+            });
+        let physical_device = PhysicalDevice::from_index(&instance, index).unwrap();
+        Self::launch(physical_device, compute_family?)
+    }
+    pub(super) fn from_index(index: usize) -> Result<Arc<Self>> {
+        let instance = instance()?;
+        let physical_device = PhysicalDevice::from_index(&instance, index).unwrap();
+        let compute_family = compute_family(&physical_device)?;
+        Self::launch(physical_device, compute_family)
+    }
+    fn launch(physical_device: PhysicalDevice, compute_family: QueueFamily) -> Result<Arc<Self>> {
+        let required_device_extensions = physical_device.required_extensions();
+        let supported_device_extensions = physical_device.supported_extensions();
+        let device_extensions = supported_device_extensions
+            .intersection(&required_device_extensions.union(&optimal_device_extensions()));
+        let device_features = physical_device
+            .supported_features()
+            .intersection(&optimal_device_features());
+        let (device, mut queues) = Device::new(
+            physical_device,
+            &device_features,
+            &device_extensions,
+            once((compute_family, 1.)),
+        )?;
+        let queue = queues.next().expect("Compute queue not found!");
+        let upload_buffer_pool = CpuBufferPool::upload(device.clone());
+        let initial_chunks = 1;
+        let storage_allocator =
+            StorageAllocator::with_initial_chunks(device.clone(), initial_chunks)?;
+        let shader_modules = DashMap::<_, _, FxBuildHasher>::default();
+        let compute_cache = DashMap::<_, _, FxBuildHasher>::default();
+        let (op_sender, op_receiver) = unbounded();
+        let done = Arc::new(AtomicBool::new(false));
+        let mut runner = Runner::new(queue, op_receiver, done.clone())?;
+        std::thread::spawn(move || runner.run());
+        Ok(Arc::new(Self {
+            device,
+            upload_buffer_pool,
+            storage_allocator,
+            shader_modules,
+            compute_cache,
+            op_sender,
+            done,
+        }))
     }
     pub(super) fn index(&self) -> usize {
-        self.index
+        self.device.physical_device().index()
     }
     pub(super) fn capabilities(&self) -> impl Iterator<Item = Capability> {
         let features = self.device.enabled_features().clone();
@@ -262,10 +265,10 @@ impl Engine {
         [Int16, StorageBuffer16BitAccess]
             .iter()
             .copied()
-            .filter(move |c| supports_capability(*c, &features))
+            .filter(move |c| has_capability(*c, &features))
     }
-    pub(super) fn supports_capability(&self, c: Capability) -> bool {
-        supports_capability(c, self.device.enabled_features())
+    pub(super) fn has_capability(&self, c: Capability) -> bool {
+        has_capability(c, self.device.enabled_features())
     }
     pub(super) unsafe fn alloc(&self, len: usize) -> Result<Arc<StorageBuffer>> {
         self.storage_allocator.alloc(len)

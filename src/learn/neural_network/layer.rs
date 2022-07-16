@@ -740,13 +740,12 @@ fn relu(input: &FloatTensorViewD) -> Result<FloatTensorD> {
     let float_type = input.float_type();
     let device = input.device();
     if float_type == FloatType::BF16
-        && (!device.supports_capability(Capability::Int16)
-            || !device.supports_capability(Capability::StorageBuffer16BitAccess))
+        && !device.has_capabilities([Capability::Int16, Capability::StorageBuffer16BitAccess])
     {
         bail!(
             "bf16 relu requires capabilities Int16={} and StorageBuffer16BitAccess={}",
-            device.supports_capability(Capability::Int16),
-            device.supports_capability(Capability::StorageBuffer16BitAccess)
+            device.has_capability(Capability::Int16),
+            device.has_capability(Capability::StorageBuffer16BitAccess)
         )
     }
     let dim = input.raw_dim();
@@ -778,13 +777,12 @@ fn relu_backward(
     let float_type = input.float_type();
     let device = input.device();
     if float_type == FloatType::BF16
-        && (!device.supports_capability(Capability::Int16)
-            || !device.supports_capability(Capability::StorageBuffer16BitAccess))
+        && !device.has_capabilities([Capability::Int16, Capability::StorageBuffer16BitAccess])
     {
         bail!(
             "bf16 relu_backward requires capabilities Int16={} and StorageBuffer16BitAccess={}",
-            device.supports_capability(Capability::Int16),
-            device.supports_capability(Capability::StorageBuffer16BitAccess)
+            device.has_capability(Capability::Int16),
+            device.has_capability(Capability::StorageBuffer16BitAccess)
         )
     }
     let n = input.len() as u32;
