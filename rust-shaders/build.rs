@@ -41,8 +41,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     let result = SpirvBuilder::new("shaders", "spirv-unknown-vulkan1.1")
         .capability(Capability::VulkanMemoryModelDeviceScopeKHR)
         .capability(Capability::Int16)
-        .capability(Capability::StorageBuffer16BitAccess)
-        .extension("VK_KHR_16bit_storage")
+        // TODO: Ideally use features and loop over each feature combination
+        //.capability(Capability::StorageBuffer16BitAccess)
+        // TOOD: This fails to run.
+        //.extension("VK_KHR_16bit_storage")
         .multimodule(true)
         .print_metadata(MetadataPrintout::DependencyOnly)
         .build()?;
