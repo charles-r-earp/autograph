@@ -88,9 +88,20 @@ where
     }
 }
 
-fn is_standard_layout<D: Dimension>(dim: &D, strides: &D, offset: Option<NonZeroUsize>) -> bool {
+fn is_contiguous<D: Dimension>(dim: &D, strides: &D, offset: usize) -> bool {
+    if offset > 0 {
+        return false;
+    }
     let zero_strides = strides.slice().iter().any(|s| *s == 0);
-    (zero_strides || strides == &dim.default_strides()) && offset.is_none()
+    zero_strides || strides == &dim.default_strides() || strides == &dim.fortran_strides()
+}
+
+fn is_standard_layout<D: Dimension>(dim: &D, strides: &D, offset: usize) -> bool {
+    if offset > 0 {
+        return false;
+    }
+    let zero_strides = strides.slice().iter().any(|s| *s == 0);
+    (zero_strides || strides == &dim.default_strides()) 
 }
 
 // adapted from https://docs.rs/ndarray/0.15.3/ndarray/struct.ArrayBase.html#method.permuted_axes
@@ -123,7 +134,7 @@ pub struct TensorBase<S: Data, D: Dimension> {
     dim: D,
     strides: D,
     buffer: BufferBase<S>,
-    offset: Option<NonZeroUsize>,
+    offset: usize,
 }
 
 /// Owned Tensor
@@ -250,7 +261,7 @@ impl<T: Scalar, S: DataOwned<Elem = T>, D: Dimension> TensorBase<S, D> {
             dim,
             strides,
             buffer,
-            offset: None,
+            offset: 0,
         })
     }
     /// Creates a tensor on `device` with `shape` filled with `elem`.
@@ -269,7 +280,7 @@ impl<T: Scalar, S: DataOwned<Elem = T>, D: Dimension> TensorBase<S, D> {
             dim,
             strides,
             buffer,
-            offset: None,
+            offset: 0,
         })
     }
     /// Creates a tensor on `device` with `shape` filled with 0's.
@@ -375,7 +386,7 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
         E: IntoDimension,
     {
         let (dim, strides) = into_shape(&self.dim, &self.strides, shape)?;
-        assert!(self.offset.is_none());
+        assert_eq!(self.offset, 0);
         Ok(TensorBase {
             dim,
             strides,
@@ -426,6 +437,12 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
             offset: self.offset,
         }
     }
+    /// Whether the tensor is contiguous.
+    ///
+    /// Contiguous is either C (Standard) or Fortran layout. 
+    pub fn is_contiguous(&self) -> bool {
+        is_contiguous(&self.dim, &self.strides, self.offset)
+    }
     /// Whether the tensor is standard layout.
     ///
     /// In standard layout, the strides increase from right to left by the product of each dimension.
@@ -446,14 +463,12 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     where
         A: IntoDimension<Dim = D>,
     {
-        todo!()
-        /*
         let (dim, strides) = permuted_axes(self.dim, self.strides, axes.into_dimension());
         Self {
             dim,
             strides,
-            data: self.data,
-        }*/
+            .. self
+        }
     }
     /// Reverses (transposes) the axes of the tensor.
     pub fn reversed_axes(mut self) -> Self {
@@ -463,7 +478,7 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     }
     /// Retunrs a view with reversed (transposed) axes.
     pub fn t(&self) -> TensorView<T, D> {
-        todo!() //self.view().reversed_axes()
+        self.view().reversed_axes()
     }
     /*
     /// Returns a [`CowBuffer`] in standard layout.
@@ -489,9 +504,8 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     /// # Note
     /// If the tensor is not standard layout (C or RowMajor), this may not be what you want. See [`to_slice()`](TensorBase::to_slice()).
     pub fn as_raw_slice(&self) -> Slice<T> {
-        if let Some(offset) = self.offset {
-            let offset = offset.get();
-            self.buffer.slice(offset..self.dim.size()).unwrap()
+        if self.offset > 0 {
+            self.buffer.slice(self.offset..self.dim.size()).unwrap()
         } else {
             self.buffer.as_slice()
         }
@@ -504,10 +518,9 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     where
         S: DataMut,
     {
-        if let Some(offset) = self.offset {
-            let offset = offset.get();
+        if self.offset > 0 {
             self.buffer
-                .slice_mut(offset..offset + self.dim.size())
+                .slice_mut(self.offset..self.offset + self.dim.size())
                 .unwrap()
         } else {
             self.buffer.as_slice_mut()
@@ -525,14 +538,15 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     {
         if device == self.device() {
             self.into_owned()
+        } else if !self.is_contiguous() {
+            todo!()
         } else {
-            assert!(self.is_standard_layout());
             let buffer = self.buffer.to_device(device)?;
             Ok(Tensor {
                 dim: self.dim,
                 strides: self.strides,
                 buffer,
-                offset: None,
+                offset: 0,
             })
         }
     }
@@ -562,12 +576,14 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     where
         T: Copy,
     {
-        assert!(self.is_standard_layout());
+        if !self.is_contiguous() {
+           todo!(); 
+        }
         Ok(TensorBase {
             dim: self.dim,
             strides: self.strides,
             buffer: self.buffer.into_owned()?,
-            offset: None,
+            offset: 0,
         })
     }
     /*
@@ -628,14 +644,16 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     /// **errors**
     /// See [`Buffer::into_vec()`].
     pub fn into_array(self) -> Result<Array<T, D>> {
-        assert!(self.is_standard_layout());
+        if !self.is_contiguous() {
+            todo!()
+        }
         let vec = self.buffer.into_vec()?;
-        Ok(Array::from_shape_vec(self.dim, vec).unwrap())
+        Ok(Array::from_shape_vec(self.dim.clone().strides(self.strides.clone()), vec).unwrap())
     }
     /// Returns the tensor as an array if on the host and standard layout
     // TODO: impl if contiguous
     pub fn as_array(&self) -> Option<ArrayView<T, D>> {
-        if self.is_standard_layout() {
+        if self.is_contiguous() {
             if let Some(host_slice) = self.buffer.as_host_slice() {
                 return Some(
                     ArrayView::from_shape(
@@ -652,7 +670,7 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     where
         S: DataMut,
     {
-        if self.is_standard_layout() {
+        if self.is_contiguous() {
             if let Some(host_slice) = self.buffer.as_host_slice_mut() {
                 return Some(
                     ArrayViewMut::from_shape(
@@ -676,7 +694,7 @@ impl<T: Scalar, S: DataOwned<Elem = T>> From<Buffer<T>> for TensorBase<S, Ix1> {
             dim,
             strides,
             buffer,
-            offset: None,
+            offset: 0,
         }
     }
 }
@@ -699,7 +717,7 @@ impl<T: Scalar, S: DataOwned<Elem = T>, D: Dimension> From<Array<T, D>> for Tens
             dim,
             strides,
             buffer,
-            offset: None,
+            offset: 0,
         }
     }
 }
@@ -714,7 +732,7 @@ impl<'a, T: Scalar, D: Dimension> From<ArrayView<'a, T, D>> for CowTensor<'a, T,
                 dim,
                 strides,
                 buffer,
-                offset: None,
+                offset: 0,
             }
         } else {
             Self::from(array.to_owned())

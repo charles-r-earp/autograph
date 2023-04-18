@@ -27,8 +27,6 @@ fn main() {}
 #[cfg(not(target_arch = "wasm32"))]
 fn main() {
     let mut args = Arguments::from_args();
-    args.test_threads.replace(1);
-    dbg!(args.test_threads);
     let tests = if cfg!(feature = "device") && !cfg!(miri) {
         let devices: Vec<_> = [Device::builder().build().unwrap()]
             .into_iter()
@@ -186,18 +184,23 @@ fn tensor_from_array<D: Dimension>(device: Device, x: Array<u32, D>) {
 
 mod linalg {
     use super::*;
+    use std::fmt::{self, Display};
     use approx::assert_relative_eq;
     use autograph::tensor::CowTensor;
     use ndarray::{linalg::Dot, Array2};
 
     pub fn linalg_tests(device: &Device) -> Vec<Trial> {
         let mut tests = Vec::new();
-        for n in [2, 4, 8, 16, 32] {
+        for n in [2, 4, 5, 8, 16, 32, 64, 128] {
             let [m, k, n] = [n; 3];
-            let name = format!("tensor_dot_f32_m{m}_k{k}_n{n}_nn");
-            tests.push(device_test(device, &name, move |device| {
-                tensor_dot::<f32>(device, [m, k, n], [Transpose::N; 2])
-            }));
+            use Transpose::*;
+            for (ta, tb) in [(N, N), (T, N), (N, T), (T, T)] {
+                
+                let name = format!("tensor_dot_f32_m{m}_k{k}_n{n}_{ta}{tb}");
+                tests.push(device_test(device, &name, move |device| {
+                    tensor_dot::<f32>(device, [m, k, n], [ta, tb])
+                }));
+            }
         }
         tests
     }
@@ -215,6 +218,16 @@ mod linalg {
     enum Transpose {
         N,
         T,
+    }
+    
+    impl Display for Transpose {
+        fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            let c = match self {
+                Self::N => 'n',
+                Self::T => 't',
+            };
+            write!(f, "{c}")
+        }
     }
 
     fn tensor_dot<T: Scalar + From<u8>>(

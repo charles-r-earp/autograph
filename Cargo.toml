@@ -33,7 +33,7 @@ autotests = false
 autobenches = false
 
 [dependencies]
-krnl = { path = "../krnl" } # git = "https://github.com/charles-r-earp/krnl" }
+krnl = { git = "https://github.com/charles-r-earp/krnl" }
 anyhow = "1.0.37"
 ndarray = { version = "0.15.6", default-features = false, features = ["serde"] }
 rand = { version = "0.8.4", optional = true }

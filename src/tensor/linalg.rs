@@ -160,7 +160,7 @@ mod kernels {
                         for j in 0..4 {
                             let tile_n = j as u32 * tsn + thread_n;
                             if tile_n < GN {
-                                let global_n = group_n * TN + tile_n;
+                                let global_n = group_n * GN + tile_n;
                                 unsafe {
                                     *b_group
                                         .unsafe_index_mut((tile_k * (GN + 1) + tile_n) as usize) =
@@ -323,20 +323,14 @@ fn gemm<T: Scalar>(
 
     let offset_a = a
         .offset
-        .map(NonZeroUsize::get)
-        .unwrap_or_default()
         .to_u32()
         .unwrap();
     let offset_b = b
         .offset
-        .map(NonZeroUsize::get)
-        .unwrap_or_default()
         .to_u32()
         .unwrap();
     let offset_c = c
         .offset
-        .map(NonZeroUsize::get)
-        .unwrap_or_default()
         .to_u32()
         .unwrap();
 
