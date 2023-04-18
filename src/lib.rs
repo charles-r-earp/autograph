@@ -319,61 +319,28 @@ Will create a file "autograph_profile_summary.txt" like this:
 ### Note
 Specify the profile feature for autograph if it is a dependency as `autograph/profile`.
 */
-
-#![cfg_attr(feature = "profile", feature(lang_items))] // Hack to ensure nightly only for now.
-#![cfg_attr(feature = "bench", feature(test))]
-#[cfg(feature = "bench")]
-extern crate test;
+#![forbid(unsafe_op_in_unsafe_fn)]
+#![allow(warnings)]
 
 #[cfg(feature = "derive")]
 #[allow(unused_imports)]
 #[macro_use]
 extern crate autograph_derive;
 
-/// Result type.
-pub mod result {
-    pub use anyhow::Result;
-}
-/// Error type.
-pub mod error {
-    pub use anyhow::Error;
-}
-/// Devices.
-pub mod device;
-
-/// Shaders
-pub mod shader;
+pub extern crate krnl;
+pub use krnl::{buffer, device, scalar};
+pub extern crate anyhow;
 
 mod util;
 
-#[allow(unused)]
-mod glsl_shaders;
-mod rust_shaders;
-
-/// Scalar types.
-pub mod scalar;
-
-// Linear Algebra.
-#[cfg(feature = "tensor")]
-mod linalg;
-// Numerical operations.
-#[cfg(feature = "tensor")]
-mod ops;
-
-/// Buffers.
-pub mod buffer;
-
 /// Tensors.
-#[cfg(feature = "tensor")]
 pub mod tensor;
 
-#[doc(hidden)]
-#[cfg(feature = "tensor")]
-pub use tensor::float as float_tensor;
-
+/*
 /// Datasets.
 pub mod dataset;
 
 /// Machine Learning.
 #[cfg(feature = "learn")]
 pub mod learn;
+*/

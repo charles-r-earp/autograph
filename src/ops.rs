@@ -1,6 +1,15 @@
 use crate::result::Result;
 use ndarray::{Dimension, IntoDimension};
 
+
+/// Dot (matrix) product.
+pub(crate) trait Dot<R> {
+    /// Type of the output.
+    type Output;
+    /// Computes the dot product `self` * `rhs`.
+    fn dot(&self, rhs: &R) -> Result<Self::Output>;
+}
+
 /*
 pub(crate) trait Add<R>: Sized {
     type Output;
@@ -11,7 +20,7 @@ pub(crate) trait Assign<R> {
     fn assign(&mut self, rhs: R) -> Result<()>;
 }*/
 
-pub(crate) trait AddAssign<R> /*: Add<R> + Assign<R>*/ {
+/*pub(crate) trait AddAssign<R> /*: Add<R> + Assign<R>*/ {
     fn add_assign(&mut self, rhs: &R) -> Result<()>;
 }
 
@@ -115,3 +124,4 @@ pub(crate) trait Col2Im<D: Dimension> {
         args: &KernelArgs<D>,
     ) -> Result<Self::Output>;
 }
+*/

@@ -1,129 +1,85 @@
-[package]
+[workspace]
+
+[workspace.package]
+version = "0.2.0-alpha"
 authors = ["Charles R Earp <charles.r.earp@gmail.com>"]
-categories = ["science"]
-description = "A machine learning library for Rust."
-edition = "2018"
-homepage = "https://github.com/charles-r-earp/autograph"
-keywords = ["neural-networks", "machine-learning", "deep-learning", "autograd", "gpu"]
-license = "MIT/Apache-2.0"
-name = "autograph"
+edition = "2021"
+rust-version = "1.68.0"
+documentation = "https://docs.rs/krnl"
 readme = "README.md"
+homepage = "https://github.com/charles-r-earp/autograph"
 repository = "https://github.com/charles-r-earp/autograph"
-version = "0.1.1"
+license = "MIT OR Apache-2.0"
+publish = false
 
-[build-dependencies]
-anyhow = "1.0.42"
-bincode = "1.3.3"
-bytemuck = "1.7.2"
-hibitset = { version = "0.6.3", default-features = false }
-once_cell = "1.8.0"
-parking_lot = "0.11.1"
-rspirv = "0.11.0"
-walkdir = "2.3.2"
-
-[build-dependencies.serde]
-features = ["derive"]
-version = "1.0.126"
+[package]
+name = "autograph"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "A machine learning library for Rust."
+documentation.workspace = true
+readme.workspace = true
+homepage.workspace = true
+repository.workspace = true
+license.workspace = true
+keywords = ["neural-networks", "machine-learning", "deep-learning", "autograd", "gpu"]
+categories = ["hardware-support", "science", "mathematics"]
+publish.workspace = true
+autobins = false 
+autoexamples = false
+autotests = false
+autobenches = false
 
 [dependencies]
+krnl = { path = "../krnl" } # git = "https://github.com/charles-r-earp/krnl" }
 anyhow = "1.0.37"
-bincode = "1.3.3"
+ndarray = { version = "0.15.6", default-features = false, features = ["serde"] }
+rand = { version = "0.8.4", optional = true }
+serde = { version = "1.0.126", features = ["derive", "rc"] }
+#bincode = "1.3.3"
 derive_more = "0.99.11"
-hibitset = { version = "0.6.3", default-features = false }
-num-traits = "0.2.14"
-once_cell = "1.8.0"
-parking_lot = "0.11.1"
-rspirv = "0.11.0"
-smol = "1.2.5"
+#hibitset = { version = "0.6.3", default-features = false }
+#num-traits = "0.2.14"
+#once_cell = "1.8.0"
+#parking_lot = "0.11.1"
 thiserror = "1.0.23"
-tinyvec = "1.2.0"
+#tinyvec = "1.2.0"
 approx = "0.5.0"
 prettytable-rs = "0.8.0"
-vulkano = "0.27.1"
-dashmap = "5.0.0"
-fxhash = "0.2.1"
-crossbeam-channel = "0.5.2"
-
-[dependencies.async-trait]
-optional = true
-version = "0.1.51"
-
-[dependencies.autograph_derive]
-optional = true
-version = "0.1.0"
-path = "autograph_derive"
-
-[dependencies.bytemuck]
-features = ["derive"]
-version = "1.4.1"
-
-[dependencies.byteorder]
-optional = true
-version = "1.4.3"
-
-[dependencies.dirs]
-optional = true
-version = "3.0.2"
-
-[dependencies.downloader]
-optional = true
-version = "0.2.6"
-
-[dependencies.flate2]
-optional = true
-version = "1.0.20"
-
-[dependencies.half]
-features = ["num-traits", "bytemuck", "serde"]
-version = "1.8.2"
-
-[dependencies.http]
-optional = true
-version = "0.2.4"
-
-[dependencies.ndarray]
-default-features = false
-features = ["serde"]
-optional = true
-version = "0.15.3"
-
-[dependencies.rand]
-optional = true
-version = "0.8.4"
-
-[dependencies.serde]
-features = ["derive", "rc"]
-version = "1.0.126"
+bytemuck = "1.4.1"
+byteorder = { version = "1.4.3", optional = true }
+dirs = { version = "3.0.2", optional = true }
+downloader = { version = "0.2.6", optional = true }
+flate2 = { version = "1.0.20", optional = true }
+half = { version = "1.8.2", features = ["num-traits", "bytemuck", "serde"] }
+http = { version = "0.2.4", optional = true }
+paste = "1.0.7"
+dry = "0.1.1"
+crunchy = { version = "0.2.2", optional = true }
+static_assertions = "1.1.0"
 
 [dev-dependencies]
 approx = "0.4.0"
-rusty-hook = "0.11.2"
-spirv_cross = { version = "0.23.1", features = ["msl"] }
-paste = "1.0.7"
 
-[dev-dependencies.ndarray]
-features = ["approx"]
-version = "0.15.3"
+ndarray = { version = "0.15.3", features = ["approx"] }
 
-[dev-dependencies.tokio]
-features = ["full"]
-version = "1.14.0"
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+libtest-mimic = "0.6.0"
+rayon = "1.7.0"
 
 [features]
-bench = ["device_tests"]
-profile = []
-derive = ["autograph_derive"]
-device_tests = []
-device_tests_16 = ["device_tests"]
-full = ["iris", "mnist", "kmeans", "neural_network"]
-iris = ["ndarray"]
-kmeans = ["learn", "rand"]
-mnist = ["ndarray", "dirs", "flate2", "byteorder", "downloader", "http"]
-neural_network = ["learn", "rand", "async-trait", "derive"]
-learn = ["tensor"]
-tensor = ["ndarray"]
+default = ["device"]
+device = ["krnl/device", "crunchy"]
 
-[target."cfg(any(target_os = \"ios\", target_os = \"macos\"))"]
-[target."cfg(any(target_os = \"ios\", target_os = \"macos\"))".dependencies]
-ash-molten = { version = "0.12.0", features = ["pre-built"] }
-ash = "0.33.3"
+[package.metadata.krnlc.dependencies]
+dry = {}
+paste = {}
+crunchy = { default-features = false, features = ["limit_64"] }
+static_assertions = {}
+
+[[test]]
+name = "integration_tests"
+path = "tests/integration_tests.rs"
+harness = false

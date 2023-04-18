@@ -1,7 +1,13 @@
 use super::*;
-use crate::linalg::{Dot, DotAcc, DotBias};
-use ndarray::Axis;
+use krnl::macros::module;
+#[cfg(feature = "device")]
+use krnl::{
+    buffer::{ScalarSlice, ScalarSliceMut},
+    krnl_core::num_traits::ToPrimitive,
+};
+use ndarray::{linalg::Dot, Axis};
 
+/*
 fn c_beta<T: Scalar, D: Dimension>(beta: T, c: &mut TensorViewMut<T, D>) -> Result<()> {
     let n = c.len() as u32;
     let builder = crate::rust_shaders::compute_pass("linalg::c_beta_f32")?
@@ -26,7 +32,246 @@ fn bias_impl<T: Scalar>(bias: &TensorView1<T>, c: &mut TensorViewMut2<T>) -> Res
         .push([bs as u32, oc as u32])?;
     unsafe { builder.submit([(bs * oc) as u32, 1, 1]) }
 }
+*/
 
+#[cfg(feature = "device")]
+#[module]
+mod kernels {
+    #[cfg(target_arch = "spirv")]
+    use crunchy::unroll;
+    #[cfg(not(target_arch = "spirv"))]
+    use krnl::krnl_core;
+    use krnl_core::macros::kernel;
+    #[cfg(target_arch = "spirv")]
+    use krnl_core::{
+        buffer::UnsafeIndex, spirv_std::arch::workgroup_memory_barrier as group_barrier,
+    };
+    #[cfg(target_arch = "spirv")]
+    use static_assertions::const_assert_eq;
+
+    pub const GEMM_THREAD_TILE_MAX_M: u32 = 4;
+    pub const GEMM_THREAD_TILE_MAX_K: u32 = 64;
+    pub const GEMM_THREAD_TILE_MAX_N: u32 = 4;
+
+    #[kernel(threads(256))]
+    pub unsafe fn gemm_f32<
+        const M: u32,
+        const K: u32,
+        const N: u32,
+        // Strides
+        const RSA: i32,
+        const CSA: i32,
+        const RSB: i32,
+        const CSB: i32,
+        const RSC: i32,
+        const CSC: i32,
+        // Group Tile
+        const GM: u32,
+        const GK: u32,
+        const GN: u32,
+        // Thread tile
+        const TM: u32,
+        const TK: u32,
+        const TN: u32,
+    >(
+        alpha: f32,
+        #[global] a: Slice<f32>,
+        offset_a: u32,
+        #[group] a_group: UnsafeSLice<f32, { ((GM + 1) * GK) as usize }>,
+        #[global] b: Slice<f32>,
+        offset_b: u32,
+        #[group] b_group: UnsafeSlice<f32, { (GK * (GN + 1)) as usize }>,
+        beta: f32,
+        #[global] c: UnsafeSlice<f32>,
+        offset_c: u32,
+        n_groups_k: u32,
+    ) {
+        // Threads
+        let tsm = GM / TM;
+        let tsk = GK / TK;
+        let tsn = GN / TN;
+
+        let n_groups_n = N / GN + (N % GN != 0) as u32;
+
+        let group_id = kernel.group_id();
+        let group_mn = group_id / n_groups_k;
+        let group_k = group_id % n_groups_k;
+        let group_m = group_mn / n_groups_n;
+        let group_n = group_mn % n_groups_n;
+
+        let threads = kernel.threads();
+        let thread_id = kernel.thread_id();
+        let thread_k = thread_id / (tsm * tsn);
+        let thread_mn = thread_id % (tsm * tsn);
+        let thread_m = thread_mn / tsn;
+        let thread_n = thread_mn % tsn;
+
+        let global_unroll = n_groups_k * GK;
+
+        let mut a_thread = <[f32; GEMM_THREAD_TILE_MAX_M as usize]>::default();
+        let mut b_thread = <[f32; GEMM_THREAD_TILE_MAX_N as usize]>::default();
+        let mut c_thread =
+            <[f32; (GEMM_THREAD_TILE_MAX_M * GEMM_THREAD_TILE_MAX_N) as usize]>::default();
+
+        let mut global_k = group_k * GK;
+
+        while global_k < K {
+            {
+                // load a
+                let thread_k = thread_id / 16;
+                let thread_m = thread_id % 16;
+                let tsk = 16;
+                let tsm = 16;
+                for u in 0..4 {
+                    let tile_k = u as u32 * tsk + thread_k;
+                    if tile_k < GK {
+                        let global_k = global_k + tile_k;
+                        for i in 0..4 {
+                            let tile_m = i as u32 * tsm + thread_m;
+                            if tile_m < GM {
+                                let global_m = group_m * GM + tile_m;
+                                unsafe {
+                                    *a_group
+                                        .unsafe_index_mut((tile_m + tile_k * (GM + 1)) as usize) =
+                                        if global_m < M && global_k < K {
+                                            a[(global_m as i32 * RSA
+                                                + global_k as i32 * CSA
+                                                + offset_a as i32)
+                                                as usize]
+                                        } else {
+                                            Default::default()
+                                        };
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            {
+                // load b
+                let thread_k = thread_id / 16;
+                let thread_n = thread_id % 16;
+                let tsk = 16;
+                let tsn = 16;
+                for u in 0..4 {
+                    let tile_k = u as u32 * tsk + thread_k;
+                    if tile_k < GK {
+                        let global_k = global_k + tile_k;
+                        for j in 0..4 {
+                            let tile_n = j as u32 * tsn + thread_n;
+                            if tile_n < GN {
+                                let global_n = group_n * TN + tile_n;
+                                unsafe {
+                                    *b_group
+                                        .unsafe_index_mut((tile_k * (GN + 1) + tile_n) as usize) =
+                                        if global_k < K && global_n < N {
+                                            b[(global_k as i32 * RSB
+                                                + global_n as i32 * CSB
+                                                + offset_b as i32)
+                                                as usize]
+                                        } else {
+                                            Default::default()
+                                        };
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            const_assert_eq!(GEMM_THREAD_TILE_MAX_M, 4);
+            const_assert_eq!(GEMM_THREAD_TILE_MAX_K, 64);
+            const_assert_eq!(GEMM_THREAD_TILE_MAX_N, 4);
+
+            unsafe {
+                group_barrier();
+            }
+
+            for u in 0..TK {
+                unroll! {
+                    for i_ in 0..4 {
+                        let i = i_ as u32;
+                        if i < TM {
+                            unsafe {
+                                a_thread[i as usize] = *a_group.unsafe_index(
+                                    ((i * tsm + thread_m) + (u * tsk + thread_k) * (GM + 1))
+                                        as usize,
+                                );
+                            }
+                        }
+                    }
+                }
+                unroll! {
+                    for j_ in 0..4 {
+                        let j = j_ as u32;
+                        if j < TN {
+                            unsafe {
+                                b_thread[j as usize] = *b_group.unsafe_index(
+                                    ((u * tsk + thread_k) * (GN + 1) + (j * tsn + thread_n))
+                                        as usize,
+                                );
+                            }
+                        }
+                    }
+                }
+                unroll! {
+                    for i_ in 0..4 {
+                        let i = i_ as u32;
+                        if i < TM {
+                            unroll! {
+                                for j_ in 0..4 {
+                                    let j = j_ as u32;
+                                    if j < TN {
+                                        c_thread[(i * TN + j) as usize] +=
+                                            a_thread[i as usize] * b_thread[j as usize];
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            unsafe {
+                group_barrier();
+            }
+
+            global_k += global_unroll;
+        }
+
+        const_assert_eq!(GEMM_THREAD_TILE_MAX_M, 4);
+        const_assert_eq!(GEMM_THREAD_TILE_MAX_N, 4);
+        unroll! {
+            for i_ in 0..4 {
+                let i = i_ as u32;
+                if i < TM {
+                    unroll! {
+                        for j_ in 0..4 {
+                            let j = j_ as u32;
+                            if j < TN {
+                                let row = group_m * GM + i * tsm + thread_m;
+                                let col = group_n * GN + j * tsn + thread_n;
+                                let idx = ((row as i32 * RSC + col as i32 * CSC + offset_c as i32) as u32
+                                    * n_groups_k
+                                    * tsk
+                                    + group_k * tsk
+                                    + thread_k) as usize;
+                                if row < M && col < N {
+                                    unsafe {
+                                        *c.unsafe_index_mut(idx) = alpha * c_thread[(i * TN + j) as usize]
+                                            + beta * *c.unsafe_index(idx);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(feature = "device")]
 #[allow(clippy::too_many_arguments, clippy::many_single_char_names)]
 fn gemm<T: Scalar>(
     alpha: T,
@@ -37,8 +282,8 @@ fn gemm<T: Scalar>(
 ) -> Result<()> {
     use ScalarType::*;
 
-    if !matches!(T::scalar_type(), U32 | I32 | F32) {
-        bail!("{} dot not implemented!", elem_type_name::<T>());
+    if !matches!(T::scalar_type(), F32) {
+        bail!("{} dot not implemented!", T::scalar_type().name());
     }
 
     /*
@@ -63,27 +308,42 @@ fn gemm<T: Scalar>(
         bail!("b_cols != c_rows, {} != {}", n, n2);
     }
 
-    let m = m as u32;
-    let k = k as u32;
-    let n = n as u32;
+    let m = m.to_u32().unwrap();
+    let k = k.to_u32().unwrap();
+    let n = n.to_u32().unwrap();
 
-    // TODO: Potentially support negative strides with an offset?
-    // Strides are negative to match ndarray but we can't offset pointers yet.
-    // Offsetting pointers of 16 and 8 bit types is a problem because bindings
-    // are required to be aligned to 32 bits on most backends.
     let [rsa, csa]: [isize; 2] = a.strides().try_into().unwrap();
-    let [rsa, csa] = [rsa as u32, csa as u32];
+    let [rsa, csa] = [rsa.to_i32().unwrap(), csa.to_i32().unwrap()];
 
     let [rsb, csb]: [isize; 2] = b.strides().try_into().unwrap();
-    let [rsb, csb] = [rsb as u32, csb as u32];
+    let [rsb, csb] = [rsb.to_i32().unwrap(), csb.to_i32().unwrap()];
 
     let [rsc, csc]: [isize; 2] = c.strides().try_into().unwrap();
-    let [rsc, csc] = [rsc as u32, csc as u32];
+    let [rsc, csc] = [rsc.to_i32().unwrap(), csc.to_i32().unwrap()];
+
+    let offset_a = a
+        .offset
+        .map(NonZeroUsize::get)
+        .unwrap_or_default()
+        .to_u32()
+        .unwrap();
+    let offset_b = b
+        .offset
+        .map(NonZeroUsize::get)
+        .unwrap_or_default()
+        .to_u32()
+        .unwrap();
+    let offset_c = c
+        .offset
+        .map(NonZeroUsize::get)
+        .unwrap_or_default()
+        .to_u32()
+        .unwrap();
 
     let splitk = 512;
-    let (n_groups_k, [gm, gk, gn], [lm, lk, ln]) = if k > splitk {
+    let (n_groups_k, [tsm, tsk, tsn], [tm, tk, tn]) = if k > splitk {
         let n_groups_k = k / splitk + if k % splitk != 0 { 1 } else { 0 };
-        (n_groups_k, [16, 1, 16], [1, 64, 1])
+        (n_groups_k, [16u32, 1, 16], [1u32, 64, 1])
     } else if m >= 64 && n <= 32 {
         (1, [32, 1, 8], [4, 8, 4])
     } else if n >= 64 && m <= 32 {
@@ -91,35 +351,21 @@ fn gemm<T: Scalar>(
     } else {
         (1, [16, 1, 16], [4, 8, 4])
     };
-    let tm = gm * lm;
-    let tk = gk * lk;
-    let tn = gn * ln;
-    let entry = format!(
-        "linalg::gemm_{}_tm{}_tk{}_tn{}_lm{}_lk{}_ln{}",
-        elem_type_name::<T>(),
-        tm,
-        tk,
-        tn,
-        lm,
-        lk,
-        ln,
-    );
-    let global_m = (m / tm + if m % tm != 0 { 1 } else { 0 }) * gm;
-    let global_n = (n / tn + if n % tn != 0 { 1 } else { 0 }) * gn;
-    let work_size = [(global_m * global_n * n_groups_k * gk) as u32, 1, 1];
-    let gemm_beta = if n_groups_k > 1 { T::zero() } else { beta };
-    let builder = crate::rust_shaders::compute_pass(entry)?
-        .slice(a.as_raw_slice())?
-        .slice(b.as_raw_slice())?
-        .push([alpha, gemm_beta])?
-        .push([m, k, n])?
-        .push([rsa, csa])?
-        .push([rsb, csb])?
-        .push([rsc, csc])?
-        .push(n_groups_k)?;
-    if n_groups_k * gk > 1 {
-        let mut c_tmp = unsafe {
-            Tensor::alloc(
+    assert!(tm <= kernels::GEMM_THREAD_TILE_MAX_M);
+    assert!(tk <= kernels::GEMM_THREAD_TILE_MAX_K);
+    assert!(tn <= kernels::GEMM_THREAD_TILE_MAX_N);
+    let gm = tsm * tm;
+    let gk = tsk * tk;
+    let gn = tsn * tn;
+    let groups_m = m / gm + (m % gm != 0) as u32;
+    let groups_n = n / gn + (n % gm != 0) as u32;
+    let groups = groups_m * groups_n * n_groups_k;
+    //let gemm_beta = if n_groups_k > 1 { T::zero() } else { beta };
+    if n_groups_k * tsk > 1 {
+        todo!();
+        /*
+        let mut c_tmp =
+            Tensor::zeros(
                 a.device(),
                 [m as usize, n as usize, (n_groups_k * gk) as usize],
             )?
@@ -129,11 +375,27 @@ fn gemm<T: Scalar>(
             builder.submit(work_size)?;
         }
         c_beta(beta, c)?;
-        c_tmp.sum_axis_with(Axis(2), c)?;
+        c_tmp.sum_axis_with(Axis(2), c)?; */
     } else {
-        let builder = builder.slice_mut(c.as_raw_slice_mut())?;
+        let device = c.device();
+        let alpha = alpha.to_f32().unwrap();
+        let beta = beta.to_f32().unwrap();
+        let a: Slice<f32> = ScalarSlice::from(a.as_raw_slice()).try_into().ok().unwrap();
+        let b: Slice<f32> = ScalarSlice::from(b.as_raw_slice()).try_into().ok().unwrap();
+        let c: SliceMut<f32> = ScalarSliceMut::from(c.as_raw_slice_mut())
+            .try_into()
+            .ok()
+            .unwrap();
         unsafe {
-            builder.submit(work_size)?;
+            kernels::gemm_f32::builder()?
+                .specialize(
+                    m, k, n, rsa, csa, rsb, csb, rsc, csc, gm, gk, gn, tm, tk, tn,
+                )?
+                .build(device)?
+                .with_groups(groups)
+                .dispatch(
+                    alpha, a, offset_a, b, offset_b, beta, c, offset_c, n_groups_k,
+                )?;
         }
     }
     Ok(())
@@ -142,20 +404,30 @@ fn gemm<T: Scalar>(
 impl<T: Scalar, S1: Data<Elem = T>, S2: Data<Elem = T>> Dot<TensorBase<S2, Ix2>>
     for TensorBase<S1, Ix2>
 {
-    type Output = Tensor2<T>;
-    fn dot(&self, rhs: &TensorBase<S2, Ix2>) -> Result<Self::Output> {
-        let mut output = unsafe { Tensor::alloc(self.device(), [self.dim().0, rhs.dim().1])? };
-        gemm(
-            T::one(),
-            &self.view(),
-            &rhs.view(),
-            T::zero(),
-            &mut output.view_mut(),
-        )?;
-        Ok(output)
+    type Output = Result<Tensor2<T>>;
+    fn dot(&self, rhs: &TensorBase<S2, Ix2>) -> Self::Output {
+        if let Some((lhs, rhs)) = self.as_array().zip(rhs.as_array()) {
+            return Ok(lhs.dot(&rhs).into());
+        }
+        #[cfg(not(feature = "device"))]
+        {
+            unreachable!()
+        }
+        #[cfg(feature = "device")]
+        {
+            let mut output = Tensor::zeros(self.device(), [self.dim().0, rhs.dim().1])?;
+            gemm(
+                T::one(),
+                &self.view(),
+                &rhs.view(),
+                T::zero(),
+                &mut output.view_mut(),
+            )?;
+            Ok(output)
+        }
     }
 }
-
+/*
 impl<T: Scalar, S1: Data<Elem = T>, S2: Data<Elem = T>, S3: Data<Elem = T>>
     DotBias<TensorBase<S2, Ix2>, TensorBase<S3, Ix1>> for TensorBase<S1, Ix2>
 {
@@ -377,3 +649,4 @@ mod tests {
         );
     }
 }
+*/
