@@ -9,6 +9,7 @@ use crate::{
 };
 use anyhow::{anyhow, bail, Result};
 use bytemuck::Pod;
+use krnl::buffer;
 use ndarray::{
     Array, ArrayBase, ArrayView, ArrayViewMut, Dimension, IntoDimension, Ix0, Ix1, Ix2, Ix3, Ix4,
     Ix5, Ix6, IxDyn, RawArrayView, ShapeBuilder, StrideShape,
@@ -101,7 +102,7 @@ fn is_standard_layout<D: Dimension>(dim: &D, strides: &D, offset: usize) -> bool
         return false;
     }
     let zero_strides = strides.slice().iter().any(|s| *s == 0);
-    (zero_strides || strides == &dim.default_strides()) 
+    (zero_strides || strides == &dim.default_strides())
 }
 
 // adapted from https://docs.rs/ndarray/0.15.3/ndarray/struct.ArrayBase.html#method.permuted_axes
@@ -129,7 +130,7 @@ fn permuted_axes<D: Dimension>(dim: D, strides: D, axes: D) -> (D, D) {
 }
 
 /// Multi-dimensional matrix.
-#[derive()]
+#[derive(Clone)]
 pub struct TensorBase<S: Data, D: Dimension> {
     dim: D,
     strides: D,
@@ -439,7 +440,7 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     }
     /// Whether the tensor is contiguous.
     ///
-    /// Contiguous is either C (Standard) or Fortran layout. 
+    /// Contiguous is either C (Standard) or Fortran layout.
     pub fn is_contiguous(&self) -> bool {
         is_contiguous(&self.dim, &self.strides, self.offset)
     }
@@ -467,7 +468,7 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
         Self {
             dim,
             strides,
-            .. self
+            ..self
         }
     }
     /// Reverses (transposes) the axes of the tensor.
@@ -480,50 +481,42 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     pub fn t(&self) -> TensorView<T, D> {
         self.view().reversed_axes()
     }
-    /*
-    /// Returns a [`CowBuffer`] in standard layout.
-    ///
-    /// If the data is default strided, ie standard layout (C or RowMajor), borrows the data as a slice. Otherwise, clones the data.
-    ///
-    /// See also [`as_raw_slice()`](TensorBase::as_raw_slice()).
-    ///
-    /// **Errors**
-    /// See [`.to_owned()`](TensorBase::to_owned()).
-    pub fn to_slice(&self) -> Result<CowBuffer<T>>
-    where
-        T: Scalar,
-    {
-        if self.strides == self.dim.default_strides() {
-            Ok(self.data.as_slice().into())
+    /// Borrows the tensor as a [`Slice`] if standard layout.
+    pub fn as_slice(&self) -> Option<Slice<T>> {
+        if self.is_standard_layout() {
+            Some(self.buffer.as_slice())
         } else {
-            Ok(self.as_standard_layout()?.data.0)
-        }
-    }*/
-    /// Borrows the tensor as a [`Slice`].
-    ///
-    /// # Note
-    /// If the tensor is not standard layout (C or RowMajor), this may not be what you want. See [`to_slice()`](TensorBase::to_slice()).
-    pub fn as_raw_slice(&self) -> Slice<T> {
-        if self.offset > 0 {
-            self.buffer.slice(self.offset..self.dim.size()).unwrap()
-        } else {
-            self.buffer.as_slice()
+            None
         }
     }
-    /// Mutably borrows the tensor as a [`SliceMut`].
-    ///
-    /// # Note
-    /// If the tensor is not standard layout (C or RowMajor), this may not be what you want.
-    pub fn as_raw_slice_mut(&mut self) -> SliceMut<T>
+    /// Borrows the tensor as a [`Slice`] if contiguous.
+    pub fn as_slice_memory_order(&self) -> Option<Slice<T>> {
+        if self.is_contiguous() {
+            Some(self.buffer.as_slice())
+        } else {
+            None
+        }
+    }
+    /// Mutably borrows the tensor as a [`SliceMut`] if standard layout.
+    pub fn as_slice_mut(&mut self) -> Option<SliceMut<T>>
     where
         S: DataMut,
     {
-        if self.offset > 0 {
-            self.buffer
-                .slice_mut(self.offset..self.offset + self.dim.size())
-                .unwrap()
+        if self.is_standard_layout() {
+            Some(self.buffer.as_slice_mut())
         } else {
-            self.buffer.as_slice_mut()
+            None
+        }
+    }
+    /// Mutably borrows the tensor as a [`SliceMut`] if contiguous.
+    pub fn as_slice_memory_order_mut(&mut self) -> Option<SliceMut<T>>
+    where
+        S: DataMut,
+    {
+        if self.is_contiguous() {
+            Some(self.buffer.as_slice_mut())
+        } else {
+            None
         }
     }
     /// Transfers the tensor into the `device`.
@@ -550,34 +543,13 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
             })
         }
     }
-    /*
-    /// Reads a tensor asynchronously.
-    ///
-    /// Returns a [`ReadGuard`] that can be converted to an [`Array`].
-    ///
-    /// # Host
-    /// NOOP
-    ///
-    /// # Device
-    /// The future will resolve when all previous operations have been completed and the transfer is complete.
-    ///
-    /// **Errors**
-    /// - OutOfDeviceMemory: Device memory is exhausted.
-    /// - DeviceLost: The device panicked or disconnected.
-    pub fn (self) -> Result<ReadGuard<S, D>>
-    where
-        T: Pod,
-    {
-        ReadGuard::new(self.dim, self.strides, self.data).await
-    }
-    */
     /// Converts into a [`Tensor`].
     pub fn into_owned(self) -> Result<Tensor<T, D>>
     where
         T: Copy,
     {
         if !self.is_contiguous() {
-           todo!(); 
+            todo!();
         }
         Ok(TensorBase {
             dim: self.dim,
@@ -586,7 +558,6 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
             offset: 0,
         })
     }
-    /*
     /// Converts to a [`Tensor`].
     pub fn to_owned(&self) -> Result<Tensor<T, D>>
     where
@@ -599,10 +570,14 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     where
         T: Copy,
     {
+        if !self.is_contiguous() {
+            todo!()
+        }
         Ok(TensorBase {
             dim: self.dim,
             strides: self.strides,
-            data: self.data.into_shared()?,
+            buffer: self.buffer.into_shared()?,
+            offset: 0,
         })
     }
     /// Converts to an [`ArcTensor`].
@@ -612,19 +587,15 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     where
         T: Copy,
     {
+        if !self.is_contiguous() {
+            todo!()
+        }
         Ok(TensorBase {
             dim: self.dim.clone(),
             strides: self.strides.clone(),
-            data: self.data.to_shared()?,
+            buffer: self.buffer.to_shared()?,
+            offset: 0,
         })
-    }
-    /// Converts into a [`FloatTensorBase`]
-    #[doc(hidden)]
-    pub fn into_float<S2: float::FloatData>(self) -> float::FloatTensorBase<S2, D>
-    where
-        Self: Into<float::FloatTensorBase<S2, D>>,
-    {
-        self.into()
     }
     /// Fills the tensor with `elem`.
     ///
@@ -636,9 +607,8 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
         T: Scalar,
         S: DataMut,
     {
-        self.data.as_slice_mut().fill(elem)
+        self.buffer.as_slice_mut().fill(elem)
     }
-    */
     /// Moves the tensor into an [`Array`].
     ///
     /// **errors**
@@ -698,16 +668,20 @@ impl<T: Scalar, S: DataOwned<Elem = T>> From<Buffer<T>> for TensorBase<S, Ix1> {
         }
     }
 }
-/*
-impl<'a, T> From<Slice<'a, T>> for TensorView<'a, T, Ix1> {
+
+impl<'a, T: Scalar> From<Slice<'a, T>> for TensorView<'a, T, Ix1> {
     fn from(slice: Slice<'a, T>) -> Self {
         let dim = slice.len().into_dimension();
         let strides = dim.default_strides();
-        let data = ViewRepr(slice);
-        Self { dim, strides, data }
+        Self {
+            dim,
+            strides,
+            buffer: slice,
+            offset: 0,
+        }
     }
 }
-*/
+
 impl<T: Scalar, S: DataOwned<Elem = T>, D: Dimension> From<Array<T, D>> for TensorBase<S, D> {
     fn from(array: Array<T, D>) -> Self {
         let dim = array.raw_dim();
@@ -739,9 +713,9 @@ impl<'a, T: Scalar, D: Dimension> From<ArrayView<'a, T, D>> for CowTensor<'a, T,
         }
     }
 }
-/*
-impl<'a, T, D: Dimension> TryFrom<ArrayView<'a, T, D>> for TensorView<'a, T, D> {
-    type Error = Error;
+
+impl<'a, T: Scalar, D: Dimension> TryFrom<ArrayView<'a, T, D>> for TensorView<'a, T, D> {
+    type Error = anyhow::Error;
     fn try_from(array: ArrayView<'a, T, D>) -> Result<Self> {
         let slice = array
             .as_slice_memory_order()
@@ -750,37 +724,44 @@ impl<'a, T, D: Dimension> TryFrom<ArrayView<'a, T, D>> for TensorView<'a, T, D> 
         let slice = unsafe { std::slice::from_raw_parts(slice.as_ptr(), slice.len()) };
         let dim = array.raw_dim();
         let strides = strides_from_array(&array);
-        let data = ViewRepr(slice.into());
-        Ok(Self { dim, strides, data })
+        Ok(Self {
+            dim,
+            strides,
+            buffer: slice.into(),
+            offset: 0,
+        })
     }
 }
 
-impl<'a, T, D: Dimension> From<TensorView<'a, T, D>> for CowTensor<'a, T, D> {
+impl<'a, T: Scalar, D: Dimension> From<TensorView<'a, T, D>> for CowTensor<'a, T, D> {
     fn from(view: TensorView<'a, T, D>) -> Self {
         Self {
             dim: view.dim,
             strides: view.strides,
-            data: CowRepr(view.data.0.into()),
+            buffer: view.buffer.into(),
+            offset: view.offset,
         }
     }
 }
 
-impl<T, D: Dimension> From<Tensor<T, D>> for CowTensor<'_, T, D> {
+impl<T: Scalar, D: Dimension> From<Tensor<T, D>> for CowTensor<'_, T, D> {
     fn from(tensor: Tensor<T, D>) -> Self {
         Self {
             dim: tensor.dim,
             strides: tensor.strides,
-            data: CowRepr(tensor.data.0.into()),
+            buffer: tensor.buffer.into(),
+            offset: tensor.offset,
         }
     }
 }
 
-impl<T, D: Dimension> From<Tensor<T, D>> for ArcTensor<T, D> {
+impl<T: Scalar, D: Dimension> From<Tensor<T, D>> for ArcTensor<T, D> {
     fn from(tensor: Tensor<T, D>) -> Self {
         Self {
             dim: tensor.dim,
             strides: tensor.strides,
-            data: ArcRepr(tensor.data.0.into()),
+            buffer: tensor.buffer.into(),
+            offset: tensor.offset,
         }
     }
 }
@@ -791,33 +772,37 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     /// Casts the tensor into a new tensor.
     ///
     /// See [`BufferBase::cast_into()`](crate::buffer::BufferBase::cast_into()).
-    pub fn cast_into<T2: Scalar>(self) -> Result<Tensor<T2, D>> {
-        let buffer = match self.data.try_into_buffer() {
-            Ok(buffer) => buffer.cast_into()?,
-            Err(data) => data.as_slice().cast_into()?,
-        };
+    pub fn cast_into<Y: Scalar>(self) -> Result<Tensor<Y, D>> {
+        if !self.is_contiguous() {
+            todo!()
+        }
         Ok(TensorBase {
             dim: self.dim,
             strides: self.strides,
-            data: OwnedRepr(buffer),
+            buffer: self.buffer.cast_into()?,
+            offset: 0,
         })
     }
     /// Casts the tensor to a new tensor.
     ///
-    /// See [`BufferBase::cast_to()`](crate::buffer::BufferBase::cast_to()).
-    pub fn cast_to<T2: Scalar>(&self) -> Result<CowTensor<T2, D>> {
-        let slice = self.data.as_slice();
-        let buffer: CowBuffer<T2> = slice.cast_to::<T2>()?;
+    /// See [`BufferBase::cast()`](crate::buffer::BufferBase::cast()).
+    pub fn cast<Y: Scalar>(&self) -> Result<Tensor<Y, D>> {
+        if !self.is_contiguous() {
+            todo!();
+        }
         Ok(TensorBase {
             dim: self.dim.clone(),
             strides: self.strides.clone(),
-            data: CowRepr(unsafe { transmute(buffer) }),
+            buffer: self.buffer.cast()?,
+            offset: 0,
         })
     }
     /// Scales the tensor into a new tensor.
     ///
     /// See [`BufferBase::scale_into()`](crate::buffer::BufferBase::scale_into()).
     pub fn scale_into<T2: Scalar>(self, alpha: T2) -> Result<Tensor<T2, D>> {
+        todo!()
+        /*
         let buffer = match self.data.try_into_buffer() {
             Ok(buffer) => buffer.scale_into(alpha)?,
             Err(data) => data.as_slice().scale_into(alpha)?,
@@ -826,10 +811,11 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
             dim: self.dim,
             strides: self.strides,
             data: OwnedRepr(buffer),
-        })
+        })*/
     }
 }
 
+/*
 #[allow(dead_code)]
 impl<T: Uint, S: Data<Elem = T>> TensorBase<S, Ix1> {
     pub(crate) fn to_one_hot<T2: Scalar>(&self, nclasses: usize) -> Result<Tensor2<T2>> {
@@ -838,6 +824,8 @@ impl<T: Uint, S: Data<Elem = T>> TensorBase<S, Ix1> {
         if size_of::<T2>() < 4 {
             output.fill(T2::zero())?;
         }
+        todo!()
+        /*
         let builder = glsl_shaders::module(&format!(
             "one_hot_{}_{}",
             T::scalar_name(),
@@ -850,66 +838,11 @@ impl<T: Uint, S: Data<Elem = T>> TensorBase<S, Ix1> {
         unsafe {
             builder.submit([n as u32, 1, 1])?;
         }
-        Ok(output)
+        Ok(output)*/
     }
-}
+}*/
 
-/// [`TensorBase`] read guard.
-///
-/// Used to read data from a tensor as an [`ArrayBase`].
-pub struct ReadGuard<S: Data, D: Dimension>
-where
-    S::Elem: 'static,
-{
-    dim: D,
-    strides: D,
-    guard: BufferReadGuard<SliceRepr<'static, S::Elem>>,
-    data: S,
-}
-
-impl<T: Pod, S: Data<Elem = T>, D: Dimension> ReadGuard<S, D> {
-    async fn new(dim: D, strides: D, data: S) -> Result<Self> {
-        let guard: BufferReadGuard<SliceRepr<T>> = data.as_slice().read().await?;
-        let guard = unsafe { transmute(guard) };
-        Ok(Self {
-            dim,
-            strides,
-            guard,
-            data,
-        })
-    }
-    /// Returns an [`ArrayView`].
-    pub fn as_array(&self) -> ArrayView<T, D> {
-        unsafe {
-            RawArrayView::from_shape_ptr(
-                self.dim.clone().strides(self.strides.clone()),
-                self.guard.as_slice().as_ptr(),
-            )
-            .deref_into_view()
-        }
-    }
-    /// Converts into an [`Array`], potentially copying.
-    pub fn into_array(self) -> Array<T, D> {
-        if let Ok(buffer) = self.data.try_into_buffer() {
-            if let Some(vec) = buffer.into_vec() {
-                unsafe {
-                    return Array::from_shape_vec_unchecked(self.dim.strides(self.strides), vec);
-                }
-            }
-        }
-        unsafe {
-            Array::from_shape_vec_unchecked(self.dim.strides(self.strides), self.guard.to_vec())
-        }
-    }
-}
-
-impl<T: Pod + Debug, S: Data<Elem = T>, D: Dimension> Debug for ReadGuard<S, D> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        self.as_array().fmt(f)
-    }
-}
-
-
+/*
 #[cfg(test)]
 mod tests {
     #[allow(unused)]

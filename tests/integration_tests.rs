@@ -1,7 +1,7 @@
 #![allow(warnings)]
 
 use anyhow::Result;
-use autograph::tensor::Tensor;
+use autograph::tensor::{Tensor, TensorView};
 use dry::macro_for;
 use half::{bf16, f16};
 #[cfg(feature = "device")]
@@ -82,10 +82,65 @@ fn tensor_tests(device: &Device) -> Vec<Trial> {
         .unwrap_or(Features::empty());
     let mut tests = Vec::new();
 
-    tests.push(device_test(device, "tensor_from_array2", |device| {
-        let x = Array::from_shape_vec((2, 2), vec![1u32, 2, 3, 4]).unwrap();
-        tensor_from_array(device, x);
-    }));
+    tests.extend([
+        Trial::test("tensor_from_array0", || {
+            tensor_from_array(Array::from_elem((), 1));
+            Ok(())
+        }),
+        Trial::test("tensor_from_array1", || {
+            tensor_from_array(Array::from_shape_vec(3, (1..=3).into_iter().collect()).unwrap());
+            Ok(())
+        }),
+        Trial::test("tensor_from_array2", || {
+            tensor_from_array(
+                Array::from_shape_vec([2, 3], (1..=6).into_iter().collect()).unwrap(),
+            );
+            Ok(())
+        }),
+        Trial::test("tensor_from_array3", || {
+            tensor_from_array(
+                Array::from_shape_vec([2, 3, 4], (1..=24).into_iter().collect()).unwrap(),
+            );
+            Ok(())
+        }),
+        Trial::test("tensor_from_array4", || {
+            tensor_from_array(
+                Array::from_shape_vec([2, 3, 4, 5], (1..=120).into_iter().collect()).unwrap(),
+            );
+            Ok(())
+        }),
+        Trial::test("tensor_from_array4", || {
+            tensor_from_array(
+                Array::from_shape_vec([2, 3, 4, 5, 6], (1..=120 * 6).into_iter().collect())
+                    .unwrap(),
+            );
+            Ok(())
+        }),
+        Trial::test("tensor_from_array5", || {
+            tensor_from_array(
+                Array::from_shape_vec([2, 3, 4, 5, 6], (1..=120 * 6).into_iter().collect())
+                    .unwrap(),
+            );
+            Ok(())
+        }),
+        Trial::test("tensor_from_array6", || {
+            tensor_from_array(
+                Array::from_shape_vec([2, 3, 4, 5, 6, 7], (1..=120 * 6 * 7).into_iter().collect())
+                    .unwrap(),
+            );
+            Ok(())
+        }),
+        Trial::test("tensor_from_arrayD", || {
+            tensor_from_array(
+                Array::from_shape_vec(
+                    [2, 3, 4, 5, 6, 7, 8].as_ref(),
+                    (1..=120 * 6 * 7 * 8).into_iter().collect(),
+                )
+                .unwrap(),
+            );
+            Ok(())
+        }),
+    ]);
     tests.extend(linalg::linalg_tests(device));
     /*
         tests.push(device_test(device, "buffer_from_vec", buffer_from_vec));
@@ -173,21 +228,19 @@ fn tensor_tests(device: &Device) -> Vec<Trial> {
     tests
 }
 
-fn tensor_from_array<D: Dimension>(device: Device, x: Array<u32, D>) {
-    let y = Tensor::from(x.clone())
-        .into_device(device)
-        .unwrap()
-        .into_array()
-        .unwrap();
-    assert_eq!(x, y);
+fn tensor_from_array<D: Dimension>(x: Array<u32, D>) {
+    let y = TensorView::try_from(x.view()).unwrap();
+    assert_eq!(x.view(), y.as_array().unwrap());
+    let y_t = TensorView::try_from(x.t()).unwrap();
+    assert_eq!(x.t(), y_t.as_array().unwrap());
 }
 
 mod linalg {
     use super::*;
-    use std::fmt::{self, Display};
     use approx::assert_relative_eq;
     use autograph::tensor::CowTensor;
     use ndarray::{linalg::Dot, Array2};
+    use std::fmt::{self, Display};
 
     pub fn linalg_tests(device: &Device) -> Vec<Trial> {
         let mut tests = Vec::new();
@@ -195,7 +248,6 @@ mod linalg {
             let [m, k, n] = [n; 3];
             use Transpose::*;
             for (ta, tb) in [(N, N), (T, N), (N, T), (T, T)] {
-                
                 let name = format!("tensor_dot_f32_m{m}_k{k}_n{n}_{ta}{tb}");
                 tests.push(device_test(device, &name, move |device| {
                     tensor_dot::<f32>(device, [m, k, n], [ta, tb])
@@ -219,7 +271,7 @@ mod linalg {
         N,
         T,
     }
-    
+
     impl Display for Transpose {
         fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
             let c = match self {

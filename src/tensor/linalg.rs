@@ -321,18 +321,9 @@ fn gemm<T: Scalar>(
     let [rsc, csc]: [isize; 2] = c.strides().try_into().unwrap();
     let [rsc, csc] = [rsc.to_i32().unwrap(), csc.to_i32().unwrap()];
 
-    let offset_a = a
-        .offset
-        .to_u32()
-        .unwrap();
-    let offset_b = b
-        .offset
-        .to_u32()
-        .unwrap();
-    let offset_c = c
-        .offset
-        .to_u32()
-        .unwrap();
+    let offset_a = a.offset.to_u32().unwrap();
+    let offset_b = b.offset.to_u32().unwrap();
+    let offset_c = c.offset.to_u32().unwrap();
 
     let splitk = 512;
     let (n_groups_k, [tsm, tsk, tsn], [tm, tk, tn]) = if k > splitk {
@@ -374,9 +365,9 @@ fn gemm<T: Scalar>(
         let device = c.device();
         let alpha = alpha.to_f32().unwrap();
         let beta = beta.to_f32().unwrap();
-        let a: Slice<f32> = ScalarSlice::from(a.as_raw_slice()).try_into().ok().unwrap();
-        let b: Slice<f32> = ScalarSlice::from(b.as_raw_slice()).try_into().ok().unwrap();
-        let c: SliceMut<f32> = ScalarSliceMut::from(c.as_raw_slice_mut())
+        let a: Slice<f32> = ScalarSlice::from(a.buffer.as_slice()).try_into().ok().unwrap();
+        let b: Slice<f32> = ScalarSlice::from(b.buffer.as_slice()).try_into().ok().unwrap();
+        let c: SliceMut<f32> = ScalarSliceMut::from(c.buffer.as_slice_mut())
             .try_into()
             .ok()
             .unwrap();
