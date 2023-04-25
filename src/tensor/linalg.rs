@@ -358,7 +358,7 @@ fn gemm<T: Scalar>(
     let gk = tsk * tk;
     let gn = tsn * tn;
     let groups_m = m / gm + (m % gm != 0) as u32;
-    let groups_n = n / gn + (n % gm != 0) as u32;
+    let groups_n = n / gn + (n % gn != 0) as u32;
     let groups = groups_m * groups_n * n_groups_k;
     //let gemm_beta = if n_groups_k > 1 { T::zero() } else { beta };
     if n_groups_k * tsk > 1 {

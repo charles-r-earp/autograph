@@ -31,20 +31,13 @@ autobins = false
 autobenches = false
 
 [dependencies]
-#krnl = { git = "https://github.com/charles-r-earp/krnl" }
-krnl = { path = "../krnl" }
+krnl = { git = "https://github.com/charles-r-earp/krnl" }
 anyhow = "1.0.37"
 ndarray = { version = "0.15.6", default-features = false, features = ["serde"] }
 rand = { version = "0.8.4", optional = true }
 serde = { version = "1.0.126", features = ["derive", "rc"] }
-#bincode = "1.3.3"
 derive_more = "0.99.11"
-#hibitset = { version = "0.6.3", default-features = false }
-#num-traits = "0.2.14"
-#once_cell = "1.8.0"
-#parking_lot = "0.11.1"
 thiserror = "1.0.23"
-#tinyvec = "1.2.0"
 approx = "0.5.0"
 prettytable-rs = "0.8.0"
 bytemuck = "1.4.1"
