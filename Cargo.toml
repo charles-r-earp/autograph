@@ -28,12 +28,11 @@ keywords = ["neural-networks", "machine-learning", "deep-learning", "autograd", 
 categories = ["hardware-support", "science", "mathematics"]
 publish.workspace = true
 autobins = false 
-autoexamples = false
-autotests = false
 autobenches = false
 
 [dependencies]
-krnl = { git = "https://github.com/charles-r-earp/krnl" }
+#krnl = { git = "https://github.com/charles-r-earp/krnl" }
+krnl = { path = "../krnl" }
 anyhow = "1.0.37"
 ndarray = { version = "0.15.6", default-features = false, features = ["serde"] }
 rand = { version = "0.8.4", optional = true }
@@ -53,7 +52,7 @@ byteorder = { version = "1.4.3", optional = true }
 dirs = { version = "3.0.2", optional = true }
 downloader = { version = "0.2.6", optional = true }
 flate2 = { version = "1.0.20", optional = true }
-half = { version = "1.8.2", features = ["num-traits", "bytemuck", "serde"] }
+half = { version = "2.1.0", features = ["num-traits", "bytemuck", "serde"] }
 http = { version = "0.2.4", optional = true }
 paste = "1.0.7"
 dry = "0.1.1"

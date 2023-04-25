@@ -1,5 +1,7 @@
 use super::*;
-use crate::rust_shaders;
+use dry::{macro_for, macro_wrap};
+use krnl::{krnl_core::num_traits::ToPrimitive, macros::module};
+use paste::paste;
 use std::iter::repeat;
 
 impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
@@ -23,8 +25,8 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     /// **Errors**
     /// - Supports up to 6 dimensional inputs.
     /// - Supports u32, i32, and f32.
-    /// - The shader could not be executed.
-    /// - The device disconnected or panicked.
+    /// - [`DeviceLost`]
+    /// - The kernel could not be dispatched.
     /// - See [`.into_owned()`](TensorBase::into_owned()).
     ///
     /// **Panics**
@@ -33,37 +35,13 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
         if self.is_standard_layout() {
             self.into_owned()
         } else {
-            let ndim = if self.dim.ndim() <= 4 {
-                4
-            } else if self.dim.ndim() <= 6 {
-                6
-            } else {
-                bail!("Up to 6 dimensions supported!");
-            };
-            let ty = match size_of::<T>() {
-                4 => "u32",
-                _ => bail!("{} not supported!", T::scalar_name()),
-            };
-            let mut output = unsafe { Tensor::alloc(self.device(), self.raw_dim())? };
-            let name = format!("reorder::as_standard_layout_{}d_{}", ndim, ty);
-            let mut builder = rust_shaders::compute_pass(&name)?
-                .slice(self.as_raw_slice())?
-                .slice_mut(output.as_raw_slice_mut())?;
-            for (d, s) in self
-                .shape()
-                .iter()
-                .copied()
-                .zip(self.strides().iter().copied())
-                .into_iter()
-                .chain(repeat((1, 1)))
-                .take(ndim)
-            {
-                builder = builder.push(d as u32)?.push(s as i32)?;
-            }
-            let n = self.len() as u32;
-            unsafe {
-                builder.submit([n, 1, 1])?;
-            }
+            let mut output = unsafe { Tensor::zeros(self.device(), self.raw_dim())? };
+            reorder(
+                T::one(),
+                self.view().into_dyn(),
+                T::zero(),
+                output.view_mut().into_dyn(),
+            )?;
             Ok(output)
         }
     }
@@ -77,68 +55,108 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
             self.as_standard_layout()?.into_shared()
         }
     }
-    #[allow(unused)]
-    pub(super) fn as_reordered<T2, Sh>(&self, shape: Sh) -> Result<CowTensor<T2, D>>
-    where
-        T2: Scalar,
-        Sh: ShapeBuilder<Dim = D>,
+}
+
+fn reorder<T: Scalar>(
+    alpha: T,
+    x: TensorViewD<T>,
+    beta: T,
+    mut y: TensorViewMutD<T>,
+) -> Result<()> {
+    if let Some((x, mut y)) = x.as_array().zip(y.as_array_mut()) {
+        y.zip_mut_with(&x, |y, x| {
+            *y = alpha * *x + beta * *y;
+        });
+        return Ok(());
+    }
+    #[cfg(not(feature = "device"))]
     {
-        let (dim, strides) = dim_strides_from_shape(shape.into_shape());
-        if self.dim == dim && self.strides == strides {
-            self.cast_to()
-        } else {
-            if bytemuck::cast_slice(strides.slice())
-                .iter()
-                .copied()
-                .any(|s: isize| s < 0)
-            {
-                bail!("Negative strides {:?} not supported!", strides);
-            }
-            let mut output = unsafe { Tensor::alloc(self.device(), dim)? };
-            output.strides = strides;
-            self.reorder_with(T2::zero(), &mut output.view_mut())?;
-            Ok(output.into())
+        unreachable!()
+    }
+    #[cfg(feature = "device")]
+    {
+        if x.ndim() != 2 {
+            todo!()
         }
+        assert_eq!(x.shape(), y.shape());
+        let x = x.into_dimensionality::<Ix2>().unwrap();
+        let mut y = y.into_dimensionality::<Ix2>().unwrap();
+        let (rows, cols) = x.dim();
+        let rows = rows.to_u32().unwrap();
+        let cols = cols.to_u32().unwrap();
+        let [rsx, csx]: [isize; 2] = x.strides().try_into().unwrap();
+        let [rsy, csy]: [isize; 2] = y.strides().try_into().unwrap();
+
+        macro_wrap!(paste! { match T::scalar_type() {
+            macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+                ScalarType::[<$T:upper>] => {
+                    kernels::[<reorder2_ $T>]::builder()?.build(y.device())?
+                        .with_global_threads([cols, rows].into())
+                        .dispatch(
+                            rows, cols,
+                            alpha.cast(),
+                            x.buffer.as_scalar_slice().try_into().unwrap(),
+                            rsx.to_i32().unwrap(),
+                            csx.to_i32().unwrap(),
+                            x.offset.to_u32().unwrap(),
+                            beta.cast(),
+                            y.buffer.as_scalar_slice_mut().try_into().unwrap(),
+                            rsy.to_i32().unwrap(),
+                            csy.to_i32().unwrap(),
+                            y.offset.to_u32().unwrap(),
+                        )?;
+                    return Ok(());
+                }
+            })
+            _ => unreachable!(),
+        }});
+        unreachable!()
     }
-    #[allow(unused)]
-    pub(super) fn reorder_with<T2: Scalar>(
-        &self,
-        beta: T2,
-        output: &mut TensorViewMut<T2, D>,
-    ) -> Result<()> {
-        let ndim = output.ndim();
-        let entry = format!(
-            "reorder::reorder_{}d_{}_{}",
-            ndim,
-            T::scalar_name(),
-            T2::scalar_name(),
-        );
-        let builder = rust_shaders::compute_pass(entry)?;
-        let (builder, global_size) = match (
-            (self.shape(), self.strides()),
-            (output.shape(), output.strides()),
-        ) {
-            (([ih, iw], [rsx, csx]), ([oh, ow], [rsy, csy])) => {
-                let bs = 1u32;
-                let builder = builder
-                    .push(bs)?
-                    .push([*ih as u32, *iw as u32])?
-                    .push([*rsx as u32, *csx as u32])?
-                    .push(beta)?
-                    .push([*oh as u32, *ow as u32])?
-                    .push([*rsy as u32, *csy as u32])?;
-                let groups_h = *oh / 16 + if *oh % 16 != 0 { 1 } else { 0 };
-                let groups_w = *ow / 16 + if *ow % 16 != 0 { 1 } else { 0 };
-                let global_size = groups_h * groups_w * 256;
-                (builder, global_size)
+}
+
+#[cfg(feature = "device")]
+#[module]
+mod kernels {
+    use dry::macro_for;
+    #[cfg(not(target_arch = "spirv"))]
+    use krnl::krnl_core;
+    use krnl_core::half::{bf16, f16};
+    use krnl_core::macros::kernel;
+    #[cfg(target_arch = "spirv")]
+    use krnl_core::{buffer::UnsafeIndex, glam::Vec2Swizzles};
+    use paste::paste;
+
+    macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+        paste! {
+            #[kernel(threads(16, 16))]
+            pub fn [<reorder2_ $T>](
+                rows: u32,
+                cols: u32,
+                alpha: $T,
+                #[global]
+                x: Slice<$T>,
+                rsx: i32,
+                csx: i32,
+                offset_x: u32,
+                beta: $T,
+                #[global]
+                y: UnsafeSlice<$T>,
+                rsy: i32,
+                csy: i32,
+                offset_y: u32,
+            ) {
+                use krnl_core::scalar::Scalar;
+                let [global_row, global_col] = kernel.global_id().yx().to_array();
+                if global_row < rows && global_col < cols {
+                    let x_idx = (global_row as i32 * rsx + global_col as i32 * csx + offset_x as i32) as usize;
+                    let y_idx = (global_row as i32 * rsy + global_col as i32 * csy + offset_y as i32) as usize;
+                    unsafe {
+                        *y.unsafe_index_mut(y_idx) = alpha * x[x_idx] + beta * *y.unsafe_index(y_idx);
+                    }
+                }
             }
-            _ => bail!("Unimplemented!"),
-        };
-        let builder = builder
-            .slice(self.as_raw_slice())?
-            .slice_mut(output.as_raw_slice_mut())?;
-        unsafe { builder.submit([global_size as u32, 1, 1]) }
-    }
+        }
+    });
 }
 
 #[cfg(all(test, feature = "device_tests"))]

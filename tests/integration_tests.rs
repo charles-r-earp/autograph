@@ -69,6 +69,17 @@ fn device_test(device: &Device, name: &str, f: impl Fn(Device) + Send + Sync + '
     })
 }
 
+fn features_for_scalar_size(size: usize) -> Features {
+    Features::empty()
+        .with_shader_int8(size == 1)
+        .with_shader_int16(size == 2)
+        .with_shader_int64(size == 8)
+}
+
+fn features_for_scalar(scalar_type: ScalarType) -> Features {
+    features_for_scalar_size(scalar_type.size()).with_shader_float64(scalar_type == ScalarType::F64)
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn tests(device: &Device) -> Vec<Trial> {
     tensor_tests(device)
@@ -142,88 +153,7 @@ fn tensor_tests(device: &Device) -> Vec<Trial> {
         }),
     ]);
     tests.extend(linalg::linalg_tests(device));
-    /*
-        tests.push(device_test(device, "buffer_from_vec", buffer_from_vec));
-
-        if device.is_device() {
-            tests.push(
-                Trial::test("device_buffer_too_large", {
-                    let device = device.clone();
-                    move || {
-                        device_buffer_too_large(device);
-                        Ok(())
-                    }
-                })
-            );
-            tests.push(
-                Trial::test("buffer_device_to_device", {
-                    let device = device.clone();
-                    let device2 = device2.cloned();
-                    move || {
-                        buffer_transfer(device, device2.unwrap());
-                        Ok(())
-                    }
-                })
-                .with_ignored_flag(device2.is_none()),
-            );
-        }
-
-        macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
-            paste! {
-                {
-                    let ignore = if device.is_host() {
-                        false
-                    } else {
-                        match $T::scalar_type().size() {
-                            1 => !features.shader_int8(),
-                            2 => !features.shader_int16(),
-                            4 => false,
-                            8 => !features.shader_int64(),
-                            _ => unreachable!(),
-                        }
-                    };
-                    let trial = paste! {
-                        device_test(device, stringify!([<buffer_fill_ $T>]), [<buffer_fill>]::<$T>)
-                    };
-                    tests.push(trial.with_ignored_flag(ignore));
-                }
-            }
-        });
-
-        fn buffer_cast_features(x: ScalarType, y: ScalarType) -> Features {
-            fn features(ty: ScalarType) -> Features {
-                use ScalarType::*;
-                match ty {
-                    U8 | I8 => Features::empty().with_shader_int8(true),
-                    U16 | I16 => Features::empty().with_shader_int16(true),
-                    F16 | BF16 => Features::empty()
-                        .with_shader_int8(true)
-                        .with_shader_int16(true),
-                    U32 | I32 | F32 => Features::empty(),
-                    U64 | I64 => Features::empty().with_shader_int64(true),
-                    F64 => Features::empty()
-                        .with_shader_int64(true)
-                        .with_shader_float64(true),
-                    _ => unreachable!(),
-                }
-            }
-            features(x).union(&features(y))
-        }
-
-        macro_for!($X in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
-            macro_for!($Y in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
-                {
-                    let ignore = !device.is_host() && !features.contains(&buffer_cast_features($X::scalar_type(), $Y::scalar_type()));
-                    paste! {
-                        let trial = device_test(device, stringify!([<buffer_cast_ $X _ $Y>]), [<buffer_cast>]::<$X, $Y>);
-                        tests.push(trial.with_ignored_flag(ignore));
-                        let trial = device_test(device, stringify!([<buffer_bitcast_ $X _ $Y>]), [<buffer_bitcast>]::<$X, $Y>);
-                        tests.push(trial.with_ignored_flag(ignore));
-                    }
-                }
-            });
-        });
-    */
+    tests.extend(reorder::reorder_tests(device));
 
     tests
 }
@@ -244,23 +174,42 @@ mod linalg {
 
     pub fn linalg_tests(device: &Device) -> Vec<Trial> {
         let mut tests = Vec::new();
-        for n in [2, 4, 5, 8, 16, 32, 64, 128] {
-            let [m, k, n] = [n; 3];
-            use Transpose::*;
-            for (ta, tb) in [(N, N), (T, N), (N, T), (T, T)] {
-                let name = format!("tensor_dot_f32_m{m}_k{k}_n{n}_{ta}{tb}");
-                tests.push(device_test(device, &name, move |device| {
-                    tensor_dot::<f32>(device, [m, k, n], [ta, tb])
-                }));
+        let features = if let Some(info) = device.info() {
+            info.features()
+        } else {
+            Features::empty()
+        };
+        macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+            let scalar_type = $T::scalar_type();
+            let type_name = scalar_type.name();
+            let ignore = device.is_device() &&
+                    !features.contains(&features_for_scalar(scalar_type));
+            for n in [2, 4, 5, 8, 16, 32, 64, 128] {
+                let [m, k, n] = [n; 3];
+                use Transpose::*;
+                for (ta, tb) in [(N, N), (T, N), (N, T), (T, T)] {
+                    let name = format!("tensor_dot_{type_name}_m{m}_k{k}_n{n}_{ta}{tb}");
+                    tests.push(device_test(device, &name, move |device| {
+                        tensor_dot::<$T>(device, [m, k, n], [ta, tb])
+                    }).with_ignored_flag(ignore));
+                }
             }
-        }
+        });
         tests
     }
 
-    fn gen_array<T: From<u8>>(dim: [usize; 2]) -> Array2<T> {
+    fn gen_array<T: Scalar>(dim: [usize; 2]) -> Array2<T> {
         let n = dim[0] * dim[1];
-        let vec: Vec<T> = (0..n)
-            .map(|x| T::from((((x + 100) % 100) + 1) as u8))
+        let vec: Vec<T> = (1..10)
+            .cycle()
+            .map(|x| {
+                if std::mem::size_of::<T>() == 1 {
+                    T::from_u8((x == 1) as u8).unwrap()
+                } else {
+                    T::from_usize(x).unwrap()
+                }
+            })
+            .take(n)
             .collect();
         Array2::from_shape_vec(dim, vec).unwrap()
     }
@@ -282,11 +231,7 @@ mod linalg {
         }
     }
 
-    fn tensor_dot<T: Scalar + From<u8>>(
-        device: Device,
-        [m, k, n]: [usize; 3],
-        [a_t, b_t]: [Transpose; 2],
-    ) {
+    fn tensor_dot<T: Scalar>(device: Device, [m, k, n]: [usize; 3], [a_t, b_t]: [Transpose; 2]) {
         let dim1 = match a_t {
             Transpose::N => [m, k],
             Transpose::T => [k, m],
@@ -313,13 +258,75 @@ mod linalg {
         };
         let a_true = a1.dot(&a2);
         let a_out = t1.dot(&t2).unwrap().into_array().unwrap();
-        if T::scalar_type() == ScalarType::F32 {
+        let scalar_type = T::scalar_type();
+        if matches!(scalar_type, ScalarType::F16 | ScalarType::BF16) {
             let a_true = a_true.map(|x| x.to_f32().unwrap());
             let a_out = a_out.map(|x| x.to_f32().unwrap());
+            let epsilon = k as f32;
+            assert_relative_eq!(a_true, a_out, epsilon = epsilon);
+        } else if scalar_type == ScalarType::F32 {
+            let a_true = a_true.map(|x| x.to_f32().unwrap());
+            let a_out = a_out.map(|x| x.to_f32().unwrap());
+            assert_relative_eq!(a_true, a_out);
+        } else if scalar_type == ScalarType::F64 {
+            let a_true = a_true.map(|x| x.to_f64().unwrap());
+            let a_out = a_out.map(|x| x.to_f64().unwrap());
             assert_relative_eq!(a_true, a_out);
         } else {
             assert_eq!(a_true, a_out);
         }
+    }
+}
+
+mod reorder {
+    use super::*;
+    use ndarray::IntoDimension;
+
+    pub fn reorder_tests(device: &Device) -> Vec<Trial> {
+        let mut tests = Vec::new();
+
+        let features = if let Some(info) = device.info() {
+            info.features()
+        } else {
+            Features::empty()
+        };
+        macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+                let scalar_type = $T::scalar_type();
+                let ignore = device.is_device() &&
+                    !features.contains(&features_for_scalar(scalar_type));
+                let name = format!("into_standard_layout_2d_{}", scalar_type.name());
+                let trial = device_test(device, &name, |device| {
+                    into_standard_layout::<$T, _>(device.clone(), [3, 3], [1, 0]);
+                    into_standard_layout::<$T, _>(device, [21, 30], [1, 0]);
+                });
+                tests.push(trial.with_ignored_flag(ignore));
+        });
+
+        tests
+    }
+
+    fn into_standard_layout<T: Scalar, E: IntoDimension>(device: Device, shape: E, axes: E) {
+        let shape = shape.into_dimension();
+        let x_vec = (1..100)
+            .cycle()
+            .take(shape.size())
+            .map(|x| T::from_usize(x).unwrap())
+            .collect();
+        let x_array = Array::from_shape_vec(shape, x_vec).unwrap();
+        let axes = E::Dim::from_dimension(&axes.into_dimension()).unwrap();
+        let y_array = x_array
+            .view()
+            .permuted_axes(axes.clone())
+            .as_standard_layout()
+            .to_owned();
+        let x = Tensor::from(x_array).into_device(device).unwrap();
+        let y = x
+            .permuted_axes(axes)
+            .into_standard_layout()
+            .unwrap()
+            .into_array()
+            .unwrap();
+        assert_eq!(y, y_array);
     }
 }
 

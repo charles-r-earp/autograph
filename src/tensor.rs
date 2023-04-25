@@ -1,3 +1,5 @@
+#[cfg(doc)]
+use crate::device::error::DeviceLost;
 use crate::{
     buffer::{
         ArcBuffer, ArcBufferRepr, Buffer, BufferBase, BufferRepr, CowBuffer, CowBufferRepr, Data,
@@ -9,7 +11,6 @@ use crate::{
 };
 use anyhow::{anyhow, bail, Result};
 use bytemuck::Pod;
-use krnl::buffer;
 use ndarray::{
     Array, ArrayBase, ArrayView, ArrayViewMut, Dimension, IntoDimension, Ix0, Ix1, Ix2, Ix3, Ix4,
     Ix5, Ix6, IxDyn, RawArrayView, ShapeBuilder, StrideShape,
@@ -26,7 +27,7 @@ use std::{
 mod linalg;
 //mod ops;
 //mod reduce;
-//mod reorder;
+mod reorder;
 
 fn strides_from_array<S, D>(array: &ArrayBase<S, D>) -> D
 where
@@ -765,6 +766,18 @@ impl<T: Scalar, D: Dimension> From<Tensor<T, D>> for ArcTensor<T, D> {
         }
     }
 }
+
+/*
+impl<S: Data + Clone, D: Dimension> Clone for TensorBase<S, D> {
+    fn clone(&self) -> Self {
+        Self {
+            dim: self.dim.clone(),
+            strides: self.strides.clone(),
+            buffer: self.buffer.clone(),
+            offset: self.offset.clone(),
+        }
+    }
+}*/
 
 /// Casts
 #[allow(unused)]
