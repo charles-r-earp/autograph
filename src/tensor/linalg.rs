@@ -336,9 +336,12 @@ fn gemm<T: Scalar>(
     let [rsc, csc]: [isize; 2] = c.strides().try_into().unwrap();
     let [rsc, csc] = [rsc.to_i32().unwrap(), csc.to_i32().unwrap()];
 
-    let offset_a = a.offset.to_u32().unwrap();
-    let offset_b = b.offset.to_u32().unwrap();
-    let offset_c = c.offset.to_u32().unwrap();
+    let (a, offset_a) = a.as_raw_slice_offset();
+    let offset_a = offset_a.to_u32().unwrap();
+    let (b, offset_b) = b.as_raw_slice_offset();
+    let offset_b = offset_b.to_u32().unwrap();
+    let (c, offset_c) = c.as_raw_slice_offset_mut();
+    let offset_c = offset_c.to_u32().unwrap();
 
     let splitk = 512;
     let (n_groups_k, [tsm, tsk, tsn], [tm, tk, tn]) = if k > splitk {
@@ -381,15 +384,15 @@ fn gemm<T: Scalar>(
         macro_wrap!(paste! { match T::scalar_type() {
             macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
                 ScalarType::[<$T:upper>] => {
-                    let a: Slice<$T> = ScalarSlice::from(a.buffer.as_slice())
+                    let a: Slice<$T> = ScalarSlice::from(a)
                         .try_into()
                         .ok()
                         .unwrap();
-                    let b: Slice<$T> = ScalarSlice::from(b.buffer.as_slice())
+                    let b: Slice<$T> = ScalarSlice::from(b)
                         .try_into()
                         .ok()
                         .unwrap();
-                    let c: SliceMut<$T> = ScalarSliceMut::from(c.buffer.as_slice_mut())
+                    let c: SliceMut<$T> = ScalarSliceMut::from(c)
                         .try_into()
                         .ok()
                         .unwrap();

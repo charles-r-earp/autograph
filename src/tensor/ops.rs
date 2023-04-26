@@ -1,446 +1,315 @@
 use super::*;
-use crate::{
-    ops::{AddAssign, Col2Im, Im2Col, KernelArgs, KernelKind, ScaledAdd},
-    rust_shaders,
-    scalar::Float,
-    util::eclid_gcd,
+use anyhow::format_err;
+use dry::{macro_for, macro_wrap};
+use half::{bf16, f16};
+use krnl::{
+    buffer::{ScalarSlice, ScalarSliceMut},
+    krnl_core::num_traits::ToPrimitive,
+    macros::module,
 };
-use anyhow::ensure;
-use ndarray::{Array, Array2, Array4, Axis, Data as ArrayData};
+use paste::paste;
+use std::iter::repeat;
 
-impl<T: Scalar, S1: DataMut<Elem = T>, S2: Data<Elem = T>, D: Dimension>
-    AddAssign<TensorBase<S2, D>> for TensorBase<S1, D>
-{
-    fn add_assign(&mut self, rhs: &TensorBase<S2, D>) -> Result<()> {
-        self.scaled_add(T::one(), rhs)
+impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
+    /// Converts to standard layout.
+    ///
+    /// If in standard layout, borrows the tensor. Otherwise, copies into a new standard layout tensor.
+    ///
+    /// **Errors**
+    /// See [`.into_standard_layout()`](TensorBase::into_standard_layout()).
+    pub fn as_standard_layout(&self) -> Result<CowTensor<T, D>> {
+        if self.is_standard_layout() {
+            Ok(self.view().into())
+        } else {
+            self.view().into_standard_layout().map(Into::into)
+        }
+    }
+    /// Converts into standard layout.
+    ///
+    /// If in standard layout, converts into an owned [`Tensor`]. Otherwise, copies the data into a new standard layout tensor.
+    ///
+    /// **Errors**
+    /// - Supports 2 dimensional inputs.
+    /// - [`DeviceLost`]
+    /// - The kernel could not be dispatched.
+    /// - See [`.into_owned()`](TensorBase::into_owned()).
+    ///
+    /// **Panics**
+    /// Only u32, i32, and f32 are currently implemented.
+    pub fn into_standard_layout(self) -> Result<Tensor<T, D>> {
+        if self.is_standard_layout() {
+            self.into_owned()
+        } else {
+            let mut output = unsafe { Tensor::uninit(self.device(), self.raw_dim())? };
+            assign(
+                BinaryOp::Add,
+                T::one(),
+                self.view().into_dyn(),
+                T::zero(),
+                output.view_mut().into_dyn(),
+            )?;
+            Ok(output)
+        }
+    }
+    /// Converts to an [`ArcTensor`] in standard layout.
+    ///
+    /// If in standard layout, converts to an [`ArcTensor`] (or clones the [`ArcTensor`]), otherwise copies the data into a new [`ArcTensor`].
+    pub fn to_standard_layout_shared(&self) -> Result<ArcTensor<T, D>> {
+        if self.is_standard_layout() {
+            self.to_shared()
+        } else {
+            self.as_standard_layout()?.into_shared()
+        }
     }
 }
 
-impl<T: Scalar, S1: DataMut<Elem = T>, S2: Data<Elem = T>, D: Dimension>
-    ScaledAdd<T, TensorBase<S2, D>> for TensorBase<S1, D>
-{
-    fn scaled_add(&mut self, alpha: T, rhs: &TensorBase<S2, D>) -> Result<()> {
-        ensure!(self.dim == rhs.dim);
-        ensure!(self.strides == rhs.strides);
-        let n = self.len() as u32;
-        let builder = glsl_shaders::module(&format!("scaled_add_{}", T::scalar_name()))?
-            .compute_pass("main")?
-            .slice_mut(self.as_raw_slice_mut())?
-            .slice(rhs.as_raw_slice())?
-            .push(n)?
-            .push(alpha)?;
-        unsafe { builder.submit([n, 1, 1]) }
+fn assign<X: Scalar, Y: Scalar>(
+    op: BinaryOp,
+    alpha: Y,
+    x: TensorViewD<X>,
+    beta: Y,
+    mut y: TensorViewMutD<Y>,
+) -> Result<()> {
+    if let Some((x, mut y)) = x.as_array().zip(y.as_array_mut()) {
+        y.zip_mut_with(&x, |y, x| {
+            *y = op.eval(alpha * x.cast(), beta * y.cast()).cast();
+        });
+        return Ok(());
+    }
+    #[cfg(not(feature = "device"))]
+    {
+        unreachable!()
+    }
+    #[cfg(feature = "device")]
+    {
+        if x.ndim() != 2 {
+            todo!()
+        }
+        assert_eq!(x.shape(), y.shape());
+        let x = x.into_dimensionality::<Ix2>().unwrap();
+        let mut y = y.into_dimensionality::<Ix2>().unwrap();
+        let (rows, cols) = x.dim();
+        let rows = rows.to_u32().unwrap();
+        let cols = cols.to_u32().unwrap();
+        let [rsx, csx]: [isize; 2] = x.strides().try_into().unwrap();
+        let rsx = rsx.to_i32().unwrap();
+        let csx = csx.to_i32().unwrap();
+        let [rsy, csy]: [isize; 2] = y.strides().try_into().unwrap();
+        let rsy = rsy.to_i32().unwrap();
+        let csy = csy.to_i32().unwrap();
+        let (x, offset_x) = x.as_raw_slice_offset();
+        let offset_x = offset_x.to_u32().unwrap();
+        let (mut y, offset_y) = y.as_raw_slice_offset_mut();
+        let offset_y = offset_y.to_u32().unwrap();
+
+        macro_for!($X in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+            if let Ok(x) = Slice::<$X>::try_from(x.as_scalar_slice()) {
+                macro_for!($Y in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+                    if let Ok(y) = SliceMut::<$Y>::try_from(y.as_scalar_slice_mut()) {
+                        let builder = paste! {
+                            kernels::[<assign2_ $X _ $Y>]::builder()?
+                        };
+                        builder
+                        .specialize(op.as_u32())?
+                        .build(y.device())?
+                        .with_global_threads([cols, rows].into())
+                        .dispatch(
+                            rows,
+                            cols,
+                            alpha.cast(),
+                            x,
+                            rsx,
+                            csx,
+                            offset_x,
+                            beta.cast(),
+                            y,
+                            rsy,
+                            csy,
+                            offset_y,
+                        )?;
+                        return Ok(());
+                    }
+                });
+            }
+        });
+        Err(format_err!(
+            "assign<{}, {}> not implemented!",
+            X::scalar_type().name(),
+            Y::scalar_type().name()
+        ))
     }
 }
 
-impl<T: Float, S: Data<Elem = T>> Im2Col<Ix2> for TensorBase<S, Ix4> {
-    type Output = Tensor2<T>;
-    fn im2col(
-        &self,
-        kernel: &Ix2,
-        kind: KernelKind,
-        args: &KernelArgs<Ix2>,
-    ) -> Result<Self::Output> {
-        let input = self.as_standard_layout()?;
-        let (bs, ic, ih, iw) = input.dim();
-        let (kh, kw) = kernel.into_pattern();
-        let strides = &args.strides;
-        let padding = &args.padding;
-        let dilation = &args.dilation;
-        let (oh, ow) = args.im2col_shape([ih, iw], kernel).into_pattern();
-        let mut output = unsafe { Tensor::alloc(input.device(), [bs * oh * ow, ic * kh * kw])? };
-        // let conv_5x5 = strides.into_pattern() == (1, 1) && padding.into_pattern() == (0, 0) && dilation.into_pattern() == (1, 1) && (kh, kw) == (5, 5);
-        let entry = format!(
-            "kernel::im2col_2d_{}_{}",
-            kind.as_str(),
-            //if conv_5x5 { "_5x5" } else { "" },
-            T::scalar_name()
-        );
-        let builder = rust_shaders::compute_pass(&entry)?
-            .slice(input.as_raw_slice())?
-            .slice_mut(output.as_raw_slice_mut())?
-            .push(bs as u32)?
-            .push(ic as u32)?
-            .push([ih as u32, iw as u32])?
-            .push([oh as u32, ow as u32])?
-            .push([kh as u32, kw as u32])?
-            .push([strides[0] as u32, strides[1] as u32])?
-            .push([padding[0] as u32, padding[1] as u32])?
-            .push([dilation[0] as u32, dilation[1] as u32])?;
-        let work_size = {
-            //let oh = (oh / 16) * 16 + if oh % 16 != 0 { 16 } else { 0 };
-            //let ow = (ow / 16) * 16 + if ow % 16 != 0 { 16 } else { 0 };
-            /*let ohw = oh * ow;
-            //let ohw = (ohw / 256) * 256 + if ohw % 256 != 0 { 256 } else { 0 };*/
+#[cfg_attr(feature = "device", module)]
+mod kernels {
+    use dry::macro_for;
+    #[cfg(not(target_arch = "spirv"))]
+    use krnl::krnl_core;
+    use krnl_core::macros::kernel;
+    #[cfg(target_arch = "spirv")]
+    use krnl_core::{buffer::UnsafeIndex, glam::Vec2Swizzles};
+    use krnl_core::{
+        half::{bf16, f16},
+        scalar::Scalar,
+    };
+    use paste::paste;
 
-            /*if conv_5x5 {
-                let gh = oh / 32 + if oh % 32 != 0 { 1 } else { 0 };
-                let gw = ow / 32 + if ow % 32 != 0 { 1 } else { 0 };
-                let ohw = gh * gw * 256;
-                [(bs * ic) as u32, ohw as u32, 1]
-            } else {
-                let gh = oh / 16 + if oh % 16 != 0 { 1 } else { 0 };
-                let gw = ow / 16 + if ow % 16 != 0 { 1 } else { 0 };
-                let ohw = gh * gw * 256;
-                [(bs * ic * ohw) as u32, 1, 1]
-            }*/
-            //[(bs * ic) as u32, ohw as u32, 1]
-            [(bs * oh * ow * ic * kh * kw) as u32, 1, 1]
-        };
-        unsafe {
-            builder.submit(work_size)?;
-        }
-        Ok(output)
+    #[repr(u32)]
+    pub enum BinaryOp {
+        Add = 1,
+        Sub = 2,
+        Mul = 3,
+        Div = 4,
     }
-}
 
-impl<T: Float, S: Data<Elem = T>> Col2Im<Ix2> for TensorBase<S, Ix2> {
-    type Output = Tensor4<T>;
-    fn col2im(
-        &self,
-        shape: &Ix2,
-        kernel: &Ix2,
-        kind: KernelKind,
-        args: &KernelArgs<Ix2>,
-    ) -> Result<Self::Output> {
-        if shape.size() == 0 {
-            bail!("Shape has zero value! {:?}", shape.slice());
+    #[cfg(not(target_arch = "spirv"))]
+    impl BinaryOp {
+        pub fn as_u32(self) -> u32 {
+            self as u32
         }
-        if kernel.size() == 0 {
-            bail!("Kernel has zero value! {:?}", kernel.slice());
-        }
-        let input = self.as_standard_layout()?;
-        let (bsihiw, ickhkw) = input.dim();
-        let (oh, ow) = shape.into_pattern();
-        let (kh, kw) = kernel.into_pattern();
-        let ic = ickhkw / (kh * kw);
-        let (ih, iw) = args.im2col_shape([oh, ow], kernel).into_pattern();
-        let bs = bsihiw / (ih * iw);
-        let strides = &args.strides;
-        let padding = &args.padding;
-        let dilation = &args.dilation;
-        let (s_bez_h, d_bez_h, gcd_h) = eclid_gcd(strides[0], dilation[0]);
-        let (s_bez_w, d_bez_w, gcd_w) = eclid_gcd(strides[1], dilation[1]);
-        let mut output = unsafe { Tensor::alloc(input.device(), [bs, ic, oh, ow])? };
-        let builder = rust_shaders::compute_pass(&format!(
-            "kernel::col2im_2d_{}_{}",
-            kind.as_str(),
-            T::scalar_name()
-        ))?
-        .slice(input.as_raw_slice())?
-        .slice_mut(output.as_raw_slice_mut())?
-        .push(bs as u32)?
-        .push(ic as u32)?
-        .push([ih as u32, iw as u32])?
-        .push([oh as u32, ow as u32])?
-        .push([kh as u32, kw as u32])?
-        .push([strides[0] as u32, strides[1] as u32])?
-        .push([padding[0] as u32, padding[1] as u32])?
-        .push([dilation[0] as u32, dilation[1] as u32])?
-        .push([s_bez_h as u32, s_bez_w as u32])?
-        .push([d_bez_h as u32, d_bez_w as u32])?
-        .push([gcd_h as u32, gcd_w as u32])?;
-        let h = (oh - 1) / gcd_h + 1;
-        let w = (ow - 1) / gcd_w + 1;
-        unsafe {
-            builder.submit([(bs * ic) as u32, (h * w) as u32, 1])?;
-        }
-        Ok(output)
     }
-}
 
-impl<S: ArrayData<Elem = f32>> Im2Col<Ix2> for ArrayBase<S, Ix4> {
-    type Output = Array2<f32>;
-    fn im2col(
-        &self,
-        kernel: &Ix2,
-        kind: KernelKind,
-        args: &KernelArgs<Ix2>,
-    ) -> Result<Self::Output> {
-        let input = self.as_standard_layout();
-        let (bs, ic, ih, iw) = input.dim();
-        let (kh, kw) = kernel.into_pattern();
-        let (sh, sw) = args.strides.into_pattern();
-        let (ph, pw) = args.padding.into_pattern();
-        let (dh, dw) = args.dilation.into_pattern();
-        let (oh, ow) = args.im2col_shape([ih, iw], kernel).into_pattern();
-        let kernel_flip = kind == KernelKind::CrossCorrelation;
-        let mut output = Array::zeros([bs, oh, ow, ic, kh * kw]);
-        for (input, mut output) in input.outer_iter().zip(output.outer_iter_mut()) {
-            for (input, mut output) in input.outer_iter().zip(output.axis_iter_mut(Axis(2))) {
-                for (hid, mut output) in output.outer_iter_mut().enumerate() {
-                    for (wid, mut output) in output.outer_iter_mut().enumerate() {
-                        for ki in 0..kh {
-                            for kj in 0..kw {
-                                let hidx = -(ph as isize) + (ki * dh + sh * hid) as isize;
-                                let widx = -(pw as isize) + (kj * dw + sw * wid) as isize;
-                                let mut kidx = ki * kw + kj;
-                                if kernel_flip {
-                                    kidx = kh * kw - (kidx + 1);
-                                }
-                                if hidx >= 0
-                                    && hidx < ih as isize
-                                    && widx >= 0
-                                    && widx < iw as isize
-                                {
-                                    output[kidx] = input[(hidx as usize, widx as usize)];
-                                }
-                            }
+    impl TryFrom<u32> for BinaryOp {
+        type Error = ();
+        fn try_from(x: u32) -> Result<Self, ()> {
+            Ok(match x {
+                1 => Self::Add,
+                2 => Self::Sub,
+                3 => Self::Mul,
+                4 => Self::Div,
+                _ => {
+                    return Err(());
+                }
+            })
+        }
+    }
+
+    impl BinaryOp {
+        pub fn eval<T: Scalar>(&self, a: T, b: T) -> T {
+            match self {
+                Self::Add => a + b,
+                Self::Sub => a - b,
+                Self::Mul => a * b,
+                Self::Div => a / b,
+            }
+        }
+    }
+
+    #[cfg(any(target_arch = "spirv", feature = "device"))]
+    macro_for!($X in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+        macro_for!($Y in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+            paste! {
+                #[kernel(threads(16, 16))]
+                pub fn [<assign2_ $X _ $Y>]<const OP: u32>(
+                    rows: u32,
+                    cols: u32,
+                    alpha: $Y,
+                    #[global]
+                    x: Slice<$X>,
+                    rsx: i32,
+                    csx: i32,
+                    offset_x: u32,
+                    beta: $Y,
+                    #[global]
+                    y: UnsafeSlice<$Y>,
+                    rsy: i32,
+                    csy: i32,
+                    offset_y: u32,
+                ) {
+                    let op = BinaryOp::try_from(OP).ok().unwrap();
+                    let [global_row, global_col] = kernel.global_id().yx().to_array();
+                    if global_row < rows && global_col < cols {
+                        let x_idx = (global_row as i32 * rsx + global_col as i32 * csx + offset_x as i32) as usize;
+                        let y_idx = (global_row as i32 * rsy + global_col as i32 * csy + offset_y as i32) as usize;
+                        unsafe {
+                            *y.unsafe_index_mut(y_idx) = op.eval(alpha * x[x_idx].cast::<$Y>(), beta * y.unsafe_index(y_idx));
                         }
                     }
                 }
             }
-        }
-        // Only used in testing
-        // Testing of autograph_derive fails to compile here.
-        Ok(output.into_shape([bs * oh * ow, ic * kh * kw]).unwrap())
-    }
+        });
+    });
 }
-
-impl<S: ArrayData<Elem = f32>> Col2Im<Ix2> for ArrayBase<S, Ix2> {
-    type Output = Array4<f32>;
-    fn col2im(
-        &self,
-        shape: &Ix2,
-        kernel: &Ix2,
-        kind: KernelKind,
-        args: &KernelArgs<Ix2>,
-    ) -> Result<Self::Output> {
-        if shape.size() == 0 {
-            bail!("Shape has zero value! {:?}", shape.slice());
-        }
-        if kernel.size() == 0 {
-            bail!("Kernel has zero value! {:?}", kernel.slice());
-        }
-        if shape.size() == 0 {
-            bail!("Shape has zero value! {:?}", shape.slice());
-        }
-        if kernel.size() == 0 {
-            bail!("Kernel has zero value! {:?}", kernel.slice());
-        }
-        let input = self.as_standard_layout();
-        let (bsihiw, ickhkw) = input.dim();
-        let (oh, ow) = shape.into_pattern();
-        let (kh, kw) = kernel.into_pattern();
-        let kernel_flip = kind == KernelKind::CrossCorrelation;
-        let (ih, iw) = args.im2col_shape([oh, ow], kernel).into_pattern();
-        let ic = ickhkw / (kh * kw);
-        let bs = bsihiw / (ih * iw);
-        let (sh, sw) = args.strides.into_pattern();
-        let (ph, pw) = args.padding.into_pattern();
-        let (dh, dw) = args.dilation.into_pattern();
-        // Only used in testing
-        // Testing of autograph_derive fails to compile here.
-        let input = input.into_shape([bs, ih, iw, ic, kh * kw]).unwrap();
-        let mut output = Array::zeros([bs, ic, oh, ow]);
-        for (input, mut output) in input.outer_iter().zip(output.outer_iter_mut()) {
-            for (input, mut output) in input.axis_iter(Axis(2)).zip(output.outer_iter_mut()) {
-                for (hid, input) in input.outer_iter().enumerate() {
-                    for (wid, input) in input.outer_iter().enumerate() {
-                        for ki in 0..kh {
-                            for kj in 0..kw {
-                                let hidx = -(ph as isize) + (ki * dh + sh * hid) as isize;
-                                let widx = -(pw as isize) + (kj * dw + sw * wid) as isize;
-                                let mut kidx = ki * kw + kj;
-                                if kernel_flip {
-                                    kidx = kh * kw - (kidx + 1);
-                                }
-                                if hidx >= 0
-                                    && hidx < oh as isize
-                                    && widx >= 0
-                                    && widx < ow as isize
-                                {
-                                    output[(hidx as usize, widx as usize)] += input[kidx];
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        Ok(output)
-    }
-}
+use kernels::BinaryOp;
 
 #[cfg(all(test, feature = "device_tests"))]
 mod tests {
     use super::*;
-    use crate::tensor::{OwnedRepr, TensorBase};
-    use half::bf16;
-    use ndarray::{ArrayBase, OwnedRepr as ArrayOwnedRepr};
 
-    async fn im2col<
-        T: Float,
-        D1: Dimension,
-        D2: Dimension,
-        E1: IntoDimension<Dim = D1>,
-        E2: IntoDimension<Dim = D2>,
-    >(
-        input_dim: E1,
-        kernel: E2,
-        kind: KernelKind,
-        args: &KernelArgs<D2>,
-    ) -> Result<()>
-    where
-        TensorBase<OwnedRepr<T>, D1>: Im2Col<D2, Output = Tensor<T, D2>>,
-        ArrayBase<ArrayOwnedRepr<f32>, D1>: Im2Col<D2, Output = Array<f32, D2>>,
-    {
-        let input_dim = input_dim.into_dimension();
-        let x_vec = (1..=input_dim.size())
-            .into_iter()
-            .map(|x| if x % 3 != 0 { x as f32 } else { -(x as f32) })
-            .collect::<Vec<_>>();
-        let kernel = kernel.into_dimension();
-        let x_array = Array::from(x_vec).into_shape(input_dim)?;
-        let y_array = x_array.im2col(&kernel, kind, args)?;
-        let device = Device::new()?;
-        let x = Tensor::from(x_array.map(|x| T::from_f32(*x).unwrap()))
-            .into_device(device)
-            .await?;
-        let y = x.im2col(&kernel, kind, args)?;
-        let y_out = y.read().await?.as_array().map(|x| x.to_f32().unwrap());
-        assert_eq!(y_out, y_array);
-        Ok(())
-    }
-
-    #[ignore] // Doesn't pass due to rounding error?
-    #[tokio::test]
-    async fn im2col_convolution_bf16() -> Result<()> {
-        im2col::<bf16, _, _, _, _>(
-            [1, 2, 3, 3],
-            [2, 2],
-            KernelKind::Convolution,
-            &KernelArgs::default(),
-        )
-        .await?;
-        im2col::<bf16, _, _, _, _>(
-            [1, 6, 8, 8],
-            [5, 5],
-            KernelKind::Convolution,
-            &KernelArgs::default(),
-        )
-        .await?;
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn im2col_convolution_f32() -> Result<()> {
-        im2col::<f32, _, _, _, _>(
-            [1, 2, 3, 3],
-            [2, 2],
-            KernelKind::Convolution,
-            &KernelArgs::default(),
-        )
-        .await?;
-        im2col::<f32, _, _, _, _>(
-            [1, 2, 21, 5],
-            [2, 2],
-            KernelKind::Convolution,
-            &KernelArgs::default(),
-        )
-        .await?;
-        im2col::<f32, _, _, _, _>(
-            [16, 6, 8, 8],
-            [5, 5],
-            KernelKind::Convolution,
-            &KernelArgs::default(),
-        )
-        .await?;
-        im2col::<f32, _, _, _, _>(
-            [1, 1, 15, 20],
-            [2, 2],
-            KernelKind::Convolution,
-            &KernelArgs::default(),
-        )
-        .await?;
-        im2col::<f32, _, _, _, _>(
-            [1, 1, 5, 16],
-            [5, 5],
-            KernelKind::Convolution,
-            &KernelArgs::default(),
-        )
-        .await?;
-        Ok(())
-    }
-
-    async fn col2im<
-        T: Float,
-        D1: Dimension,
-        D2: Dimension,
-        E1: IntoDimension<Dim = D1>,
-        E2: IntoDimension<Dim = D1>,
-        E3: IntoDimension<Dim = D1>,
-    >(
-        input_dim: E1,
-        shape: E2,
-        kernel: E3,
-        kind: KernelKind,
-        args: &KernelArgs<D1>,
-    ) -> Result<()>
-    where
-        TensorBase<OwnedRepr<T>, D1>: Col2Im<D1, Output = Tensor<T, D2>>,
-        ArrayBase<ArrayOwnedRepr<f32>, D1>: Col2Im<D1, Output = Array<f32, D2>>,
-    {
-        let input_dim = input_dim.into_dimension();
-        let x_vec = (1..=input_dim.size())
-            .into_iter()
-            .map(|x| if x % 3 != 0 { x as f32 } else { -(x as f32) })
-            .collect::<Vec<_>>();
+    async fn into_standard_layout<T: Scalar, E: IntoDimension>(shape: E, axes: E) -> Result<()> {
         let shape = shape.into_dimension();
-        let kernel = kernel.into_dimension();
-        let x_array = Array::from(x_vec).into_shape(input_dim)?;
-        let y_array = x_array.col2im(&shape, &kernel, kind, args)?;
+        let x_vec = (0..shape.size())
+            .into_iter()
+            .map(|x| T::from_usize(x).unwrap())
+            .collect();
+        let x_array = Array::from_shape_vec(shape, x_vec)?;
+        let axes = E::Dim::from_dimension(&axes.into_dimension()).unwrap();
+        let y_array = x_array
+            .view()
+            .permuted_axes(axes.clone())
+            .as_standard_layout()
+            .to_owned();
         let device = Device::new()?;
-        let x = Tensor::from(x_array.map(|x| T::from_f32(*x).unwrap()))
-            .into_device(device)
-            .await?;
-        let y = x.col2im(&shape, &kernel, kind, args)?;
-        let y_out = y.read().await?.as_array().map(|x| x.to_f32().unwrap());
-        assert_eq!(y_out, y_array);
+        let x = Tensor::from(x_array).into_device(device).await?;
+        let y = x.permuted_axes(axes).into_standard_layout()?.read().await?;
+        assert_eq!(y_array.view(), y.as_array());
         Ok(())
     }
 
-    async fn col2im_for<
-        T: Float,
-        D1: Dimension,
-        D2: Dimension,
-        E1: IntoDimension<Dim = D1>,
-        E2: IntoDimension<Dim = D2>,
-    >(
-        input_dim: E1,
-        kernel: E2,
-        kind: KernelKind,
-        args: &KernelArgs<D2>,
-    ) -> Result<()>
-    where
-        TensorBase<OwnedRepr<T>, D2>: Col2Im<D2, Output = Tensor<T, D1>>,
-        ArrayBase<ArrayOwnedRepr<f32>, D1>: Im2Col<D2, Output = Array<f32, D2>>,
-        ArrayBase<ArrayOwnedRepr<f32>, D2>: Col2Im<D2, Output = Array<f32, D1>>,
-    {
-        let x = Array::<f32, _>::zeros(input_dim);
-        let kernel = kernel.into_dimension();
-        let y = x.im2col(&kernel, kind, args)?;
-        let mut shape = D2::zeros(x.ndim() - 2);
-        shape.slice_mut().copy_from_slice(&x.shape()[2..]);
-        col2im(y.raw_dim(), shape, kernel, KernelKind::Convolution, args).await
+    #[tokio::test]
+    async fn into_standard_layout_4d_u32() -> Result<()> {
+        into_standard_layout::<u32, _>([2, 12, 12, 16], [0, 3, 1, 2]).await?;
+        Ok(())
     }
 
     #[tokio::test]
-    async fn col2im_convolution_f32() -> Result<()> {
-        col2im_for::<f32, _, _, _, _>(
-            [1, 2, 3, 3],
-            [2, 2],
-            KernelKind::Convolution,
-            &KernelArgs::default(),
-        )
-        .await?;
-        col2im_for::<f32, _, _, _, _>(
-            [16, 6, 8, 8],
-            [5, 5],
-            KernelKind::Convolution,
-            &KernelArgs::default(),
-        )
-        .await?;
+    async fn into_standard_layout_4d_f32() -> Result<()> {
+        into_standard_layout::<f32, _>([1000, 24, 24, 6], [0, 3, 1, 2]).await?;
+        into_standard_layout::<f32, _>([1000, 8, 8, 16], [0, 3, 1, 2]).await?;
+        Ok(())
+    }
+
+    /*#[tokio::test]
+    async fn into_standard_layout_6d_u32() -> Result<()> {
+        into_standard_layout::<u32, _>([2, 3, 4, 5, 6, 7]).await?;
+        Ok(())
+    }*/
+
+    async fn reorder<T1, Sh1, T2, Sh2>(input_shape: Sh1, output_shape: Sh2) -> Result<()>
+    where
+        T1: Scalar,
+        Sh1: ShapeBuilder,
+        T2: Scalar,
+        Sh2: ShapeBuilder<Dim = Sh1::Dim> + Clone,
+    {
+        let mut x_array = Array::<T1, _>::zeros(input_shape);
+        for (x, i) in x_array.iter_mut().zip(1..) {
+            *x = T1::from_usize(i).unwrap();
+        }
+        let mut y_array = Array::<T2, _>::zeros(output_shape.clone());
+        for (indices, x) in x_array.indexed_iter() {
+            if let Some(y) = y_array.get_mut(indices.into_dimension()) {
+                *y = T2::from_usize(x.to_usize().unwrap()).unwrap();
+            }
+        }
+
+        let device = Device::new()?;
+        let x = CowTensor::from(x_array.view())
+            .into_device(device.clone())
+            .await?;
+        let y = x
+            .as_reordered::<T2, _>(output_shape)?
+            .read()
+            .await?
+            .as_array()
+            .to_owned();
+        assert_eq!(y, y_array);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reorder_2d_f32_f32() -> Result<()> {
+        reorder::<f32, _, f32, _>([3, 3], [4, 4].set_f(true)).await?;
         Ok(())
     }
 }

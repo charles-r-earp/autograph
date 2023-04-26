@@ -27,7 +27,7 @@ use std::{
 mod linalg;
 //mod ops;
 //mod reduce;
-mod reorder;
+mod ops;
 
 fn strides_from_array<S, D>(array: &ArrayBase<S, D>) -> D
 where
@@ -519,6 +519,15 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
         } else {
             None
         }
+    }
+    fn as_raw_slice_offset(&self) -> (Slice<T>, usize) {
+        (self.buffer.as_slice(), self.offset)
+    }
+    fn as_raw_slice_offset_mut(&mut self) -> (SliceMut<T>, usize)
+    where
+        S: DataMut,
+    {
+        (self.buffer.as_slice_mut(), self.offset)
     }
     /// Transfers the tensor into the `device`.
     ///
