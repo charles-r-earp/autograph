@@ -13,7 +13,7 @@ use anyhow::{anyhow, bail, Result};
 use bytemuck::Pod;
 use ndarray::{
     Array, ArrayBase, ArrayView, ArrayViewMut, Dimension, IntoDimension, Ix0, Ix1, Ix2, Ix3, Ix4,
-    Ix5, Ix6, IxDyn, RawArrayView, ShapeBuilder, StrideShape,
+    Ix5, Ix6, IxDyn, RawArrayView, ShapeBuilder, ShapeError, StrideShape,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -128,6 +128,97 @@ fn permuted_axes<D: Dimension>(dim: D, strides: D, axes: D) -> (D, D) {
         }
     }
     (new_dim, new_strides)
+}
+
+// adapted from https://docs.rs/crate/ndarray/0.15.6/source/src/dimension/mod.rs
+/// Returns the `size` of the `dim`, checking that the product of non-zero axis
+/// lengths does not exceed `isize::MAX`.
+///
+/// If `size_of_checked_shape(dim)` returns `Ok(size)`, the data buffer is a
+/// slice or `Vec` of length `size`, and `strides` are created with
+/// `self.default_strides()` or `self.fortran_strides()`, then the invariants
+/// are met to construct an array from the data buffer, `dim`, and `strides`.
+/// (The data buffer being a slice or `Vec` guarantees that it contains no more
+/// than `isize::MAX` bytes.)
+pub fn size_of_shape_checked<D: Dimension>(dim: &D) -> Result<usize, ShapeError> {
+    use ndarray::ErrorKind;
+    let size_nonzero = dim
+        .slice()
+        .iter()
+        .filter(|&&d| d != 0)
+        .try_fold(1usize, |acc, &d| acc.checked_mul(d))
+        .ok_or_else(|| ShapeError::from_kind(ErrorKind::Overflow))?;
+    if size_nonzero > ::std::isize::MAX as usize {
+        Err(ShapeError::from_kind(ErrorKind::Overflow))
+    } else {
+        Ok(dim.size())
+    }
+}
+
+// adapted from https://docs.rs/ndarray/0.15.6/ndarray/struct.ArrayBase.html#method.broadcast
+fn broadcast<D: Dimension, E: IntoDimension>(
+    from: &D,
+    strides: &D,
+    dim: E,
+) -> Option<(E::Dim, E::Dim)> {
+    /// Return new stride when trying to grow `from` into shape `to`
+    ///
+    /// Broadcasting works by returning a "fake stride" where elements
+    /// to repeat are in axes with 0 stride, so that several indexes point
+    /// to the same element.
+    ///
+    /// **Note:** Cannot be used for mutable iterators, since repeating
+    /// elements would create aliasing pointers.
+    fn upcast<D: Dimension, E: Dimension>(to: &D, from: &E, stride: &E) -> Option<D> {
+        // Make sure the product of non-zero axis lengths does not exceed
+        // `isize::MAX`. This is the only safety check we need to perform
+        // because all the other constraints of `ArrayBase` are guaranteed
+        // to be met since we're starting from a valid `ArrayBase`.
+        let _ = size_of_shape_checked(to).ok()?;
+
+        let mut new_stride = to.clone();
+        // begin at the back (the least significant dimension)
+        // size of the axis has to either agree or `from` has to be 1
+        if to.ndim() < from.ndim() {
+            return None;
+        }
+
+        {
+            let mut new_stride_iter = new_stride.slice_mut().iter_mut().rev();
+            for ((er, es), dr) in from
+                .slice()
+                .iter()
+                .rev()
+                .zip(stride.slice().iter().rev())
+                .zip(new_stride_iter.by_ref())
+            {
+                /* update strides */
+                if *dr == *er {
+                    /* keep stride */
+                    *dr = *es;
+                } else if *er == 1 {
+                    /* dead dimension, zero stride */
+                    *dr = 0
+                } else {
+                    return None;
+                }
+            }
+
+            /* set remaining strides to zero */
+            for dr in new_stride_iter {
+                *dr = 0;
+            }
+        }
+        Some(new_stride)
+    }
+    let dim = dim.into_dimension();
+
+    // Note: zero strides are safe precisely because we return an read-only view
+    let broadcast_strides = match upcast(&dim, from, strides) {
+        Some(st) => st,
+        None => return None,
+    };
+    Some((dim, broadcast_strides))
 }
 
 /// Multi-dimensional matrix.
@@ -316,6 +407,10 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     pub fn device(&self) -> Device {
         self.buffer.device()
     }
+    /// The scalar type of the tensor.
+    pub fn scalar_type(&self) -> ScalarType {
+        T::scalar_type()
+    }
     /// The dimensions of the tensor in pattern form.
     pub fn dim(&self) -> D::Pattern {
         self.dim.clone().into_pattern()
@@ -408,6 +503,19 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
         }
         Err(anyhow!("Incompatible Shapes!"))
         */
+    }
+    pub fn broadcast<E>(&self, dim: E) -> Option<TensorView<T, E::Dim>>
+    where
+        E: IntoDimension,
+        S: Data,
+    {
+        let (dim, strides) = broadcast(&self.dim, &self.strides, dim)?;
+        Some(TensorView {
+            dim,
+            strides,
+            buffer: self.buffer.as_slice(),
+            offset: self.offset,
+        })
     }
     /// Converts the dimensionality of the tensor to [`IxDyn`](type@ndarray::IxDyn).
     pub fn into_dyn(self) -> TensorBase<S, IxDyn> {
@@ -617,7 +725,11 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
         T: Scalar,
         S: DataMut,
     {
-        self.buffer.as_slice_mut().fill(elem)
+        if self.is_contiguous() {
+            self.buffer.as_slice_mut().fill(elem)
+        } else {
+            todo!()
+        }
     }
     /// Moves the tensor into an [`Array`].
     ///
@@ -776,17 +888,22 @@ impl<T: Scalar, D: Dimension> From<Tensor<T, D>> for ArcTensor<T, D> {
     }
 }
 
-/*
-impl<S: Data + Clone, D: Dimension> Clone for TensorBase<S, D> {
-    fn clone(&self) -> Self {
-        Self {
-            dim: self.dim.clone(),
-            strides: self.strides.clone(),
-            buffer: self.buffer.clone(),
-            offset: self.offset.clone(),
+impl<S: Data, D: Dimension> Debug for TensorBase<S, D> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let mut builder = f.debug_struct("TensorBase");
+        builder
+            .field("device", &self.device())
+            .field("scalar_type", &S::Elem::scalar_type())
+            .field("shape", &self.shape());
+        if self.strides != self.dim.default_strides() {
+            builder.field("strides", &self.strides());
         }
+        if self.offset > 0 {
+            builder.field("offset", &self.offset);
+        }
+        builder.finish()
     }
-}*/
+}
 
 /// Casts
 #[allow(unused)]
@@ -819,10 +936,9 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
             offset: 0,
         })
     }
+    /*
     /// Scales the tensor into a new tensor.
-    ///
-    /// See [`BufferBase::scale_into()`](crate::buffer::BufferBase::scale_into()).
-    pub fn scale_into<T2: Scalar>(self, alpha: T2) -> Result<Tensor<T2, D>> {
+    pub fn scale_into<Y: Scalar>(self, alpha: Y) -> Result<Tensor<Y, D>> {
         todo!()
         /*
         let buffer = match self.data.try_into_buffer() {
@@ -834,7 +950,7 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
             strides: self.strides,
             data: OwnedRepr(buffer),
         })*/
-    }
+    }*/
 }
 
 /*

@@ -1,4 +1,5 @@
 use super::*;
+use crate::ops::AddAssign;
 use anyhow::format_err;
 use dry::{macro_for, macro_wrap};
 use half::{bf16, f16};
@@ -41,13 +42,7 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
             self.into_owned()
         } else {
             let mut output = unsafe { Tensor::uninit(self.device(), self.raw_dim())? };
-            assign(
-                BinaryOp::Add,
-                T::one(),
-                self.view().into_dyn(),
-                T::zero(),
-                output.view_mut().into_dyn(),
-            )?;
+            output.assign(&self)?;
             Ok(output)
         }
     }
@@ -61,18 +56,66 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
             self.as_standard_layout()?.into_shared()
         }
     }
+    pub fn scaled_add<S2, D2>(&mut self, alpha: T, rhs: &TensorBase<S2, D2>) -> Result<()>
+    where
+        S: DataMut,
+        S2: Data<Elem = T>,
+        D2: Dimension,
+    {
+        assign(
+            BinaryOp::Add,
+            alpha,
+            rhs.view().into_dyn(),
+            self.view_mut().into_dyn(),
+        )
+    }
+    pub fn assign<S2, D2>(&mut self, rhs: &TensorBase<S2, D2>) -> Result<()>
+    where
+        S: DataMut,
+        S2: Data<Elem = T>,
+        D2: Dimension,
+    {
+        assign(
+            BinaryOp::Identity,
+            T::one(),
+            rhs.view().into_dyn(),
+            self.view_mut().into_dyn(),
+        )
+    }
+}
+
+impl<T: Scalar, S: DataMut<Elem = T>, D: Dimension, S2: Data<Elem = T>, D2: Dimension>
+    AddAssign<TensorBase<S2, D2>> for TensorBase<S, D>
+{
+    type Error = anyhow::Error;
+    fn add_assign(&mut self, rhs: TensorBase<S2, D2>) -> Result<(), Self::Error> {
+        self.scaled_add(T::one(), &rhs)
+    }
+}
+
+impl<T: Scalar, S: DataMut<Elem = T>, D: Dimension, S2: Data<Elem = T>, D2: Dimension>
+    AddAssign<&TensorBase<S2, D2>> for TensorBase<S, D>
+{
+    type Error = anyhow::Error;
+    fn add_assign(&mut self, rhs: &TensorBase<S2, D2>) -> Result<(), Self::Error> {
+        self.scaled_add(T::one(), rhs)
+    }
 }
 
 fn assign<X: Scalar, Y: Scalar>(
     op: BinaryOp,
     alpha: Y,
     x: TensorViewD<X>,
-    beta: Y,
     mut y: TensorViewMutD<Y>,
 ) -> Result<()> {
+    let x = if let Some(x) = x.broadcast(y.shape()) {
+        x
+    } else {
+        bail!("Broadcast not possible! {x:?} -> {y:?}");
+    };
     if let Some((x, mut y)) = x.as_array().zip(y.as_array_mut()) {
         y.zip_mut_with(&x, |y, x| {
-            *y = op.eval(alpha * x.cast(), beta * y.cast()).cast();
+            *y = op.eval(alpha * x.cast(), y.cast()).cast();
         });
         return Ok(());
     }
@@ -82,56 +125,61 @@ fn assign<X: Scalar, Y: Scalar>(
     }
     #[cfg(feature = "device")]
     {
-        if x.ndim() != 2 {
-            todo!()
-        }
-        assert_eq!(x.shape(), y.shape());
-        let x = x.into_dimensionality::<Ix2>().unwrap();
-        let mut y = y.into_dimensionality::<Ix2>().unwrap();
-        let (rows, cols) = x.dim();
-        let rows = rows.to_u32().unwrap();
-        let cols = cols.to_u32().unwrap();
-        let [rsx, csx]: [isize; 2] = x.strides().try_into().unwrap();
-        let rsx = rsx.to_i32().unwrap();
-        let csx = csx.to_i32().unwrap();
-        let [rsy, csy]: [isize; 2] = y.strides().try_into().unwrap();
-        let rsy = rsy.to_i32().unwrap();
-        let csy = csy.to_i32().unwrap();
-        let (x, offset_x) = x.as_raw_slice_offset();
-        let offset_x = offset_x.to_u32().unwrap();
-        let (mut y, offset_y) = y.as_raw_slice_offset_mut();
-        let offset_y = offset_y.to_u32().unwrap();
+        let ndim = y.ndim();
+        if ndim <= 2 {
+            let (rows, cols) = match y.shape() {
+                [rows, cols] => (rows.to_u32().unwrap(), cols.to_u32().unwrap()),
+                [cols] => (1, cols.to_u32().unwrap()),
+                [] => (1, 1),
+                _ => unreachable!(),
+            };
+            let (rsx, csx) = match x.strides() {
+                [rsx, csx] => (rsx.to_i32().unwrap(), csx.to_i32().unwrap()),
+                [csx] => (1, csx.to_i32().unwrap()),
+                [] => (1, 1),
+                _ => unreachable!(),
+            };
+            let (rsy, csy) = match y.strides() {
+                [rsy, csy] => (rsy.to_i32().unwrap(), csy.to_i32().unwrap()),
+                [csy] => (1, csy.to_i32().unwrap()),
+                [] => (1, 1),
+                _ => unreachable!(),
+            };
+            let (x, offset_x) = x.as_raw_slice_offset();
+            let offset_x = offset_x.to_u32().unwrap();
+            let (mut y, offset_y) = y.as_raw_slice_offset_mut();
+            let offset_y = offset_y.to_u32().unwrap();
 
-        macro_for!($X in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
-            if let Ok(x) = Slice::<$X>::try_from(x.as_scalar_slice()) {
-                macro_for!($Y in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
-                    if let Ok(y) = SliceMut::<$Y>::try_from(y.as_scalar_slice_mut()) {
-                        let builder = paste! {
-                            kernels::[<assign2_ $X _ $Y>]::builder()?
-                        };
-                        builder
-                        .specialize(op.as_u32())?
-                        .build(y.device())?
-                        .with_global_threads([cols, rows].into())
-                        .dispatch(
-                            rows,
-                            cols,
-                            alpha.cast(),
-                            x,
-                            rsx,
-                            csx,
-                            offset_x,
-                            beta.cast(),
-                            y,
-                            rsy,
-                            csy,
-                            offset_y,
-                        )?;
-                        return Ok(());
-                    }
-                });
-            }
-        });
+            macro_for!($X in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+                if let Ok(x) = Slice::<$X>::try_from(x.as_scalar_slice()) {
+                    macro_for!($Y in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+                        if let Ok(y) = SliceMut::<$Y>::try_from(y.as_scalar_slice_mut()) {
+                            let builder = paste! {
+                                kernels::[<assign2_ $X _ $Y>]::builder()?
+                            };
+                            builder
+                            .specialize(op.as_u32())?
+                            .build(y.device())?
+                            .with_global_threads([cols, rows].into())
+                            .dispatch(
+                                rows,
+                                cols,
+                                alpha.cast(),
+                                x,
+                                rsx,
+                                csx,
+                                offset_x,
+                                y,
+                                rsy,
+                                csy,
+                                offset_y,
+                            )?;
+                            return Ok(());
+                        }
+                    });
+                }
+            });
+        }
         Err(format_err!(
             "assign<{}, {}> not implemented!",
             X::scalar_type().name(),
@@ -156,10 +204,11 @@ mod kernels {
 
     #[repr(u32)]
     pub enum BinaryOp {
-        Add = 1,
-        Sub = 2,
-        Mul = 3,
-        Div = 4,
+        Identity = 1,
+        Add = 2,
+        Sub = 3,
+        Mul = 4,
+        Div = 5,
     }
 
     #[cfg(not(target_arch = "spirv"))]
@@ -173,10 +222,11 @@ mod kernels {
         type Error = ();
         fn try_from(x: u32) -> Result<Self, ()> {
             Ok(match x {
-                1 => Self::Add,
-                2 => Self::Sub,
-                3 => Self::Mul,
-                4 => Self::Div,
+                1 => Self::Identity,
+                2 => Self::Add,
+                3 => Self::Sub,
+                4 => Self::Mul,
+                5 => Self::Div,
                 _ => {
                     return Err(());
                 }
@@ -187,6 +237,7 @@ mod kernels {
     impl BinaryOp {
         pub fn eval<T: Scalar>(&self, a: T, b: T) -> T {
             match self {
+                Self::Identity => a,
                 Self::Add => a + b,
                 Self::Sub => a - b,
                 Self::Mul => a * b,
@@ -209,7 +260,6 @@ mod kernels {
                     rsx: i32,
                     csx: i32,
                     offset_x: u32,
-                    beta: $Y,
                     #[global]
                     y: UnsafeSlice<$Y>,
                     rsy: i32,
@@ -222,7 +272,7 @@ mod kernels {
                         let x_idx = (global_row as i32 * rsx + global_col as i32 * csx + offset_x as i32) as usize;
                         let y_idx = (global_row as i32 * rsy + global_col as i32 * csy + offset_y as i32) as usize;
                         unsafe {
-                            *y.unsafe_index_mut(y_idx) = op.eval(alpha * x[x_idx].cast::<$Y>(), beta * y.unsafe_index(y_idx));
+                            *y.unsafe_index_mut(y_idx) = op.eval(alpha * x[x_idx].cast::<$Y>(), *y.unsafe_index(y_idx));
                         }
                     }
                 }

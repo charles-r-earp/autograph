@@ -333,6 +333,9 @@ pub extern crate anyhow;
 
 mod util;
 
+/// Ops
+pub mod ops;
+
 /// Tensors.
 pub mod tensor;
 

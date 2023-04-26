@@ -57,14 +57,14 @@ fn main() {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn device_test(device: &Device, name: &str, f: impl Fn(Device) + Send + Sync + 'static) -> Trial {
+fn device_test(device: &Device, name: &str, f: impl Fn(&Device) + Send + Sync + 'static) -> Trial {
     let name = format!(
         "{name}_{}",
         if device.is_host() { "host" } else { "device" }
     );
     let device = device.clone();
     Trial::test(name, move || {
-        f(device);
+        f(&device);
         Ok(())
     })
 }
@@ -152,8 +152,12 @@ fn tensor_tests(device: &Device) -> Vec<Trial> {
             Ok(())
         }),
     ]);
-    tests.extend(linalg::linalg_tests(device));
-    tests.extend(reorder::reorder_tests(device));
+    tests.extend(
+        linalg::linalg_tests(device)
+            .into_iter()
+            .chain(reorder::reorder_tests(device))
+            .chain(ops::ops_tests(device)),
+    );
 
     tests
 }
@@ -231,7 +235,7 @@ mod linalg {
         }
     }
 
-    fn tensor_dot<T: Scalar>(device: Device, [m, k, n]: [usize; 3], [a_t, b_t]: [Transpose; 2]) {
+    fn tensor_dot<T: Scalar>(device: &Device, [m, k, n]: [usize; 3], [a_t, b_t]: [Transpose; 2]) {
         let dim1 = match a_t {
             Transpose::N => [m, k],
             Transpose::T => [k, m],
@@ -278,6 +282,67 @@ mod linalg {
     }
 }
 
+mod ops {
+    use super::*;
+    use ndarray::{Array1, IntoDimension};
+
+    pub fn ops_tests(device: &Device) -> Vec<Trial> {
+        let mut tests = Vec::new();
+        let features = if let Some(info) = device.info() {
+            info.features()
+        } else {
+            Features::empty()
+        };
+        macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+                let scalar_type = $T::scalar_type();
+                let ignore = device.is_device() &&
+                    !features.contains(&features_for_scalar(scalar_type));
+                let ty = scalar_type.name();
+                let lens = [7, 64, 300];
+                tests.extend([
+                    device_test(device, &format!("scaled_add_{ty}"), |device| {
+                        for n in [7, 64, 300] {
+                            scaled_add::<$T>(device, &[n]);
+                        }
+                        scaled_add::<$T>(device, &[3, 5]);
+                        scaled_add::<$T>(device, &[21, 14]);
+                    }),
+                ].into_iter().map(|trial| trial.with_ignored_flag(ignore)));
+        });
+
+        tests
+    }
+
+    fn scaled_add<T: Scalar>(device: &Device, shape: &[usize]) {
+        let alpha = T::from_u32(2).unwrap();
+        let shape = shape.into_dimension();
+        let x_array = (1..10)
+            .cycle()
+            .take(shape.size())
+            .map(|x| T::from_usize(x).unwrap())
+            .collect::<Array1<_>>()
+            .into_shape(shape.clone())
+            .unwrap();
+        let mut y_array = (11..20)
+            .cycle()
+            .take(x_array.len())
+            .map(|x| T::from_usize(x).unwrap())
+            .collect::<Array1<_>>()
+            .into_shape(shape.clone())
+            .unwrap();
+        let x = Tensor::from(x_array.clone())
+            .into_device(device.clone())
+            .unwrap();
+        let mut y = Tensor::from(y_array.clone())
+            .into_device(device.clone())
+            .unwrap();
+        y_array.scaled_add(alpha, &x_array);
+        y.scaled_add(alpha, &x).unwrap();
+        let y = y.into_array().unwrap();
+        assert_eq!(y, y_array);
+    }
+}
+
 mod reorder {
     use super::*;
     use ndarray::IntoDimension;
@@ -294,18 +359,19 @@ mod reorder {
                 let scalar_type = $T::scalar_type();
                 let ignore = device.is_device() &&
                     !features.contains(&features_for_scalar(scalar_type));
-                let name = format!("into_standard_layout_2d_{}", scalar_type.name());
-                let trial = device_test(device, &name, |device| {
-                    into_standard_layout::<$T, _>(device.clone(), [3, 3], [1, 0]);
-                    into_standard_layout::<$T, _>(device, [21, 30], [1, 0]);
-                });
-                tests.push(trial.with_ignored_flag(ignore));
+                let ty = scalar_type.name();
+                tests.extend([
+                    device_test(device, &format!("into_standard_layout2_{ty}"), |device| {
+                        into_standard_layout::<$T, _>(device, [3, 3], [1, 0]);
+                        into_standard_layout::<$T, _>(device, [21, 30], [1, 0]);
+                    }),
+                ].into_iter().map(|trial| trial.with_ignored_flag(ignore)));
         });
 
         tests
     }
 
-    fn into_standard_layout<T: Scalar, E: IntoDimension>(device: Device, shape: E, axes: E) {
+    fn into_standard_layout<T: Scalar, E: IntoDimension>(device: &Device, shape: E, axes: E) {
         let shape = shape.into_dimension();
         let x_vec = (1..100)
             .cycle()
@@ -319,7 +385,9 @@ mod reorder {
             .permuted_axes(axes.clone())
             .as_standard_layout()
             .to_owned();
-        let x = Tensor::from(x_array).into_device(device).unwrap();
+        let x = Tensor::from(x_array.clone())
+            .into_device(device.clone())
+            .unwrap();
         let y = x
             .permuted_axes(axes)
             .into_standard_layout()
