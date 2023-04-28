@@ -47,7 +47,8 @@ mod kernels {
     use krnl_core::macros::kernel;
     #[cfg(target_arch = "spirv")]
     use krnl_core::{
-        buffer::UnsafeIndex, spirv_std::arch::workgroup_memory_barrier as group_barrier,
+        buffer::UnsafeIndex,
+        spirv_std::arch::workgroup_memory_barrier_with_group_sync as group_barrier,
     };
     use krnl_core::{
         half::{bf16, f16},
