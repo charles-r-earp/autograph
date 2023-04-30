@@ -14,10 +14,12 @@ use crate::{
 };
 use anyhow::{anyhow, bail, Result};
 use bytemuck::Pod;
+use dry::macro_for;
 use ndarray::{
     Array, ArrayBase, ArrayView, ArrayViewMut, Dimension, IntoDimension, Ix0, Ix1, Ix2, Ix3, Ix4,
     Ix5, Ix6, IxDyn, RawArrayView, ShapeBuilder, ShapeError, StrideShape,
 };
+use paste::paste;
 use serde::{Deserialize, Serialize};
 use std::{
     convert::{TryFrom, TryInto},
@@ -52,25 +54,17 @@ fn dim_strides_from_shape<D: Dimension>(shape: impl Into<StrideShape<D>>) -> (D,
     (dim, strides)
 }
 
-fn into_dimensionality<D1, D2>(dim: &D1, strides: &D1) -> Result<(D2, D2)>
+fn into_dimensionality<D1, D2>(dim: &D1, strides: &D1) -> Result<(D2, D2), ShapeError>
 where
     D1: Dimension,
     D2: Dimension,
 {
     D2::from_dimension(dim)
         .and_then(|dim| D2::from_dimension(strides).map(|strides| (dim, strides)))
-        .ok_or_else(|| {
-            let strides = bytemuck::cast_slice::<_, isize>(strides.slice());
-            anyhow!(
-                "Incompatible Shapes! {:?} {:?} => {:?}",
-                dim.slice(),
-                strides,
-                D2::NDIM
-            )
-        })
+        .ok_or(ShapeError::from_kind(ndarray::ErrorKind::IncompatibleShape))
 }
 
-fn into_shape<D1, E>(dim: &D1, strides: &D1, shape: E) -> Result<(E::Dim, E::Dim)>
+fn into_shape<D1, E>(dim: &D1, strides: &D1, shape: E) -> Result<(E::Dim, E::Dim), ShapeError>
 where
     D1: Dimension,
     E: IntoDimension,
@@ -84,12 +78,7 @@ where
         let strides = shape.fortran_strides();
         Ok((shape, strides))
     } else {
-        Err(anyhow!(
-            "Incompatible Shapes! {:?} {:?} => {:?}",
-            dim.slice(),
-            strides.slice(),
-            shape.slice()
-        ))
+        Err(ShapeError::from_kind(ndarray::ErrorKind::IncompatibleShape))
     }
 }
 
@@ -222,6 +211,460 @@ fn broadcast<D: Dimension, E: IntoDimension>(
         None => return None,
     };
     Some((dim, broadcast_strides))
+}
+
+/// Dynamically typed multi-dimensional matrix.
+#[derive(Clone)]
+pub struct ScalarTensorBase<S: ScalarData, D: Dimension> {
+    dim: D,
+    strides: D,
+    buffer: ScalarBufferBase<S>,
+    offset: usize,
+}
+
+/// Owned Scalar Tensor
+///
+/// See [`ScalarTensorBase`].
+pub type ScalarTensor<D> = ScalarTensorBase<ScalarBufferRepr, D>;
+/// ScalarTensor with 1 element
+pub type ScalarTensor0 = ScalarTensor<Ix0>;
+/// ScalarTensor with 1 dimension
+pub type ScalarTensor1 = ScalarTensor<Ix1>;
+/// ScalarTensor with 2 dimensions
+pub type ScalarTensor2 = ScalarTensor<Ix2>;
+/// ScalarTensor with 3 dimensions
+pub type ScalarTensor3 = ScalarTensor<Ix3>;
+/// ScalarTensor with 4 dimensions
+pub type ScalarTensor4 = ScalarTensor<Ix4>;
+/// ScalarTensor with 5 dimensions
+pub type ScalarTensor5 = ScalarTensor<Ix5>;
+/// ScalarTensor with 6 dimensions
+pub type ScalarTensor6 = ScalarTensor<Ix6>;
+/// ScalarTensor with dynamic dimensions
+pub type ScalarTensorD = ScalarTensor<IxDyn>;
+
+/// Shared Scalar Tensor
+///
+/// See [`ScalarTensorBase`].
+pub type ScalarArcTensor<D> = ScalarTensorBase<ScalarArcBufferRepr, D>;
+/// ScalarArcTensor with 1 element
+pub type ScalarArcTensor0 = ScalarArcTensor<Ix0>;
+/// ScalarArcTensor with 1 dimension
+pub type ScalarArcTensor1 = ScalarArcTensor<Ix1>;
+/// ScalarArcTensor with 2 dimensions
+pub type ScalarArcTensor2 = ScalarArcTensor<Ix2>;
+/// ScalarArcTensor with 3 dimensions
+pub type ScalarArcTensor3 = ScalarArcTensor<Ix3>;
+/// ScalarArcTensor with 4 dimensions
+pub type ScalarArcTensor4 = ScalarArcTensor<Ix4>;
+/// ScalarArcTensor with 5 dimensions
+pub type ScalarArcTensor5 = ScalarArcTensor<Ix5>;
+/// ScalarArcTensor with 6 dimensions
+pub type ScalarArcTensor6 = ScalarArcTensor<Ix6>;
+/// ScalarArcTensor with dynamic dimensions
+pub type ScalarArcTensorD = ScalarArcTensor<IxDyn>;
+
+/// Borrowed Scalar Tensor
+///
+/// See [`ScalarTensorBase`].
+pub type ScalarTensorView<'a, D> = ScalarTensorBase<ScalarSliceRepr<'a>, D>;
+/// ScalarTensorView with 1 element
+pub type ScalarTensorView0<'a> = ScalarTensorView<'a, Ix0>;
+/// ScalarTensorView with 1 dimension
+pub type ScalarTensorView1<'a> = ScalarTensorView<'a, Ix1>;
+/// ScalarTensorView with 2 dimensions
+pub type ScalarTensorView2<'a> = ScalarTensorView<'a, Ix2>;
+/// ScalarTensorView with 3 dimensions
+pub type ScalarTensorView3<'a> = ScalarTensorView<'a, Ix3>;
+/// ScalarTensorView with 4 dimensions
+pub type ScalarTensorView4<'a> = ScalarTensorView<'a, Ix4>;
+/// ScalarTensorView with 5 dimensions
+pub type ScalarTensorView5<'a> = ScalarTensorView<'a, Ix5>;
+/// ScalarTensorView with 6 dimensions
+pub type ScalarTensorView6<'a> = ScalarTensorView<'a, Ix6>;
+/// ScalarTensorView with dynamic dimensions
+pub type ScalarTensorViewD<'a> = ScalarTensorView<'a, IxDyn>;
+
+/// Mutably borrowed Scalar Tensor
+///
+/// See [`ScalarTensorBase`].
+pub type ScalarTensorViewMut<'a, D> = ScalarTensorBase<ScalarSliceMutRepr<'a>, D>;
+/// ScalarTensorViewMut with 1 element
+pub type ScalarTensorViewMut0<'a> = ScalarTensorViewMut<'a, Ix0>;
+/// ScalarTensorViewMut with 1 dimension
+pub type ScalarTensorViewMut1<'a> = ScalarTensorViewMut<'a, Ix1>;
+/// ScalarTensorViewMut with 2 dimensions
+pub type ScalarTensorViewMut2<'a> = ScalarTensorViewMut<'a, Ix2>;
+/// ScalarTensorViewMut with 3 dimensions
+pub type ScalarTensorViewMut3<'a> = ScalarTensorViewMut<'a, Ix3>;
+/// ScalarTensorViewMut with 4 dimensions
+pub type ScalarTensorViewMut4<'a> = ScalarTensorViewMut<'a, Ix4>;
+/// ScalarTensorViewMut with 5 dimensions
+pub type ScalarTensorViewMut5<'a> = ScalarTensorViewMut<'a, Ix5>;
+/// ScalarTensorViewMut with 6 dimensions
+pub type ScalarTensorViewMut6<'a> = ScalarTensorViewMut<'a, Ix6>;
+/// ScalarTensorViewMut with dynamic dimensions
+pub type ScalarTensorViewMutD<'a> = ScalarTensorViewMut<'a, IxDyn>;
+
+/// Scalar Tensor that is either borrowed or owned.
+///
+/// See [`ScalarTensorBase`].
+pub type ScalarCowTensor<'a, D> = ScalarTensorBase<ScalarCowBufferRepr<'a>, D>;
+/// ScalarCowTensor with 1 element
+pub type ScalarCowTensor0<'a> = ScalarCowTensor<'a, Ix0>;
+/// ScalarCowTensor with 1 dimension
+pub type ScalarCowTensor1<'a> = ScalarCowTensor<'a, Ix1>;
+/// ScalarCowTensor with 2 dimensions
+pub type ScalarCowTensor2<'a> = ScalarCowTensor<'a, Ix2>;
+/// ScalarCowTensor with 3 dimensions
+pub type ScalarCowTensor3<'a> = ScalarCowTensor<'a, Ix3>;
+/// ScalarCowTensor with 4 dimensions
+pub type ScalarCowTensor4<'a> = ScalarCowTensor<'a, Ix4>;
+/// ScalarCowTensor with 5 dimensions
+pub type ScalarCowTensor5<'a> = ScalarCowTensor<'a, Ix5>;
+/// ScalarCowTensor with 6 dimensions
+pub type ScalarCowTensor6<'a> = ScalarCowTensor<'a, Ix6>;
+/// ScalarCowTensor with dynamic dimensions
+pub type ScalarCowTensorD<'a> = ScalarCowTensor<'a, IxDyn>;
+
+impl<S: ScalarDataOwned, D: Dimension> ScalarTensorBase<S, D> {
+    /// Allocates a scalar tensor on `device` with `shape`.
+    ///
+    /// # Safety
+    ///
+    /// The tensor is not initialized.
+    ///
+    /// **Errors**
+    /// See [`ScalarBuffer::uninit()`].
+    pub unsafe fn uninit<Sh>(device: Device, shape: Sh, scalar_type: ScalarType) -> Result<Self>
+    where
+        Sh: ShapeBuilder<Dim = D>,
+    {
+        let (dim, strides) = dim_strides_from_shape(shape.into_shape());
+        let buffer = unsafe { ScalarBufferBase::uninit(device, dim.size(), scalar_type)? };
+        Ok(Self {
+            dim,
+            strides,
+            buffer,
+            offset: 0,
+        })
+    }
+    /// Creates a tensor on `device` with `shape` filled with `elem`.
+    ///
+    /// **Errors**
+    /// See [`ScalarBuffer::from_elem()`].
+    pub fn from_elem<Sh>(device: Device, shape: Sh, elem: ScalarElem) -> Result<Self>
+    where
+        Sh: ShapeBuilder<Dim = D>,
+    {
+        let (dim, strides) = dim_strides_from_shape(shape.into_shape());
+        let buffer = ScalarBufferBase::from_elem(device, dim.size(), elem)?;
+        Ok(Self {
+            dim,
+            strides,
+            buffer,
+            offset: 0,
+        })
+    }
+    /// Creates a tensor on `device` with `shape` filled with 0's.
+    ///
+    /// **Errors**
+    /// See [`ScalarBuffer::zeros()`].
+    pub fn zeros<Sh>(device: Device, shape: Sh, scalar_type: ScalarType) -> Result<Self>
+    where
+        Sh: ShapeBuilder<Dim = D>,
+    {
+        Self::from_elem(device, shape, ScalarElem::zero(scalar_type))
+    }
+    /// Creates a tensor on `device` with `shape` filled with 1's.
+    ///
+    /// **Errors**
+    /// See [`ScalarBuffer::ones()`].
+    pub fn ones<Sh>(device: Device, shape: Sh, scalar_type: ScalarType) -> Result<Self>
+    where
+        Sh: ShapeBuilder<Dim = D>,
+    {
+        Self::from_elem(device, shape, ScalarElem::one(scalar_type))
+    }
+}
+
+impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
+    /// The device of the tensor.
+    pub fn device(&self) -> Device {
+        self.buffer.device()
+    }
+    /// The scalar type of the tensor.
+    pub fn scalar_type(&self) -> ScalarType {
+        self.buffer.scalar_type()
+    }
+    /// The dimensions of the tensor in pattern form.
+    pub fn dim(&self) -> D::Pattern {
+        self.dim.clone().into_pattern()
+    }
+    /// The dimensions of the tensor.
+    pub fn raw_dim(&self) -> D {
+        self.dim.clone()
+    }
+    /// The dimensions of the tensor as a slice.
+    pub fn shape(&self) -> &[usize] {
+        self.dim.slice()
+    }
+    /// The strides of the tensor as a slice.
+    pub fn strides(&self) -> &[isize] {
+        bytemuck::cast_slice(self.strides.slice())
+    }
+    /// The length of the tensor.
+    pub fn len(&self) -> usize {
+        self.dim.size()
+    }
+    /// Whether the tensor is empty.
+    pub fn is_empty(&self) -> bool {
+        self.shape().iter().any(|x| *x == 0)
+    }
+    /// The dimensionality of the tensor.
+    pub fn ndim(&self) -> usize {
+        self.dim.ndim()
+    }
+    /// Converts the tensor into dimension `D2`.
+    ///
+    /// Typically this is used to downcast from [`IxDyn`](type@ndarray::IxDyn) to a static dimensionality. For conversions to [`IxDyn`](type@ndarray::IxDyn), use [`.into_dyn()`](TensorBase::into_dyn()).
+    ///
+    /// **Errors**
+    /// The number of axes of `D2` must be the same as `D`.
+    pub fn into_dimensionality<D2>(self) -> Result<ScalarTensorBase<S, D2>, ShapeError>
+    where
+        D2: Dimension,
+    {
+        let (dim, strides) = into_dimensionality(&self.dim, &self.strides)?;
+        Ok(ScalarTensorBase {
+            dim,
+            strides,
+            buffer: self.buffer,
+            offset: self.offset,
+        })
+    }
+    /// Converts the dimensionality of the tensor to [`IxDyn`](type@ndarray::IxDyn).
+    pub fn into_dyn(self) -> ScalarTensorBase<S, IxDyn> {
+        ScalarTensorBase {
+            dim: self.dim.into_dyn(),
+            strides: self.strides.into_dyn(),
+            buffer: self.buffer,
+            offset: self.offset,
+        }
+    }
+    /// Returns the tensor with dim `shape`.
+    ///
+    /// **Errors**
+    /// The tensor must be contiguous, with default strides.
+    pub fn into_shape<E>(self, shape: E) -> Result<ScalarTensorBase<S, E::Dim>, ShapeError>
+    where
+        E: IntoDimension,
+    {
+        let (dim, strides) = into_shape(&self.dim, &self.strides, shape)?;
+        assert_eq!(self.offset, 0);
+        Ok(ScalarTensorBase {
+            dim,
+            strides,
+            buffer: self.buffer,
+            offset: self.offset,
+        })
+    }
+    pub fn broadcast<E>(&self, dim: E) -> Option<ScalarTensorView<E::Dim>>
+    where
+        E: IntoDimension,
+    {
+        let (dim, strides) = broadcast(&self.dim, &self.strides, dim)?;
+        Some(ScalarTensorView {
+            dim,
+            strides,
+            buffer: self.buffer.as_scalar_slice(),
+            offset: self.offset,
+        })
+    }
+    /// Borrows the tensor as a [`ScalarTensorView`].
+    pub fn view(&self) -> ScalarTensorView<D> {
+        ScalarTensorView {
+            dim: self.dim.clone(),
+            strides: self.strides.clone(),
+            buffer: self.buffer.as_scalar_slice(),
+            offset: self.offset,
+        }
+    }
+    /// Borrows the tensor as a [`ScalarTensorViewMut`].
+    pub fn view_mut(&mut self) -> ScalarTensorViewMut<D>
+    where
+        S: ScalarDataMut,
+    {
+        ScalarTensorViewMut {
+            dim: self.dim.clone(),
+            strides: self.strides.clone(),
+            buffer: self.buffer.as_scalar_slice_mut(),
+            offset: self.offset,
+        }
+    }
+    /// Whether the tensor is contiguous.
+    ///
+    /// Contiguous is either C (Standard) or Fortran layout.
+    pub fn is_contiguous(&self) -> bool {
+        is_contiguous(&self.dim, &self.strides, self.offset)
+    }
+    /// Whether the tensor is standard layout.
+    ///
+    /// In standard layout, the strides increase from right to left by the product of each dimension.
+    pub fn is_standard_layout(&self) -> bool {
+        is_standard_layout(&self.dim, &self.strides, self.offset)
+    }
+    /// Permute the axes of the tensor.
+    ///
+    /// Reorders the dimensions of the tensor, where for each a in `axes`, a is the index of that axis in the new tensor.
+    ///
+    /// # Note
+    /// This operation merely reorders the dimensions / strides and does not copy the data. Combine with [`.into_standard_layout()`](TensorBase::into_standard_layout()) to execute the operation, returning a tensor in standard layout.
+    ///
+    /// **Errors**
+    ///
+    /// Each axis 0 .. ndim must be used exactly once.
+    pub fn permuted_axes<A>(self, axes: A) -> Self
+    where
+        A: IntoDimension<Dim = D>,
+    {
+        let (dim, strides) = permuted_axes(self.dim, self.strides, axes.into_dimension());
+        Self {
+            dim,
+            strides,
+            ..self
+        }
+    }
+    /// Reverses (transposes) the axes of the tensor.
+    pub fn reversed_axes(mut self) -> Self {
+        self.dim.slice_mut().reverse();
+        self.strides.slice_mut().reverse();
+        self
+    }
+    /// Retunrs a view with reversed (transposed) axes.
+    pub fn t(&self) -> ScalarTensorView<D> {
+        self.view().reversed_axes()
+    }
+    /// Borrows the tensor as a [`ScalarSlice`] if standard layout.
+    pub fn as_scalar_slice(&self) -> Option<ScalarSlice> {
+        if self.is_standard_layout() {
+            Some(self.buffer.as_scalar_slice())
+        } else {
+            None
+        }
+    }
+    /// Borrows the tensor as a [`ScalarSlice`] if contiguous.
+    pub fn as_scalar_slice_memory_order(&self) -> Option<ScalarSlice> {
+        if self.is_contiguous() {
+            Some(self.buffer.as_scalar_slice())
+        } else {
+            None
+        }
+    }
+    /// Mutably borrows the tensor as a [`ScalarSliceMut`] if standard layout.
+    pub fn as_scalar_slice_mut(&mut self) -> Option<ScalarSliceMut>
+    where
+        S: DataMut,
+    {
+        if self.is_standard_layout() {
+            Some(self.buffer.as_scalar_slice_mut())
+        } else {
+            None
+        }
+    }
+    /// Mutably borrows the tensor as a [`ScalarSliceMut`] if contiguous.
+    pub fn as_scalar_slice_memory_order_mut(&mut self) -> Option<ScalarSliceMut>
+    where
+        S: ScalarDataMut,
+    {
+        if self.is_contiguous() {
+            Some(self.buffer.as_scalar_slice_mut())
+        } else {
+            None
+        }
+    }
+    fn as_raw_scalar_slice_offset(&self) -> (ScalarSlice, usize) {
+        (self.buffer.as_scalar_slice(), self.offset)
+    }
+    fn as_raw_scalar_slice_offset_mut(&mut self) -> (ScalarSliceMut, usize)
+    where
+        S: ScalarDataMut,
+    {
+        (self.buffer.as_scalar_slice_mut(), self.offset)
+    }
+}
+
+impl<S: ScalarDataOwned, T: Scalar, D: Dimension> From<Tensor<T, D>> for ScalarTensorBase<S, D> {
+    fn from(tensor: Tensor<T, D>) -> Self {
+        Self {
+            dim: tensor.dim,
+            strides: tensor.strides,
+            buffer: tensor.buffer.into(),
+            offset: tensor.offset,
+        }
+    }
+}
+
+impl<T: Scalar, D: Dimension> From<ArcTensor<T, D>> for ScalarArcTensor<D> {
+    fn from(tensor: ArcTensor<T, D>) -> Self {
+        Self {
+            dim: tensor.dim,
+            strides: tensor.strides,
+            buffer: tensor.buffer.into(),
+            offset: tensor.offset,
+        }
+    }
+}
+
+macro_for!($Tensor in [TensorView, TensorViewMut, CowTensor] {
+    paste! {
+        impl<'a, T: Scalar, D: Dimension> From<$Tensor<'a, T, D>> for [<Scalar $Tensor>]<'a, D> {
+            fn from(tensor: $Tensor<'a, T, D>) -> Self {
+                Self {
+                    dim: tensor.dim,
+                    strides: tensor.strides,
+                    buffer: tensor.buffer.into(),
+                    offset: tensor.offset,
+                }
+            }
+        }
+        impl<'a, T: Scalar, D: Dimension> TryFrom<[<Scalar $Tensor>]<'a, D>> for $Tensor<'a, T, D> {
+            type Error = [<Scalar $Tensor>]<'a, D>;
+            fn try_from(tensor: [<Scalar $Tensor>]<'a, D>) -> Result<Self, Self::Error> {
+                match tensor.buffer.try_into() {
+                    Ok(buffer) => Ok(Self {
+                        dim: tensor.dim,
+                        strides: tensor.strides,
+                        buffer,
+                        offset: tensor.offset,
+                    }),
+                    Err(buffer) => Err(Self::Error {
+                        dim: tensor.dim,
+                        strides: tensor.strides,
+                        buffer,
+                        offset: tensor.offset,
+                    })
+                }
+            }
+        }
+    }
+});
+
+impl<S: ScalarData, D: Dimension> Debug for ScalarTensorBase<S, D> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let mut builder = f.debug_struct("TensorBase");
+        builder
+            .field("device", &self.device())
+            .field("scalar_type", &self.scalar_type())
+            .field("shape", &self.shape());
+        if self.strides != self.dim.default_strides() {
+            builder.field("strides", &self.strides());
+        }
+        if self.offset > 0 {
+            builder.field("offset", &self.offset);
+        }
+        builder.finish()
+    }
 }
 
 /// Multi-dimensional matrix.
@@ -442,7 +885,7 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     ///
     /// **Errors**
     /// The number of axes of `D2` must be the same as `D`.
-    pub fn into_dimensionality<D2>(self) -> Result<TensorBase<S, D2>>
+    pub fn into_dimensionality<D2>(self) -> Result<TensorBase<S, D2>, ShapeError>
     where
         D2: Dimension,
     {
@@ -471,11 +914,20 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
             D2::NDIM
         ))*/
     }
+    /// Converts the dimensionality of the tensor to [`IxDyn`](type@ndarray::IxDyn).
+    pub fn into_dyn(self) -> TensorBase<S, IxDyn> {
+        TensorBase {
+            dim: self.dim.into_dyn(),
+            strides: self.strides.into_dyn(),
+            buffer: self.buffer,
+            offset: self.offset,
+        }
+    }
     /// Returns the tensor with dim `shape`.
     ///
     /// **Errors**
     /// The tensor must be contiguous, with default strides.
-    pub fn into_shape<E>(self, shape: E) -> Result<TensorBase<S, E::Dim>>
+    pub fn into_shape<E>(self, shape: E) -> Result<TensorBase<S, E::Dim>, ShapeError>
     where
         E: IntoDimension,
     {
@@ -504,7 +956,6 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     pub fn broadcast<E>(&self, dim: E) -> Option<TensorView<T, E::Dim>>
     where
         E: IntoDimension,
-        S: Data,
     {
         let (dim, strides) = broadcast(&self.dim, &self.strides, dim)?;
         Some(TensorView {
@@ -514,15 +965,7 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
             offset: self.offset,
         })
     }
-    /// Converts the dimensionality of the tensor to [`IxDyn`](type@ndarray::IxDyn).
-    pub fn into_dyn(self) -> TensorBase<S, IxDyn> {
-        TensorBase {
-            dim: self.dim.into_dyn(),
-            strides: self.strides.into_dyn(),
-            buffer: self.buffer,
-            offset: self.offset,
-        }
-    }
+
     /// Borrows the tensor as a [`TensorView`].
     pub fn view(&self) -> TensorView<T, D> {
         TensorView {
@@ -887,18 +1330,7 @@ impl<T: Scalar, D: Dimension> From<Tensor<T, D>> for ArcTensor<T, D> {
 
 impl<S: Data, D: Dimension> Debug for TensorBase<S, D> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let mut builder = f.debug_struct("TensorBase");
-        builder
-            .field("device", &self.device())
-            .field("scalar_type", &S::Elem::scalar_type())
-            .field("shape", &self.shape());
-        if self.strides != self.dim.default_strides() {
-            builder.field("strides", &self.strides());
-        }
-        if self.offset > 0 {
-            builder.field("offset", &self.offset);
-        }
-        builder.finish()
+        ScalarTensorView::from(self.view()).fmt(f)
     }
 }
 
@@ -976,203 +1408,6 @@ impl<T: Uint, S: Data<Elem = T>> TensorBase<S, Ix1> {
         Ok(output)*/
     }
 }*/
-
-/// Dynamically typed multi-dimensional matrix.
-#[derive(Clone)]
-pub struct ScalarTensorBase<S: ScalarData, D: Dimension> {
-    dim: D,
-    strides: D,
-    buffer: ScalarBufferBase<S>,
-    offset: usize,
-}
-
-/// Owned Scalar Tensor
-///
-/// See [`ScalarTensorBase`].
-pub type ScalarTensor<D> = ScalarTensorBase<ScalarBufferRepr, D>;
-/// ScalarTensor with 1 element
-pub type ScalarTensor0 = ScalarTensor<Ix0>;
-/// ScalarTensor with 1 dimension
-pub type ScalarTensor1 = ScalarTensor<Ix1>;
-/// ScalarTensor with 2 dimensions
-pub type ScalarTensor2 = ScalarTensor<Ix2>;
-/// ScalarTensor with 3 dimensions
-pub type ScalarTensor3 = ScalarTensor<Ix3>;
-/// ScalarTensor with 4 dimensions
-pub type ScalarTensor4 = ScalarTensor<Ix4>;
-/// ScalarTensor with 5 dimensions
-pub type ScalarTensor5 = ScalarTensor<Ix5>;
-/// ScalarTensor with 6 dimensions
-pub type ScalarTensor6 = ScalarTensor<Ix6>;
-/// ScalarTensor with dynamic dimensions
-pub type ScalarTensorD = ScalarTensor<IxDyn>;
-
-/// Shared Scalar Tensor
-///
-/// See [`ScalarTensorBase`].
-pub type ScalarArcTensor<D> = ScalarTensorBase<ScalarArcBufferRepr, D>;
-/// ScalarArcTensor with 1 element
-pub type ScalarArcTensor0 = ScalarArcTensor<Ix0>;
-/// ScalarArcTensor with 1 dimension
-pub type ScalarArcTensor1 = ScalarArcTensor<Ix1>;
-/// ScalarArcTensor with 2 dimensions
-pub type ScalarArcTensor2 = ScalarArcTensor<Ix2>;
-/// ScalarArcTensor with 3 dimensions
-pub type ScalarArcTensor3 = ScalarArcTensor<Ix3>;
-/// ScalarArcTensor with 4 dimensions
-pub type ScalarArcTensor4 = ScalarArcTensor<Ix4>;
-/// ScalarArcTensor with 5 dimensions
-pub type ScalarArcTensor5 = ScalarArcTensor<Ix5>;
-/// ScalarArcTensor with 6 dimensions
-pub type ScalarArcTensor6 = ScalarArcTensor<Ix6>;
-/// ScalarArcTensor with dynamic dimensions
-pub type ScalarArcTensorD = ScalarArcTensor<IxDyn>;
-
-/// Borrowed Scalar Tensor
-///
-/// See [`ScalarTensorBase`].
-pub type ScalarTensorView<'a, D> = ScalarTensorBase<ScalarSliceRepr<'a>, D>;
-/// ScalarTensorView with 1 element
-pub type ScalarTensorView0<'a> = ScalarTensorView<'a, Ix0>;
-/// ScalarTensorView with 1 dimension
-pub type ScalarTensorView1<'a> = ScalarTensorView<'a, Ix1>;
-/// ScalarTensorView with 2 dimensions
-pub type ScalarTensorView2<'a> = ScalarTensorView<'a, Ix2>;
-/// ScalarTensorView with 3 dimensions
-pub type ScalarTensorView3<'a> = ScalarTensorView<'a, Ix3>;
-/// ScalarTensorView with 4 dimensions
-pub type ScalarTensorView4<'a> = ScalarTensorView<'a, Ix4>;
-/// ScalarTensorView with 5 dimensions
-pub type ScalarTensorView5<'a> = ScalarTensorView<'a, Ix5>;
-/// ScalarTensorView with 6 dimensions
-pub type ScalarTensorView6<'a> = ScalarTensorView<'a, Ix6>;
-/// ScalarTensorView with dynamic dimensions
-pub type ScalarTensorViewD<'a> = ScalarTensorView<'a, IxDyn>;
-
-/// Mutably borrowed Scalar Tensor
-///
-/// See [`ScalarTensorBase`].
-pub type ScalarTensorViewMut<'a, D> = ScalarTensorBase<ScalarSliceMutRepr<'a>, D>;
-/// ScalarTensorViewMut with 1 element
-pub type ScalarTensorViewMut0<'a> = ScalarTensorViewMut<'a, Ix0>;
-/// ScalarTensorViewMut with 1 dimension
-pub type ScalarTensorViewMut1<'a> = ScalarTensorViewMut<'a, Ix1>;
-/// ScalarTensorViewMut with 2 dimensions
-pub type ScalarTensorViewMut2<'a> = ScalarTensorViewMut<'a, Ix2>;
-/// ScalarTensorViewMut with 3 dimensions
-pub type ScalarTensorViewMut3<'a> = ScalarTensorViewMut<'a, Ix3>;
-/// ScalarTensorViewMut with 4 dimensions
-pub type ScalarTensorViewMut4<'a> = ScalarTensorViewMut<'a, Ix4>;
-/// ScalarTensorViewMut with 5 dimensions
-pub type ScalarTensorViewMut5<'a> = ScalarTensorViewMut<'a, Ix5>;
-/// ScalarTensorViewMut with 6 dimensions
-pub type ScalarTensorViewMut6<'a> = ScalarTensorViewMut<'a, Ix6>;
-/// ScalarTensorViewMut with dynamic dimensions
-pub type ScalarTensorViewMutD<'a> = ScalarTensorViewMut<'a, IxDyn>;
-
-/// Scalar Tensor that is either borrowed or owned.
-///
-/// See [`ScalarTensorBase`].
-pub type ScalarCowTensor<'a, D> = TensorBase<ScalarCowBufferRepr<'a>, D>;
-/// ScalarCowTensor with 1 element
-pub type ScalarCowTensor0<'a> = ScalarCowTensor<'a, Ix0>;
-/// ScalarCowTensor with 1 dimension
-pub type ScalarCowTensor1<'a> = ScalarCowTensor<'a, Ix1>;
-/// ScalarCowTensor with 2 dimensions
-pub type ScalarCowTensor2<'a> = ScalarCowTensor<'a, Ix2>;
-/// ScalarCowTensor with 3 dimensions
-pub type ScalarCowTensor3<'a> = ScalarCowTensor<'a, Ix3>;
-/// ScalarCowTensor with 4 dimensions
-pub type ScalarCowTensor4<'a> = ScalarCowTensor<'a, Ix4>;
-/// ScalarCowTensor with 5 dimensions
-pub type ScalarCowTensor5<'a> = ScalarCowTensor<'a, Ix5>;
-/// ScalarCowTensor with 6 dimensions
-pub type ScalarCowTensor6<'a> = ScalarCowTensor<'a, Ix6>;
-/// ScalarCowTensor with dynamic dimensions
-pub type ScalarCowTensorD<'a> = ScalarCowTensor<'a, IxDyn>;
-
-impl<S: ScalarDataOwned, D: Dimension> ScalarTensorBase<S, D> {
-    /// Allocates a scalar tensor on `device` with `shape`.
-    ///
-    /// # Safety
-    ///
-    /// The tensor is not initialized.
-    ///
-    /// **Errors**
-    /// See [`ScalarBuffer::uninit()`].
-    pub unsafe fn uninit<Sh>(device: Device, shape: Sh, scalar_type: ScalarType) -> Result<Self>
-    where
-        Sh: ShapeBuilder<Dim = D>,
-    {
-        let (dim, strides) = dim_strides_from_shape(shape.into_shape());
-        let buffer = unsafe { ScalarBufferBase::uninit(device, dim.size(), scalar_type)? };
-        Ok(Self {
-            dim,
-            strides,
-            buffer,
-            offset: 0,
-        })
-    }
-    /// Creates a tensor on `device` with `shape` filled with `elem`.
-    ///
-    /// **Errors**
-    /// See [`ScalarBuffer::from_elem()`].
-    pub fn from_elem<Sh>(device: Device, shape: Sh, elem: ScalarElem) -> Result<Self>
-    where
-        Sh: ShapeBuilder<Dim = D>,
-    {
-        let (dim, strides) = dim_strides_from_shape(shape.into_shape());
-        let buffer = ScalarBufferBase::from_elem(device, dim.size(), elem)?;
-        Ok(Self {
-            dim,
-            strides,
-            buffer,
-            offset: 0,
-        })
-    }
-    /// Creates a tensor on `device` with `shape` filled with 0's.
-    ///
-    /// **Errors**
-    /// See [`ScalarBuffer::zeros()`].
-    pub fn zeros<Sh>(device: Device, shape: Sh, scalar_type: ScalarType) -> Result<Self>
-    where
-        Sh: ShapeBuilder<Dim = D>,
-    {
-        Self::from_elem(device, shape, ScalarElem::zero(scalar_type))
-    }
-    /// Creates a tensor on `device` with `shape` filled with 1's.
-    ///
-    /// **Errors**
-    /// See [`ScalarBuffer::ones()`].
-    pub fn ones<Sh>(device: Device, shape: Sh, scalar_type: ScalarType) -> Result<Self>
-    where
-        Sh: ShapeBuilder<Dim = D>,
-    {
-        Self::from_elem(device, shape, ScalarElem::one(scalar_type))
-    }
-}
-
-impl<T: Scalar, D: Dimension> From<Tensor<T, D>> for ScalarTensor<D> {
-    fn from(tensor: Tensor<T, D>) -> Self {
-        Self {
-            dim: tensor.dim,
-            strides: tensor.strides,
-            buffer: tensor.buffer.into(),
-            offset: tensor.offset,
-        }
-    }
-}
-
-impl<T: Scalar, D: Dimension> From<ArcTensor<T, D>> for ScalarArcTensor<D> {
-    fn from(tensor: ArcTensor<T, D>) -> Self {
-        Self {
-            dim: tensor.dim,
-            strides: tensor.strides,
-            buffer: tensor.buffer.into(),
-            offset: tensor.offset,
-        }
-    }
-}
 
 /*
 #[cfg(test)]

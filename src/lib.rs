@@ -342,8 +342,8 @@ pub mod tensor;
 /*
 /// Datasets.
 pub mod dataset;
+*/
 
 /// Machine Learning.
 #[cfg(feature = "learn")]
 pub mod learn;
-*/

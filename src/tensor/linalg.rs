@@ -6,6 +6,7 @@ use krnl::macros::module;
 use krnl::{
     buffer::{ScalarSlice, ScalarSliceMut},
     krnl_core::num_traits::ToPrimitive,
+    scalar::ScalarElem,
 };
 use ndarray::{linalg::Dot, Axis};
 use paste::paste;
@@ -302,14 +303,18 @@ mod kernels {
 }
 
 #[cfg(feature = "device")]
-#[allow(clippy::too_many_arguments, clippy::many_single_char_names)]
-fn gemm<T: Scalar>(
-    alpha: T,
-    a: &TensorView2<T>,
-    b: &TensorView2<T>,
-    beta: T,
-    c: &mut TensorViewMut2<T>,
+fn gemm(
+    alpha: ScalarElem,
+    a: ScalarTensorView2,
+    b: ScalarTensorView2,
+    beta: ScalarElem,
+    mut c: ScalarTensorViewMut2,
 ) -> Result<()> {
+    assert_eq!(alpha.scalar_type(), c.scalar_type());
+    assert_eq!(a.scalar_type(), c.scalar_type());
+    assert_eq!(b.scalar_type(), c.scalar_type());
+    assert_eq!(beta.scalar_type(), c.scalar_type());
+
     let (m, k) = a.dim();
     let (k2, n) = b.dim();
     let (m2, n2) = c.dim();
@@ -337,11 +342,11 @@ fn gemm<T: Scalar>(
     let [rsc, csc]: [isize; 2] = c.strides().try_into().unwrap();
     let [rsc, csc] = [rsc.to_i32().unwrap(), csc.to_i32().unwrap()];
 
-    let (a, offset_a) = a.as_raw_slice_offset();
+    let (a, offset_a) = a.as_raw_scalar_slice_offset();
     let offset_a = offset_a.to_u32().unwrap();
-    let (b, offset_b) = b.as_raw_slice_offset();
+    let (b, offset_b) = b.as_raw_scalar_slice_offset();
     let offset_b = offset_b.to_u32().unwrap();
-    let (c, offset_c) = c.as_raw_slice_offset_mut();
+    let (mut c, offset_c) = c.as_raw_scalar_slice_offset_mut();
     let offset_c = offset_c.to_u32().unwrap();
 
     let splitk = 512;
@@ -382,21 +387,14 @@ fn gemm<T: Scalar>(
         c_tmp.sum_axis_with(Axis(2), c)?; */
     } else {
         let device = c.device();
-        macro_wrap!(paste! { match T::scalar_type() {
+        macro_wrap!(paste! { match c.scalar_type() {
             macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
                 ScalarType::[<$T:upper>] => {
-                    let a: Slice<$T> = ScalarSlice::from(a)
-                        .try_into()
-                        .ok()
-                        .unwrap();
-                    let b: Slice<$T> = ScalarSlice::from(b)
-                        .try_into()
-                        .ok()
-                        .unwrap();
-                    let c: SliceMut<$T> = ScalarSliceMut::from(c)
-                        .try_into()
-                        .ok()
-                        .unwrap();
+                    let alpha = $T::try_from(alpha).unwrap();
+                    let a = Slice::<$T>::try_from(a.clone()).unwrap();
+                    let b = Slice::<$T>::try_from(b.clone()).unwrap();
+                    let beta = $T::try_from(beta).unwrap();
+                    let c = SliceMut::<$T>::try_from(c.as_scalar_slice_mut()).unwrap();
                     unsafe {
                         kernels::[<gemm_ $T>]::builder()?
                             .specialize(
@@ -432,11 +430,57 @@ impl<T: Scalar, S1: Data<Elem = T>, S2: Data<Elem = T>> Dot<TensorBase<S2, Ix2>>
         {
             let mut output = Tensor::zeros(self.device(), [self.dim().0, rhs.dim().1])?;
             gemm(
-                T::one(),
-                &self.view(),
-                &rhs.view(),
-                T::zero(),
-                &mut output.view_mut(),
+                T::one().into(),
+                self.view().into(),
+                rhs.view().into(),
+                T::zero().into(),
+                output.view_mut().into(),
+            )?;
+            Ok(output)
+        }
+    }
+}
+
+impl<S1: ScalarData, S2: ScalarData> Dot<ScalarTensorBase<S2, Ix2>> for ScalarTensorBase<S1, Ix2> {
+    type Output = Result<ScalarTensor2>;
+    fn dot(&self, rhs: &ScalarTensorBase<S2, Ix2>) -> Self::Output {
+        if self.scalar_type() != rhs.scalar_type() {
+            bail!(
+                "Can not dot tensors of different types {:?} != {:?}!",
+                self.scalar_type(),
+                rhs.scalar_type()
+            );
+        }
+        let device = self.device();
+        let scalar_type = self.scalar_type();
+        if device.is_host() && rhs.device().is_host() {
+            macro_wrap!(paste! { match scalar_type {
+                macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+                    ScalarType::[<$T:upper>] => {
+                        let lhs = TensorView2::<$T>::try_from(self.view()).unwrap();
+                        let lhs = lhs.as_array().unwrap();
+                        let rhs = TensorView2::<$T>::try_from(rhs.view()).unwrap();
+                        let rhs = rhs.as_array().unwrap();
+                        return Ok(Tensor::from(lhs.dot(&rhs)).into());
+                    }
+                })
+                _ => bail!("Dot unimplemented for {scalar_type:?}!"),
+            }});
+        }
+        #[cfg(not(feature = "device"))]
+        {
+            unreachable!()
+        }
+        #[cfg(feature = "device")]
+        {
+            let mut output =
+                ScalarTensor::zeros(self.device(), [self.dim().0, rhs.dim().1], scalar_type)?;
+            gemm(
+                ScalarElem::one(scalar_type),
+                self.view(),
+                rhs.view(),
+                ScalarElem::zero(scalar_type),
+                output.view_mut(),
             )?;
             Ok(output)
         }

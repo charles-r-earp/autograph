@@ -11,6 +11,94 @@ use krnl::{
 use paste::paste;
 use std::iter::repeat;
 
+impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
+    /*
+    /// Converts to standard layout.
+    ///
+    /// If in standard layout, borrows the tensor. Otherwise, copies into a new standard layout tensor.
+    ///
+    /// **Errors**
+    /// See [`.into_standard_layout()`](TensorBase::into_standard_layout()).
+    pub fn as_standard_layout(&self) -> Result<ScalarCowTensor<D>> {
+        if self.is_standard_layout() {
+            Ok(self.view().into())
+        } else {
+            self.view().into_standard_layout().map(Into::into)
+        }
+    }
+    /// Converts into standard layout.
+    ///
+    /// If in standard layout, converts into an owned [`Tensor`]. Otherwise, copies the data into a new standard layout tensor.
+    ///
+    /// **Errors**
+    /// - Supports 2 dimensional inputs.
+    /// - [`DeviceLost`]
+    /// - The kernel could not be dispatched.
+    /// - See [`.into_owned()`](TensorBase::into_owned()).
+    ///
+    /// **Panics**
+    /// Only u32, i32, and f32 are currently implemented.
+    pub fn into_standard_layout(self) -> Result<ScalarTensor<D>> {
+        if self.is_standard_layout() {
+            self.into_owned()
+        } else {
+            let mut output =
+                unsafe { ScalarTensor::uninit(self.device(), self.raw_dim(), self.scalar_type())? };
+            output.assign(&self)?;
+            Ok(output)
+        }
+    }
+    /// Converts to an [`ArcTensor`] in standard layout.
+    ///
+    /// If in standard layout, converts to an [`ArcTensor`] (or clones the [`ArcTensor`]), otherwise copies the data into a new [`ArcTensor`].
+    pub fn to_standard_layout_shared(&self) -> Result<ScalarArcTensor<D>> {
+        if self.is_standard_layout() {
+            self.to_shared()
+        } else {
+            self.as_standard_layout()?.into_shared()
+        }
+    }*/
+    pub fn scaled_add<S2, D2>(
+        &mut self,
+        alpha: ScalarElem,
+        rhs: &ScalarTensorBase<S2, D2>,
+    ) -> Result<()>
+    where
+        S: ScalarDataMut,
+        S2: ScalarData,
+        D2: Dimension,
+    {
+        scalar_assign(
+            BinaryOp::Add,
+            alpha,
+            rhs.view().into_dyn(),
+            self.view_mut().into_dyn(),
+        )
+    }
+    pub fn assign<S2, D2>(&mut self, rhs: &ScalarTensorBase<S2, D2>) -> Result<()>
+    where
+        S: ScalarDataMut,
+        S2: ScalarData,
+        D2: Dimension,
+    {
+        scalar_assign(
+            BinaryOp::Identity,
+            ScalarElem::one(self.scalar_type()),
+            rhs.view().into_dyn(),
+            self.view_mut().into_dyn(),
+        )
+    }
+}
+
+impl<T: Scalar, S: DataMut<Elem = T>, D: Dimension, S2: Data<Elem = T>, D2: Dimension>
+    AddAssign<&ScalarTensorBase<S2, D2>> for ScalarTensorBase<S, D>
+{
+    type Error = anyhow::Error;
+    fn add_assign(&mut self, rhs: &ScalarTensorBase<S2, D2>) -> Result<(), Self::Error> {
+        self.scaled_add(ScalarElem::one(self.scalar_type()), rhs)
+    }
+}
+
 impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     /// Converts to standard layout.
     ///
@@ -125,6 +213,8 @@ fn assign<X: Scalar, Y: Scalar>(
     }
     #[cfg(feature = "device")]
     {
+        scalar_assign(op, alpha.into(), x.into(), y.into())
+        /*
         let ndim = y.ndim();
         if ndim <= 2 {
             let (rows, cols) = match y.shape() {
@@ -184,6 +274,111 @@ fn assign<X: Scalar, Y: Scalar>(
             "assign<{}, {}> not implemented!",
             X::scalar_type().name(),
             Y::scalar_type().name()
+        ))*/
+    }
+}
+
+fn scalar_assign(
+    op: BinaryOp,
+    alpha: ScalarElem,
+    x: ScalarTensorViewD,
+    mut y: ScalarTensorViewMutD,
+) -> Result<()> {
+    if alpha.scalar_type() != y.scalar_type() {
+        bail!(
+            "alpha scalar_type {:?} != {:?}",
+            alpha.scalar_type(),
+            y.scalar_type()
+        );
+    }
+    let x = if let Some(x) = x.broadcast(y.shape()) {
+        x
+    } else {
+        bail!("Broadcast not possible! {x:?} -> {y:?}");
+    };
+    let device = y.device();
+    if device.is_host() && x.device().is_host() {
+        macro_for!($X in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+            if let Ok(x) = TensorViewD::<$X>::try_from(x.clone()) {
+                macro_for!($Y in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+                    if let Ok(y) = TensorViewMutD::<$Y>::try_from(y.view_mut()) {
+                        let alpha = $Y::try_from(alpha).unwrap();
+                        return assign(op, alpha, x, y);
+                    }
+                });
+            }
+        });
+        bail!(
+            "assign<{}, {}> not implemented!",
+            x.scalar_type().name(),
+            y.scalar_type().name(),
+        );
+    }
+    #[cfg(not(feature = "device"))]
+    {
+        unreachable!()
+    }
+    #[cfg(feature = "device")]
+    {
+        let ndim = y.ndim();
+        if ndim <= 2 {
+            let (rows, cols) = match y.shape() {
+                [rows, cols] => (rows.to_u32().unwrap(), cols.to_u32().unwrap()),
+                [cols] => (1, cols.to_u32().unwrap()),
+                [] => (1, 1),
+                _ => unreachable!(),
+            };
+            let (rsx, csx) = match x.strides() {
+                [rsx, csx] => (rsx.to_i32().unwrap(), csx.to_i32().unwrap()),
+                [csx] => (1, csx.to_i32().unwrap()),
+                [] => (1, 1),
+                _ => unreachable!(),
+            };
+            let (rsy, csy) = match y.strides() {
+                [rsy, csy] => (rsy.to_i32().unwrap(), csy.to_i32().unwrap()),
+                [csy] => (1, csy.to_i32().unwrap()),
+                [] => (1, 1),
+                _ => unreachable!(),
+            };
+            let (x, offset_x) = x.as_raw_scalar_slice_offset();
+            let offset_x = offset_x.to_u32().unwrap();
+            let (mut y, offset_y) = y.as_raw_scalar_slice_offset_mut();
+            let offset_y = offset_y.to_u32().unwrap();
+
+            macro_for!($X in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+                if let Ok(x) = Slice::<$X>::try_from(x.clone()) {
+                    macro_for!($Y in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+                        if let Ok(y) = SliceMut::<$Y>::try_from(y.as_scalar_slice_mut()) {
+                            let builder = paste! {
+                                kernels::[<assign2_ $X _ $Y>]::builder()?
+                            };
+                            builder
+                            .specialize(op.as_u32())?
+                            .build(device)?
+                            .with_global_threads([cols, rows].into())
+                            .dispatch(
+                                rows,
+                                cols,
+                                alpha.cast(),
+                                x,
+                                rsx,
+                                csx,
+                                offset_x,
+                                y,
+                                rsy,
+                                csy,
+                                offset_y,
+                            )?;
+                            return Ok(());
+                        }
+                    });
+                }
+            });
+        }
+        Err(format_err!(
+            "assign<{}, {}> not implemented!",
+            x.scalar_type().name(),
+            y.scalar_type().name()
         ))
     }
 }
