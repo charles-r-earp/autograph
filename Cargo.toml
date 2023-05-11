@@ -1,4 +1,5 @@
 [workspace]
+members = ["examples/neural-network-mnist"]
 
 [workspace.package]
 version = "0.2.0-alpha"
@@ -11,6 +12,13 @@ homepage = "https://github.com/charles-r-earp/autograph"
 repository = "https://github.com/charles-r-earp/autograph"
 license = "MIT OR Apache-2.0"
 publish = false
+
+[workspace.dependencies]
+autograph = { path = "." }
+clap = "4.2.5"
+rayon = "1.7.0"
+crossbeam-channel = "0.5.8"
+parking_lot = "0.12.1"
 
 [package]
 name = "autograph"
@@ -31,9 +39,10 @@ autobins = false
 autobenches = false
 
 [dependencies]
-krnl = { git = "https://github.com/charles-r-earp/krnl" }
+#krnl = { git = "https://github.com/charles-r-earp/krnl", default-features = false }
+krnl = { path = "../krnl", default-features = false }
 anyhow = "1.0.37"
-ndarray = { version = "0.15.6", default-features = false, features = ["serde"] }
+ndarray = { version = "0.15.6", default-features = false, features = ["serde", "rayon"] }
 rand = { version = "0.8.4", optional = true }
 serde = { version = "1.0.126", features = ["derive", "rc"] }
 derive_more = { version = "0.99.11", optional = true }
@@ -51,10 +60,12 @@ paste = "1.0.7"
 dry = "0.1.1"
 crunchy = { version = "0.2.2", optional = true }
 static_assertions = "1.1.0"
-crossbeam-channel = { version = "0.5.8", optional = true }
-parking_lot = { version = "0.12.1", optional = true }
+crossbeam-channel = { workspace = true, optional = true }
+parking_lot = { workspace = true, optional = true }
 atomicbox = { version = "0.4.0", optional = true }
-rayon = "1.7.0"
+rayon.workspace = true
+once_cell = { version = "1.17.1", optional = true, features = ["std"] }
+num-traits = "0.2.15"
 
 [dev-dependencies]
 approx = "0.4.0"
@@ -67,8 +78,10 @@ libtest-mimic = "0.6.0"
 [features]
 default = ["device"]
 device = ["krnl/device", "dep:crunchy"]
+dataset = ["dep:rand"]
+mnist = ["dataset", "dep:dirs", "dep:flate2", "dep:downloader", "dep:byteorder", "dep:http"]
 learn = []
-neural-network = ["learn", "dep:crossbeam-channel", "dep:parking_lot", "dep:atomicbox", "dep:derive_more"]
+neural-network = ["learn", "dep:crossbeam-channel", "dep:parking_lot", "dep:atomicbox", "dep:derive_more", "dep:rand", "once_cell"]
 
 [package.metadata.krnlc.dependencies]
 dry = {}
@@ -80,3 +93,6 @@ static_assertions = {}
 name = "integration_tests"
 path = "tests/integration_tests.rs"
 harness = false
+
+[profile.release]
+codegen-units = 1

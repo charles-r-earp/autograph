@@ -1,38 +1,250 @@
+use super::{
+    layer::Forward,
+    optimizer::{Optimizer, State, StateMut},
+};
 use crate::{
+    buffer::{
+        ArcBuffer, ArcBufferRepr, BufferBase, Data, DataMut, ScalarArcBuffer, ScalarArcBufferRepr,
+        ScalarBufferBase, ScalarData, ScalarDataMut, ScalarSliceMutRepr, SliceMutRepr,
+    },
     device::Device,
     ops::AddAssign,
-    scalar::ScalarType,
-    tensor::{ScalarArcTensor, ScalarArcTensorD},
-};
-use anyhow::{bail, format_err, Error, Result};
-use atomicbox::AtomicOptionBox;
-use crossbeam_channel::{Receiver, RecvError, Sender};
-use ndarray::{linalg::Dot, Dimension, Ix0, Ix2, IxDyn, ShapeError};
-use parking_lot::{RwLock, RwLockWriteGuard};
-use std::{
-    marker::PhantomData,
-    sync::{
-        atomic::{AtomicBool, AtomicUsize, Ordering},
-        Arc, Weak,
+    scalar::{Scalar, ScalarElem, ScalarType},
+    tensor::{
+        ArcTensor, ScalarArcTensor, ScalarArcTensorD, ScalarTensor, ScalarTensor4,
+        ScalarTensorBase, ScalarTensorViewMut, Tensor, TensorView, TensorViewMut,
     },
 };
+use anyhow::{bail, Error, Result};
+use ndarray::{linalg::Dot, Axis, Dimension, IntoDimension, Ix1, Ix2, Ix4, IxDyn, ShapeError};
+use parking_lot::{Mutex, RwLock};
+use std::{
+    collections::VecDeque,
+    fmt::Debug,
+    marker::PhantomData,
+    sync::{atomic::Ordering, Arc, Weak},
+};
 
-#[derive(Clone)]
-pub struct Variable<D: Dimension> {
-    value: ScalarArcTensor<D>,
-    grad: Option<GradientLock<D>>,
+pub mod builder {
+    use serde::de::VariantAccess;
+
+    use super::*;
+
+    pub struct VariableBuilder<D: Dimension> {
+        grad: Option<Arc<RwLock<Option<ScalarArcTensorD>>>>,
+        edges: Vec<EdgeInner>,
+        _m: PhantomData<D>,
+    }
+
+    impl<D: Dimension> VariableBuilder<D> {
+        pub(super) fn new() -> Self {
+            Self {
+                grad: None,
+                edges: Vec::new(),
+                _m: PhantomData::default(),
+            }
+        }
+        pub fn edge<D2, F>(&mut self, node: &Node<D2>, f: F)
+        where
+            D2: Dimension,
+            F: FnOnce(ScalarArcTensor<D>) -> Result<ScalarArcTensor<D2>> + Send + Sync + 'static,
+        {
+            if self.grad.is_none() {
+                self.grad.replace(Arc::new(RwLock::default()));
+            }
+            let output_grad_lock = self.grad.clone().unwrap();
+            let node = node.inner.clone();
+            let mut input_grad_lock = Arc::downgrade(&node.grad);
+            let device = node.device.clone();
+            let dim = node.dim.clone();
+            let scalar_type = node.scalar_type;
+            let name = std::any::type_name::<F>();
+            let mut f = Some(f);
+            let op = Box::new(move || {
+                let input_grad_lock = Weak::upgrade(&std::mem::take(&mut input_grad_lock));
+                if let Some((f, input_grad_lock)) = f.take().zip(input_grad_lock) {
+                    let grad = output_grad_lock
+                        .read()
+                        .clone()
+                        .unwrap()
+                        .into_dimensionality()
+                        .unwrap();
+                    let grad = (f)(grad)?;
+                    assert_eq!(grad.device(), device);
+                    assert_eq!(grad.shape(), dim.slice());
+                    assert_eq!(grad.scalar_type(), scalar_type);
+                    let mut guard = input_grad_lock.write();
+                    if let Some(input_grad) = guard.as_mut() {
+                        input_grad.make_view_mut()?.add_assign(&grad)?;
+                    } else {
+                        guard.replace(grad.into_dyn());
+                    }
+                }
+                Ok(())
+            });
+            self.edges.push(EdgeInner { name, op, node })
+        }
+        pub fn build(self, value: ScalarArcTensor<D>) -> Variable<D> {
+            let node = if let Some(grad) = self.grad {
+                Some(Node::new(
+                    value.device(),
+                    value.raw_dim().into_dyn(),
+                    value.scalar_type(),
+                    grad,
+                    self.edges,
+                ))
+            } else {
+                None
+            };
+            Variable { value, node }
+        }
+    }
+}
+use builder::*;
+
+struct EdgeInner {
+    name: &'static str,
+    op: Box<dyn FnMut() -> Result<()> + Send + Sync + 'static>,
+    node: Arc<NodeInner>,
 }
 
-pub type Variable0 = Variable<Ix0>;
+impl Debug for EdgeInner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EdgeInner")
+            .field("node", &self.node)
+            .finish()
+    }
+}
+
+#[derive(Debug)]
+struct NodeInner {
+    device: Device,
+    dim: IxDyn,
+    scalar_type: ScalarType,
+    grad: Arc<RwLock<Option<ScalarArcTensorD>>>,
+    edges: Mutex<Vec<EdgeInner>>,
+}
+
+impl NodeInner {
+    fn ready(&self) -> bool {
+        Arc::weak_count(&self.grad) == 0
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Node<D: Dimension> {
+    inner: Arc<NodeInner>,
+    _m: PhantomData<D>,
+}
+
+impl<D: Dimension> Node<D> {
+    fn new(
+        device: Device,
+        dim: IxDyn,
+        scalar_type: ScalarType,
+        grad: Arc<RwLock<Option<ScalarArcTensorD>>>,
+        edges: Vec<EdgeInner>,
+    ) -> Self {
+        Self {
+            inner: Arc::new(NodeInner {
+                device,
+                dim,
+                scalar_type,
+                grad,
+                edges: Mutex::new(edges),
+            }),
+            _m: PhantomData::default(),
+        }
+    }
+    pub fn grad(&self) -> Option<ScalarArcTensor<D>> {
+        Some(
+            self.inner
+                .grad
+                .read()
+                .clone()?
+                .into_dimensionality()
+                .unwrap(),
+        )
+    }
+    pub fn backward(&self) -> Result<()> {
+        let NodeInner {
+            device,
+            dim,
+            scalar_type,
+            grad,
+            edges,
+        } = self.inner.as_ref();
+        {
+            let mut guard = grad.write();
+            if guard.is_some() {
+                return Ok(());
+            }
+            let batch_size = dim.slice().first().copied().unwrap_or(1);
+            let scale = ScalarElem::F32(1f32 / batch_size as f32).scalar_cast(*scalar_type);
+            guard.replace(ScalarArcTensor::from_elem(
+                device.clone(),
+                dim.clone(),
+                scale,
+            )?);
+        }
+        let mut queue = VecDeque::new();
+        queue.push_back(self.inner.clone());
+        while let Some(node) = queue.pop_front() {
+            for mut edge in node.edges.lock().drain(..) {
+                (edge.op)()?;
+                let node = edge.node;
+                if node.ready() {
+                    queue.push_back(node.clone())
+                }
+            }
+        }
+        Ok(())
+    }
+    fn into_dyn(self) -> Node<IxDyn> {
+        Node {
+            inner: self.inner,
+            _m: PhantomData::default(),
+        }
+    }
+    fn into_dimensionality<D2: Dimension>(self) -> Node<D2> {
+        Node {
+            inner: self.inner,
+            _m: PhantomData::default(),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Variable<D: Dimension> {
+    value: ScalarArcTensor<D>,
+    node: Option<Node<D>>,
+}
+
 pub type Variable2 = Variable<Ix2>;
+pub type Variable4 = Variable<Ix4>;
 pub type VariableD = Variable<IxDyn>;
 
 impl<D: Dimension> Variable<D> {
+    pub fn builder() -> VariableBuilder<D> {
+        VariableBuilder::new()
+    }
     pub fn value(&self) -> &ScalarArcTensor<D> {
         &self.value
     }
-    pub fn grad(&self) -> Option<&GradientLock<D>> {
-        self.grad.as_ref()
+    pub fn into_value(self) -> ScalarArcTensor<D> {
+        self.value
+    }
+    pub fn node(&self) -> Option<&Node<D>> {
+        self.node.as_ref()
+    }
+    pub fn forward<F: Forward<Self>>(self, f: &F) -> Result<F::Output> {
+        f.forward(self)
+    }
+    pub fn backward(&self) -> Result<()> {
+        if let Some(node) = self.node.as_ref() {
+            node.backward()?;
+        }
+        Ok(())
     }
     pub fn device(&self) -> Device {
         self.value.device()
@@ -40,86 +252,99 @@ impl<D: Dimension> Variable<D> {
     pub fn scalar_type(&self) -> ScalarType {
         self.value.scalar_type()
     }
-    pub fn with_backward(
-        self,
-        input_grads: impl IntoIterator<Item = Option<GradientLock<D>>>,
-        backward: impl FnOnce(Gradient<D>, &mut [Option<GradientMut<D>>]) -> Result<()>
-            + Send
-            + Sync
-            + 'static,
-    ) -> Self
+    pub fn shape(&self) -> &[usize] {
+        self.value.shape()
+    }
+    pub fn raw_dim(&self) -> D {
+        self.value.raw_dim()
+    }
+    pub fn into_dimensionality<D2>(self) -> Result<Variable<D2>, ShapeError>
     where
-        D: 'static,
+        D2: Dimension,
     {
-        let input_grads: Vec<_> = input_grads.into_iter().collect();
-        if input_grads.iter().all(Option::is_none) {
-            return self;
+        let value = self.value.into_dimensionality()?;
+        Ok(Variable {
+            value,
+            node: self.node.map(Node::into_dimensionality),
+        })
+    }
+    pub fn into_dyn(self) -> VariableD {
+        Variable {
+            value: self.value.into_dyn(),
+            node: self.node.map(Node::into_dyn),
         }
-        for input_grad in input_grads.iter().flatten() {
-            input_grad.inner.ref_count.fetch_add(1, Ordering::SeqCst);
-        }
-        let mut backward = Some(backward);
-        let backward = BackwardOp(Box::new(
-            move |output_grad: GradientD, sender: Weak<Sender<Error>>| {
-                if let Some(backward) = backward.take() {
-                    let output_grad: Gradient<D> = output_grad.into_dimensionality().unwrap();
-                    let mut input_grads: Vec<_> = input_grads
-                        .iter()
-                        .map(|grad| {
-                            if let Some(grad) = grad {
-                                Some(grad.write(sender.clone()))
-                            } else {
-                                None
-                            }
-                        })
-                        .collect();
-                    (backward)(output_grad, input_grads.as_mut_slice());
-                }
-            },
-        ));
-        let inner = Arc::new(GradientInner {
-            gradient: RwLock::default(),
-            ref_count: AtomicUsize::default(),
-            backward: AtomicOptionBox::new(Some(Box::new(backward))),
-        });
-        let grad = Some(GradientLock {
-            inner,
-            _m: PhantomData::default(),
-        });
-        Self { grad, ..self }
     }
 }
 
-impl Variable0 {
-    pub fn backward(&self) -> Result<()> {
-        let grad = if let Some(grad) = self.grad.as_ref() {
-            grad
-        } else {
-            bail!("Variable does not have a gradient!")
-        };
-        let inner = &grad.inner;
-        let guard = inner.gradient.write();
-        if guard.is_some() {
-            bail!("Variable gradient already computed!");
+impl<D: Dimension + 'static> Variable<D> {
+    pub fn into_shape<E>(self, shape: E) -> Result<Variable<E::Dim>, ShapeError>
+    where
+        E: IntoDimension,
+    {
+        let dim = self.raw_dim();
+        let mut builder = Variable::builder();
+        if let Some(node) = self.node() {
+            builder.edge(node, |output_grad| {
+                output_grad
+                    .into_shape(dim)
+                    .map_err(Error::msg)
+                    .map(Into::into)
+            })
         }
-        let gradient = Gradient::Dense(ScalarArcTensor::ones(
-            self.device(),
-            IxDyn::default(),
-            self.scalar_type(),
-        )?);
-        let mut backward = if let Some(backward) = inner.backward.take(Ordering::SeqCst) {
-            backward
-        } else {
-            bail!("Variable does not have a backward!")
-        };
-        let (sender, receiver) = crossbeam_channel::bounded(1);
-        let sender = Arc::new(sender);
-        let sender2 = Arc::downgrade(&sender);
-        rayon::spawn(move || (backward)(gradient, sender2));
-        if let Ok(error) = receiver.recv() {
-            return Err(error);
+        Ok(builder.build(self.value.into_shape(shape)?))
+    }
+    pub fn flatten(self) -> Result<Variable2, ShapeError> {
+        let dim = crate::tensor::flatten(self.shape());
+        self.into_shape(dim)
+    }
+    /// Reverses (transposes) the axes of the tensor.
+    pub fn reversed_axes(self) -> Self {
+        let mut builder = Self::builder();
+        if let Some(node) = self.node() {
+            builder.edge(node, |output_grad| Ok(output_grad.reversed_axes()));
         }
-        Ok(())
+        builder.build(self.value.reversed_axes())
+    }
+    pub fn t(&self) -> Self {
+        self.clone().reversed_axes()
+    }
+    pub fn broadcast<E>(&self, dim: E) -> Option<Variable<E::Dim>>
+    where
+        E: IntoDimension,
+    {
+        let mut builder = Variable::builder();
+        if let Some(node) = self.node() {
+            builder.edge(node, |output_grad| {
+                let input_grad = output_grad
+                    .cast_into_tensor::<f32>()?
+                    .into_array()?
+                    .into_dimensionality::<Ix2>()
+                    .unwrap()
+                    .sum_axis(Axis(0))
+                    .into_dimensionality()
+                    .unwrap();
+                Tensor::from(input_grad).into_scalar_tensor().into_shared()
+            })
+        }
+        Some(builder.build(self.value.broadcast_shared(dim)?))
+    }
+}
+
+impl<T: Scalar, D: Dimension> From<Tensor<T, D>> for Variable<D> {
+    fn from(tensor: Tensor<T, D>) -> Self {
+        Self::from(ScalarArcTensor::from(tensor))
+    }
+}
+
+impl<T: Scalar, D: Dimension> From<ArcTensor<T, D>> for Variable<D> {
+    fn from(tensor: ArcTensor<T, D>) -> Self {
+        Self::from(ScalarArcTensor::from(tensor))
+    }
+}
+
+impl<D: Dimension> From<ScalarTensor<D>> for Variable<D> {
+    fn from(tensor: ScalarTensor<D>) -> Self {
+        Self::from(ScalarArcTensor::from(tensor))
     }
 }
 
@@ -127,186 +352,187 @@ impl<D: Dimension> From<ScalarArcTensor<D>> for Variable<D> {
     fn from(tensor: ScalarArcTensor<D>) -> Self {
         Self {
             value: tensor,
-            grad: None,
+            node: None,
         }
+    }
+}
+
+impl<D1: Dimension + 'static, D2: Dimension + 'static> AddAssign<Variable<D2>> for Variable<D1> {
+    fn add_assign(&mut self, rhs: Variable<D2>) -> Result<()> {
+        if self.node.is_none() && rhs.node.is_none() {
+            return self.value.make_view_mut()?.add_assign(&rhs.value);
+        }
+        let rhs = if self.shape() != rhs.shape() {
+            if let Some(rhs) = rhs.broadcast(self.raw_dim()) {
+                rhs
+            } else {
+                bail!("Can not broadcast {:?} -> {:?}!", self, rhs);
+            }
+        } else {
+            rhs.into_dimensionality().unwrap()
+        };
+        self.value.make_view_mut()?.add_assign(rhs.value())?;
+        let mut builder = Self::builder();
+        if let Some(node) = self.node() {
+            builder.edge(node, Ok)
+        }
+        if let Some(node) = rhs.node() {
+            let dim = rhs.raw_dim();
+            builder.edge(node, |output_grad| {
+                output_grad.into_shape(dim).map_err(Error::msg)
+            })
+        }
+        *self = builder.build(self.value.clone());
+        Ok(())
+    }
+}
+
+impl<D1: Dimension + 'static, D2: Dimension + 'static> AddAssign<&Variable<D2>> for Variable<D1> {
+    fn add_assign(&mut self, rhs: &Variable<D2>) -> Result<()> {
+        self.add_assign(rhs.clone())
     }
 }
 
 impl Dot<Self> for Variable2 {
     type Output = Result<Self>;
     fn dot(&self, rhs: &Self) -> Result<Self> {
-        todo!()
-        /*
         let lhs = self;
-        let output = Self::from(lhs.value().dot(rhs.value())?);
-        let lhs_grad = lhs.grad().clone();
-        let rhs_grad = rhs.grad().clone();
-        let lhs = lhs.values().clone();
-        let rhs = rhs.value().clone();
-        Ok(Self::from(self.value().dot(rhs)?).with_backward(
-            [lhs_grad, rhs_grad],
-            move |output_grad, input_grads| {
-                let [lhs_grad, rhs_grad] =
-                    <[Option<GradientMut2>; 2]>::try_from(input_grads).unwrap();
-                let output_grad = output_grad.unwrap_dense();
-                if let Some(mut lhs_grad) = lhs_grad {
-                    lhs_grad.add_assign(output_grad.dot(lhs.t()))?;
-                }
-                if let Some(mut rhs_grad) = rhs_grad {
-                    rhs_grad.add_assign(lhs.t().dot(&output_grad))?;
-                }
-            },
-        ))*/
+        let mut builder = Self::builder();
+        if let Some(node) = lhs.node() {
+            let rhs = rhs.value().clone();
+            builder.edge(node, move |output_grad| {
+                output_grad.dot(&rhs.t()).map(Into::into)
+            });
+        }
+        if let Some(node) = rhs.node() {
+            let lhs = lhs.value().clone();
+            builder.edge(node, move |output_grad| {
+                lhs.t().dot(&output_grad).map(Into::into)
+            });
+        }
+        let value = lhs.value().dot(rhs.value())?.into();
+        Ok(builder.build(value))
     }
 }
 
-#[derive(Clone)]
-pub struct GradientLock<D: Dimension> {
-    inner: Arc<GradientInner>,
-    _m: PhantomData<D>,
+pub struct ParameterBase<S: ScalarData, D: Dimension> {
+    value: ScalarTensorBase<S, D>,
+    grad: Option<Arc<RwLock<Option<ScalarArcTensorD>>>>,
+    state: State,
 }
 
-impl<D: Dimension> GradientLock<D> {
-    pub fn load(&self) -> Option<Gradient<D>> {
+pub type Parameter<D> = ParameterBase<ScalarArcBufferRepr, D>;
+pub type Parameter1 = Parameter<Ix1>;
+pub type Parameter2 = Parameter<Ix2>;
+
+pub type ParameterViewMut<'a, D> = ParameterBase<ScalarSliceMutRepr<'a>, D>;
+pub type ParameterViewMut1<'a> = ParameterViewMut<'a, Ix1>;
+pub type ParameterViewMut2<'a> = ParameterViewMut<'a, Ix2>;
+pub type ParameterViewMutD<'a> = ParameterViewMut<'a, IxDyn>;
+
+impl<S: ScalarData, D: Dimension> ParameterBase<S, D> {
+    pub fn value(&self) -> &ScalarTensorBase<S, D> {
+        &self.value
+    }
+    pub fn value_view_mut(&mut self) -> ScalarTensorViewMut<D>
+    where
+        S: ScalarDataMut,
+    {
+        self.value.view_mut()
+    }
+    pub fn grad(&self) -> Option<ScalarArcTensor<D>> {
+        Some(
+            self.grad
+                .as_ref()?
+                .read()
+                .clone()?
+                .into_dimensionality()
+                .unwrap(),
+        )
+    }
+    pub fn set_training(&mut self, training: bool) {
+        if training && self.grad.is_none() {
+            self.grad.replace(Arc::new(RwLock::default()));
+        } else if !training {
+            self.grad = None;
+        }
+    }
+    pub fn state_mut(&mut self) -> StateMut {
         todo!()
     }
-    fn write(&self, sender: Weak<Sender<Error>>) -> GradientMut<D> {
-        let inner = &self.inner;
-        let mut guard = inner.gradient.write();
-        let gradient = guard.take().map(|x| x.into_dimensionality().unwrap());
-        GradientMut {
-            inner,
-            guard,
-            gradient,
-            sender,
-        }
-    }
-}
-
-pub struct GradientMut<'a, D: Dimension> {
-    inner: &'a GradientInner,
-    guard: RwLockWriteGuard<'a, Option<GradientD>>,
-    gradient: Option<Gradient<D>>,
-    sender: Weak<Sender<Error>>,
-}
-
-pub type GradientMut2<'a> = GradientMut<'a, Ix2>;
-
-impl<D: Dimension> GradientMut<'_, D> {
-    pub fn as_mut(&mut self) -> Option<&mut Gradient<D>> {
-        self.gradient.as_mut()
-    }
-}
-
-impl<D: Dimension> AddAssign<ScalarArcTensor<D>> for GradientMut<'_, D> {
-    type Error = Error;
-    fn add_assign(&mut self, rhs: ScalarArcTensor<D>) -> Result<()> {
-        if let Some(gradient) = self.gradient.as_mut() {
-            todo!()
-        } else {
-            self.gradient.replace(Gradient::Dense(rhs));
-        }
-        Ok(())
-    }
-}
-
-impl<'a, D: Dimension> Drop for GradientMut<'a, D> {
-    fn drop(&mut self) {
-        let gradient = self.gradient.take().map(Gradient::into_dyn);
-        *self.guard = gradient.clone();
-        if self.inner.ref_count.fetch_sub(1, Ordering::SeqCst) == 0 {
-            if let Some((gradient, mut backward)) =
-                gradient.zip(self.inner.backward.take(Ordering::SeqCst))
-            {
-                if Weak::strong_count(&self.sender) > 0 {
-                    let sender = self.sender.clone();
-                    rayon::spawn(move || (backward)(gradient, sender));
-                }
-            }
-        }
-    }
-}
-
-#[derive(derive_more::Deref, derive_more::DerefMut)]
-struct BackwardOp(Box<dyn FnMut(GradientD, Weak<Sender<Error>>) + Send + Sync>);
-
-struct GradientInner {
-    gradient: RwLock<Option<Gradient<IxDyn>>>,
-    ref_count: AtomicUsize,
-    backward: AtomicOptionBox<BackwardOp>,
-}
-
-#[derive(Clone, derive_more::IsVariant, derive_more::Unwrap)]
-pub enum Gradient<D: Dimension> {
-    Dense(ScalarArcTensor<D>),
-}
-
-pub type GradientD = Gradient<IxDyn>;
-
-impl<D: Dimension> Gradient<D> {
-    /// Converts the gradient into dimension `D2`.
-    ///
-    /// Typically this is used to downcast from [`IxDyn`](type@ndarray::IxDyn) to a static dimensionality. For conversions to [`IxDyn`](type@ndarray::IxDyn), use [`.into_dyn()`](TensorBase::into_dyn()).
-    ///
-    /// **Errors**
-    /// The number of axes of `D2` must be the same as `D`.
-    pub fn into_dimensionality<D2>(self) -> Result<Gradient<D2>, ShapeError>
+    pub fn into_dimensionality<D2>(self) -> Result<ParameterBase<S, D2>, ShapeError>
     where
         D2: Dimension,
     {
-        match self {
-            Self::Dense(x) => x.into_dimensionality().map(Gradient::Dense),
-        }
+        Ok(ParameterBase {
+            value: self.value.into_dimensionality()?,
+            grad: self.grad.clone(),
+            state: State::default(),
+        })
     }
-    /// Converts the dimensionality of the gradient to [`IxDyn`](type@ndarray::IxDyn).
-    pub fn into_dyn(self) -> GradientD {
-        match self {
-            Self::Dense(x) => Gradient::Dense(x.into_dyn()),
+    pub fn into_dyn(self) -> ParameterBase<S, IxDyn> {
+        ParameterBase {
+            value: self.value.into_dyn(),
+            grad: self.grad.clone(),
+            state: State::default(),
         }
     }
 }
-
-#[derive(Clone)]
-pub struct Parameter<D: Dimension> {
-    variable: Variable<D>,
-}
-
-pub type ParameterD = Parameter<IxDyn>;
 
 impl<D: Dimension> Parameter<D> {
-    pub fn variable(&self) -> &Variable<D> {
-        &self.variable
+    pub fn to_variable(&self) -> Variable<D> {
+        let value = self.value.clone();
+        let node = self.grad.as_ref().map(|grad| {
+            Node::new(
+                value.device(),
+                value.raw_dim().into_dyn(),
+                value.scalar_type(),
+                grad.clone(),
+                Vec::new(),
+            )
+        });
+        Variable { value, node }
+    }
+    pub fn make_view_mut(&mut self) -> Result<ParameterViewMut<D>> {
+        Ok(ParameterViewMut {
+            value: self.value.make_view_mut()?,
+            grad: self.grad.clone(),
+            state: State::default(),
+        })
     }
     pub fn to_device_mut(&mut self, device: Device) -> Result<()> {
+        if device == self.value.device() {
+            return Ok(());
+        }
+        self.value.to_device_mut(device)?;
         todo!()
     }
-    pub fn grad(&self) -> Option<&GradientLock<D>> {
-        self.variable.grad()
+}
+
+impl<T: Scalar, D: Dimension> From<Tensor<T, D>> for Parameter<D> {
+    fn from(tensor: Tensor<T, D>) -> Self {
+        Self::from(ScalarArcTensor::from(tensor))
     }
-    /// Adds a gradient computed on backward pass.
-    ///
-    /// If `training` is true, [`.grad()`] will be Some.
-    /// else it will be None.
-    ///
-    /// This should be called with `training` = true prior to training.
-    /// Setting `training` to false prevents gradients from being computed
-    /// and can be used for inference.
-    pub fn set_training(&mut self, training: bool) {
-        if training {
-            if self.grad().is_some() {
-                return;
-            }
-            let inner = Arc::new(GradientInner {
-                gradient: RwLock::default(),
-                ref_count: AtomicUsize::default(),
-                backward: AtomicOptionBox::default(),
-            });
-            self.variable.grad = Some(GradientLock {
-                inner,
-                _m: PhantomData::default(),
-            });
-        } else {
-            self.variable.grad = None;
+}
+
+impl<T: Scalar, D: Dimension> From<ArcTensor<T, D>> for Parameter<D> {
+    fn from(tensor: ArcTensor<T, D>) -> Self {
+        Self::from(ScalarArcTensor::from(tensor))
+    }
+}
+
+impl<D: Dimension> From<ScalarTensor<D>> for Parameter<D> {
+    fn from(tensor: ScalarTensor<D>) -> Self {
+        Self::from(ScalarArcTensor::from(tensor))
+    }
+}
+
+impl<D: Dimension> From<ScalarArcTensor<D>> for Parameter<D> {
+    fn from(tensor: ScalarArcTensor<D>) -> Self {
+        Self {
+            value: tensor,
+            grad: None,
+            state: State::default(),
         }
     }
 }

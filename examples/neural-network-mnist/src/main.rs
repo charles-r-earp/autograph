@@ -1,286 +1,530 @@
 use autograph::{
-    dataset::mnist::Mnist,
-    device::Device,
+    anyhow::{Error, Result},
+    buffer::Buffer,
+    dataset::mnist::{Mnist, MnistKind},
+    krnl::krnl_core::half::bf16,
     learn::{
+        criterion::{Accuracy, Criterion, CrossEntropyLoss},
         neural_network::{
-            layer::{Layer, Forward, Conv, Relu, Dense, MaxPool},
-            NetworkTrainer,
+            autograd::{ParameterViewMutD, Variable2, Variable4},
+            layer::{Dense, Forward, Layer},
+            optimizer::{Optimizer, SGD},
         },
-        Summarize, Train, Test,
     },
-    result::Result,
-    tensor::{Tensor, float::FloatTensor4, Tensor1, TensorView},
+    ndarray::Axis,
+    scalar::{ScalarElem, ScalarType},
+    tensor::{CowTensor, ScalarCowTensor, ScalarCowTensor1, ScalarTensor4, Tensor},
 };
-use ndarray::{s, Array1, ArrayView1, ArrayView4, Axis};
-use argparse::{ArgumentParser, Store, StoreConst, StoreTrue};
-use indicatif::{ProgressStyle, ProgressBar, ProgressIterator};
-use serde::{Serialize, Deserialize};
-use std::{
-    fmt::Debug,
-    convert::TryFrom,
-    path::PathBuf,
-    fs,
-};
-use rand::seq::SliceRandom;
+use clap::{Parser, ValueEnum};
+use parking_lot::Mutex;
+use rand::{seq::index::sample, thread_rng};
+use rayon::iter::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator};
+use std::{fmt::Debug, sync::Arc, time::Instant};
 
-#[derive(Clone, Copy)]
-enum NetworkKind {
+#[derive(Clone, Copy, ValueEnum, Debug)]
+enum DatasetKind {
+    Mnist,
+    FashionMnist,
+}
+
+impl DatasetKind {
+    fn mnist_kind(self) -> MnistKind {
+        match self {
+            Self::Mnist => MnistKind::Digits,
+            Self::FashionMnist => MnistKind::Fashion,
+        }
+    }
+}
+
+#[derive(Clone, Copy, ValueEnum, Debug)]
+enum ModelKind {
     Linear,
-    CNN,
-    Lenet5,
 }
 
-#[derive(Layer, Forward, Clone, Debug, Serialize, Deserialize)]
-struct CNN {
-    #[autograph(layer)]
-    conv1: Conv,
-    #[autograph(layer)]
-    relu1: Relu,
-    #[autograph(layer)]
-    dense1: Dense,
-    #[autograph(layer)]
-    relu2: Relu,
-    #[autograph(layer)]
-    dense2: Dense,
+struct Linear {
+    dense: Dense,
 }
 
-impl CNN {
-    fn new() -> Result<Self> {
-        let conv1 = Conv::from_inputs_outputs_kernel(1, 6, [5, 5]);
-        let relu1 = Relu::default();
-        let dense1 = Dense::from_inputs_outputs(6 * 24 * 24, 84);
-        let relu2 = Relu::default();
-        let dense2 = Dense::from_inputs_outputs(84, 10)
-            .with_bias(true)?;
-        Ok(Self {
-            conv1,
-            relu1,
-            dense1,
-            relu2,
-            dense2,
-        })
+impl Linear {
+    fn new(scalar_type: ScalarType) -> Result<Self> {
+        let dense = Dense::builder()
+            .inputs(28 * 28)
+            .outputs(10)
+            .bias(true)
+            .scalar_type(scalar_type)
+            .build()?;
+        Ok(Self { dense })
     }
 }
 
-#[derive(Layer, Forward, Clone, Debug, Serialize, Deserialize)]
-struct Lenet5 {
-    #[autograph(layer)]
-    conv1: Conv,
-    #[autograph(layer)]
-    relu1: Relu,
-    #[autograph(layer)]
-    pool1: MaxPool,
-    #[autograph(layer)]
-    conv2: Conv,
-    #[autograph(layer)]
-    relu2: Relu,
-    #[autograph(layer)]
-    pool2: MaxPool,
-    #[autograph(layer)]
-    dense1: Dense,
-    #[autograph(layer)]
-    relu3: Relu,
-    #[autograph(layer)]
-    dense2: Dense,
-    #[autograph(layer)]
-    relu4: Relu,
-    #[autograph(layer)]
-    dense3: Dense,
-}
-
-impl Lenet5 {
-    fn new() -> Result<Self> {
-        let conv1 = Conv::from_inputs_outputs_kernel(1, 6, [5, 5]);
-        let relu1 = Relu::default();
-        let pool1 = MaxPool::from_kernel([2, 2])
-            .with_strides(2)?;
-        let conv2 = Conv::from_inputs_outputs_kernel(6, 16, [5, 5]);
-        let relu2 = Relu::default();
-        let pool2 = MaxPool::from_kernel([2, 2])
-            .with_strides(2)?;
-        let dense1 = Dense::from_inputs_outputs(16 * 4 * 4, 120);
-        let relu3 = Relu::default();
-        let dense2 = Dense::from_inputs_outputs(120, 84);
-        let relu4 = Relu::default();
-        let dense3 = Dense::from_inputs_outputs(84, 10)
-            .with_bias(true)?;
-        Ok(Self {
-            conv1,
-            relu1,
-            pool1,
-            conv2,
-            relu2,
-            pool2,
-            dense1,
-            relu3,
-            dense2,
-            relu4,
-            dense3,
-        })
+impl Layer for Linear {
+    fn set_training(&mut self, training: bool) -> Result<()> {
+        self.dense.set_training(training)?;
+        Ok(())
+    }
+    fn parameters_mut(&mut self) -> Result<Vec<ParameterViewMutD>> {
+        self.dense.parameters_mut()
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    let mut kind = NetworkKind::Linear;
-    let mut save = false;
-    let mut epochs = 100;
-    {
-        let mut ap = ArgumentParser::new();
-        ap.set_description("Neural Network MNIST Example");
-        ap.refer(&mut kind)
-            .add_option(&["--linear"], StoreConst(NetworkKind::Linear), "A linear network.")
-            .add_option(&["--cnn"], StoreConst(NetworkKind::CNN), "A convolutional network.")
-            .add_option(&["--lenet5"], StoreConst(NetworkKind::Lenet5), "The LeNet5 network.");
-        ap.refer(&mut save)
-            .add_option(&["--save"], StoreTrue, "Load / save the trainer.");
-        ap.refer(&mut epochs)
-            .add_option(&["--epochs"], Store, "The number of epochs to train for.");
-        ap.parse_args_or_exit();
+impl Forward<Variable4> for Linear {
+    type Output = Variable2;
+    fn forward(&self, input: Variable4) -> Result<Self::Output> {
+        input.flatten().map_err(Error::msg)?.forward(&self.dense)
     }
+}
 
-    // Create a device.
-    let device = Device::new()?;
-    println!("{:#?}", device);
+enum Model {
+    Linear(Linear),
+}
 
-
-    fn save_path(name: &str, save: bool) -> Option<PathBuf> {
-        if save {
-            Some(format!("{}_trainer.bincode", name).into())
-        } else {
-            None
-        }
-    }
-
-    match kind {
-        NetworkKind::Linear => {
-            let dense = Dense::from_inputs_outputs(28 * 28, 10)
-                .with_bias(true)?;
-            train(device, dense, save_path("linear", save), epochs).await
-        }
-        NetworkKind::CNN => {
-            train(device, CNN::new()?, save_path("cnn", save), epochs).await
-        }
-        NetworkKind::Lenet5 => {
-            train(device, Lenet5::new()?, save_path("lenet5", save), epochs).await
+impl Model {
+    fn new(kind: ModelKind, scalar_type: ScalarType) -> Result<Self> {
+        match kind {
+            ModelKind::Linear => Ok(Self::Linear(Linear::new(scalar_type)?)),
         }
     }
 }
 
-async fn train<L: Layer + Debug + Serialize + for<'de> Deserialize<'de>>(device: Device, layer: L, save_path: Option<PathBuf>, epochs: usize) -> Result<()> {
+impl Layer for Model {
+    fn set_training(&mut self, training: bool) -> Result<()> {
+        match self {
+            Self::Linear(x) => {
+                x.set_training(training)?;
+            }
+        }
+        Ok(())
+    }
+    fn parameters_mut(&mut self) -> Result<Vec<ParameterViewMutD>> {
+        match self {
+            Self::Linear(x) => x.parameters_mut(),
+        }
+    }
+}
 
-    // Construct a trainer to train the network.
-    let mut trainer = match save_path.as_ref() {
-        // Load the trainer from a file.
-        Some(save_path) if save_path.exists() => bincode::deserialize(& fs::read(save_path)?)?,
-        // Use the provided layer.
-        _ => NetworkTrainer::from_network(layer.into())
+impl Forward<Variable4> for Model {
+    type Output = Variable2;
+    fn forward(&self, input: Variable4) -> Result<Self::Output> {
+        match self {
+            Self::Linear(linear) => linear.forward(input),
+        }
+    }
+}
+
+#[derive(Default)]
+struct Stats {
+    count: usize,
+    loss: f32,
+    correct: usize,
+}
+
+impl std::ops::AddAssign for Stats {
+    fn add_assign(&mut self, rhs: Self) {
+        self.count += rhs.count;
+        self.loss += rhs.loss;
+        self.correct += rhs.correct;
+    }
+}
+
+#[derive(Parser, Debug)]
+#[command(author)]
+struct Options {
+    #[arg(long, value_enum, default_value_t = DatasetKind::Mnist)]
+    dataset: DatasetKind,
+    #[arg(long)]
+    offline: bool,
+    #[arg(long, value_enum, default_value_t = ModelKind::Linear)]
+    model: ModelKind,
+    #[arg(long)]
+    bf16: bool,
+    #[arg(short, long, default_value_t = 10)]
+    epochs: usize,
+    #[arg(long, default_value_t = 100)]
+    train_batch_size: usize,
+    #[arg(long, default_value_t = 1000)]
+    test_batch_size: usize,
+    #[arg(long, default_value_t = 0.01)]
+    learning_rate: f32,
+    #[arg(long)]
+    parallel: bool,
+}
+
+fn main() -> Result<()> {
+    let options = Options::parse();
+    eprintln!("{options:#?}");
+    let ((train_images, train_classes), (test_images, test_classes)) = match options.dataset {
+        DatasetKind::Mnist | DatasetKind::FashionMnist => {
+            let Mnist {
+                train_images,
+                train_classes,
+                test_images,
+                test_classes,
+                ..
+            } = Mnist::builder()
+                .kind(options.dataset.mnist_kind())
+                .download(!options.offline)
+                .verbose(true)
+                .build()?;
+            ((train_images, train_classes), (test_images, test_classes))
+        }
+    };
+    let train_images = train_images.into_shared();
+    let train_classes = train_classes.into_shared();
+    let scalar_type = if options.bf16 {
+        ScalarType::BF16
+    } else {
+        ScalarType::F32
+    };
+    let mut model = Model::new(options.model, scalar_type)?;
+    let optimizer = SGD::default();
+
+    let image_scale = 1f32 / 255f32;
+    let image_scale = if options.bf16 {
+        ScalarElem::BF16(bf16::from_f32(image_scale))
+    } else {
+        ScalarElem::F32(image_scale)
     };
 
-    // Transfer the trainer to the device. Most operations (ie compute shaders) only
-    // run on a device.
-    trainer.to_device_mut(device.clone()).await?;
-    println!("{:#?}", &trainer);
+    let train_batch_size = options.train_batch_size;
+    let train_iter_fn = || {
+        let count = train_classes.len();
+        let index_vec = sample(&mut thread_rng(), count, count);
+        batches_indexed(
+            train_batch_size,
+            train_images.as_slice().unwrap(),
+            train_classes.as_slice().unwrap(),
+            index_vec.into_iter(),
+        )
+        .map(|(x, t)| -> Result<_> {
+            let x = Tensor::from(Buffer::from(x))
+                .into_shape([options.train_batch_size, 1, 28, 28])
+                .unwrap()
+                .into_scalar_tensor()
+                .scaled_cast(image_scale)?;
+            let t = ScalarCowTensor::from(Tensor::from(Buffer::from(t)).into_scalar_tensor());
+            Ok((x, t))
+        })
+    };
 
-    // Load the dataset.
-    println!("Loading dataset...");
-    let mnist = Mnist::builder().download(true).build()?;
-    // Use the first 60_000 images as the training set.
-    let train_images = mnist
-        .images()
-        .slice(s![..60_000, .., .., ..]);
-    let train_classes = mnist.classes().slice(s![..60_000]);
-    let train_batch_size = 100;
-    // Use the last 10_000 images as the test set.
-    let test_images = mnist
-        .images()
-        .slice(s![60_000.., .., .., ..]);
-    let test_classes = mnist.classes().slice(s![60_000..]);
-    let test_batch_size = 1000;
+    let train_par_iter_fn = || {
+        let train_images_classes = (train_images.clone(), train_classes.clone());
+        let (sender, receiver) = crossbeam_channel::bounded(1);
+        rayon::spawn(move || {
+            let (train_images, train_classes) = train_images_classes;
+            let count = train_classes.len();
+            let index_vec = sample(&mut thread_rng(), count, count);
+            let iter = batches_indexed(
+                options.train_batch_size,
+                train_images.as_slice().unwrap(),
+                train_classes.as_slice().unwrap(),
+                index_vec.into_iter(),
+            )
+            .map(|(x, t)| -> Result<_> {
+                let x = Tensor::from(Buffer::from(x))
+                    .into_shape([options.train_batch_size, 1, 28, 28])
+                    .unwrap()
+                    .into_scalar_tensor()
+                    .scaled_cast(image_scale)?;
+                let t = ScalarCowTensor::from(Tensor::from(Buffer::from(t)).into_scalar_tensor());
+                Ok((x, t))
+            });
+            for batch in iter {
+                let result = sender.send(batch);
+                if result.is_err() {
+                    return;
+                }
+            }
+        });
+        receiver.into_iter()
+    };
 
-    // Stream the data to the device, converting arrays to tensors.
-    fn batch_iter<'a>(
-        device: &'a Device,
-        images: &'a ArrayView4<u8>,
-        classes: &'a ArrayView1<u8>,
-        batch_size: usize,
-    ) -> impl ExactSizeIterator<Item = Result<(FloatTensor4, Tensor1<u8>)>> + 'a {
-        images
-            .axis_chunks_iter(Axis(0), batch_size)
-            .into_iter()
-            .zip(classes.axis_chunks_iter(Axis(0), batch_size))
-            .map(move |(x, t)| {
-                let x = smol::block_on(TensorView::try_from(x)?.into_device(device.clone()))?
-                    // normalize the bytes to f32
-                    .scale_into::<f32>(1. / 255.)?
-                    .into_float();
-                let t = smol::block_on(TensorView::try_from(t)?.into_device(device.clone()))?;
+    let test_iter_fn = || {
+        test_images
+            .axis_chunks_iter(Axis(0), options.test_batch_size)
+            .zip(test_classes.axis_chunks_iter(Axis(0), options.test_batch_size))
+            .map(|(x, t)| -> Result<_> {
+                let x = CowTensor::from(x)
+                    .into_scalar_cow_tensor()
+                    .scaled_cast(image_scale)?;
+                let t = CowTensor::from(t).into_scalar_cow_tensor();
                 Ok((x, t))
             })
-    }
+    };
 
-    // Shuffled training data iterator
-    fn shuffled_batch_iter<'a>(
-        device: &'a Device,
-        images: &'a ArrayView4<'a, u8>,
-        classes: &'a ArrayView1<'a, u8>,
-        batch_size: usize,
-    ) -> impl ExactSizeIterator<Item = Result<(FloatTensor4, Tensor1<u8>)>> + 'a {
-        let mut indices = (0 .. images.shape()[0]).into_iter().collect::<Vec<usize>>();
-        indices.shuffle(&mut rand::thread_rng());
-        (0 .. indices.len())
-            .into_iter()
-            .step_by(batch_size)
-            .map(move |index| {
-                let batch_indices = &indices[index..(index+batch_size).min(indices.len())];
-                let x = batch_indices.iter()
-                    .copied()
-                    .flat_map(|i| images.index_axis(Axis(0), i))
-                    .copied()
-                    .collect::<Array1<u8>>()
-                    .into_shape([batch_indices.len(), images.dim().1, images.dim().2, images.dim().3])?;
-                let t = batch_indices.iter()
-                    .copied()
-                    .map(|i| classes[i])
-                    .collect::<Array1<u8>>();
-                let x = smol::block_on(Tensor::from(x).into_device(device.clone()))?
-                    // normalize the bytes to f32
-                    .scale_into::<f32>(1. / 255.)?
-                    .into_float();
-                let t = smol::block_on(Tensor::from(t).into_device(device.clone()))?;
+    let test_par_iter_fn = || {
+        test_images
+            .axis_chunks_iter(Axis(0), options.test_batch_size)
+            .into_par_iter()
+            .zip(test_classes.axis_chunks_iter(Axis(0), options.test_batch_size))
+            .map(|(x, t)| -> Result<_> {
+                let x = CowTensor::from(x)
+                    .into_scalar_cow_tensor()
+                    .scaled_cast(image_scale)?;
+                let t = CowTensor::from(t).into_scalar_cow_tensor();
                 Ok((x, t))
             })
-    }
+    };
 
-    // Show a progress bar
-    fn progress_iter<X>(iter: impl ExactSizeIterator<Item=X>, epoch: usize, name: &str) -> impl ExactSizeIterator<Item=X> {
-        let style = ProgressStyle::default_bar()
-            .template(&format!("[epoch: {} elapsed: {{elapsed}}] {} [{{bar}}] {{pos:>7}}/{{len:7}} [eta: {{eta}}]", epoch, name))
-            .progress_chars("=> ");
-        let bar = ProgressBar::new(iter.len() as u64)
-            .with_style(style);
-        iter.progress_with(bar)
-    }
+    model.set_training(true)?;
 
-    println!("Training...");
-    // Run the training for the specified epochs
-    while trainer.summarize().epoch < epochs {
-        let epoch = trainer.summarize().epoch;
-        let train_iter = progress_iter(shuffled_batch_iter(&device, &train_images, &train_classes, train_batch_size), epoch, "training");
-        let test_iter = progress_iter(batch_iter(&device, &test_images, &test_classes, test_batch_size), epoch, "testing");
-        trainer.train_test(train_iter, test_iter)?;
-        println!("{:#?}", trainer.summarize());
-
-        // Save the trainer at each epoch.
-        if let Some(save_path) = save_path.as_ref() {
-            fs::write(save_path, bincode::serialize(&trainer)?)?;
+    for epoch in 1..=options.epochs {
+        let epoch_start = Instant::now();
+        fn train<'a, I: Iterator<Item = Result<(ScalarTensor4, ScalarCowTensor1<'a>)>>>(
+            model: &mut Model,
+            optimizer: &SGD,
+            learning_rate: f32,
+            mut train_iter: I,
+        ) -> Result<Stats> {
+            let mut train_stats = Stats::default();
+            while let Some((x, t)) = train_iter.next().transpose()? {
+                train_stats.count += x.shape().first().unwrap();
+                let y = model.forward(x.into())?;
+                train_stats.correct += Accuracy.eval(y.value().view(), t.view())?;
+                let t_one_hot = t.to_one_hot(10, y.scalar_type())?;
+                let loss = CrossEntropyLoss::default().eval(y, t_one_hot.into())?;
+                loss.backward()?;
+                for parameter in model.parameters_mut()? {
+                    optimizer.update(learning_rate, parameter)?;
+                }
+                train_stats.loss += loss
+                    .into_value()
+                    .cast_into_tensor::<f32>()?
+                    .into_array()?
+                    .sum();
+            }
+            Ok(train_stats)
         }
+        let train_stats = if options.parallel {
+            train(
+                &mut model,
+                &optimizer,
+                options.learning_rate,
+                train_par_iter_fn(),
+            )?
+        } else {
+            train(
+                &mut model,
+                &optimizer,
+                options.learning_rate,
+                train_iter_fn(),
+            )?
+        };
+        let train_count = train_stats.count;
+        let train_correct = train_stats.correct;
+        let train_loss = train_stats.loss / train_count as f32;
+        let train_acc = (train_correct * 100) as f32 / train_count as f32;
+
+        let test_stats = if options.parallel {
+            let test_stats = Arc::new(Mutex::new(Stats::default()));
+            test_par_iter_fn().try_for_each_with(
+                test_stats.clone(),
+                |test_stats, batch| -> Result<()> {
+                    let (x, t) = batch?;
+                    let mut stats = Stats::default();
+                    stats.count = x.shape().first().copied().unwrap();
+                    let y = model.forward(x.into())?.into_value();
+                    stats.correct = Accuracy.eval(y.view(), t.view())?;
+                    let t_one_hot = t.to_one_hot(10, y.scalar_type())?;
+                    stats.loss += CrossEntropyLoss::default()
+                        .eval(y, t_one_hot)?
+                        .cast_into_tensor::<f32>()?
+                        .into_array()?
+                        .sum();
+                    *test_stats.lock() += stats;
+                    Ok(())
+                },
+            )?;
+            let test_stats = std::mem::take(&mut *test_stats.lock());
+            test_stats
+        } else {
+            let mut test_stats = Stats::default();
+            let mut test_iter = test_iter_fn();
+            while let Some((x, t)) = test_iter.next().transpose()? {
+                test_stats.count += x.shape().first().copied().unwrap();
+                let y = model.forward(x.into())?.into_value();
+                test_stats.correct += Accuracy.eval(y.view(), t.view())?;
+                let t_one_hot = t.to_one_hot(10, y.scalar_type())?;
+                test_stats.loss += CrossEntropyLoss::default()
+                    .eval(y, t_one_hot)?
+                    .cast_into_tensor::<f32>()?
+                    .into_array()?
+                    .sum();
+            }
+            test_stats
+        };
+        let test_count = test_stats.count;
+        let test_correct = test_stats.count;
+        let test_loss = test_stats.loss / test_count as f32;
+        let test_acc = (test_stats.correct * 100) as f32 / test_count as f32;
+        let epoch_elapsed = epoch_start.elapsed();
+        println!(
+                "[{epoch}] train_loss: {train_loss} train_acc: {train_acc}% {train_count}/{train_count} test_loss: {test_loss} test_acc: {test_acc}% {test_correct}/{test_count} elapsed: {epoch_elapsed:?}"
+            );
     }
-
-    println!("Evaluating...");
-    let test_iter = progress_iter(batch_iter(&device, &test_images, &test_classes, test_batch_size), trainer.summarize().epoch, "evaluating");
-    let stats = trainer.test(test_iter)?;
-    println!("{:#?}", stats);
-
     Ok(())
 }
+
+pub fn batches_indexed<'a, I: Iterator<Item = usize> + 'a>(
+    batch_size: usize,
+    images: &'a [u8],
+    classes: &'a [u8],
+    mut index_iter: I,
+) -> impl Iterator<Item = (Vec<u8>, Vec<u8>)> + 'a {
+    let image_size = 28 * 28;
+    (0..classes.len() / batch_size).map(move |_| {
+        let mut output_images = Vec::with_capacity(batch_size * image_size);
+        let mut output_classes = Vec::with_capacity(batch_size);
+        for index in index_iter.by_ref().take(batch_size) {
+            output_images.extend(&images[index * image_size..(index + 1) * image_size]);
+            output_classes.push(classes[index]);
+        }
+        (output_images, output_classes)
+    })
+}
+
+/*
+fn load_dataset(options: &Options) -> [ScalarArcTensorD; 4] {
+    let Mnist {
+        images, classes, ..
+    } = Mnist::builder()
+        .kind(options.dataset.kind())
+        .download(true)
+        .build()
+        .unwrap();
+    // Use the first 60_000 images as the training set.
+    let train_images = ScalarArcTensor::from(Tensor::from(
+        images.slice(s![..60_000, .., .., ..]).to_owned(),
+    ))
+    .into_dyn();
+    let train_classes =
+        ScalarArcTensor::from(Tensor::from(classes.slice(s![..60_000]).to_owned())).into_dyn();
+    // Use the last 10_000 images as the test set.
+    let test_images = ScalarArcTensor::from(Tensor::from(
+        images.slice(s![60_000.., .., .., ..]).to_owned(),
+    ))
+    .into_dyn();
+    let test_classes =
+        ScalarArcTensor::from(Tensor::from(classes.slice(s![60_000..]).to_owned())).into_dyn();
+    [train_images, train_classes, test_images, test_classes]
+}
+
+fn preprocess_images(input: ScalarArcTensorD) -> Result<ScalarArcTensorD> {
+    let scale = 1f32 / 255f32;
+    let output = TensorViewD::<u8>::try_from(input.view())
+        .unwrap()
+        .into_array()
+        .unwrap()
+        .map(|x| scale * x.cast::<f32>());
+    Ok(ScalarArcTensor::from(Tensor::from(output)))
+
+    //input.scaled_cast(scale.into())
+}
+
+fn accuracy(input: ScalarTensorView2, classes: ScalarTensorView1) -> usize {
+    let input = TensorView2::<f32>::try_from(input).unwrap();
+    let input = input.as_array().unwrap();
+    let classes = TensorView1::<u8>::try_from(classes).unwrap();
+    let classes = classes.as_array().unwrap();
+    input
+        .outer_iter()
+        .zip(classes.iter().map(|x| x.to_usize().unwrap()))
+        .filter(|(input, class)| {
+            let mut max = input[0];
+            let mut max_index = 0;
+            for (i, x) in input.iter().copied().enumerate() {
+                if x > max {
+                    max = x;
+                    max_index = i;
+                }
+            }
+            max_index == *class
+        })
+        .count()
+}
+
+fn run<M>(options: Options, mut model: M, dataset: [ScalarArcTensorD; 4])
+where
+    M: Layer + Debug,
+{
+    println!("{model:#?}");
+    println!("Training...");
+    let nclasses = 10;
+    let [train_images, train_classes, test_images, test_classes] = dataset;
+
+    let criterion = CrossEntropyLoss::default();
+    for epoch in 0..options.epochs {
+        let epoch_start = Instant::now();
+        model.set_training(true);
+        let mut train_count = 0;
+        let mut train_loss = 0f32;
+        let mut train_correct = 0;
+        let mut train_iter = Batches::new(
+            (train_images.clone(), train_classes.clone()),
+            options.train_batch_size,
+        )
+        .into_iter()
+        .map(|batch| batch.and_then(|(input, classes)| Ok((preprocess_images(input)?, classes))));
+        while let Some((x, t)) = train_iter.next().transpose().unwrap() {
+            train_count += x.shape().first().copied().unwrap_or_default();
+            let y = model.forward(x.into()).unwrap();
+            train_correct += accuracy(
+                y.value().view().into_dimensionality().unwrap(),
+                t.view().into_dimensionality().unwrap(),
+            );
+            let t_one_hot = t.to_one_hot(nclasses, y.scalar_type()).unwrap();
+            let loss = criterion.eval(y, t_one_hot.into()).unwrap();
+            loss.backward().unwrap();
+            //rayon::scope(|scope| {
+            model.for_each_parameter_mut(&mut |parameter| {
+                //scope.spawn(|_| {
+                let Gradient::Dense(gradient) = parameter.grad().unwrap().load().unwrap();
+                parameter
+                    .make_view_mut()
+                    .unwrap()
+                    .scaled_add((-options.learning_rate).into(), &gradient)
+                    .unwrap();
+                // });
+            });
+            //});
+            let loss = ArcTensorD::<f32>::try_from(loss.into_value())
+                .unwrap()
+                .into_array()
+                .unwrap();
+            train_loss += loss.sum();
+        }
+        let train_loss = train_loss / train_count as f32;
+        let train_acc = (train_correct * 100) as f32 / train_count as f32;
+        model.set_training(false);
+        let mut test_count = 0;
+        let mut test_loss = 0f32;
+        let mut test_correct = 0;
+        let mut test_iter = Batches::new(
+            (test_images.clone(), test_classes.clone()),
+            options.test_batch_size,
+        )
+        .into_iter()
+        .map(|batch| batch.and_then(|(input, classes)| Ok((preprocess_images(input)?, classes))));
+        while let Some((x, t)) = test_iter.next().transpose().unwrap() {
+            test_count += x.shape().first().copied().unwrap_or_default();
+            let y = model.forward(x.into()).unwrap();
+            test_correct += accuracy(
+                y.value().view().into_dimensionality().unwrap(),
+                t.view().into_dimensionality().unwrap(),
+            );
+            let t_one_hot = t.to_one_hot(nclasses, y.scalar_type()).unwrap();
+            let loss = criterion.eval(y.into_value(), t_one_hot).unwrap();
+            let loss = TensorD::<f32>::try_from(loss)
+                .unwrap()
+                .into_array()
+                .unwrap();
+            test_loss += loss.sum();
+        }
+        let test_loss = test_loss / test_count as f32;
+        let test_acc = (test_correct * 100) as f32 / test_count as f32;
+        let epoch_elapsed = epoch_start.elapsed();
+        println!(
+            "[{epoch}] train_loss: {train_loss} train_acc: {train_acc}% {train_count}/{train_count} test_loss: {test_loss} test_acc: {test_acc}% {test_correct}/{test_count} elapsed: {epoch_elapsed:?}"
+        );
+    }
+}
+*/

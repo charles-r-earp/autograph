@@ -75,6 +75,17 @@ impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
             self.view_mut().into_dyn(),
         )
     }
+    pub fn scaled_cast(&self, alpha: ScalarElem) -> Result<ScalarTensor<D>> {
+        let mut output =
+            unsafe { ScalarTensor::uninit(self.device(), self.raw_dim(), alpha.scalar_type())? };
+        scalar_assign(
+            BinaryOp::Identity,
+            alpha,
+            self.view().into_dyn(),
+            output.view_mut().into_dyn(),
+        )?;
+        Ok(output)
+    }
     pub fn assign<S2, D2>(&mut self, rhs: &ScalarTensorBase<S2, D2>) -> Result<()>
     where
         S: ScalarDataMut,
@@ -90,11 +101,18 @@ impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
     }
 }
 
-impl<T: Scalar, S: DataMut<Elem = T>, D: Dimension, S2: Data<Elem = T>, D2: Dimension>
+impl<S: ScalarDataMut, D: Dimension, S2: ScalarData, D2: Dimension>
+    AddAssign<ScalarTensorBase<S2, D2>> for ScalarTensorBase<S, D>
+{
+    fn add_assign(&mut self, rhs: ScalarTensorBase<S2, D2>) -> Result<()> {
+        self.scaled_add(ScalarElem::one(self.scalar_type()), &rhs)
+    }
+}
+
+impl<S: ScalarDataMut, D: Dimension, S2: ScalarData, D2: Dimension>
     AddAssign<&ScalarTensorBase<S2, D2>> for ScalarTensorBase<S, D>
 {
-    type Error = anyhow::Error;
-    fn add_assign(&mut self, rhs: &ScalarTensorBase<S2, D2>) -> Result<(), Self::Error> {
+    fn add_assign(&mut self, rhs: &ScalarTensorBase<S2, D2>) -> Result<()> {
         self.scaled_add(ScalarElem::one(self.scalar_type()), rhs)
     }
 }
@@ -175,8 +193,7 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
 impl<T: Scalar, S: DataMut<Elem = T>, D: Dimension, S2: Data<Elem = T>, D2: Dimension>
     AddAssign<TensorBase<S2, D2>> for TensorBase<S, D>
 {
-    type Error = anyhow::Error;
-    fn add_assign(&mut self, rhs: TensorBase<S2, D2>) -> Result<(), Self::Error> {
+    fn add_assign(&mut self, rhs: TensorBase<S2, D2>) -> Result<()> {
         self.scaled_add(T::one(), &rhs)
     }
 }
@@ -184,8 +201,7 @@ impl<T: Scalar, S: DataMut<Elem = T>, D: Dimension, S2: Data<Elem = T>, D2: Dime
 impl<T: Scalar, S: DataMut<Elem = T>, D: Dimension, S2: Data<Elem = T>, D2: Dimension>
     AddAssign<&TensorBase<S2, D2>> for TensorBase<S, D>
 {
-    type Error = anyhow::Error;
-    fn add_assign(&mut self, rhs: &TensorBase<S2, D2>) -> Result<(), Self::Error> {
+    fn add_assign(&mut self, rhs: &TensorBase<S2, D2>) -> Result<()> {
         self.scaled_add(T::one(), rhs)
     }
 }
@@ -196,86 +212,20 @@ fn assign<X: Scalar, Y: Scalar>(
     x: TensorViewD<X>,
     mut y: TensorViewMutD<Y>,
 ) -> Result<()> {
+    let (x, mut y) = if let Some((x, y)) = x.as_array().zip(y.as_array_mut()) {
+        (x, y)
+    } else {
+        return scalar_assign(op, alpha.into(), x.into(), y.into());
+    };
     let x = if let Some(x) = x.broadcast(y.shape()) {
         x
     } else {
         bail!("Broadcast not possible! {x:?} -> {y:?}");
     };
-    if let Some((x, mut y)) = x.as_array().zip(y.as_array_mut()) {
-        y.zip_mut_with(&x, |y, x| {
-            *y = op.eval(alpha * x.cast(), y.cast()).cast();
-        });
-        return Ok(());
-    }
-    #[cfg(not(feature = "device"))]
-    {
-        unreachable!()
-    }
-    #[cfg(feature = "device")]
-    {
-        scalar_assign(op, alpha.into(), x.into(), y.into())
-        /*
-        let ndim = y.ndim();
-        if ndim <= 2 {
-            let (rows, cols) = match y.shape() {
-                [rows, cols] => (rows.to_u32().unwrap(), cols.to_u32().unwrap()),
-                [cols] => (1, cols.to_u32().unwrap()),
-                [] => (1, 1),
-                _ => unreachable!(),
-            };
-            let (rsx, csx) = match x.strides() {
-                [rsx, csx] => (rsx.to_i32().unwrap(), csx.to_i32().unwrap()),
-                [csx] => (1, csx.to_i32().unwrap()),
-                [] => (1, 1),
-                _ => unreachable!(),
-            };
-            let (rsy, csy) = match y.strides() {
-                [rsy, csy] => (rsy.to_i32().unwrap(), csy.to_i32().unwrap()),
-                [csy] => (1, csy.to_i32().unwrap()),
-                [] => (1, 1),
-                _ => unreachable!(),
-            };
-            let (x, offset_x) = x.as_raw_slice_offset();
-            let offset_x = offset_x.to_u32().unwrap();
-            let (mut y, offset_y) = y.as_raw_slice_offset_mut();
-            let offset_y = offset_y.to_u32().unwrap();
-
-            macro_for!($X in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
-                if let Ok(x) = Slice::<$X>::try_from(x.as_scalar_slice()) {
-                    macro_for!($Y in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
-                        if let Ok(y) = SliceMut::<$Y>::try_from(y.as_scalar_slice_mut()) {
-                            let builder = paste! {
-                                kernels::[<assign2_ $X _ $Y>]::builder()?
-                            };
-                            builder
-                            .specialize(op.as_u32())?
-                            .build(y.device())?
-                            .with_global_threads([cols, rows].into())
-                            .dispatch(
-                                rows,
-                                cols,
-                                alpha.cast(),
-                                x,
-                                rsx,
-                                csx,
-                                offset_x,
-                                y,
-                                rsy,
-                                csy,
-                                offset_y,
-                            )?;
-                            return Ok(());
-                        }
-                    });
-                }
-            });
-        }
-        Err(format_err!(
-            "assign<{}, {}> not implemented!",
-            X::scalar_type().name(),
-            Y::scalar_type().name()
-        ))*/
-    }
+    y.zip_mut_with(&x, |y, x| {
+        *y = op.eval(alpha * x.cast(), y.cast()).cast();
+    });
+    Ok(())
 }
 
 fn scalar_assign(
@@ -284,6 +234,16 @@ fn scalar_assign(
     x: ScalarTensorViewD,
     mut y: ScalarTensorViewMutD,
 ) -> Result<()> {
+    if let BinaryOp::Identity = op {
+        if x.device() != y.device() {
+            if let Some((x, mut y)) = x.as_scalar_slice().zip(y.as_scalar_slice_mut()) {
+                y.copy_from_scalar_slice(&x);
+                return Ok(());
+            } else {
+                todo!()
+            }
+        }
+    }
     if alpha.scalar_type() != y.scalar_type() {
         bail!(
             "alpha scalar_type {:?} != {:?}",

@@ -1,226 +1,280 @@
-use super::autograd::{ParameterD, VariableD};
-use crate::device::Device;
-use anyhow::Result;
+use super::{
+    autograd::{
+        Parameter, Parameter1, Parameter2, ParameterViewMut1, ParameterViewMut2, ParameterViewMutD,
+        Variable, Variable2,
+    },
+    optimizer::Optimizer,
+};
+use crate::{
+    buffer::Data,
+    buffer::{Buffer, ScalarBuffer},
+    device::Device,
+    krnl::krnl_core::half::{bf16, f16},
+    ops::AddAssign,
+    scalar::ScalarType,
+    tensor::{ArcTensor, ArcTensor2, ScalarTensor, Tensor, Tensor2, TensorBase},
+};
+use anyhow::{bail, Result};
+use ndarray::{linalg::Dot, Array1, Array2, Dimension, Ix2};
+use rand::{
+    distributions::{Distribution, Uniform},
+    thread_rng,
+};
+use std::{any::Any, marker::PhantomData};
 
-/// A trait for networks and layers.
-pub trait Layer: Forward + Send + Sync + 'static {
-    // impl if has layers
+pub mod builder {
+    use super::*;
 
-    fn try_for_each_layer<'a>(
-        &'a self,
-        f: &mut dyn FnMut(&'a dyn Layer) -> Result<()>,
-    ) -> Result<()> {
-        Ok(())
+    pub struct DenseBuilder<A = Identity> {
+        inputs: usize,
+        outputs: usize,
+        bias: bool,
+        scalar_type: ScalarType,
+        device: Device,
+        activation: A,
     }
-    fn try_for_each_layer_mut<'a>(
-        &'a mut self,
-        f: &mut dyn FnMut(&'a mut dyn Layer) -> Result<()>,
-    ) -> Result<()> {
-        Ok(())
+
+    impl DenseBuilder {
+        pub(super) fn new() -> Self {
+            Self {
+                inputs: 0,
+                outputs: 0,
+                bias: false,
+                scalar_type: ScalarType::F32,
+                device: Device::host(),
+                activation: Identity,
+            }
+        }
     }
 
-    // impl if has parameters
-
-    fn try_for_each_parameter<'a>(
-        &'a self,
-        f: &mut dyn FnMut(&'a ParameterD) -> Result<()>,
-    ) -> Result<()> {
-        self.try_for_each_layer(&mut |layer| layer.try_for_each_parameter(f))
+    impl<A> DenseBuilder<A> {
+        pub fn inputs(self, inputs: usize) -> Self {
+            Self { inputs, ..self }
+        }
+        pub fn outputs(self, outputs: usize) -> Self {
+            Self { outputs, ..self }
+        }
+        pub fn bias(self, bias: bool) -> Self {
+            Self { bias, ..self }
+        }
+        pub fn activation<A2>(self, activation: A2) -> DenseBuilder<A2> {
+            let Self {
+                inputs,
+                outputs,
+                bias,
+                activation: _,
+                scalar_type,
+                device,
+            } = self;
+            DenseBuilder {
+                inputs,
+                outputs,
+                bias,
+                activation,
+                scalar_type,
+                device,
+            }
+        }
+        pub fn scalar_type(self, scalar_type: ScalarType) -> Self {
+            Self {
+                scalar_type,
+                ..self
+            }
+        }
+        pub fn device(self, device: Device) -> Self {
+            Self { device, ..self }
+        }
+        pub fn build(self) -> Result<Dense<A>> {
+            let Self {
+                inputs,
+                outputs,
+                bias,
+                activation,
+                scalar_type,
+                device,
+            } = self;
+            if !matches!(scalar_type, ScalarType::BF16 | ScalarType::F32) {
+                bail!("Dense {scalar_type:?} not supported!");
+            }
+            let a = if inputs > 0 {
+                f32::sqrt(2. / inputs as f32)
+            } else {
+                0.
+            };
+            let mut rng = thread_rng();
+            let weight_iter = Uniform::new(-a, a)
+                .sample_iter(&mut rng)
+                .take(inputs * outputs);
+            let weight = match scalar_type {
+                ScalarType::BF16 => ScalarBuffer::from(Buffer::from(
+                    weight_iter.map(bf16::from_f32).collect::<Vec<_>>(),
+                )),
+                ScalarType::F32 => {
+                    ScalarBuffer::from(Buffer::from(weight_iter.collect::<Vec<_>>()))
+                }
+                _ => unreachable!(),
+            };
+            let weight = weight.into_device(device.clone())?;
+            let weight = Parameter::from(
+                ScalarTensor::from(weight)
+                    .into_shape([outputs, inputs])
+                    .unwrap(),
+            );
+            let bias = if bias {
+                let bias_iter = Uniform::new(-a, a).sample_iter(rng).take(outputs);
+                let bias = match scalar_type {
+                    ScalarType::BF16 => ScalarBuffer::from(Buffer::from(
+                        bias_iter.map(bf16::from_f32).collect::<Vec<_>>(),
+                    )),
+                    ScalarType::F32 => {
+                        ScalarBuffer::from(Buffer::from(bias_iter.collect::<Vec<_>>()))
+                    }
+                    _ => unreachable!(),
+                };
+                let bias = bias.into_device(device)?;
+                Some(Parameter::from(ScalarTensor::from(bias)))
+            } else {
+                None
+            };
+            Ok(Dense {
+                weight,
+                bias,
+                activation,
+            })
+        }
     }
-    fn try_for_each_parameter_mut<'a>(
-        &'a mut self,
-        f: &mut dyn FnMut(&'a mut ParameterD) -> Result<()>,
-    ) -> Result<()> {
-        self.try_for_each_layer_mut(&mut |layer| layer.try_for_each_parameter_mut(f))
+}
+use builder::DenseBuilder;
+
+pub struct LayerMut<'a> {
+    inner: &'a mut dyn Layer,
+}
+
+impl<'a> LayerMut<'a> {
+    pub fn new(layer: &'a mut dyn Layer) -> Self {
+        Self { inner: layer }
     }
+}
 
-    // impl if has layers and parameters
-
+impl Layer for LayerMut<'_> {
+    fn set_training(&mut self, training: bool) -> Result<()> {
+        self.inner.set_training(training)
+    }
+    fn parameters_mut(&mut self) -> Result<Vec<ParameterViewMutD>> {
+        self.inner.parameters_mut()
+    }
+    fn layers_mut(&mut self) -> Result<Vec<LayerMut>> {
+        self.inner.layers_mut()
+    }
     fn to_device_mut(&mut self, device: Device) -> Result<()> {
-        // TODO: rayon?
-        let mut has_layer_parameters = false;
-        self.try_for_each_layer_mut(&mut |layer| {
-            has_layer_parameters |= layer.parameter_count() > 0;
-            layer.to_device_mut(device.clone())
-        })?;
-        if !has_layer_parameters {
-            self.try_for_each_parameter_mut(&mut |parameter| {
-                parameter.to_device_mut(device.clone())
-            })?;
+        self.inner.to_device_mut(device)
+    }
+}
+
+pub trait Layer {
+    fn set_training(&mut self, training: bool) -> Result<()> {
+        for mut layer in self.layers_mut()? {
+            layer.set_training(training)?;
         }
         Ok(())
     }
-
-    // provided methods
-
-    fn for_each_layer<'a>(&'a self, f: &mut dyn FnMut(&'a dyn Layer)) {
-        self.try_for_each_layer(&mut |layer| {
-            f(layer);
-            Ok(())
-        })
-        .unwrap();
+    fn parameters_mut(&mut self) -> Result<Vec<ParameterViewMutD>> {
+        todo!()
     }
-    fn for_each_layer_mut<'a>(&'a mut self, f: &mut dyn FnMut(&'a mut dyn Layer)) {
-        self.try_for_each_layer_mut(&mut |layer| {
-            f(layer);
-            Ok(())
-        })
-        .unwrap();
+    fn layers_mut(&mut self) -> Result<Vec<LayerMut>> {
+        Ok(Vec::new())
     }
-    fn layer_count(&self) -> usize {
-        let mut count = 0;
-        self.for_each_layer(&mut |_| count += 1);
-        count
-    }
-    fn layers(&self) -> Vec<&dyn Layer> {
-        let mut layers = Vec::with_capacity(self.layer_count());
-        self.for_each_layer(&mut |layer| layers.push(layer));
-        layers
-    }
-    fn layers_mut(&mut self) -> Vec<&mut dyn Layer> {
-        let mut layers = Vec::with_capacity(self.layer_count());
-        self.for_each_layer_mut(&mut |layer| layers.push(layer));
-        layers
-    }
-
-    fn for_each_parameter<'a>(&'a self, f: &mut dyn FnMut(&'a ParameterD)) {
-        self.try_for_each_parameter(&mut |parameter| {
-            f(parameter);
-            Ok(())
-        })
-        .unwrap();
-    }
-    fn for_each_parameter_mut<'a>(&'a mut self, f: &mut dyn FnMut(&'a mut ParameterD)) {
-        self.try_for_each_parameter_mut(&mut |parameter| {
-            f(parameter);
-            Ok(())
-        })
-        .unwrap();
-    }
-    fn parameter_count(&self) -> usize {
-        let mut count = 0;
-        self.for_each_parameter(&mut |_| count += 1);
-        count
-    }
-    fn parameters(&self) -> Vec<ParameterD> {
-        let mut parameters = Vec::with_capacity(self.parameter_count());
-        self.for_each_parameter(&mut |parameter| parameters.push(parameter.clone()));
-        parameters
-    }
-    fn parameters_mut(&mut self) -> Vec<&mut ParameterD> {
-        let mut parameters = Vec::with_capacity(self.parameter_count());
-        self.for_each_parameter_mut(&mut |parameter| parameters.push(parameter));
-        parameters
+    fn to_device_mut(&mut self, device: Device) -> Result<()> {
+        for layer in self.layers_mut()?.iter_mut() {
+            layer.to_device_mut(device.clone())?;
+        }
+        Ok(())
     }
 }
 
-/// A trait for the forward pass.
-///
-/// [`Layer`]'s implement [`Forward`], which computes the output as a function of the input.
-///
-/// # Derive
-/// [`Forward`] can be [derived](autograph_derive) for sequential layers (ie typical feed-foward networks).
-pub trait Forward {
-    /// Computes the forward pass.
-    ///
-    /// # Autograd
-    /// Operations on [`Variable`](super::autograd::Variable) are expected to apply backward ops via [`Variable::with_backward()`].
-    ///
-    /// **Errors**
-    ///
-    /// Returns an error if the operation could not be performed. Generally the implemenation should return an error instead of panicking.
-    fn forward(&self, input: VariableD) -> Result<VariableD>;
+pub trait Forward<X> {
+    type Output;
+    fn forward(&self, input: X) -> Result<Self::Output>;
 }
 
-/// Dense / fully connected layer.
-#[derive(Clone)]
-pub struct Dense {
-    weight: ParameterD,
-    bias: Option<ParameterD>,
+///```no_run
+/// # fn main() -> anyhow::Result<()> {
+/// # let device = Device::host();
+/// let dense = Dense::builder()
+///    .inputs(1)
+///    .outputs(1)
+///    .bias(true))
+///    .activation(Relu)
+///    .scalar_type(ScalarType::BF16)
+///    .device(device.clone())
+///    .build()?;
+/// # }
+///```
+pub struct Dense<A = Identity> {
+    weight: Parameter2,
+    bias: Option<Parameter1>,
+    activation: A,
 }
 
 impl Dense {
-    /// Creates a new [`Dense`] for `inputs` and `outputs`.
-    ///
-    /// The weight is initialized with a uniform distribution of (-a, a) where a = sqrt(1 / inputs).
-    pub fn from_inputs_outputs(inputs: usize, outputs: usize) -> Self {
-        todo!()
-        /*
-        let a = f32::sqrt(2. / inputs as f32);
-        let data = Uniform::new(-a, a)
-            .sample_iter(&mut rand::thread_rng())
-            .take(inputs * outputs)
-            .collect::<Vec<_>>();
-        let buffer = FloatBuffer::from(Buffer::from(data));
-        let weight = Parameter::from(
-            FloatArcTensor::from(buffer)
-                .into_shape([outputs, inputs].as_ref())
-                .unwrap(),
-        );
-        Self { weight, bias: None }*/
+    pub fn builder() -> DenseBuilder {
+        DenseBuilder::new()
     }
-    /// Adds a bias to the layer.
-    ///
-    /// The bias is initialized with a uniform distribution of (-a, a) where a = sqrt(1 / inputs).
-    pub fn with_bias(mut self, bias: bool) -> Result<Self> {
+}
+
+impl<A> Dense<A> {
+    pub fn weight_view_mut(&mut self) -> ParameterViewMut2 {
         todo!()
-        /*
-        if bias {
-            let inputs = self.weight.shape()[1];
-            let outputs = self.weight.shape()[0];
-            let a = f32::sqrt(2. / inputs as f32);
-            let data = Uniform::new(-a, a)
-                .sample_iter(&mut rand::thread_rng())
-                .take(outputs)
-                .collect::<Vec<_>>();
-            let device = self.weight.device();
-            let buffer = FloatBuffer::from(smol::block_on(Buffer::from(data).into_device(device))?);
-            self.bias.replace(Parameter::from(
-                FloatArcTensor::from(buffer)
-                    .into_shape([outputs].as_ref())
-                    .unwrap(),
-            ));
-        } else {
-            self.bias = None;
-        }
-        Ok(self)*/
+    }
+    pub fn bias_view_mut(&mut self) -> Result<Option<ParameterViewMut1>> {
+        todo!()
+    }
+    pub fn into_device(self, device: Device) -> Result<Self> {
+        todo!()
+    }
+    pub fn to_device_mut(&mut self, device: Device) -> Result<()> {
+        todo!()
     }
 }
 
 impl Layer for Dense {
-    fn try_for_each_parameter<'a>(
-        &'a self,
-        f: &mut dyn FnMut(&'a ParameterD) -> Result<()>,
-    ) -> Result<()> {
-        f(&self.weight)?;
-        if let Some(bias) = self.bias.as_ref() {
-            f(bias)?;
+    fn set_training(&mut self, training: bool) -> Result<()> {
+        self.weight.set_training(training);
+        if let Some(bias) = self.bias.as_mut() {
+            bias.set_training(training);
         }
         Ok(())
     }
-    fn try_for_each_parameter_mut<'a>(
-        &'a mut self,
-        f: &mut dyn FnMut(&'a mut ParameterD) -> Result<()>,
-    ) -> Result<()> {
-        f(&mut self.weight)?;
+    fn parameters_mut(&mut self) -> Result<Vec<ParameterViewMutD>> {
+        let mut parameters = Vec::new();
+        parameters.push(self.weight.make_view_mut()?.into_dyn());
         if let Some(bias) = self.bias.as_mut() {
-            f(bias)?;
+            parameters.push(bias.make_view_mut()?.into_dyn());
         }
-        Ok(())
+        Ok(parameters)
     }
 }
 
-impl Forward for Dense {
-    fn forward(&self, input: VariableD) -> Result<VariableD> {
-        todo!()
-        /*let input = smol::block_on(input.into_device(self.weight.device()))?.flatten()?;
-        // TODO: convert to float type of weight
-        let weight = self.weight.clone().into_dimensionality()?;
-        let bias = if let Some(bias) = self.bias.as_ref().map(Parameter::clone) {
-            Some(bias.into_dimensionality()?)
-        } else {
-            None
-        };
-        Ok(input.dot_bias(&weight.t(), bias.as_ref())?.into_dyn())*/
+impl<A: Forward<Variable2, Output = Variable2> + Any> Forward<Variable2> for Dense<A> {
+    type Output = Variable2;
+    fn forward(&self, input: Variable2) -> Result<Self::Output> {
+        let mut output = input.dot(&self.weight.to_variable().t())?;
+        if let Some(bias) = self.bias.as_ref() {
+            output.add_assign(&bias.to_variable())?;
+        }
+        self.activation.forward(output)
     }
 }
+
+#[derive(Default, Clone, Copy, Debug)]
+pub struct Identity;
+
+impl<X> Forward<X> for Identity {
+    type Output = X;
+    fn forward(&self, input: X) -> Result<Self::Output> {
+        Ok(input)
+    }
+}
+
+#[derive(Default, Clone, Copy, Debug)]
+pub struct Relu;

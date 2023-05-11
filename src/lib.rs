@@ -330,6 +330,7 @@ extern crate autograph_derive;
 pub extern crate krnl;
 pub use krnl::{buffer, device, scalar};
 pub extern crate anyhow;
+pub extern crate ndarray;
 
 mod util;
 
@@ -339,10 +340,9 @@ pub mod ops;
 /// Tensors.
 pub mod tensor;
 
-/*
 /// Datasets.
+#[cfg(feature = "dataset")]
 pub mod dataset;
-*/
 
 /// Machine Learning.
 #[cfg(feature = "learn")]

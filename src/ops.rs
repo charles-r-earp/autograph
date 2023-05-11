@@ -1,9 +1,8 @@
-//use crate::result::Result;
+use anyhow::Result;
 //use ndarray::{Dimension, IntoDimension};
 
 pub trait AddAssign<R> {
-    type Error;
-    fn add_assign(&mut self, rhs: R) -> Result<(), Self::Error>;
+    fn add_assign(&mut self, rhs: R) -> Result<()>;
 }
 
 /*
