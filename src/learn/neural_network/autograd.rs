@@ -1,33 +1,32 @@
 use super::{
     layer::Forward,
-    optimizer::{Optimizer, State, StateMut},
+    optimizer::{OptimizerId, State as OptimizerState, Value as OptimizerValue},
 };
 use crate::{
-    buffer::{
-        ArcBuffer, ArcBufferRepr, BufferBase, Data, DataMut, ScalarArcBuffer, ScalarArcBufferRepr,
-        ScalarBufferBase, ScalarData, ScalarDataMut, ScalarSliceMutRepr, SliceMutRepr,
-    },
+    buffer::{ScalarArcBufferRepr, ScalarData, ScalarDataMut, ScalarDataOwned, ScalarSliceMutRepr},
     device::Device,
     ops::AddAssign,
-    scalar::{Scalar, ScalarElem, ScalarType},
+    scalar::{Scalar, ScalarType},
     tensor::{
-        ArcTensor, ScalarArcTensor, ScalarArcTensorD, ScalarTensor, ScalarTensor4,
-        ScalarTensorBase, ScalarTensorViewMut, Tensor, TensorView, TensorViewMut,
+        ArcTensor, ScalarArcTensor, ScalarArcTensorD, ScalarTensor, ScalarTensorBase,
+        ScalarTensorViewMut, Tensor, TensorView,
     },
 };
 use anyhow::{bail, Error, Result};
-use ndarray::{linalg::Dot, Axis, Dimension, IntoDimension, Ix1, Ix2, Ix4, IxDyn, ShapeError};
+use dry::macro_wrap;
+use half::{bf16, f16};
+use ndarray::{linalg::Dot, Array, Dimension, IntoDimension, Ix1, Ix2, Ix4, IxDyn, ShapeError};
 use parking_lot::{Mutex, RwLock};
+use paste::paste;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::{
     collections::VecDeque,
-    fmt::Debug,
+    fmt::{self, Debug},
     marker::PhantomData,
-    sync::{atomic::Ordering, Arc, Weak},
+    sync::{Arc, Weak},
 };
 
 pub mod builder {
-    use serde::de::VariantAccess;
-
     use super::*;
 
     pub struct VariableBuilder<D: Dimension> {
@@ -70,9 +69,9 @@ pub mod builder {
                         .into_dimensionality()
                         .unwrap();
                     let grad = (f)(grad)?;
-                    assert_eq!(grad.device(), device);
-                    assert_eq!(grad.shape(), dim.slice());
-                    assert_eq!(grad.scalar_type(), scalar_type);
+                    assert_eq!(grad.device(), device, "{name}");
+                    assert_eq!(grad.shape(), dim.slice(), "{name}");
+                    assert_eq!(grad.scalar_type(), scalar_type, "{name}");
                     let mut guard = input_grad_lock.write();
                     if let Some(input_grad) = guard.as_mut() {
                         input_grad.make_view_mut()?.add_assign(&grad)?;
@@ -111,6 +110,7 @@ struct EdgeInner {
 impl Debug for EdgeInner {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("EdgeInner")
+            .field("name", &self.name)
             .field("node", &self.node)
             .finish()
     }
@@ -172,19 +172,17 @@ impl<D: Dimension> Node<D> {
             dim,
             scalar_type,
             grad,
-            edges,
+            edges: _,
         } = self.inner.as_ref();
         {
             let mut guard = grad.write();
             if guard.is_some() {
                 return Ok(());
             }
-            let batch_size = dim.slice().first().copied().unwrap_or(1);
-            let scale = ScalarElem::F32(1f32 / batch_size as f32).scalar_cast(*scalar_type);
-            guard.replace(ScalarArcTensor::from_elem(
+            guard.replace(ScalarArcTensor::ones(
                 device.clone(),
                 dim.clone(),
-                scale,
+                *scalar_type,
             )?);
         }
         let mut queue = VecDeque::new();
@@ -314,20 +312,38 @@ impl<D: Dimension + 'static> Variable<D> {
     {
         let mut builder = Variable::builder();
         if let Some(node) = self.node() {
-            builder.edge(node, |output_grad| {
-                let input_grad = output_grad
-                    .cast_into_tensor::<f32>()?
-                    .into_array()?
-                    .into_dimensionality::<Ix2>()
-                    .unwrap()
-                    .sum_axis(Axis(0))
-                    .into_dimensionality()
-                    .unwrap();
-                Tensor::from(input_grad).into_scalar_tensor().into_shared()
+            let input_dim = self.raw_dim();
+            builder.edge(node, move |output_grad| {
+                macro_wrap!(paste! { match output_grad.scalar_type() {
+                    macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+                        ScalarType::[<$T:upper>] => Ok(broadcast_backward::<$T, E::Dim, D>(output_grad.view().try_into().unwrap(), input_dim)?.into_scalar_tensor().into()),
+                    })
+                    _ => bail!("Broadcast backward {:?} unimplemented!", output_grad.scalar_type()),
+                }})
             })
         }
         Some(builder.build(self.value.broadcast_shared(dim)?))
     }
+}
+
+fn broadcast_backward<T: Scalar, D1: Dimension, D2: Dimension>(
+    output_grad: TensorView<T, D1>,
+    input_dim: D2,
+) -> Result<Tensor<T, D2>> {
+    if let Some(output_grad) = output_grad.as_array() {
+        let mut output_grad_iter = output_grad.iter().copied();
+        let mut input_grad: Vec<T> = output_grad_iter.by_ref().take(input_dim.size()).collect();
+        let mut output_grad_iter = output_grad_iter.peekable();
+        while output_grad_iter.peek().is_some() {
+            for (dy, dx) in output_grad_iter.by_ref().zip(input_grad.iter_mut()) {
+                *dx += dy;
+            }
+        }
+        return Ok(Tensor::from(
+            Array::from(input_grad).into_shape(input_dim).unwrap(),
+        ));
+    }
+    todo!()
 }
 
 impl<T: Scalar, D: Dimension> From<Tensor<T, D>> for Variable<D> {
@@ -415,10 +431,17 @@ impl Dot<Self> for Variable2 {
     }
 }
 
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(bound(
+    serialize = "D: Serialize",
+    deserialize = "S: ScalarDataOwned, D: Deserialize<'de>"
+))]
 pub struct ParameterBase<S: ScalarData, D: Dimension> {
     value: ScalarTensorBase<S, D>,
+    #[serde(skip)]
     grad: Option<Arc<RwLock<Option<ScalarArcTensorD>>>>,
-    state: State,
+    #[serde(skip_serializing_if = "OptimState::is_none", default)]
+    optim_state: OptimState<'static>,
 }
 
 pub type Parameter<D> = ParameterBase<ScalarArcBufferRepr, D>;
@@ -450,6 +473,18 @@ impl<S: ScalarData, D: Dimension> ParameterBase<S, D> {
                 .unwrap(),
         )
     }
+    pub fn device(&self) -> Device {
+        self.value.device()
+    }
+    pub fn scalar_type(&self) -> ScalarType {
+        self.value.scalar_type()
+    }
+    pub fn shape(&self) -> &[usize] {
+        self.value.shape()
+    }
+    pub fn raw_dim(&self) -> D {
+        self.value.raw_dim()
+    }
     pub fn set_training(&mut self, training: bool) {
         if training && self.grad.is_none() {
             self.grad.replace(Arc::new(RwLock::default()));
@@ -457,8 +492,35 @@ impl<S: ScalarData, D: Dimension> ParameterBase<S, D> {
             self.grad = None;
         }
     }
-    pub fn state_mut(&mut self) -> StateMut {
-        todo!()
+    pub fn optimizer_state(&self) -> Option<&OptimizerState> {
+        self.optim_state.get()
+    }
+    pub fn optimzer_state_mut(&mut self) -> Option<&mut OptimizerState> {
+        self.optim_state.get_mut()
+    }
+    pub fn value_view_optimizer_state_mut(
+        &mut self,
+    ) -> (ScalarTensorViewMut<D>, Option<&mut OptimizerState>)
+    where
+        S: ScalarDataMut,
+    {
+        (self.value.view_mut(), self.optim_state.get_mut())
+    }
+    pub fn init_optimizer_state(
+        &mut self,
+        name: impl Into<String>,
+        id: OptimizerId,
+        key_values: impl IntoIterator<Item = (String, OptimizerValue)>,
+    ) -> Result<()> {
+        let state = OptimizerState::new(
+            self.device(),
+            self.scalar_type(),
+            name.into(),
+            id,
+            key_values.into_iter().collect(),
+        )?;
+        self.optim_state.make_mut()?.replace(Arc::new(state));
+        Ok(())
     }
     pub fn into_dimensionality<D2>(self) -> Result<ParameterBase<S, D2>, ShapeError>
     where
@@ -467,14 +529,14 @@ impl<S: ScalarData, D: Dimension> ParameterBase<S, D> {
         Ok(ParameterBase {
             value: self.value.into_dimensionality()?,
             grad: self.grad.clone(),
-            state: State::default(),
+            optim_state: self.optim_state,
         })
     }
     pub fn into_dyn(self) -> ParameterBase<S, IxDyn> {
         ParameterBase {
             value: self.value.into_dyn(),
             grad: self.grad.clone(),
-            state: State::default(),
+            optim_state: self.optim_state,
         }
     }
 }
@@ -494,10 +556,17 @@ impl<D: Dimension> Parameter<D> {
         Variable { value, node }
     }
     pub fn make_view_mut(&mut self) -> Result<ParameterViewMut<D>> {
+        let value = self.value.make_view_mut()?;
+        let grad = self.grad.clone();
+        let optim_state = self.optim_state.make_mut()?;
+        let optim_state = OptimState::StateMut(unsafe {
+            let optim_state_ptr = optim_state as *mut Option<Arc<OptimizerState>>;
+            &mut *optim_state_ptr as &mut Option<Arc<OptimizerState>>
+        });
         Ok(ParameterViewMut {
-            value: self.value.make_view_mut()?,
-            grad: self.grad.clone(),
-            state: State::default(),
+            value,
+            grad,
+            optim_state,
         })
     }
     pub fn to_device_mut(&mut self, device: Device) -> Result<()> {
@@ -532,7 +601,105 @@ impl<D: Dimension> From<ScalarArcTensor<D>> for Parameter<D> {
         Self {
             value: tensor,
             grad: None,
-            state: State::default(),
+            optim_state: OptimState::default(),
         }
+    }
+}
+
+impl<S: ScalarData, D: Dimension> Debug for ParameterBase<S, D> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("ParameterBase")
+            .field("value:", &self.value)
+            .field("grad", &self.grad)
+            .field("optim_state", &self.optim_state)
+            .finish()
+    }
+}
+
+#[derive(Debug)]
+enum OptimState<'a> {
+    State(Option<Arc<OptimizerState>>),
+    StateMut(&'a mut Option<Arc<OptimizerState>>),
+}
+
+impl OptimState<'_> {
+    fn is_none(&self) -> bool {
+        match self {
+            Self::State(x) => x.is_none(),
+            Self::StateMut(x) => x.is_none(),
+        }
+    }
+    fn as_ref(&self) -> &Option<Arc<OptimizerState>> {
+        match self {
+            Self::State(x) => x,
+            Self::StateMut(x) => &*x,
+        }
+    }
+    fn as_mut(&mut self) -> &mut Option<Arc<OptimizerState>> {
+        match self {
+            Self::State(x) => x,
+            Self::StateMut(x) => &mut *x,
+        }
+    }
+    fn get(&self) -> Option<&OptimizerState> {
+        self.as_ref().as_deref()
+    }
+    fn get_mut(&mut self) -> Option<&mut OptimizerState> {
+        if let Some(state) = self.as_mut() {
+            Arc::get_mut(state)
+        } else {
+            None
+        }
+    }
+    fn make_mut(&mut self) -> Result<&mut Option<Arc<OptimizerState>>> {
+        let inner = self.as_mut();
+        if let Some(state) = inner.as_mut() {
+            if Arc::get_mut(state).is_none() {
+                *state = Arc::new(state.as_ref().to_owned()?);
+            }
+        }
+        Ok(self.as_mut())
+    }
+    /*fn to_device_mut(&mut self, device: Device) -> Result<()> {
+        todo!()
+    }*/
+}
+
+impl Default for OptimState<'_> {
+    fn default() -> Self {
+        Self::State(None)
+    }
+}
+
+impl Clone for OptimState<'_> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::State(x) => Self::State(x.clone()),
+            Self::StateMut(_) => unreachable!(),
+        }
+    }
+}
+
+impl Serialize for OptimState<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        if let Some(state) = self.get() {
+            state.serialize(serializer)
+        } else {
+            serializer.serialize_none()
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for OptimState<'_> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Ok(Self::State(Some(Arc::new(OptimizerState::deserialize(
+            deserializer,
+        )?))))
     }
 }

@@ -2,18 +2,16 @@
 use crate::device::error::DeviceLost;
 use crate::{
     buffer::{
-        ArcBuffer, ArcBufferRepr, Buffer, BufferBase, BufferRepr, CowBuffer, CowBufferRepr, Data,
-        DataMut, DataOwned, ScalarArcBuffer, ScalarArcBufferRepr, ScalarBuffer, ScalarBufferBase,
-        ScalarBufferRepr, ScalarCowBuffer, ScalarCowBufferRepr, ScalarData, ScalarDataMut,
-        ScalarDataOwned, ScalarSlice, ScalarSliceMut, ScalarSliceMutRepr, ScalarSliceRepr, Slice,
-        SliceMut, SliceMutRepr, SliceRepr,
+        ArcBufferRepr, Buffer, BufferBase, BufferRepr, CowBuffer, CowBufferRepr, Data, DataMut,
+        DataOwned, ScalarArcBufferRepr, ScalarBuffer, ScalarBufferBase, ScalarBufferRepr,
+        ScalarCowBuffer, ScalarCowBufferRepr, ScalarData, ScalarDataMut, ScalarDataOwned,
+        ScalarSlice, ScalarSliceMut, ScalarSliceMutRepr, ScalarSliceRepr, Slice, SliceMut,
+        SliceMutRepr, SliceRepr,
     },
     device::Device,
     scalar::{Scalar, ScalarElem, ScalarType},
-    util::{elem_type_name, size_eq},
 };
 use anyhow::{anyhow, bail, Result};
-use bytemuck::Pod;
 use dry::macro_for;
 use krnl::krnl_core::half::{bf16, f16};
 use ndarray::{
@@ -22,16 +20,14 @@ use ndarray::{
 };
 use num_traits::{One, ToPrimitive};
 use paste::paste;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::{
     convert::{TryFrom, TryInto},
     fmt::{self, Debug},
-    mem::{size_of, transmute},
 };
 
 //mod accuracy;
 mod linalg;
-//mod ops;
 //mod reduce;
 mod ops;
 
@@ -97,7 +93,7 @@ fn is_contiguous<D: Dimension>(dim: &D, strides: &D) -> bool {
 
 fn is_standard_layout<D: Dimension>(dim: &D, strides: &D) -> bool {
     let zero_strides = strides.slice().iter().any(|s| *s == 0);
-    (zero_strides || strides == &dim.default_strides())
+    zero_strides || strides == &dim.default_strides()
 }
 
 // adapted from https://docs.rs/ndarray/0.15.3/ndarray/struct.ArrayBase.html#method.permuted_axes
@@ -529,7 +525,6 @@ impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
         S: ScalarDataOwned,
     {
         if self.offset == 0 && self.is_contiguous() {
-            let buffer = self.buffer.make_scalar_slice_mut()?;
             Ok(ScalarTensorViewMut {
                 dim: self.dim.clone(),
                 strides: self.strides.clone(),
@@ -1078,6 +1073,55 @@ impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
     }
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(bound(
+    serialize = "S: ScalarData, D: Dimension + Serialize",
+    deserialize = "S: ScalarDataOwned, D: Dimension + Deserialize<'de>"
+))]
+#[serde(rename = "Tensor")]
+struct ScalarTensorSerde<S: ScalarData, D: Dimension> {
+    dim: D,
+    buffer: ScalarBufferBase<S>,
+}
+
+impl<S1: ScalarData, D: Dimension + Serialize> Serialize for ScalarTensorBase<S1, D> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        use serde::ser::Error;
+        let buffer = if let Some(slice) = self.as_scalar_slice() {
+            ScalarCowBuffer::from(slice)
+        } else {
+            self.to_device(Device::host())
+                .map_err(S::Error::custom)?
+                .buffer
+                .into()
+        };
+        ScalarTensorSerde {
+            dim: self.dim.clone(),
+            buffer,
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de, S: ScalarDataOwned, D1: Dimension + Deserialize<'de>> Deserialize<'de>
+    for ScalarTensorBase<S, D1>
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        use serde::de::Error;
+        let ScalarTensorSerde { dim, buffer } =
+            ScalarTensorSerde::<ScalarBufferRepr, D1>::deserialize(deserializer)?;
+        ScalarTensorBase::from(buffer)
+            .into_shape(dim)
+            .map_err(D::Error::custom)
+    }
+}
+
 /// Multi-dimensional matrix.
 #[derive(Clone)]
 pub struct TensorBase<S: Data, D: Dimension> {
@@ -1515,10 +1559,10 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
             None
         }
     }
-    fn as_raw_slice_offset(&self) -> (Slice<T>, usize) {
+    pub fn as_raw_slice_offset(&self) -> (Slice<T>, usize) {
         (self.buffer.as_slice(), self.offset)
     }
-    fn as_raw_slice_offset_mut(&mut self) -> (SliceMut<T>, usize)
+    pub fn as_raw_slice_offset_mut(&mut self) -> (SliceMut<T>, usize)
     where
         S: DataMut,
     {
@@ -1854,6 +1898,99 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
             data: OwnedRepr(buffer),
         })*/
     }*/
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(bound(
+    serialize = "S: Data, D: Dimension + Serialize",
+    deserialize = "S: DataOwned, D: Dimension + Deserialize<'de>"
+))]
+#[serde(rename = "Tensor")]
+struct TensorSerde<S: Data, D: Dimension> {
+    dim: D,
+    buffer: BufferBase<S>,
+}
+
+impl<S1: Data, D: Dimension + Serialize> Serialize for TensorBase<S1, D> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        use serde::ser::Error;
+        let buffer = if let Some(slice) = self.as_slice() {
+            CowBuffer::from(slice)
+        } else {
+            self.to_device(Device::host())
+                .map_err(S::Error::custom)?
+                .buffer
+                .into()
+        };
+        TensorSerde {
+            dim: self.dim.clone(),
+            buffer,
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de, S: DataOwned, D1: Dimension + Deserialize<'de>> Deserialize<'de> for TensorBase<S, D1> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        use serde::de::Error;
+        let TensorSerde { dim, buffer } =
+            TensorSerde::<BufferRepr<S::Elem>, D1>::deserialize(deserializer)?;
+        TensorBase::from(buffer)
+            .into_shape(dim)
+            .map_err(D::Error::custom)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_test::{assert_tokens, Token};
+
+    #[test]
+    fn tensor_serde() {
+        static DATA: &[u32] = &[1u32, 2, 3, 4];
+        let bytes: &[u8] = bytemuck::cast_slice(&DATA);
+        let tensor = Tensor::from(Buffer::from_vec(DATA.to_vec()));
+        let tokens = [
+            Token::Struct {
+                name: "Tensor",
+                len: 2,
+            },
+            Token::Str("dim"),
+            Token::Tuple { len: 1 },
+            Token::U64(4),
+            Token::TupleEnd,
+            Token::Str("buffer"),
+            Token::TupleStruct {
+                name: "Buffer",
+                len: 2,
+            },
+            Token::Str("U32"),
+            Token::BorrowedBytes(bytes),
+            Token::TupleStructEnd,
+            Token::StructEnd,
+        ];
+
+        #[derive(Debug, Serialize, Deserialize)]
+        #[serde(transparent)]
+        struct TensorWrap(Tensor1<u32>);
+
+        impl PartialEq for TensorWrap {
+            fn eq(&self, other: &Self) -> bool {
+                self.0.as_array().unwrap() == other.0.as_array().unwrap()
+            }
+        }
+
+        impl Eq for TensorWrap {}
+
+        assert_tokens(&TensorWrap(tensor), &tokens);
+    }
 }
 
 /*

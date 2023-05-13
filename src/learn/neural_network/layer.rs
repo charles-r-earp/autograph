@@ -1,26 +1,23 @@
-use super::{
-    autograd::{
-        Parameter, Parameter1, Parameter2, ParameterViewMut1, ParameterViewMut2, ParameterViewMutD,
-        Variable, Variable2,
-    },
-    optimizer::Optimizer,
+use super::autograd::{
+    Parameter, Parameter1, Parameter2, ParameterViewMut1, ParameterViewMut2, ParameterViewMutD,
+    Variable2,
 };
 use crate::{
-    buffer::Data,
     buffer::{Buffer, ScalarBuffer},
     device::Device,
-    krnl::krnl_core::half::{bf16, f16},
+    krnl::krnl_core::half::bf16,
     ops::AddAssign,
     scalar::ScalarType,
-    tensor::{ArcTensor, ArcTensor2, ScalarTensor, Tensor, Tensor2, TensorBase},
+    tensor::ScalarTensor,
 };
 use anyhow::{bail, Result};
-use ndarray::{linalg::Dot, Array1, Array2, Dimension, Ix2};
+use ndarray::linalg::Dot;
 use rand::{
     distributions::{Distribution, Uniform},
     thread_rng,
 };
-use std::{any::Any, marker::PhantomData};
+use serde::{Deserialize, Serialize};
+use std::any::Any;
 
 pub mod builder {
     use super::*;
@@ -210,6 +207,7 @@ pub trait Forward<X> {
 ///    .build()?;
 /// # }
 ///```
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Dense<A = Identity> {
     weight: Parameter2,
     bias: Option<Parameter1>,
@@ -229,10 +227,10 @@ impl<A> Dense<A> {
     pub fn bias_view_mut(&mut self) -> Result<Option<ParameterViewMut1>> {
         todo!()
     }
-    pub fn into_device(self, device: Device) -> Result<Self> {
+    pub fn into_device(self, _device: Device) -> Result<Self> {
         todo!()
     }
-    pub fn to_device_mut(&mut self, device: Device) -> Result<()> {
+    pub fn to_device_mut(&mut self, _device: Device) -> Result<()> {
         todo!()
     }
 }
@@ -266,7 +264,7 @@ impl<A: Forward<Variable2, Output = Variable2> + Any> Forward<Variable2> for Den
     }
 }
 
-#[derive(Default, Clone, Copy, Debug)]
+#[derive(Default, Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct Identity;
 
 impl<X> Forward<X> for Identity {
@@ -276,5 +274,5 @@ impl<X> Forward<X> for Identity {
     }
 }
 
-#[derive(Default, Clone, Copy, Debug)]
+#[derive(Default, Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct Relu;

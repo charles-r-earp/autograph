@@ -13,3 +13,5 @@ rand = "0.8.5"
 rayon.workspace = true
 parking_lot.workspace = true
 crossbeam-channel.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true

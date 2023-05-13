@@ -1,17 +1,13 @@
 use crate::{
     buffer::{Data, ScalarData},
-    scalar::{Scalar, ScalarType},
-    tensor::{ScalarTensor, ScalarTensorBase, ScalarTensorView, Tensor, TensorBase, TensorView},
+    scalar::Scalar,
+    tensor::{ScalarTensor, ScalarTensorBase, Tensor, TensorBase, TensorView},
 };
 use anyhow::{bail, Error, Result};
 use dry::macro_for;
-use half::{bf16, f16};
-use ndarray::{
-    Array, Array2, ArrayBase, ArrayView1, ArrayView2, Data as ArrayData, Dimension, Ix1, Ix2,
-    RemoveAxis,
-};
+use half::bf16;
+use ndarray::{Array2, ArrayBase, ArrayView1, ArrayView2, Data as ArrayData, Dimension, Ix1, Ix2};
 use num_traits::{Float, Unsigned};
-use paste::paste;
 
 pub trait Criterion<X, T> {
     type Output;

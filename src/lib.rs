@@ -1,5 +1,3 @@
-#![warn(missing_docs, unsafe_op_in_unsafe_fn)]
-
 /*!
 # **autograph**
 A machine learning library for Rust.
@@ -320,7 +318,6 @@ Will create a file "autograph_profile_summary.txt" like this:
 Specify the profile feature for autograph if it is a dependency as `autograph/profile`.
 */
 #![forbid(unsafe_op_in_unsafe_fn)]
-#![allow(warnings)]
 
 #[cfg(feature = "derive")]
 #[allow(unused_imports)]
@@ -330,9 +327,9 @@ extern crate autograph_derive;
 pub extern crate krnl;
 pub use krnl::{buffer, device, scalar};
 pub extern crate anyhow;
+pub extern crate half;
 pub extern crate ndarray;
-
-mod util;
+pub extern crate num_traits;
 
 /// Ops
 pub mod ops;

@@ -1,15 +1,12 @@
 use super::*;
 use crate::ops::AddAssign;
+#[cfg(feature = "device")]
 use anyhow::format_err;
-use dry::{macro_for, macro_wrap};
+use dry::macro_for;
 use half::{bf16, f16};
-use krnl::{
-    buffer::{ScalarSlice, ScalarSliceMut},
-    krnl_core::num_traits::ToPrimitive,
-    macros::module,
-};
-use paste::paste;
-use std::iter::repeat;
+use krnl::krnl_core::num_traits::ToPrimitive;
+#[cfg(feature = "device")]
+use krnl::macros::module;
 
 impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
     /*
@@ -237,8 +234,7 @@ fn scalar_assign(
     if let BinaryOp::Identity = op {
         if x.device() != y.device() {
             if let Some((x, mut y)) = x.as_scalar_slice().zip(y.as_scalar_slice_mut()) {
-                y.copy_from_scalar_slice(&x);
-                return Ok(());
+                return y.copy_from_scalar_slice(&x);
             } else {
                 todo!()
             }
@@ -343,6 +339,7 @@ fn scalar_assign(
     }
 }
 
+#[allow(unused_imports)]
 #[cfg_attr(feature = "device", module)]
 mod kernels {
     use dry::macro_for;

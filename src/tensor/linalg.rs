@@ -1,14 +1,9 @@
 use super::*;
-use dry::{macro_for, macro_wrap};
+use dry::macro_wrap;
 use half::{bf16, f16};
-use krnl::macros::module;
 #[cfg(feature = "device")]
-use krnl::{
-    buffer::{ScalarSlice, ScalarSliceMut},
-    krnl_core::num_traits::ToPrimitive,
-    scalar::ScalarElem,
-};
-use ndarray::{linalg::Dot, Axis};
+use krnl::{macros::module, scalar::ScalarElem};
+use ndarray::linalg::Dot;
 use paste::paste;
 
 /*
@@ -39,6 +34,7 @@ fn bias_impl<T: Scalar>(bias: &TensorView1<T>, c: &mut TensorViewMut2<T>) -> Res
 */
 
 #[cfg(feature = "device")]
+#[allow(unused_imports, unused_variables)]
 #[module]
 mod kernels {
     #[cfg(target_arch = "spirv")]
@@ -419,8 +415,50 @@ impl<T: Scalar, S1: Data<Elem = T>, S2: Data<Elem = T>> Dot<TensorBase<S2, Ix2>>
 {
     type Output = Result<Tensor2<T>>;
     fn dot(&self, rhs: &TensorBase<S2, Ix2>) -> Self::Output {
-        if let Some((lhs, rhs)) = self.as_array().zip(rhs.as_array()) {
-            return Ok(lhs.dot(&rhs).into());
+        if let Some((lhs_array, rhs_array)) = self.as_array().zip(rhs.as_array()) {
+            // TODO: bf16 is very slow because it falls back to naive alg, min is handle more shapes here
+            if matches!(T::scalar_type(), ScalarType::BF16)
+                && lhs_array.is_standard_layout()
+                && rhs_array.is_standard_layout()
+            {
+                use half::{slice::HalfFloatSliceExt, vec::HalfFloatVecExt};
+                let lhs_vec = if let Some(slice) = self.as_slice_memory_order() {
+                    let slice = slice.as_host_slice().unwrap();
+                    let slice: &[bf16] = bytemuck::cast_slice(slice);
+                    slice.to_f32_vec()
+                } else {
+                    todo!()
+                };
+                let lhs = Tensor {
+                    dim: self.dim.clone(),
+                    strides: self.strides.clone(),
+                    buffer: Buffer::from(lhs_vec),
+                    offset: 0,
+                };
+                let rhs_vec = if let Some(slice) = rhs.as_slice_memory_order() {
+                    let slice = slice.as_host_slice().unwrap();
+                    let slice: &[bf16] = bytemuck::cast_slice(slice);
+                    slice.to_f32_vec()
+                } else {
+                    todo!()
+                };
+                let rhs = Tensor {
+                    dim: rhs.dim.clone(),
+                    strides: rhs.strides.clone(),
+                    buffer: Buffer::from(rhs_vec),
+                    offset: 0,
+                };
+                let output = lhs.as_array().unwrap().dot(&rhs.as_array().unwrap());
+                let output_vec = Vec::<bf16>::from_f32_slice(output.as_slice().unwrap());
+                return Ok(Tensor::from(
+                    Array::from(output_vec)
+                        .into_shape(output.raw_dim())
+                        .unwrap(),
+                )
+                .cast_into()
+                .unwrap());
+            }
+            return Ok(lhs_array.dot(&rhs_array).into());
         }
         #[cfg(not(feature = "device"))]
         {
@@ -458,10 +496,8 @@ impl<S1: ScalarData, S2: ScalarData> Dot<ScalarTensorBase<S2, Ix2>> for ScalarTe
                 macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
                     ScalarType::[<$T:upper>] => {
                         let lhs = TensorView2::<$T>::try_from(self.view()).unwrap();
-                        let lhs = lhs.as_array().unwrap();
                         let rhs = TensorView2::<$T>::try_from(rhs.view()).unwrap();
-                        let rhs = rhs.as_array().unwrap();
-                        return Ok(Tensor::from(lhs.dot(&rhs)).into());
+                        return lhs.dot(&rhs).map(Into::into);
                     }
                 })
                 _ => bail!("Dot unimplemented for {scalar_type:?}!"),

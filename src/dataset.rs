@@ -1,3 +1,4 @@
+/*
 use crate::{
     buffer::Data,
     device::Device,
@@ -19,7 +20,7 @@ use std::{
     iter::Peekable,
     marker::PhantomData,
     ops::{Range, RangeBounds},
-};
+};*/
 
 /// The Iris dataset.
 #[cfg(feature = "iris")]
@@ -29,6 +30,7 @@ pub mod iris;
 #[cfg(feature = "mnist")]
 pub mod mnist;
 
+/*
 pub trait Dataset {
     type Item;
     fn sample_count(&self) -> usize;
@@ -108,7 +110,7 @@ pub struct Slice<A> {
 }
 
 impl<A: Dataset + Clone> Slice<A> {
-    fn from_split_at(dataset: A, index: usize) -> (Self, Self) {
+    fn from_split_at(_dataset: A, _index: usize) -> (Self, Self) {
         todo!()
     }
 }
@@ -411,3 +413,4 @@ fn batches2() {
     }
     todo!()
 }
+*/

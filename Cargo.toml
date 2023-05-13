@@ -19,6 +19,9 @@ clap = "4.2.5"
 rayon = "1.7.0"
 crossbeam-channel = "0.5.8"
 parking_lot = "0.12.1"
+serde = { version = "1.0.126" }
+serde_json = "1.0.96"
+ndarray = { version = "0.15.6", default-features = false }
 
 [package]
 name = "autograph"
@@ -42,9 +45,9 @@ autobenches = false
 krnl = { git = "https://github.com/charles-r-earp/krnl", default-features = false }
 #krnl = { path = "../krnl", default-features = false }
 anyhow = "1.0.37"
-ndarray = { version = "0.15.6", default-features = false, features = ["serde", "rayon"] }
+ndarray = { workspace = true, features = ["serde", "rayon"] }
 rand = { version = "0.8.4", optional = true }
-serde = { version = "1.0.126", features = ["derive", "rc"] }
+serde = { workspace = true, features = ["derive", "rc"] }
 derive_more = { version = "0.99.11", optional = true }
 thiserror = "1.0.23"
 approx = "0.5.0"
@@ -69,8 +72,8 @@ num-traits = "0.2.15"
 
 [dev-dependencies]
 approx = "0.4.0"
-
-ndarray = { version = "0.15.3", features = ["approx"] }
+serde_test = "1.0.160"
+ndarray = { workspace = true, features = ["approx"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 libtest-mimic = "0.6.0"
@@ -93,6 +96,3 @@ static_assertions = {}
 name = "integration_tests"
 path = "tests/integration_tests.rs"
 harness = false
-
-[profile.release]
-codegen-units = 1
