@@ -1,5 +1,5 @@
 [workspace]
-members = ["examples/neural-network-mnist"]
+members = ["examples/neural-network-mnist", "benches/*"]
 
 [workspace.package]
 version = "0.2.0-alpha"
@@ -14,7 +14,8 @@ license = "MIT OR Apache-2.0"
 publish = false
 
 [workspace.dependencies]
-autograph = { path = "." }
+autograph = { path = ".", default-features = false }
+anyhow = "1.0.37"
 clap = "4.2.5"
 rayon = "1.7.0"
 crossbeam-channel = "0.5.8"
@@ -43,8 +44,7 @@ autobenches = false
 
 [dependencies]
 krnl = { git = "https://github.com/charles-r-earp/krnl", default-features = false }
-#krnl = { path = "../krnl", default-features = false }
-anyhow = "1.0.37"
+anyhow.workspace = true
 ndarray = { workspace = true, features = ["serde", "rayon"] }
 rand = { version = "0.8.4", optional = true }
 serde = { workspace = true, features = ["derive", "rc"] }

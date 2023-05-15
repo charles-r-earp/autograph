@@ -207,6 +207,7 @@ fn main() -> Result<()> {
     };
     let checkpoint_path = Checkpoint::path_for(&options, scalar_type);
     let checkpoint = if options.checkpoint {
+        println!("checkpoint will be saved to: {checkpoint_path:?}");
         Checkpoint::load(&checkpoint_path)?
     } else {
         None
@@ -217,7 +218,9 @@ fn main() -> Result<()> {
         dataset: _,
         mut model,
         mut optimizer,
-    } = if let Some(checkpoint) = checkpoint {
+    } = if let Some(mut checkpoint) = checkpoint {
+        println!("loaded {checkpoint:#?}");
+        checkpoint.epoch += 1;
         checkpoint
     } else {
         let model = Model::new(options.model, scalar_type)?;
@@ -228,6 +231,8 @@ fn main() -> Result<()> {
             }
             builder.build()
         };
+        println!("model: {model:#?}");
+        println!("optimizer: {optimizer:#?}");
         Checkpoint {
             epoch: 1,
             time: Duration::default(),
