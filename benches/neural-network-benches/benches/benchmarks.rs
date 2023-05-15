@@ -66,12 +66,12 @@ pub fn criterion_benchmark(c: &mut Criterion) {
     {
         use tch::{kind::Kind, Device};
 
-        for device in [Device::Cuda(tch_device_index)] {
-            dbg!(tch::Cuda::device_count());
-            if device.is_cuda() && !tch::utils::has_cuda() {
-                continue;
-            }
+        let mut devices = vec![Device::Cpu];
+        if tch::utils::has_cuda() {
+            devices.push(Device::Cuda(tch_device_index));
+        }
 
+        for device in [Device::Cpu, Device::Cuda(tch_device_index)] {
             let device_name = if device.is_cuda() { "device" } else { "host" };
 
             c.bench_function(&format!("tch_linear_classifier_infer_{device_name}"), |b| {

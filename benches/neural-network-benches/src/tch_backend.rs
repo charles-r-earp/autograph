@@ -17,7 +17,6 @@ pub struct LinearClassifier {
 
 impl LinearClassifier {
     pub fn new(device: Device, kind: Kind, inputs: usize, outputs: usize) -> Result<Self> {
-        dbg!("new");
         let mut var_store = VarStore::new(device);
         let linear = tch::nn::linear(
             var_store.root(),
@@ -40,7 +39,6 @@ impl LinearClassifier {
         })
     }
     pub fn with_sgd(self, momentum: bool) -> Result<Self> {
-        dbg!("with_sgd");
         let momentum = if momentum { 0.01 } else { 0.0 };
         let learning_rate = 0.01;
         let optimizer = Sgd {
@@ -54,7 +52,6 @@ impl LinearClassifier {
         })
     }
     pub fn infer(&self, batch_size: usize) -> Result<()> {
-        dbg!("infer");
         let x = Tensor::zeros(
             [batch_size as i64, self.inputs as i64],
             (self.kind, self.device),
@@ -63,7 +60,6 @@ impl LinearClassifier {
         Ok(())
     }
     pub fn train(&mut self, batch_size: usize) -> Result<()> {
-        dbg!("train");
         let x = Tensor::zeros(
             [batch_size as i64, self.inputs as i64],
             (self.kind, self.device),
