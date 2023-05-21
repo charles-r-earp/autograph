@@ -2,10 +2,15 @@ use super::autograd::ParameterViewMutD;
 use crate::{
     device::Device,
     scalar::{Scalar, ScalarElem, ScalarType},
-    tensor::{ScalarTensor, ScalarTensorD, ScalarTensorViewMutD, TensorViewD, TensorViewMutD},
+    tensor::{
+        ScalarTensor, ScalarTensorD, ScalarTensorView, ScalarTensorViewMut, ScalarTensorViewMutD,
+        TensorViewD, TensorViewMutD,
+    },
 };
 use anyhow::{bail, Result};
 use half::bf16;
+#[cfg(feature = "device")]
+use krnl::macros::module;
 use ndarray::Zip;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -252,14 +257,8 @@ impl Optimizer for SGD {
                 let (_, velocity) = state.iter_mut().next().unwrap();
                 let velocity = velocity.unwrap_tensor();
                 match scalar_type {
-                    ScalarType::BF16 => update_with_momentum::<bf16>(
-                        value.try_into().unwrap(),
-                        learning_rate,
-                        grad.try_into().unwrap(),
-                        momentum,
-                        velocity.try_into().unwrap(),
-                    )?,
-                    ScalarType::F32 => update_with_momentum::<f32>(
+                    ScalarType::BF16 => todo!(),
+                    ScalarType::F32 => sgd_update_with_momentum::<f32>(
                         value.try_into().unwrap(),
                         learning_rate,
                         grad.try_into().unwrap(),
@@ -279,7 +278,7 @@ impl Optimizer for SGD {
     }
 }
 
-fn update_with_momentum<T: Scalar>(
+fn sgd_update_with_momentum<T: Scalar>(
     mut value: TensorViewMutD<T>,
     learning_rate: f32,
     grad: TensorViewD<T>,
@@ -298,12 +297,72 @@ fn update_with_momentum<T: Scalar>(
                 let mut value_f32 = value.cast::<f32>();
                 let grad_f32 = grad.cast::<f32>();
                 let mut velocity_f32 = velocity.cast::<f32>();
-                velocity_f32 = momentum * velocity_f32 + grad_f32;
-                value_f32 -= learning_rate * velocity_f32;
+                kernels::sgd_update_with_momentum(
+                    &mut value_f32,
+                    grad_f32,
+                    learning_rate,
+                    momentum,
+                    &mut velocity_f32,
+                );
                 *velocity = velocity_f32.cast();
                 *value = value_f32.cast();
             });
         return Ok(());
     }
-    todo!()
+    #[cfg(not(feature = "device"))]
+    {
+        unreachable!()
+    }
+    #[cfg(feature = "device")]
+    {
+        let mut value = ScalarTensorViewMut::from(value)
+            .try_into_tensor_view_mut::<f32>()
+            .unwrap();
+        let grad = ScalarTensorView::from(grad)
+            .try_into_tensor_view::<f32>()
+            .unwrap();
+        let mut velocity = ScalarTensorViewMut::from(velocity)
+            .try_into_tensor_view_mut::<f32>()
+            .unwrap();
+        kernels::sgd_update_with_momentum_f32::builder()?
+            .build(value.device())?
+            .dispatch(
+                value.as_slice_mut().unwrap(),
+                grad.as_slice().unwrap(),
+                learning_rate,
+                momentum,
+                velocity.as_slice_mut().unwrap(),
+            )?;
+        Ok(())
+    }
+}
+
+#[cfg_attr(feature = "device", module)]
+mod kernels {
+    #[cfg(all(feature = "device", not(target_arch = "spirv")))]
+    use krnl::krnl_core;
+    #[cfg(any(feature = "device", target_arch = "spirv"))]
+    use krnl_core::macros::kernel;
+
+    pub fn sgd_update_with_momentum(w: &mut f32, dw: f32, lr: f32, m: f32, v: &mut f32) {
+        *v = m * *v + dw;
+        *w -= lr * *v;
+    }
+
+    #[cfg(any(feature = "device", target_arch = "spirv"))]
+    pub mod device {
+        use super::*;
+        #[kernel(threads(256))]
+        pub fn sgd_update_with_momentum_f32(
+            #[item] w: &mut f32,
+            #[item] dw: f32,
+            lr: f32,
+            m: f32,
+            #[item] v: &mut f32,
+        ) {
+            sgd_update_with_momentum(w, dw, lr, m, v);
+        }
+    }
+    #[cfg(any(feature = "device", target_arch = "spirv"))]
+    pub use device::*;
 }

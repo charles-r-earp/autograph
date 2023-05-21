@@ -5,7 +5,7 @@ use autograph::{
         criterion::{Criterion, CrossEntropyLoss},
         neural_network::{
             layer::{Dense, Forward, Layer},
-            optimizer::{self, Optimizer, SGD},
+            optimizer::{Optimizer, SGD},
         },
     },
     scalar::ScalarType,
@@ -16,7 +16,6 @@ pub struct LinearClassifier {
     device: Device,
     scalar_type: ScalarType,
     inputs: usize,
-    outputs: usize,
     dense: Dense,
     optimizer: Option<SGD>,
 }
@@ -39,7 +38,6 @@ impl LinearClassifier {
             device,
             scalar_type,
             inputs,
-            outputs,
             dense,
             optimizer: None,
         })
@@ -61,7 +59,14 @@ impl LinearClassifier {
             [batch_size, self.inputs],
             self.scalar_type,
         )?;
-        let _ = self.dense.forward(x.into())?;
+        let _ = self
+            .dense
+            .forward(x.into())?
+            .into_value()
+            .try_into_arc_tensor::<f32>()
+            .unwrap()
+            .into_array()?
+            .into_raw_vec();
         Ok(())
     }
     pub fn train(&mut self, batch_size: usize) -> Result<()> {
@@ -71,11 +76,7 @@ impl LinearClassifier {
             [batch_size, self.inputs],
             self.scalar_type,
         )?;
-        let t = ScalarArcTensor::zeros(
-            self.device.clone(),
-            [batch_size, self.outputs],
-            self.scalar_type,
-        )?;
+        let t = ScalarArcTensor::zeros(self.device.clone(), batch_size, ScalarType::U8)?;
         let y = self.dense.forward(x.into())?;
         let loss = CrossEntropyLoss::default().eval(y, t)?;
         loss.backward()?;

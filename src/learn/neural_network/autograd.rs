@@ -9,13 +9,18 @@ use crate::{
     scalar::{Scalar, ScalarType},
     tensor::{
         ArcTensor, ScalarArcTensor, ScalarArcTensorD, ScalarTensor, ScalarTensorBase,
-        ScalarTensorViewMut, Tensor, TensorView,
+        ScalarTensorView, ScalarTensorViewMut, Tensor, TensorView,
     },
 };
 use anyhow::{bail, Error, Result};
 use dry::macro_wrap;
 use half::{bf16, f16};
-use ndarray::{linalg::Dot, Array, Dimension, IntoDimension, Ix1, Ix2, Ix4, IxDyn, ShapeError};
+#[cfg(feature = "device")]
+use krnl::macros::module;
+use ndarray::{
+    linalg::Dot, Array, Dimension, IntoDimension, Ix0, Ix1, Ix2, Ix4, IxDyn, ShapeError,
+};
+use num_traits::ToPrimitive;
 use parking_lot::{Mutex, RwLock};
 use paste::paste;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -218,6 +223,7 @@ pub struct Variable<D: Dimension> {
     node: Option<Node<D>>,
 }
 
+pub type Variable0 = Variable<Ix0>;
 pub type Variable2 = Variable<Ix2>;
 pub type Variable4 = Variable<Ix4>;
 pub type VariableD = Variable<IxDyn>;
@@ -237,12 +243,6 @@ impl<D: Dimension> Variable<D> {
     }
     pub fn forward<F: Forward<Self>>(self, f: &F) -> Result<F::Output> {
         f.forward(self)
-    }
-    pub fn backward(&self) -> Result<()> {
-        if let Some(node) = self.node.as_ref() {
-            node.backward()?;
-        }
-        Ok(())
     }
     pub fn device(&self) -> Device {
         self.value.device()
@@ -271,6 +271,15 @@ impl<D: Dimension> Variable<D> {
             value: self.value.into_dyn(),
             node: self.node.map(Node::into_dyn),
         }
+    }
+}
+
+impl Variable0 {
+    pub fn backward(&self) -> Result<()> {
+        if let Some(node) = self.node.as_ref() {
+            node.backward()?;
+        }
+        Ok(())
     }
 }
 
@@ -343,7 +352,25 @@ fn broadcast_backward<T: Scalar, D1: Dimension, D2: Dimension>(
             Array::from(input_grad).into_shape(input_dim).unwrap(),
         ));
     }
-    todo!()
+    #[cfg(not(feature = "device"))]
+    {
+        unreachable!()
+    }
+    #[cfg(feature = "device")]
+    {
+        let dy = ScalarTensorView::from(output_grad)
+            .try_into_tensor_view::<f32>()
+            .unwrap();
+        let n = dy.len().to_u32().unwrap();
+        assert!(n != 0);
+        let batch_size = input_dim.size().to_u32().unwrap() / n;
+        let mut dx = unsafe { Tensor::uninit(dy.device(), input_dim)? };
+        kernels::broadcast_backward_f32::builder()?
+            .build(dx.device())?
+            .with_global_threads(batch_size)
+            .dispatch(n, dy.as_slice().unwrap(), dx.as_slice_mut().unwrap())?;
+        Ok(dx.cast_into().unwrap())
+    }
 }
 
 impl<T: Scalar, D: Dimension> From<Tensor<T, D>> for Variable<D> {
@@ -423,7 +450,16 @@ impl Dot<Self> for Variable2 {
         if let Some(node) = rhs.node() {
             let lhs = lhs.value().clone();
             builder.edge(node, move |output_grad| {
-                lhs.t().dot(&output_grad).map(Into::into)
+                /*let output_grad_array =
+                    output_grad.view().cast_into_tensor::<f32>()?.into_array()?;
+                dbg!(output_grad_array);
+                let lhs_array = lhs.view().cast_into_tensor::<f32>()?.into_array()?;
+                dbg!(lhs_array);*/
+                let input_grad = lhs.t().dot(&output_grad)?;
+                /*let input_grad_array = input_grad.view().cast_into_tensor::<f32>()?.into_array()?;
+                dbg!(input_grad_array);
+                todo!();*/
+                Ok(input_grad.into())
             });
         }
         let value = lhs.value().dot(rhs.value())?.into();
@@ -701,5 +737,22 @@ impl<'de> Deserialize<'de> for OptimState<'_> {
         Ok(Self::State(Some(Arc::new(OptimizerState::deserialize(
             deserializer,
         )?))))
+    }
+}
+
+#[cfg(feature = "device")]
+#[module]
+pub mod kernels {
+    #[cfg(not(target_arch = "spirv"))]
+    use krnl::krnl_core;
+    use krnl_core::macros::kernel;
+
+    #[kernel(threads(256))]
+    pub fn broadcast_backward_f32(n: u32, #[global] dy: Slice<f32>, #[item] dx: &mut f32) {
+        let idx = kernel.item_id();
+        *dx = 0f32;
+        for i in 0..n {
+            *dx += dy[(idx * n + i) as usize];
+        }
     }
 }

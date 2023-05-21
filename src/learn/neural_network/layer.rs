@@ -114,7 +114,7 @@ pub mod builder {
             let weight = weight.into_device(device.clone())?;
             let weight = Parameter::from(
                 ScalarTensor::from(weight)
-                    .into_shape([outputs, inputs])
+                    .into_shape([inputs, outputs])
                     .unwrap(),
             );
             let bias = if bias {
@@ -256,7 +256,7 @@ impl Layer for Dense {
 impl<A: Forward<Variable2, Output = Variable2> + Any> Forward<Variable2> for Dense<A> {
     type Output = Variable2;
     fn forward(&self, input: Variable2) -> Result<Self::Output> {
-        let mut output = input.dot(&self.weight.to_variable().t())?;
+        let mut output = input.dot(&self.weight.to_variable())?;
         if let Some(bias) = self.bias.as_ref() {
             output.add_assign(&bias.to_variable())?;
         }

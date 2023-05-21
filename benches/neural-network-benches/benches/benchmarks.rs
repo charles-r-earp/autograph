@@ -7,16 +7,16 @@ use std::str::FromStr;
 
 pub fn criterion_benchmark(c: &mut Criterion) {
     #[cfg_attr(not(feature = "cuda"), allow(unused))]
-    let krnl_device = if cfg!(feature = "device") {
+    let device_index = if cfg!(feature = "device") {
         let krnl_device = std::env::var("KRNL_DEVICE");
         println!("KRNL_DEVICE = {krnl_device:?}");
-        let krnl_device_index = if let Ok(krnl_device) = krnl_device.as_ref() {
+        let device_index = if let Ok(krnl_device) = krnl_device.as_ref() {
             usize::from_str(krnl_device).unwrap()
         } else {
             0
         };
-        println!("testing device {krnl_device_index}");
-        krnl_device_index
+        println!("testing device {device_index}");
+        device_index
     } else {
         0
     };
@@ -42,33 +42,51 @@ pub fn criterion_benchmark(c: &mut Criterion) {
     let train_batch_size = 100;
     let infer_batch_size = 1000;
 
-    c.bench_function("autograph_linear_classifier_infer_host", |b| {
-        use autograph_backend::LinearClassifier;
+    let mut devices = vec![Device::host()];
 
-        let model = LinearClassifier::new(Device::host(), ScalarType::F32, 28 * 28, 10).unwrap();
-        b.iter(|| {
-            model.infer(infer_batch_size).unwrap();
-        });
-    });
+    if cfg!(feature = "device") {
+        devices.push(Device::builder().index(device_index).build().unwrap());
+    }
 
-    c.bench_function("autograph_linear_classifier_train_host", |b| {
-        use autograph_backend::LinearClassifier;
+    for device in devices {
+        let device_name = if device.is_device() { "device" } else { "host" };
 
-        let mut model = LinearClassifier::new(Device::host(), ScalarType::F32, 28 * 28, 10)
-            .unwrap()
-            .with_sgd(true);
-        b.iter(|| {
-            model.train(train_batch_size).unwrap();
-        });
-    });
+        c.bench_function(
+            &format!("autograph_linear_classifier_infer_{device_name}"),
+            |b| {
+                use autograph_backend::LinearClassifier;
+
+                let model =
+                    LinearClassifier::new(device.clone(), ScalarType::F32, 28 * 28, 10).unwrap();
+                b.iter(|| {
+                    model.infer(infer_batch_size).unwrap();
+                });
+            },
+        );
+
+        c.bench_function(
+            &format!("autograph_linear_classifier_train_{device_name}"),
+            |b| {
+                use autograph_backend::LinearClassifier;
+
+                let mut model = LinearClassifier::new(device.clone(), ScalarType::F32, 28 * 28, 10)
+                    .unwrap()
+                    .with_sgd(true);
+                b.iter(|| {
+                    model.train(train_batch_size).unwrap();
+                });
+            },
+        );
+    }
 
     #[cfg(feature = "tch")]
     {
-        use tch::{kind::Kind, Device};
+        use tch::{kind::Kind, Device, Tensor};
 
         let mut devices = vec![Device::Cpu];
         if tch::utils::has_cuda() {
-            devices.push(Device::Cuda(tch_device_index));
+            let device = Device::Cuda(tch_device_index);
+            devices.push(device);
         }
 
         for device in [Device::Cpu, Device::Cuda(tch_device_index)] {

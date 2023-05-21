@@ -9,7 +9,6 @@ use krnl::krnl_core::num_traits::ToPrimitive;
 use krnl::macros::module;
 
 impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
-    /*
     /// Converts to standard layout.
     ///
     /// If in standard layout, borrows the tensor. Otherwise, copies into a new standard layout tensor.
@@ -54,7 +53,7 @@ impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
         } else {
             self.as_standard_layout()?.into_shared()
         }
-    }*/
+    }
     pub fn scaled_add<S2, D2>(
         &mut self,
         alpha: ScalarElem,
@@ -231,13 +230,9 @@ fn scalar_assign(
     x: ScalarTensorViewD,
     mut y: ScalarTensorViewMutD,
 ) -> Result<()> {
-    if let BinaryOp::Identity = op {
-        if x.device() != y.device() {
-            if let Some((x, mut y)) = x.as_scalar_slice().zip(y.as_scalar_slice_mut()) {
-                return y.copy_from_scalar_slice(&x);
-            } else {
-                todo!()
-            }
+    if op.is_identity() && x.scalar_type() == y.scalar_type() {
+        if let Some((x, mut y)) = x.as_scalar_slice().zip(y.as_scalar_slice_mut()) {
+            return y.copy_from_scalar_slice(&x);
         }
     }
     if alpha.scalar_type() != y.scalar_type() {
@@ -276,6 +271,28 @@ fn scalar_assign(
     }
     #[cfg(feature = "device")]
     {
+        if let Some((x, mut y)) = x.as_scalar_slice().zip(y.as_scalar_slice_mut()) {
+            macro_for!($X in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+                if let Ok(x) = Slice::<$X>::try_from(x.clone()) {
+                    macro_for!($Y in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+                        if let Ok(y) = SliceMut::<$Y>::try_from(y.as_scalar_slice_mut()) {
+                            let builder = paste! {
+                                kernels::[<assign_ $X _ $Y>]::builder()?
+                            };
+                            builder
+                            .specialize(op.as_u32())?
+                            .build(device)?
+                            .dispatch(
+                                alpha.cast(),
+                                x,
+                                y,
+                            )?;
+                            return Ok(());
+                        }
+                    });
+                }
+            });
+        }
         let ndim = y.ndim();
         if ndim <= 2 {
             let (rows, cols) = match y.shape() {
@@ -339,7 +356,6 @@ fn scalar_assign(
     }
 }
 
-#[allow(unused_imports)]
 #[cfg_attr(feature = "device", module)]
 mod kernels {
     use dry::macro_for;
@@ -347,13 +363,16 @@ mod kernels {
     use krnl::krnl_core;
     use krnl_core::macros::kernel;
     #[cfg(target_arch = "spirv")]
+    #[allow(unused_imports)]
     use krnl_core::{buffer::UnsafeIndex, glam::Vec2Swizzles};
+    #[allow(unused_imports)]
     use krnl_core::{
         half::{bf16, f16},
         scalar::Scalar,
     };
     use paste::paste;
 
+    #[cfg_attr(not(target_arch = "spirv"), derive(derive_more::IsVariant))]
     #[repr(u32)]
     pub enum BinaryOp {
         Identity = 1,
@@ -402,6 +421,25 @@ mod kernels {
     macro_for!($X in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
         macro_for!($Y in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
             paste! {
+                #[kernel(threads(256))]
+                pub fn [<assign_ $X _ $Y>]<const OP: u32>(
+                    alpha: $Y,
+                    #[item]
+                    x: $X,
+                    #[item]
+                    y: &mut $Y,
+                ) {
+                    let op = BinaryOp::try_from(OP).ok().unwrap();
+                    *y = op.eval(alpha * x.cast::<$Y>(), *y);
+                }
+            }
+        });
+    });
+
+    #[cfg(any(target_arch = "spirv", feature = "device"))]
+    macro_for!($X in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+        macro_for!($Y in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+            paste! {
                 #[kernel(threads(16, 16))]
                 pub fn [<assign2_ $X _ $Y>]<const OP: u32>(
                     rows: u32,
@@ -430,88 +468,6 @@ mod kernels {
                 }
             }
         });
-    });
+    }); 
 }
 use kernels::BinaryOp;
-
-#[cfg(all(test, feature = "device_tests"))]
-mod tests {
-    use super::*;
-
-    async fn into_standard_layout<T: Scalar, E: IntoDimension>(shape: E, axes: E) -> Result<()> {
-        let shape = shape.into_dimension();
-        let x_vec = (0..shape.size())
-            .into_iter()
-            .map(|x| T::from_usize(x).unwrap())
-            .collect();
-        let x_array = Array::from_shape_vec(shape, x_vec)?;
-        let axes = E::Dim::from_dimension(&axes.into_dimension()).unwrap();
-        let y_array = x_array
-            .view()
-            .permuted_axes(axes.clone())
-            .as_standard_layout()
-            .to_owned();
-        let device = Device::new()?;
-        let x = Tensor::from(x_array).into_device(device).await?;
-        let y = x.permuted_axes(axes).into_standard_layout()?.read().await?;
-        assert_eq!(y_array.view(), y.as_array());
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn into_standard_layout_4d_u32() -> Result<()> {
-        into_standard_layout::<u32, _>([2, 12, 12, 16], [0, 3, 1, 2]).await?;
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn into_standard_layout_4d_f32() -> Result<()> {
-        into_standard_layout::<f32, _>([1000, 24, 24, 6], [0, 3, 1, 2]).await?;
-        into_standard_layout::<f32, _>([1000, 8, 8, 16], [0, 3, 1, 2]).await?;
-        Ok(())
-    }
-
-    /*#[tokio::test]
-    async fn into_standard_layout_6d_u32() -> Result<()> {
-        into_standard_layout::<u32, _>([2, 3, 4, 5, 6, 7]).await?;
-        Ok(())
-    }*/
-
-    async fn reorder<T1, Sh1, T2, Sh2>(input_shape: Sh1, output_shape: Sh2) -> Result<()>
-    where
-        T1: Scalar,
-        Sh1: ShapeBuilder,
-        T2: Scalar,
-        Sh2: ShapeBuilder<Dim = Sh1::Dim> + Clone,
-    {
-        let mut x_array = Array::<T1, _>::zeros(input_shape);
-        for (x, i) in x_array.iter_mut().zip(1..) {
-            *x = T1::from_usize(i).unwrap();
-        }
-        let mut y_array = Array::<T2, _>::zeros(output_shape.clone());
-        for (indices, x) in x_array.indexed_iter() {
-            if let Some(y) = y_array.get_mut(indices.into_dimension()) {
-                *y = T2::from_usize(x.to_usize().unwrap()).unwrap();
-            }
-        }
-
-        let device = Device::new()?;
-        let x = CowTensor::from(x_array.view())
-            .into_device(device.clone())
-            .await?;
-        let y = x
-            .as_reordered::<T2, _>(output_shape)?
-            .read()
-            .await?
-            .as_array()
-            .to_owned();
-        assert_eq!(y, y_array);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn reorder_2d_f32_f32() -> Result<()> {
-        reorder::<f32, _, f32, _>([3, 3], [4, 4].set_f(true)).await?;
-        Ok(())
-    }
-}

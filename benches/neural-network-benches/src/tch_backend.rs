@@ -8,11 +8,11 @@ use tch::{
 pub struct LinearClassifier {
     device: Device,
     kind: Kind,
-    var_store: VarStore,
     inputs: usize,
     outputs: usize,
     linear: Linear,
     optimizer: Option<Optimizer>,
+    var_store: VarStore,
 }
 
 impl LinearClassifier {
@@ -31,11 +31,11 @@ impl LinearClassifier {
         Ok(Self {
             device,
             kind,
-            var_store,
             inputs,
             outputs,
             linear,
             optimizer: None,
+            var_store,
         })
     }
     pub fn with_sgd(self, momentum: bool) -> Result<Self> {
@@ -45,7 +45,7 @@ impl LinearClassifier {
             momentum,
             ..Sgd::default()
         }
-        .build(&self.var_store, 0.01)?;
+        .build(&self.var_store, learning_rate)?;
         Ok(Self {
             optimizer: Some(optimizer),
             ..self
@@ -56,7 +56,10 @@ impl LinearClassifier {
             [batch_size as i64, self.inputs as i64],
             (self.kind, self.device),
         );
-        let _ = self.linear.forward_t(&x, false);
+        let mut y = vec![0f32; batch_size * self.outputs];
+        self.linear
+            .forward_t(&x, false)
+            .copy_data(&mut y, batch_size * self.outputs);
         Ok(())
     }
     pub fn train(&mut self, batch_size: usize) -> Result<()> {
@@ -64,10 +67,7 @@ impl LinearClassifier {
             [batch_size as i64, self.inputs as i64],
             (self.kind, self.device),
         );
-        let t = Tensor::zeros(
-            [batch_size as i64, self.outputs as i64],
-            (self.kind, self.device),
-        );
+        let t = Tensor::zeros([batch_size as i64], (Kind::Uint8, self.device));
         let y = self.linear.forward_t(&x, true);
         let loss = y.cross_entropy_loss::<Tensor>(&t, None, Reduction::Sum, -1, 0.);
         self.optimizer.as_mut().unwrap().backward_step(&loss);

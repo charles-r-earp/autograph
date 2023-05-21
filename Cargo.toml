@@ -48,7 +48,7 @@ anyhow.workspace = true
 ndarray = { workspace = true, features = ["serde", "rayon"] }
 rand = { version = "0.8.4", optional = true }
 serde = { workspace = true, features = ["derive", "rc"] }
-derive_more = { version = "0.99.11", optional = true }
+derive_more = "0.99.11"
 thiserror = "1.0.23"
 approx = "0.5.0"
 prettytable-rs = "0.8.0"
@@ -80,11 +80,14 @@ libtest-mimic = "0.6.0"
 
 [features]
 default = ["device"]
-device = ["krnl/device", "dep:crunchy"]
+device = ["krnl/device", "dep:crunchy", "dep:once_cell"]
 dataset = ["dep:rand"]
 mnist = ["dataset", "dep:dirs", "dep:flate2", "dep:downloader", "dep:byteorder", "dep:http"]
 learn = []
-neural-network = ["learn", "dep:crossbeam-channel", "dep:parking_lot", "dep:atomicbox", "dep:derive_more", "dep:rand", "once_cell"]
+neural-network = ["learn", "dep:crossbeam-channel", "dep:parking_lot", "dep:atomicbox", "dep:rand", "dep:once_cell"]
+
+[package.metadata.krnlc]
+features = ["neural-network"]
 
 [package.metadata.krnlc.dependencies]
 dry = {}

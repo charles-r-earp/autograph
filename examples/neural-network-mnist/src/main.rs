@@ -1,6 +1,7 @@
 use autograph::{
     anyhow::{Error, Result},
     dataset::mnist::{Mnist, MnistKind},
+    device::Device,
     krnl::krnl_core::half::bf16,
     learn::{
         criterion::{Accuracy, Criterion, CrossEntropyLoss},
@@ -52,11 +53,12 @@ struct Linear {
 }
 
 impl Linear {
-    fn new(scalar_type: ScalarType) -> Result<Self> {
+    fn new(device: Device, scalar_type: ScalarType) -> Result<Self> {
         let dense = Dense::builder()
             .inputs(28 * 28)
             .outputs(10)
             .bias(true)
+            .device(device)
             .scalar_type(scalar_type)
             .build()?;
         Ok(Self { dense })
@@ -86,9 +88,9 @@ enum Model {
 }
 
 impl Model {
-    fn new(kind: ModelKind, scalar_type: ScalarType) -> Result<Self> {
+    fn new(kind: ModelKind, device: Device, scalar_type: ScalarType) -> Result<Self> {
         match kind {
-            ModelKind::Linear => Ok(Self::Linear(Linear::new(scalar_type)?)),
+            ModelKind::Linear => Ok(Self::Linear(Linear::new(device, scalar_type)?)),
         }
     }
 }
@@ -166,6 +168,8 @@ struct Options {
     #[arg(long, value_enum, default_value_t = ModelKind::Linear)]
     model: ModelKind,
     #[arg(long)]
+    device: Option<usize>,
+    #[arg(long)]
     bf16: bool,
     #[arg(short, long, default_value_t = 100)]
     epochs: usize,
@@ -200,6 +204,11 @@ fn main() -> Result<()> {
             ((train_images, train_classes), (test_images, test_classes))
         }
     };
+    let device = if let Some(index) = options.device {
+        Device::builder().index(index).build()?
+    } else {
+        Device::host()
+    };
     let scalar_type = if options.bf16 {
         ScalarType::BF16
     } else {
@@ -223,7 +232,7 @@ fn main() -> Result<()> {
         checkpoint.epoch += 1;
         checkpoint
     } else {
-        let model = Model::new(options.model, scalar_type)?;
+        let model = Model::new(options.model, device.clone(), scalar_type)?;
         let optimizer = {
             let mut builder = SGD::builder();
             if let Some(momentum) = options.momentum {
@@ -258,9 +267,14 @@ fn main() -> Result<()> {
         )
         .map(|(x, t)| -> Result<_> {
             let x = Tensor::from(x)
+                .into_device(device.clone())?
                 .into_scalar_tensor()
                 .scaled_cast(image_scale)?;
-            let t = ScalarCowTensor::from(Tensor::from(t).into_scalar_tensor());
+            let t = ScalarCowTensor::from(
+                Tensor::from(t)
+                    .into_device(device.clone())?
+                    .into_scalar_tensor(),
+            );
             Ok((x, t))
         });
         let train_stats = train(&mut model, &optimizer, options.learning_rate, train_iter)?;
@@ -276,17 +290,27 @@ fn main() -> Result<()> {
                 let x = CowTensor::from(x)
                     .into_scalar_cow_tensor()
                     .scaled_cast(image_scale)?;
+                let x = if device.is_device() {
+                    x.to_device(device.clone())?.into()
+                } else {
+                    x
+                };
                 let t = CowTensor::from(t).into_scalar_cow_tensor();
+                let t = if device.is_device() {
+                    t.to_device(device.clone())?.into()
+                } else {
+                    t
+                };
                 Ok((x, t))
             });
         let test_stats = test(&model, test_iter)?;
         let test_count = test_stats.count;
-        let test_correct = test_stats.count;
+        let test_correct = test_stats.correct;
         let test_loss = test_stats.loss / test_count as f32;
         let test_acc = (test_stats.correct * 100) as f32 / test_count as f32;
         let epoch_elapsed = epoch_start.elapsed();
         println!(
-                "[{epoch}] train_loss: {train_loss} train_acc: {train_acc}% {train_count}/{train_count} test_loss: {test_loss} test_acc: {test_acc}% {test_correct}/{test_count} elapsed: {epoch_elapsed:?}"
+                "[{epoch}] train_loss: {train_loss} train_acc: {train_acc}% {train_correct}/{train_count} test_loss: {test_loss} test_acc: {test_acc}% {test_correct}/{test_count} elapsed: {epoch_elapsed:?}"
             );
         time += epoch_elapsed;
         if options.checkpoint {
@@ -313,12 +337,22 @@ fn main() -> Result<()> {
             let x = CowTensor::from(x)
                 .into_scalar_cow_tensor()
                 .scaled_cast(image_scale)?;
+            let x = if device.is_device() {
+                x.to_device(device.clone())?.into()
+            } else {
+                x
+            };
             let t = CowTensor::from(t).into_scalar_cow_tensor();
+            let t = if device.is_device() {
+                t.to_device(device.clone())?.into()
+            } else {
+                t
+            };
             Ok((x, t))
         });
     let test_stats = test(&model, test_iter)?;
     let test_count = test_stats.count;
-    let test_correct = test_stats.count;
+    let test_correct = test_stats.correct;
     let test_loss = test_stats.loss / test_count as f32;
     let test_acc = (test_stats.correct * 100) as f32 / test_count as f32;
     let elapsed = start.elapsed();
@@ -372,23 +406,22 @@ fn train<'a, I: Iterator<Item = Result<(ScalarTensor4, ScalarCowTensor1<'a>)>>>(
     mut train_iter: I,
 ) -> Result<Stats> {
     let mut train_stats = Stats::default();
-    while let Some((x, t)) = train_iter.next().transpose()? {
+    while let Some((x, t)) = train_iter.by_ref().next().transpose()? {
         train_stats.count += x.shape().first().unwrap();
         model.set_training(true)?;
         let y = model.forward(x.into())?;
         train_stats.correct += Accuracy.eval(y.value().view(), t.view())?;
-        let t_one_hot = t.to_one_hot(10, y.scalar_type())?;
-        let loss = CrossEntropyLoss::default().eval(y, t_one_hot.into())?;
+        let loss = CrossEntropyLoss::default().eval(y.clone(), t.into_shared()?)?;
         loss.backward()?;
         for parameter in model.parameters_mut()? {
             optimizer.update(learning_rate, parameter)?;
         }
-        model.set_training(false)?;
         train_stats.loss += loss
             .into_value()
             .cast_into_tensor::<f32>()?
             .into_array()?
-            .sum();
+            .into_scalar();
+        model.set_training(false)?;
     }
     Ok(train_stats)
 }
@@ -406,12 +439,7 @@ fn test<'a, I: IntoParallelIterator<Item = Result<(ScalarTensor4, ScalarCowTenso
             stats.count = x.shape().first().copied().unwrap();
             let y = model.forward(x.into())?.into_value();
             stats.correct = Accuracy.eval(y.view(), t.view())?;
-            let t_one_hot = t.to_one_hot(10, y.scalar_type())?;
-            stats.loss += CrossEntropyLoss::default()
-                .eval(y, t_one_hot)?
-                .cast_into_tensor::<f32>()?
-                .into_array()?
-                .sum();
+            stats.loss += CrossEntropyLoss::default().eval(y, t)?;
             *test_stats.lock() += stats;
             Ok(())
         },

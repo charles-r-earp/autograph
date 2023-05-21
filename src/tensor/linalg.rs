@@ -6,63 +6,51 @@ use krnl::{macros::module, scalar::ScalarElem};
 use ndarray::linalg::Dot;
 use paste::paste;
 
-/*
-fn c_beta<T: Scalar, D: Dimension>(beta: T, c: &mut TensorViewMut<T, D>) -> Result<()> {
-    let n = c.len() as u32;
-    let builder = crate::rust_shaders::compute_pass("linalg::c_beta_f32")?
-        .slice_mut(c.as_raw_slice_mut())?
-        .push(n)?
-        .push(beta)?;
-    unsafe { builder.submit([n, 1, 1]) }
-}
-
-fn bias_impl<T: Scalar>(bias: &TensorView1<T>, c: &mut TensorViewMut2<T>) -> Result<()> {
-    if T::scalar_type() != ScalarType::F32 {
-        bail!("{} bias not implemented!", elem_type_name::<T>());
-    }
-    let _oc = bias.dim();
-    let (bs, oc) = c.dim();
-    if _oc != oc {
-        bail!("bias != c_cols, {} != {}", _oc, oc);
-    }
-    let builder = crate::rust_shaders::compute_pass("linalg::bias_f32")?
-        .slice(bias.as_raw_slice())?
-        .slice_mut(c.as_raw_slice_mut())?
-        .push([bs as u32, oc as u32])?;
-    unsafe { builder.submit([(bs * oc) as u32, 1, 1]) }
-}
-*/
-
 #[cfg(feature = "device")]
-#[allow(unused_imports, unused_variables)]
 #[module]
 mod kernels {
-    #[cfg(target_arch = "spirv")]
-    use crunchy::unroll;
+    //#[cfg(target_arch = "spirv")]
+    //use core::arch::asm;
     #[cfg(not(target_arch = "spirv"))]
     use krnl::krnl_core;
     use krnl_core::macros::kernel;
     #[cfg(target_arch = "spirv")]
+    #[allow(unused_imports)]
     use krnl_core::{
         buffer::UnsafeIndex,
+        half::{bf16, f16},
+        num_traits::One,
+        scalar::Scalar,
         spirv_std::arch::workgroup_memory_barrier_with_group_sync as group_barrier,
     };
-    use krnl_core::{
-        half::{bf16, f16},
-        scalar::Scalar,
-    };
     use paste::paste;
-    #[cfg(target_arch = "spirv")]
-    use static_assertions::const_assert_eq;
 
-    pub const GEMM_THREAD_TILE_MAX_M: u32 = 4;
-    pub const GEMM_THREAD_TILE_MAX_K: u32 = 64;
-    pub const GEMM_THREAD_TILE_MAX_N: u32 = 4;
+    pub const THREADS_M: u32 = 16;
+    pub const THREADS_N: u32 = 16;
+    pub const UNROLL: u32 = 16;
+    pub const THREAD_M_MAX: u32 = 8;
+    pub const THREAD_N_MAX: u32 = 8;
+
+    #[cfg(target_arch = "spirv")]
+    #[rustfmt::skip]
+    fn init_c_thread<T: Default + Copy>() -> [T; (THREAD_M_MAX * THREAD_N_MAX) as usize] {
+        let z = T::default();
+        [
+            z, z, z, z, z, z, z, z,
+            z, z, z, z, z, z, z, z,
+            z, z, z, z, z, z, z, z,
+            z, z, z, z, z, z, z, z,
+            z, z, z, z, z, z, z, z,
+            z, z, z, z, z, z, z, z,
+            z, z, z, z, z, z, z, z,
+            z, z, z, z, z, z, z, z,
+        ]
+    }
 
     macro_rules! impl_gemm {
         ($T:ty => $A:ty) => {
             paste! {
-                #[kernel(threads(256))]
+                #[kernel(threads(16, 16, 1))]
                 pub unsafe fn [<gemm_ $T>]<
                     const M: u32,
                     const K: u32,
@@ -74,168 +62,108 @@ mod kernels {
                     const CSB: i32,
                     const RSC: i32,
                     const CSC: i32,
-                    // Group Tile
-                    const GM: u32,
-                    const GK: u32,
-                    const GN: u32,
                     // Thread tile
                     const TM: u32,
-                    const TK: u32,
                     const TN: u32,
                 >(
                     alpha: $A,
                     #[global] a: Slice<$T>,
                     offset_a: u32,
-                    #[group] a_group: UnsafeSlice<$A, { ((GM + 1) * GK) as usize }>,
+                    #[group] a_group: UnsafeSlice<$A, { ((16 * TM + 1) * 16) as usize }>,
                     #[global] b: Slice<$T>,
                     offset_b: u32,
-                    #[group] b_group: UnsafeSlice<$A, { (GK * (GN + 1)) as usize }>,
+                    #[group] b_group: UnsafeSlice<$A, { (16 * (16 * TN + 1)) as usize }>,
                     beta: $A,
                     #[global] c: UnsafeSlice<$T>,
                     offset_c: u32,
-                    n_groups_k: u32,
                 ) {
-                    // Threads
-                    let tsm = GM / TM;
-                    let tsk = GK / TK;
-                    let tsn = GN / TN;
+                    let [global_n, global_m, global_k] = kernel.global_id().to_array();
+                    let [groups_n, groups_m, groups_k] = kernel.groups().to_array();
+                    let [group_n, group_m, group_k] = kernel.group_id().to_array();
+                    let [thread_n, thread_m, _] = kernel.thread_id().to_array();
 
-                    let n_groups_n = N / GN + (N % GN != 0) as u32;
+                    if a.len() != (M * K) as usize {
+                        panic!();
+                    }
+                    if b.len() != (K * N) as usize {
+                        panic!();
+                    }
+                    if c.len() != (M * N * groups_k + offset_c) as usize {
+                        panic!();
+                    }
+                    if kernel.threads().y != THREADS_M {
+                        panic!()
+                    }
+                    if kernel.threads().x != THREADS_N {
+                        panic!()
+                    }
+                    if kernel.threads().z != 1 {
+                        panic!()
+                    }
 
-                    let group_id = kernel.group_id();
-                    let group_mn = group_id / n_groups_k;
-                    let group_k = group_id % n_groups_k;
-                    let group_m = group_mn / n_groups_n;
-                    let group_n = group_mn % n_groups_n;
+                    let mut a_thread = <[$A; THREAD_M_MAX as usize]>::default();
+                    let mut b_thread = <[$A; THREAD_N_MAX as usize]>::default();
+                    let mut c_thread = init_c_thread::<$A>();
 
-                    let threads = kernel.threads();
-                    let thread_id = kernel.thread_id();
-                    let thread_k = thread_id / (tsm * tsn);
-                    let thread_mn = thread_id % (tsm * tsn);
-                    let thread_m = thread_mn / tsn;
-                    let thread_n = thread_mn % tsn;
-
-                    let global_unroll = n_groups_k * GK;
-
-                    let mut a_thread = <[$A; GEMM_THREAD_TILE_MAX_M as usize]>::default();
-                    let mut b_thread = <[$A; GEMM_THREAD_TILE_MAX_N as usize]>::default();
-                    let mut c_thread =
-                        <[$A; (GEMM_THREAD_TILE_MAX_M * GEMM_THREAD_TILE_MAX_N) as usize]>::default();
-
-                    let mut global_k = group_k * GK;
+                    let mut global_k = group_k * UNROLL;
 
                     while global_k < K {
                         {
-                            // load a
-                            let thread_k = thread_id / 16;
-                            let thread_m = thread_id % 16;
-                            let tsk = 16;
-                            let tsm = 16;
-                            for u in 0..4 {
-                                let tile_k = u as u32 * tsk + thread_k;
-                                if tile_k < GK {
-                                    let global_k = global_k + tile_k;
-                                    for i in 0..4 {
-                                        let tile_m = i as u32 * tsm + thread_m;
-                                        if tile_m < GM {
-                                            let global_m = group_m * GM + tile_m;
-                                            unsafe {
-                                                *a_group
-                                                    .unsafe_index_mut((tile_m + tile_k * (GM + 1)) as usize) =
-                                                    if global_m < M && global_k < K {
-                                                        a[(global_m as i32 * RSA
-                                                            + global_k as i32 * CSA
-                                                            + offset_a as i32)
-                                                            as usize].cast()
-                                                    } else {
-                                                        Default::default()
-                                                    };
-                                            }
-                                        }
+                            let (thread_m, thread_k) = if RSA >= CSA {
+                                (thread_m, thread_n)
+                            } else {
+                                (thread_n, thread_m)
+                            };
+                            const THREADS_M: u32 = 16;
+                            const THREADS_K: u32 = 16;
+                            for i in 0 .. TM {
+                                let tile_m = i * THREADS_M + thread_m;
+                                let tile_k = thread_k;
+                                if tile_m < THREADS_M * TM && tile_k < THREADS_K * UNROLL {
+                                    let global_m = group_m * THREADS_M * TM + tile_m;
+                                    let global_k = global_k + thread_k;
+                                    unsafe {
+                                        *a_group
+                                            .unsafe_index_mut((tile_m + tile_k * (THREADS_M * TM + 1)) as usize) =
+                                            if global_m < M && global_k < K {
+                                                a[(global_m as i32 * RSA
+                                                    + global_k as i32 * CSA
+                                                    + offset_a as i32)
+                                                    as usize].cast()
+                                            } else {
+                                                $A::default()
+                                            };
+
                                     }
                                 }
                             }
                         }
                         {
-                            // load b
-                            let thread_k = thread_id / 16;
-                            let thread_n = thread_id % 16;
-                            let tsk = 16;
-                            let tsn = 16;
-                            for u in 0..4 {
-                                let tile_k = u as u32 * tsk + thread_k;
-                                if tile_k < GK {
-                                    let global_k = global_k + tile_k;
-                                    for j in 0..4 {
-                                        let tile_n = j as u32 * tsn + thread_n;
-                                        if tile_n < GN {
-                                            let global_n = group_n * GN + tile_n;
-                                            unsafe {
-                                                *b_group
-                                                    .unsafe_index_mut((tile_k * (GN + 1) + tile_n) as usize) =
-                                                    if global_k < K && global_n < N {
-                                                        b[(global_k as i32 * RSB
-                                                            + global_n as i32 * CSB
-                                                            + offset_b as i32)
-                                                            as usize].cast()
-                                                    } else {
-                                                        Default::default()
-                                                    };
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                            let (thread_k, thread_n) = if RSB > CSB {
+                                (thread_m, thread_n)
+                            } else {
+                                (thread_n, thread_m)
+                            };
+                            const THREADS_K: u32 = 16;
+                            const THREADS_N: u32 = 16;
+                            for j in 0 .. TN {
+                                let tile_k = thread_k;
+                                let tile_n = j * THREADS_N + thread_n;
+                                if tile_k < THREADS_K * UNROLL && tile_n < THREADS_N * TN {
+                                    let global_k = global_k + thread_k;
+                                    let global_n = group_n * THREADS_N * TM + tile_n;
+                                    unsafe {
+                                        *b_group
+                                            .unsafe_index_mut((tile_k * (THREADS_N * TN + 1) + tile_n) as usize) =
+                                            if global_k < K && global_n < N {
+                                                b[(global_k as i32 * RSB
+                                                    + global_n as i32 * CSB
+                                                    + offset_b as i32)
+                                                    as usize].cast()
+                                            } else {
+                                                $A::default()
+                                            };
 
-                        const_assert_eq!(GEMM_THREAD_TILE_MAX_M, 4);
-                        const_assert_eq!(GEMM_THREAD_TILE_MAX_K, 64);
-                        const_assert_eq!(GEMM_THREAD_TILE_MAX_N, 4);
-
-                        unsafe {
-                            group_barrier();
-                        }
-
-                        for u in 0..TK {
-                            unroll! {
-                                for i_ in 0..4 {
-                                    let i = i_ as u32;
-                                    if i < TM {
-                                        unsafe {
-                                            a_thread[i as usize] = *a_group.unsafe_index(
-                                                ((i * tsm + thread_m) + (u * tsk + thread_k) * (GM + 1))
-                                                    as usize,
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-                            unroll! {
-                                for j_ in 0..4 {
-                                    let j = j_ as u32;
-                                    if j < TN {
-                                        unsafe {
-                                            b_thread[j as usize] = *b_group.unsafe_index(
-                                                ((u * tsk + thread_k) * (GN + 1) + (j * tsn + thread_n))
-                                                    as usize,
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-                            unroll! {
-                                for i_ in 0..4 {
-                                    let i = i_ as u32;
-                                    if i < TM {
-                                        unroll! {
-                                            for j_ in 0..4 {
-                                                let j = j_ as u32;
-                                                if j < TN {
-                                                    c_thread[(i * TN + j) as usize] +=
-                                                        a_thread[i as usize] * b_thread[j as usize];
-                                                }
-                                            }
-                                        }
                                     }
                                 }
                             }
@@ -245,34 +173,49 @@ mod kernels {
                             group_barrier();
                         }
 
-                        global_k += global_unroll;
+                        for u in 0..UNROLL {
+                            for i in 0..TM {
+                                unsafe {
+                                    a_thread[i as usize] = *a_group.unsafe_index(
+                                        (i * THREADS_M + thread_m + u * (THREADS_M * TM + 1)) as usize
+                                    );
+                                }
+                            }
+                            for j in 0..TN {
+                                unsafe {
+                                    b_thread[j as usize] = *b_group.unsafe_index(
+                                        (u * (THREADS_N * TN + 1) + j * THREADS_N + thread_n) as usize
+                                    );
+                                }
+                            }
+                            for i in 0..TM {
+                                for j in 0..TN {
+                                    c_thread[(i * TN + j) as usize] += a_thread[i as usize] * b_thread[j as usize];
+                                }
+                            }
+                        }
+
+                        unsafe {
+                            group_barrier();
+                        }
+
+                        global_k += groups_k * UNROLL;
                     }
 
-                    const_assert_eq!(GEMM_THREAD_TILE_MAX_M, 4);
-                    const_assert_eq!(GEMM_THREAD_TILE_MAX_N, 4);
-                    unroll! {
-                        for i_ in 0..4 {
-                            let i = i_ as u32;
-                            if i < TM {
-                                unroll! {
-                                    for j_ in 0..4 {
-                                        let j = j_ as u32;
-                                        if j < TN {
-                                            let row = group_m * GM + i * tsm + thread_m;
-                                            let col = group_n * GN + j * tsn + thread_n;
-                                            let idx = ((row as i32 * RSC + col as i32 * CSC + offset_c as i32) as u32
-                                                * n_groups_k
-                                                * tsk
-                                                + group_k * tsk
-                                                + thread_k) as usize;
-                                            if row < M && col < N {
-                                                unsafe {
-                                                    *c.unsafe_index_mut(idx) = (alpha * c_thread[(i * TN + j) as usize]
-                                                        + beta * c.unsafe_index(idx).cast::<$A>()).cast();
-                                                }
-                                            }
-                                        }
+                    for i in 0..TM {
+                        for j in 0..TN {
+                            let row = group_m * THREADS_M * TM + i * THREADS_M + thread_m;
+                            let col = group_n * THREADS_N * TN + j * THREADS_N + thread_n;
+                            if row < M && col < N {
+                                let idx = ((row as i32 * RSC + col as i32 * CSC) * groups_k as i32 + group_k as i32 + offset_c as i32) as usize;
+                                let mut c_out = alpha * c_thread[(i * TN + j) as usize];
+                                if beta > $A::default() {
+                                    unsafe {
+                                        c_out += beta * c.unsafe_index(idx).cast::<$A>();
                                     }
+                                }
+                                unsafe {
+                                    *c.unsafe_index_mut(idx) = c_out.cast();
                                 }
                             }
                         }
@@ -296,6 +239,39 @@ mod kernels {
     impl_gemm!(i8, i16 => i32);
     impl_gemm!(f16, bf16 => f32);
     impl_gemm!(u32, i32, f32, u64, i64, f64);
+
+    /*
+    #[allow(unused)]
+    // adapted from https://github.com/EmbarkStudios/rust-gpu/blob/main/examples/shaders/reduce/src/lib.rs
+    #[cfg(target_arch = "spirv")]
+    unsafe fn subgroup_add_f32(value: f32) -> f32 {
+        // https://registry.khronos.org/SPIR-V/specs/unified1/SPIRV.html#Scope_-id-
+        // let execution = Scope::Subgroup // 3
+        let mut result = 0f32;
+        asm! {
+            "%u32 = OpTypeInt 32 0",
+            "%execution = OpConstant %u32 3",
+            "%result = OpGroupNonUniformFAdd _ %execution Reduce {value}",
+            "OpStore {result} %result",
+            // execution = execution,
+            value = in(reg) value,
+            result = in(reg) &mut result,
+        }
+        result
+    }*/
+
+    #[kernel(threads(256))]
+    pub fn reduce_k_f32(k: u32, #[global] x: Slice<f32>, beta: f32, #[item] y: &mut f32) {
+        let idx = kernel.item_id();
+        if beta > 0f32 {
+            *y *= beta;
+        } else {
+            *y = 0f32;
+        }
+        for i in 0..k {
+            *y += x[(idx * k + i) as usize];
+        }
+    }
 }
 
 #[cfg(feature = "device")]
@@ -306,6 +282,8 @@ fn gemm(
     beta: ScalarElem,
     mut c: ScalarTensorViewMut2,
 ) -> Result<()> {
+    use kernels::{THREADS_M, THREADS_N, THREAD_M_MAX, THREAD_N_MAX, UNROLL};
+
     assert_eq!(alpha.scalar_type(), c.scalar_type());
     assert_eq!(a.scalar_type(), c.scalar_type());
     assert_eq!(b.scalar_type(), c.scalar_type());
@@ -345,68 +323,78 @@ fn gemm(
     let (mut c, offset_c) = c.as_raw_scalar_slice_offset_mut();
     let offset_c = offset_c.to_u32().unwrap();
 
-    let splitk = 512;
-    let (n_groups_k, [tsm, tsk, tsn], [tm, tk, tn]) = if k > splitk {
-        let n_groups_k = k / splitk + if k % splitk != 0 { 1 } else { 0 };
-        (n_groups_k, [16u32, 1, 16], [1u32, 64, 1])
-    } else if m >= 64 && n <= 32 {
-        (1, [32, 1, 8], [4, 8, 4])
-    } else if n >= 64 && m <= 32 {
-        (1, [8, 1, 32], [4, 8, 4])
+    let tm = (m / THREADS_M + (m % THREADS_M != 0) as u32).min(THREAD_M_MAX);
+    let tn = (n / THREADS_N + (n % THREADS_N != 0) as u32).min(THREAD_N_MAX);
+    let splitk = 4 * UNROLL;
+    let groups_k = if c.scalar_type() == ScalarType::F32 {
+        k / splitk + ((k % splitk) != 0) as u32
     } else {
-        (1, [16, 1, 16], [4, 8, 4])
+        1
     };
-    assert!(tm <= kernels::GEMM_THREAD_TILE_MAX_M);
-    assert!(tk <= kernels::GEMM_THREAD_TILE_MAX_K);
-    assert!(tn <= kernels::GEMM_THREAD_TILE_MAX_N);
-    let gm = tsm * tm;
-    let gk = tsk * tk;
-    let gn = tsn * tn;
+
+    let gm = THREADS_M * tm;
+    let gn = THREADS_N * tn;
     let groups_m = m / gm + (m % gm != 0) as u32;
     let groups_n = n / gn + (n % gn != 0) as u32;
-    let groups = groups_m * groups_n * n_groups_k;
-    //let gemm_beta = if n_groups_k > 1 { T::zero() } else { beta };
-    if n_groups_k * tsk > 1 {
-        todo!();
-        /*
-        let mut c_tmp =
-            Tensor::zeros(
-                a.device(),
-                [m as usize, n as usize, (n_groups_k * gk) as usize],
-            )?
-        };
-        let builder = builder.slice_mut(c_tmp.as_raw_slice_mut())?;
-        unsafe {
-            builder.submit(work_size)?;
-        }
-        c_beta(beta, c)?;
-        c_tmp.sum_axis_with(Axis(2), c)?; */
-    } else {
-        let device = c.device();
-        macro_wrap!(paste! { match c.scalar_type() {
-            macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
-                ScalarType::[<$T:upper>] => {
+    let groups = [groups_n, groups_m, groups_k];
+
+    let device = c.device();
+    macro_wrap!(paste! { match c.scalar_type() {
+        macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+            ScalarType::[<$T:upper>] => {
+                if groups_k > 1 {
+                    if $T::scalar_type() != ScalarType::F32 {
+                        todo!()
+                    }
+                    assert!(rsc > 0);
+                    assert!(csc > 0);
+                    assert_eq!(offset_c, 0);
+                    let alpha = f32::try_from(alpha).unwrap();
+                    let a = Slice::<f32>::try_from(a.clone()).unwrap();
+                    let b = Slice::<f32>::try_from(b.clone()).unwrap();
+                    let beta = f32::try_from(beta).unwrap();
+                    let c = SliceMut::<f32>::try_from(c.as_scalar_slice_mut()).unwrap();
+                    let gemm_kernel = kernels::gemm_f32::builder()?
+                        .specialize(
+                            m, k, n, rsa, csa, rsb, csb, rsc, csc, tm, tn,
+                        )?
+                        .build(device.clone())?
+                        .with_groups(groups.into());
+                    let reduce_kernel = kernels::reduce_k_f32::builder()?.build(device.clone())?;
+                    let mut c_tmp = unsafe {
+                        Buffer::<f32>::uninit(c.device(), (m * n * groups_k) as usize)?
+                    };
+                    unsafe {
+                        gemm_kernel
+                            .dispatch(
+                                alpha, a, offset_a, b, offset_b, 0f32, c_tmp.as_slice_mut(), 0,
+                            )?;
+                    }
+                    reduce_kernel.dispatch(groups_k, c_tmp.as_slice(), beta, c)?;
+                } else {
                     let alpha = $T::try_from(alpha).unwrap();
                     let a = Slice::<$T>::try_from(a.clone()).unwrap();
                     let b = Slice::<$T>::try_from(b.clone()).unwrap();
                     let beta = $T::try_from(beta).unwrap();
                     let c = SliceMut::<$T>::try_from(c.as_scalar_slice_mut()).unwrap();
+                    c.device().wait()?;
+                    let gemm_kernel = kernels::[<gemm_ $T>]::builder()?
+                        .specialize(
+                            m, k, n, rsa, csa, rsb, csb, rsc, csc, tm, tn,
+                        )?
+                        .build(device.clone())?
+                        .with_groups(groups.into());
                     unsafe {
-                        kernels::[<gemm_ $T>]::builder()?
-                            .specialize(
-                                m, k, n, rsa, csa, rsb, csb, rsc, csc, gm, gk, gn, tm, tk, tn,
-                            )?
-                            .build(device)?
-                            .with_groups(groups)
+                        gemm_kernel
                             .dispatch(
-                                alpha.cast(), a, offset_a, b, offset_b, beta.cast(), c, offset_c, n_groups_k,
+                                alpha.cast(), a, offset_a, b, offset_b, beta.cast(), c, offset_c,
                             )?;
                     }
                 }
-            })
-            scalar_type => bail!("Dot unimplemented for {scalar_type:?}!"),
-        }});
-    }
+            }
+        })
+        scalar_type => bail!("Dot unimplemented for {scalar_type:?}!"),
+    }});
     Ok(())
 }
 
@@ -466,7 +454,7 @@ impl<T: Scalar, S1: Data<Elem = T>, S2: Data<Elem = T>> Dot<TensorBase<S2, Ix2>>
         }
         #[cfg(feature = "device")]
         {
-            let mut output = Tensor::zeros(self.device(), [self.dim().0, rhs.dim().1])?;
+            let mut output = unsafe { Tensor::uninit(self.device(), [self.dim().0, rhs.dim().1])? };
             gemm(
                 T::one().into(),
                 self.view().into(),
@@ -509,8 +497,9 @@ impl<S1: ScalarData, S2: ScalarData> Dot<ScalarTensorBase<S2, Ix2>> for ScalarTe
         }
         #[cfg(feature = "device")]
         {
-            let mut output =
-                ScalarTensor::zeros(self.device(), [self.dim().0, rhs.dim().1], scalar_type)?;
+            let mut output = unsafe {
+                ScalarTensor::uninit(self.device(), [self.dim().0, rhs.dim().1], scalar_type)?
+            };
             gemm(
                 ScalarElem::one(scalar_type),
                 self.view(),
@@ -522,6 +511,98 @@ impl<S1: ScalarData, S2: ScalarData> Dot<ScalarTensorBase<S2, Ix2>> for ScalarTe
         }
     }
 }
+/*
+#[test]
+fn gemm_bench() {
+    let device = Device::builder().index(1).build().unwrap();
+    let x = Tensor::<f32, _>::zeros(device.clone(), [1000, 28 * 28]).unwrap();
+    let w = Tensor::<f32, _>::zeros(device.clone(), [10, 28 * 28]).unwrap();
+    let mut y = Tensor::<f32, _>::zeros(device.clone(), [1000, 10]).unwrap();
+    for _ in 0..10 {
+        gemm(
+            1f32.into(),
+            x.view().into(),
+            w.t().into(),
+            0f32.into(),
+            y.view_mut().into(),
+        )
+        .unwrap();
+        device.wait().unwrap();
+    }
+    use std::time::{Duration, Instant};
+    let mut duration = Duration::default();
+    for _ in 0..10 {
+        let start = Instant::now();
+        gemm(
+            1f32.into(),
+            x.view().into(),
+            w.t().into(),
+            0f32.into(),
+            y.view_mut().into(),
+        )
+        .unwrap();
+        device.wait().unwrap();
+        duration += start.elapsed() / 10;
+    }
+    panic!("{duration:?}");
+}
+
+#[test]
+fn dot_bench() {
+    let device = Device::builder().index(1).build().unwrap();
+    let x = Tensor::<f32, _>::zeros(device.clone(), [1000, 28 * 28]).unwrap();
+    let w = Tensor::<f32, _>::zeros(device.clone(), [10, 28 * 28]).unwrap();
+    for _ in 0..10 {
+        let y = x.view().dot(&w.t());
+        device.wait().unwrap();
+    }
+    use std::time::{Duration, Instant};
+    let mut duration = Duration::default();
+    for _ in 0..10 {
+        let start = Instant::now();
+        let y = x.view().dot(&w.t());
+        device.wait().unwrap();
+        duration += start.elapsed() / 10;
+    }
+    panic!("{duration:?}");
+}
+
+#[test]
+fn uninit_bench() {
+    let device = Device::builder().index(1).build().unwrap();
+    for _ in 0..10 {
+        let y = unsafe { Tensor::<f32, _>::uninit(device.clone(), [1000, 10]).unwrap() };
+        device.wait().unwrap();
+    }
+    use std::time::{Duration, Instant};
+    let mut duration = Duration::default();
+    for _ in 0..10 {
+        let start = Instant::now();
+        let y = unsafe { Tensor::<f32, _>::uninit(device.clone(), [1000, 10]).unwrap() };
+        device.wait().unwrap();
+        duration += start.elapsed() / 10;
+    }
+    panic!("{duration:?}");
+}
+
+#[test]
+fn zeros_bench() {
+    let device = Device::builder().index(1).build().unwrap();
+    for _ in 0..10 {
+        let y = Tensor::<f32, _>::zeros(device.clone(), [1000, 10]).unwrap();
+        device.wait().unwrap();
+    }
+    use std::time::{Duration, Instant};
+    let mut duration = Duration::default();
+    for _ in 0..10 {
+        let start = Instant::now();
+        let y = Tensor::<f32, _>::zeros(device.clone(), [1000, 10]).unwrap();
+        device.wait().unwrap();
+        duration += start.elapsed() / 10;
+    }
+    panic!("{duration:?}");
+}*/
+
 /*
 impl<T: Scalar, S1: Data<Elem = T>, S2: Data<Elem = T>, S3: Data<Elem = T>>
     DotBias<TensorBase<S2, Ix2>, TensorBase<S3, Ix1>> for TensorBase<S1, Ix2>
