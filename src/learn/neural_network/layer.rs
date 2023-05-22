@@ -1,17 +1,19 @@
 use super::autograd::{
     Parameter, Parameter1, Parameter2, ParameterViewMut1, ParameterViewMut2, ParameterViewMutD,
-    Variable2,
+    Variable, Variable2,
 };
 use crate::{
-    buffer::{Buffer, ScalarBuffer},
+    buffer::{Buffer, ScalarBuffer, ScalarData, ScalarSliceMut},
     device::Device,
     krnl::krnl_core::half::bf16,
     ops::AddAssign,
-    scalar::ScalarType,
-    tensor::ScalarTensor,
+    scalar::{Scalar, ScalarType},
+    tensor::{ScalarArcTensor, ScalarTensor, ScalarTensorBase, Tensor, TensorView, TensorViewMut},
 };
 use anyhow::{bail, Result};
-use ndarray::linalg::Dot;
+#[cfg(feature = "device")]
+use krnl::macros::module;
+use ndarray::{linalg::Dot, Array, Dimension};
 use rand::{
     distributions::{Distribution, Uniform},
     thread_rng,
@@ -235,7 +237,7 @@ impl<A> Dense<A> {
     }
 }
 
-impl Layer for Dense {
+impl<A> Layer for Dense<A> {
     fn set_training(&mut self, training: bool) -> Result<()> {
         self.weight.set_training(training);
         if let Some(bias) = self.bias.as_mut() {
@@ -276,3 +278,233 @@ impl<X> Forward<X> for Identity {
 
 #[derive(Default, Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct Relu;
+
+impl<D: Dimension + 'static> Forward<Variable<D>> for Relu {
+    type Output = Variable<D>;
+    fn forward(&self, input: Variable<D>) -> Result<Self::Output> {
+        let mut builder = Variable::builder();
+        if let Some(node) = input.node() {
+            let input = input.value().clone();
+            builder.edge(&node, move |output_grad| {
+                scalar_relu_backward(input, output_grad)
+            });
+        }
+        Ok(builder.build(scalar_relu(input.into_value())?.into()))
+    }
+}
+
+fn scalar_relu<S: ScalarData, D: Dimension>(
+    mut input: ScalarTensorBase<S, D>,
+) -> Result<ScalarArcTensor<D>> {
+    let scalar_type = input.scalar_type();
+    if input.is_standard_layout() {
+        if let Some(input_mut) = input.get_view_mut() {
+            match scalar_type {
+                ScalarType::F32 => {
+                    relu_mut::<f32, D>(input_mut.try_into().unwrap())?;
+                }
+                _ => todo!(),
+            }
+            return input.into_shared();
+        }
+    }
+    match scalar_type {
+        ScalarType::F32 => Ok(relu::<f32, D>(input.view().try_into().unwrap())?
+            .into_shared()?
+            .into()),
+        _ => todo!(),
+    }
+}
+
+fn relu_mut<T: Scalar, D: Dimension>(mut input: TensorViewMut<T, D>) -> Result<()> {
+    if let Some(mut x) = input.as_array_mut() {
+        for x in x.iter_mut() {
+            *x = relu_impl(*x);
+        }
+        return Ok(());
+    }
+    #[cfg(not(feature = "device"))]
+    {
+        unreachable!()
+    }
+    #[cfg(feature = "device")]
+    {
+        let device = input.device();
+        let mut x = input.as_slice_mut().unwrap();
+        if let Ok(x) = x.as_scalar_slice_mut().try_into() {
+            kernels::relu_mut_f32::builder()?
+                .build(device)?
+                .dispatch(x)?;
+            return Ok(());
+        }
+        todo!()
+    }
+}
+
+fn relu<T: Scalar, D: Dimension>(input: TensorView<T, D>) -> Result<Tensor<T, D>> {
+    if let Some(x) = input.as_array() {
+        let y = x.map(|x| relu_impl(*x));
+        return Ok(y.into());
+    }
+    #[cfg(not(feature = "device"))]
+    {
+        unreachable!()
+    }
+    #[cfg(feature = "device")]
+    {
+        let mut output = unsafe { Tensor::<T, D>::uninit(input.device(), input.raw_dim())? };
+        let x = input.as_slice().unwrap();
+        let mut y = output.as_slice_mut().unwrap();
+        if let Ok(x) = x.as_scalar_slice().try_into() {
+            let y = y.as_scalar_slice_mut().try_into().unwrap();
+            kernels::relu_f32::builder()?
+                .build(input.device())?
+                .dispatch(x, y)?;
+            return Ok(output);
+        }
+        todo!()
+    }
+}
+
+fn scalar_relu_backward<D: Dimension>(
+    output: ScalarArcTensor<D>,
+    mut output_grad: ScalarArcTensor<D>,
+) -> Result<ScalarArcTensor<D>> {
+    let scalar_type = output.scalar_type();
+    if let Some(output_grad_mut) = output_grad.get_view_mut() {
+        match scalar_type {
+            ScalarType::F32 => {
+                relu_backward_mut::<f32, D>(
+                    output.view().try_into().unwrap(),
+                    output_grad_mut.try_into().unwrap(),
+                )?;
+            }
+            _ => todo!(),
+        }
+        return Ok(output_grad);
+    }
+    todo!()
+}
+
+fn relu_backward_mut<T: Scalar, D: Dimension>(
+    input: TensorView<T, D>,
+    mut output_grad: TensorViewMut<T, D>,
+) -> Result<()> {
+    if let Some((x, mut dy)) = input.as_array().zip(output_grad.as_array_mut()) {
+        dy.zip_mut_with(&x, |dy, x| {
+            *dy = relu_backward_impl(*x, *dy);
+        });
+        return Ok(());
+    }
+    #[cfg(not(feature = "device"))]
+    {
+        unreachable!()
+    }
+    #[cfg(feature = "device")]
+    {
+        let x = input.as_slice().unwrap();
+        let mut dy = output_grad.as_slice_mut().unwrap();
+        if let Some((x, dy)) = x
+            .as_scalar_slice()
+            .try_into()
+            .ok()
+            .zip(dy.as_scalar_slice_mut().try_into().ok())
+        {
+            kernels::relu_backward_mut_f32::builder()?
+                .build(input.device())?
+                .dispatch(x, dy)?;
+            return Ok(());
+        }
+        todo!()
+    }
+}
+
+fn relu_backward<T: Scalar, D: Dimension>(
+    input: TensorView<T, D>,
+    output_grad: TensorView<T, D>,
+) -> Result<Tensor<T, D>> {
+    if let Some((x, dy)) = input.as_array().zip(output_grad.as_array()) {
+        let dx: Vec<T> = x
+            .iter()
+            .copied()
+            .zip(dy.iter().copied())
+            .map(|(x, dy)| relu_backward_impl(x, dy))
+            .collect();
+        return Ok(Array::from(dx).into_shape(input.raw_dim()).unwrap().into());
+    }
+    #[cfg(not(feature = "device"))]
+    {
+        unreachable!()
+    }
+    #[cfg(feature = "device")]
+    {
+        let x = input.as_slice().unwrap();
+        let dy = output_grad.as_slice().unwrap();
+        let mut input_grad = unsafe { Tensor::uninit(input.device(), input.raw_dim())? };
+        if let Some((x, dy)) = x
+            .as_scalar_slice()
+            .try_into()
+            .ok()
+            .zip(dy.as_scalar_slice().try_into().ok())
+        {
+            let dx = ScalarSliceMut::from(input_grad.as_slice_mut().unwrap())
+                .try_into()
+                .unwrap();
+            kernels::relu_backward_f32::builder()?
+                .build(input.device())?
+                .dispatch(x, dy, dx)?;
+            return Ok(input_grad);
+        }
+        todo!()
+    }
+}
+
+#[cfg_attr(feature = "device", module)]
+mod kernels {
+    #[cfg(not(target_arch = "spirv"))]
+    use krnl::krnl_core;
+    use krnl_core::{macros::kernel, scalar::Scalar};
+
+    pub fn relu_impl<T: Scalar>(x: T) -> T {
+        if x >= T::zero() {
+            x
+        } else {
+            T::zero()
+        }
+    }
+
+    pub fn relu_backward_impl<T: Scalar>(x: T, dy: T) -> T {
+        if x >= T::zero() {
+            dy
+        } else {
+            T::zero()
+        }
+    }
+
+    #[cfg(any(feature = "device", target_arch = "spirv"))]
+    pub mod device {
+        use super::*;
+
+        #[kernel(threads(256))]
+        pub fn relu_mut_f32(#[item] x: &mut f32) {
+            *x = relu_impl(*x);
+        }
+
+        #[kernel(threads(256))]
+        pub fn relu_f32(#[item] x: f32, #[item] y: &mut f32) {
+            *y = relu_impl(x);
+        }
+
+        #[kernel(threads(256))]
+        pub fn relu_backward_mut_f32(#[item] x: f32, #[item] dy: &mut f32) {
+            *dy = relu_backward_impl(x, *dy);
+        }
+
+        #[kernel(threads(256))]
+        pub fn relu_backward_f32(#[item] x: f32, #[item] dy: f32, #[item] dx: &mut f32) {
+            *dx = relu_backward_impl(x, dy);
+        }
+    }
+    pub use device::*;
+}
+use kernels::{relu_backward_impl, relu_impl};

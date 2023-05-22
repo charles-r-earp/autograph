@@ -56,7 +56,7 @@ pub mod builder {
             if self.grad.is_none() {
                 self.grad.replace(Arc::new(RwLock::default()));
             }
-            let output_grad_lock = self.grad.clone().unwrap();
+            let mut output_grad_lock = Some(self.grad.clone().unwrap());
             let node = node.inner.clone();
             let mut input_grad_lock = Arc::downgrade(&node.grad);
             let device = node.device.clone();
@@ -66,13 +66,16 @@ pub mod builder {
             let mut f = Some(f);
             let op = Box::new(move || {
                 let input_grad_lock = Weak::upgrade(&std::mem::take(&mut input_grad_lock));
-                if let Some((f, input_grad_lock)) = f.take().zip(input_grad_lock) {
+                if let Some((f, (input_grad_lock, output_grad_lock))) =
+                    f.take().zip(input_grad_lock.zip(output_grad_lock.take()))
+                {
                     let grad = output_grad_lock
                         .read()
                         .clone()
                         .unwrap()
                         .into_dimensionality()
                         .unwrap();
+                    std::mem::drop(output_grad_lock);
                     let grad = (f)(grad)?;
                     assert_eq!(grad.device(), device, "{name}");
                     assert_eq!(grad.shape(), dim.slice(), "{name}");
@@ -193,7 +196,9 @@ impl<D: Dimension> Node<D> {
         let mut queue = VecDeque::new();
         queue.push_back(self.inner.clone());
         while let Some(node) = queue.pop_front() {
-            for mut edge in node.edges.lock().drain(..) {
+            let edges = std::mem::take(&mut *node.edges.lock());
+            std::mem::drop(node);
+            for mut edge in edges {
                 (edge.op)()?;
                 let node = edge.node;
                 if node.ready() {

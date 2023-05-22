@@ -1,11 +1,9 @@
 use crate::{
     buffer::{Buffer, Data, ScalarData},
-    device::Device,
-    ops::AddAssign,
     scalar::Scalar,
     tensor::{
-        ScalarCowTensor1, ScalarCowTensor2, ScalarTensorBase, ScalarTensorView1, ScalarTensorView2,
-        TensorBase, TensorView1, TensorView2, TensorViewMut0,
+        ScalarTensorBase, ScalarTensorView1, ScalarTensorView2, TensorBase, TensorView1,
+        TensorView2,
     },
 };
 use anyhow::{bail, Result};
@@ -15,7 +13,6 @@ use half::bf16;
 use krnl::macros::module;
 use ndarray::{ArrayBase, ArrayView1, ArrayView2, Data as ArrayData, Ix1, Ix2};
 use num_traits::{Float, ToPrimitive, Unsigned};
-use std::time::Instant;
 
 pub trait Criterion<X, T> {
     type Output;

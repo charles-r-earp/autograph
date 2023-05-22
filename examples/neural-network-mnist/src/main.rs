@@ -7,7 +7,7 @@ use autograph::{
         criterion::{Accuracy, Criterion, CrossEntropyLoss},
         neural_network::{
             autograd::{ParameterViewMutD, Variable2, Variable4},
-            layer::{Dense, Forward, Layer},
+            layer::{Dense, Forward, Layer, Relu},
             optimizer::{Optimizer, SGD},
         },
     },
@@ -49,7 +49,7 @@ enum ModelKind {
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Linear {
-    dense: Dense,
+    dense: Dense<Relu>,
 }
 
 impl Linear {
@@ -58,6 +58,7 @@ impl Linear {
             .inputs(28 * 28)
             .outputs(10)
             .bias(true)
+            .activation(Relu)
             .device(device)
             .scalar_type(scalar_type)
             .build()?;
@@ -411,7 +412,7 @@ fn train<'a, I: Iterator<Item = Result<(ScalarTensor4, ScalarCowTensor1<'a>)>>>(
         model.set_training(true)?;
         let y = model.forward(x.into())?;
         train_stats.correct += Accuracy.eval(y.value().view(), t.view())?;
-        let loss = CrossEntropyLoss::default().eval(y.clone(), t.into_shared()?)?;
+        let loss = CrossEntropyLoss::default().eval(y, t.into_shared()?)?;
         loss.backward()?;
         for parameter in model.parameters_mut()? {
             optimizer.update(learning_rate, parameter)?;

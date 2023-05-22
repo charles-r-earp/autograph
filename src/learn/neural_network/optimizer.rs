@@ -8,7 +8,6 @@ use crate::{
     },
 };
 use anyhow::{bail, Result};
-use half::bf16;
 #[cfg(feature = "device")]
 use krnl::macros::module;
 use ndarray::Zip;
