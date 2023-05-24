@@ -7,10 +7,10 @@ use anyhow::format_err;
 use dry::macro_for;
 use half::{bf16, f16};
 use krnl::krnl_core::num_traits::ToPrimitive;
-#[cfg(feature = "neural-network")]
-use ndarray::{Data as ArrayData, Array2};
 #[cfg(feature = "device")]
 use krnl::macros::module;
+#[cfg(feature = "neural-network")]
+use ndarray::{Array2, Data as ArrayData};
 
 impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
     /// Converts to standard layout.
@@ -389,7 +389,8 @@ impl<T: Scalar, S: ArrayData<Elem = T>> Im2ColConv2 for ArrayBase<S, Ix4> {
                                     && widx < iw as isize
                                 {
                                     unsafe {
-                                        *output.uget_mut(fidx) = *input.uget((hidx as usize, widx as usize));
+                                        *output.uget_mut(fidx) =
+                                            *input.uget((hidx as usize, widx as usize));
                                     }
                                 }
                             }
