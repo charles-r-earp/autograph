@@ -86,13 +86,14 @@ impl Forward<Variable4> for Linear {
 
 #[derive(Debug, Serialize, Deserialize)]
 struct ConvNet {
-    conv: Conv2<Relu>,
+    conv1: Conv2<Relu>,
+    conv2: Conv2<Relu>,
     dense: Dense,
 }
 
 impl ConvNet {
     fn new(device: Device, scalar_type: ScalarType) -> Result<Self> {
-        let conv = Conv2::builder()
+        let conv1 = Conv2::builder()
             .device(device.clone())
             .scalar_type(scalar_type)
             .inputs(1)
@@ -100,29 +101,43 @@ impl ConvNet {
             .filter([5, 5])
             .activation(Relu)
             .build()?;
+        let conv2 = Conv2::builder()
+            .device(device.clone())
+            .scalar_type(scalar_type)
+            .inputs(6)
+            .outputs(16)
+            .filter([5, 5])
+            .activation(Relu)
+            .build()?;
         let dense = Dense::builder()
             .device(device)
             .scalar_type(scalar_type)
-            .inputs(6 * 24 * 24)
+            .inputs(16 * 20 * 20)
             .outputs(10)
             .bias(true)
             .build()?;
-        Ok(Self { conv, dense })
+        Ok(Self {
+            conv1,
+            conv2,
+            dense,
+        })
     }
 }
 
 impl Layer for ConvNet {
     fn set_training(&mut self, training: bool) -> Result<()> {
+        self.conv1.set_training(training)?;
+        self.conv2.set_training(training)?;
         self.dense.set_training(training)?;
-        self.conv.set_training(training)?;
         Ok(())
     }
     fn parameters_mut(&mut self) -> Result<Vec<ParameterViewMutD>> {
         Ok(self
-            .dense
+            .conv1
             .parameters_mut()?
             .into_iter()
-            .chain(self.conv.parameters_mut()?)
+            .chain(self.conv2.parameters_mut()?)
+            .chain(self.dense.parameters_mut()?)
             .collect())
     }
 }
@@ -130,7 +145,11 @@ impl Layer for ConvNet {
 impl Forward<Variable4> for ConvNet {
     type Output = Variable2;
     fn forward(&self, input: Variable4) -> Result<Self::Output> {
-        input.forward(&self.conv)?.flatten()?.forward(&self.dense)
+        input
+            .forward(&self.conv1)?
+            .forward(&self.conv2)?
+            .flatten()?
+            .forward(&self.dense)
     }
 }
 

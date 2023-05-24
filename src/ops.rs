@@ -46,6 +46,49 @@ pub(crate) trait Im2ColConv2 {
     fn im2col_conv2(&self, options: Im2ColConv2Options) -> Result<Self::Output>;
 }
 
+#[cfg(feature = "neural-network")]
+pub(crate) struct Col2ImConv2Options {
+    pub(crate) shape: [usize; 2],
+    pub(crate) filter: [usize; 2],
+    pub(crate) padding: [usize; 2],
+    pub(crate) stride: [usize; 2],
+    pub(crate) dilation: [usize; 2],
+}
+
+#[cfg(feature = "neural-network")]
+impl Default for Col2ImConv2Options {
+    fn default() -> Self {
+        Self {
+            shape: [0, 0],
+            filter: [0, 0],
+            padding: [0, 0],
+            stride: [1, 1],
+            dilation: [1, 1],
+        }
+    }
+}
+
+#[cfg(feature = "neural-network")]
+impl Col2ImConv2Options {
+    pub(crate) fn output_shape(&self) -> [usize; 2] {
+        let mut shape = self.shape;
+        for ((a, f), (s, (p, d))) in shape.iter_mut().zip(self.filter).zip(
+            self.stride
+                .into_iter()
+                .zip(self.padding.into_iter().zip(self.dilation)),
+        ) {
+            *a = (*a - 1) * s + d * (f - 1) + 1 - (2 * p);
+        }
+        shape
+    }
+}
+
+#[cfg(feature = "neural-network")]
+pub(crate) trait Col2ImConv2 {
+    type Output;
+    fn col2im_conv2(&self, options: Col2ImConv2Options) -> Result<Self::Output>;
+}
+
 /*
 /// Dot (matrix) product.
 pub(crate) trait Dot<R> {

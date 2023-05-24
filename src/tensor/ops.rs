@@ -1,16 +1,16 @@
 use super::*;
 use crate::ops::AddAssign;
 #[cfg(feature = "neural-network")]
-use crate::ops::{Im2ColConv2, Im2ColConv2Options};
+use crate::ops::{Col2ImConv2, Col2ImConv2Options, Im2ColConv2, Im2ColConv2Options};
 #[cfg(feature = "device")]
 use anyhow::format_err;
-use dry::macro_for;
+use dry::{macro_for, macro_wrap};
 use half::{bf16, f16};
 use krnl::krnl_core::num_traits::ToPrimitive;
 #[cfg(feature = "device")]
 use krnl::macros::module;
 #[cfg(feature = "neural-network")]
-use ndarray::{Array2, Data as ArrayData};
+use ndarray::{Array2, Array4, Data as ArrayData};
 
 impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
     /// Converts to standard layout.
@@ -365,7 +365,7 @@ impl<T: Scalar, S: ArrayData<Elem = T>> Im2ColConv2 for ArrayBase<S, Ix4> {
     type Output = Array2<T>;
     fn im2col_conv2(&self, options: Im2ColConv2Options) -> Result<Self::Output> {
         let input = self.as_standard_layout();
-        let (bs, ic, ih, iw) = input.dim();
+        let (bs, c, ih, iw) = input.dim();
         let [oh, ow] = options.output_shape([ih, iw]);
         let Im2ColConv2Options {
             filter: [fh, fw],
@@ -373,7 +373,7 @@ impl<T: Scalar, S: ArrayData<Elem = T>> Im2ColConv2 for ArrayBase<S, Ix4> {
             stride: [sh, sw],
             dilation: [dh, dw],
         } = options;
-        let mut output = unsafe { Array::uninitialized([bs, oh, ow, ic, fh * fw]) };
+        let mut output = Array::zeros([bs, oh, ow, c, fh * fw]);
         for (input, mut output) in input.outer_iter().zip(output.outer_iter_mut()) {
             for (input, mut output) in input.outer_iter().zip(output.axis_iter_mut(Axis(2))) {
                 for (hid, mut output) in output.outer_iter_mut().enumerate() {
@@ -388,10 +388,7 @@ impl<T: Scalar, S: ArrayData<Elem = T>> Im2ColConv2 for ArrayBase<S, Ix4> {
                                     && widx >= 0
                                     && widx < iw as isize
                                 {
-                                    unsafe {
-                                        *output.uget_mut(fidx) =
-                                            *input.uget((hidx as usize, widx as usize));
-                                    }
+                                    output[fidx] = input[(hidx as usize, widx as usize)];
                                 }
                             }
                         }
@@ -399,7 +396,7 @@ impl<T: Scalar, S: ArrayData<Elem = T>> Im2ColConv2 for ArrayBase<S, Ix4> {
                 }
             }
         }
-        Ok(output.into_shape([bs * oh * ow, ic * fh * fw]).unwrap())
+        Ok(output.into_shape([bs * oh * ow, c * fh * fw]).unwrap())
     }
 }
 
@@ -411,6 +408,93 @@ impl<T: Scalar, S: Data<Elem = T>> Im2ColConv2 for TensorBase<S, Ix4> {
             return input.im2col_conv2(options).map(Into::into);
         }
         todo!()
+    }
+}
+
+#[cfg(feature = "neural-network")]
+impl<S: ScalarData> Im2ColConv2 for ScalarTensorBase<S, Ix4> {
+    type Output = ScalarTensor2;
+    fn im2col_conv2(&self, options: Im2ColConv2Options) -> Result<Self::Output> {
+        macro_wrap!(paste! { match self.scalar_type() {
+            macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+               ScalarType::[<$T:upper>] => {
+                   return self.view().try_into_tensor_view::<$T>().unwrap().im2col_conv2(options).map(Into::into);
+               }
+            })
+            _ => (),
+        }});
+        bail!("im2col_conv2 {:?} unimplemented!()", self.scalar_type())
+    }
+}
+
+#[cfg(feature = "neural-network")]
+impl<T: Scalar, S: ArrayData<Elem = T>> Col2ImConv2 for ArrayBase<S, Ix2> {
+    type Output = Array4<T>;
+    fn col2im_conv2(&self, options: Col2ImConv2Options) -> Result<Self::Output> {
+        let input = self.as_standard_layout();
+        let (rows, cols) = input.dim();
+        let [oh, ow] = options.output_shape();
+        let Col2ImConv2Options {
+            shape: [ih, iw],
+            filter: [fh, fw],
+            padding: [ph, pw],
+            stride: [sh, sw],
+            dilation: [dh, dw],
+        } = options;
+        let bs = rows / (ih * iw);
+        let c = cols / (fh * fw);
+        let input = input.into_shape([bs, ih, iw, c, fh * fw]).unwrap();
+        let mut output = Array::zeros([bs, c, oh, ow]);
+        for (input, mut output) in input.outer_iter().zip(output.outer_iter_mut()) {
+            for (input, mut output) in input.axis_iter(Axis(2)).zip(output.outer_iter_mut()) {
+                for (hid, input) in input.outer_iter().enumerate() {
+                    for (wid, input) in input.outer_iter().enumerate() {
+                        for fi in 0..fh {
+                            for fj in 0..fw {
+                                let hidx = -(ph as isize) + (fi * dh + sh * hid) as isize;
+                                let widx = -(pw as isize) + (fj * dw + sw * wid) as isize;
+                                let fidx = fi * fw + fj;
+                                if hidx >= 0
+                                    && hidx < oh as isize
+                                    && widx >= 0
+                                    && widx < ow as isize
+                                {
+                                    output[(hidx as usize, widx as usize)] += input[fidx];
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(output)
+    }
+}
+
+#[cfg(feature = "neural-network")]
+impl<T: Scalar, S: Data<Elem = T>> Col2ImConv2 for TensorBase<S, Ix2> {
+    type Output = Tensor4<T>;
+    fn col2im_conv2(&self, options: Col2ImConv2Options) -> Result<Self::Output> {
+        if let Some(input) = self.as_array() {
+            return input.col2im_conv2(options).map(Into::into);
+        }
+        todo!()
+    }
+}
+
+#[cfg(feature = "neural-network")]
+impl<S: ScalarData> Col2ImConv2 for ScalarTensorBase<S, Ix2> {
+    type Output = ScalarTensor4;
+    fn col2im_conv2(&self, options: Col2ImConv2Options) -> Result<Self::Output> {
+        macro_wrap!(paste! { match self.scalar_type() {
+            macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+               ScalarType::[<$T:upper>] => {
+                   return self.view().try_into_tensor_view::<$T>().unwrap().col2im_conv2(options).map(Into::into);
+               }
+            })
+            _ => (),
+        }});
+        bail!("im2col_conv2 {:?} unimplemented!()", self.scalar_type())
     }
 }
 

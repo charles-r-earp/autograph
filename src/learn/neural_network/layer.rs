@@ -6,7 +6,7 @@ use crate::{
     buffer::{Buffer, ScalarBuffer, ScalarData, ScalarSliceMut},
     device::Device,
     krnl::krnl_core::half::bf16,
-    ops::{AddAssign, Im2ColConv2, Im2ColConv2Options},
+    ops::{AddAssign, Col2ImConv2, Col2ImConv2Options, Im2ColConv2, Im2ColConv2Options},
     scalar::{Scalar, ScalarType},
     tensor::{ScalarArcTensor, ScalarTensor, ScalarTensorBase, Tensor, TensorView, TensorViewMut},
 };
@@ -111,7 +111,7 @@ pub mod builder {
             let mut rng = thread_rng();
             let weight_iter = Uniform::new(-a, a)
                 .sample_iter(&mut rng)
-                .take(inputs * filter[0] * filter[1] * outputs);
+                .take(outputs * inputs * filter[0] * filter[1]);
             let weight = match scalar_type {
                 ScalarType::BF16 => ScalarBuffer::from(Buffer::from(
                     weight_iter.map(bf16::from_f32).collect::<Vec<_>>(),
@@ -124,7 +124,7 @@ pub mod builder {
             let weight = weight.into_device(device.clone())?;
             let weight = Parameter::from(
                 ScalarTensor::from(weight)
-                    .into_shape([inputs, filter[0], filter[1], outputs])
+                    .into_shape([outputs, inputs, filter[0], filter[1]])
                     .unwrap(),
             );
             let bias = if bias {
@@ -369,61 +369,67 @@ impl<A> Layer for Conv2<A> {
 impl<A: Forward<Variable4, Output = Variable4>> Forward<Variable4> for Conv2<A> {
     type Output = Variable4;
     fn forward(&self, input: Variable4) -> Result<Variable4> {
-        let input_value = input.value().view().try_into_tensor_view::<f32>().unwrap();
         let (batch_size, inputs, ih, iw) = input.dim();
-        let (inputs2, fh, fw, outputs) = self.weight.dim();
+        let (outputs, inputs2, fh, fw) = self.weight.dim();
         assert_eq!(inputs, inputs2);
         let options = Im2ColConv2Options {
             filter: [fh, fw],
             ..Im2ColConv2Options::default()
         };
         let [oh, ow] = options.output_shape([ih, iw]);
-        //use std::time::Instant;
-        //let im2col_start = Instant::now();
-        let im2col_matrix = input_value.im2col_conv2(options)?;
-        //dbg!(im2col_start.elapsed());
-        let weight_value = self
+        let im2col_matrix = input.value().im2col_conv2(options)?;
+        let weight_matrix = self
             .weight
             .value()
-            .view()
-            .try_into_tensor_view::<f32>()
-            .unwrap()
-            .into_shape([inputs * fh * fw, outputs])
+            .clone()
+            .into_shape([outputs, inputs * fh * fw])
             .unwrap();
-        //let dot_start = Instant::now();
-        let output = im2col_matrix.dot(&weight_value)?;
-        //dbg!(dot_start.elapsed());
-        //let transpose_start = Instant::now();
-        let output = output
+        let output_matrix = im2col_matrix.dot(&weight_matrix.t())?;
+        let mut builder = Variable::builder();
+        if let Some(node) = input.node() {
+            let weight_matrix = weight_matrix.clone();
+            builder.edge(node, move |output_grad| {
+                let options = Col2ImConv2Options {
+                    shape: [oh, ow],
+                    filter: [fh, fw],
+                    ..Col2ImConv2Options::default()
+                };
+                output_grad
+                    .dot(&weight_matrix)?
+                    .col2im_conv2(options)
+                    .map(Into::into)
+            });
+        }
+        let weight = self.weight.to_variable();
+        if let Some(node) = weight.node() {
+            builder.edge(node, move |output_grad| {
+                let weight_grad = output_grad
+                    .t()
+                    .dot(&im2col_matrix)?
+                    .into_shape([outputs, inputs, fh, fw])
+                    .unwrap();
+                Ok(weight_grad.into())
+            });
+        }
+        let output_matrix = builder.build(output_matrix.into());
+        let mut builder = Variable::builder();
+        if let Some(node) = output_matrix.node() {
+            builder.edge(node, move |output_grad| {
+                Ok(output_grad
+                    .permuted_axes([0, 2, 3, 1])
+                    .into_owned()?
+                    .into_shape([batch_size * oh * ow, outputs])
+                    .unwrap()
+                    .into())
+            });
+        }
+        let output = output_matrix
+            .value()
+            .view()
             .into_shape([batch_size, oh, ow, outputs])
             .unwrap()
             .permuted_axes([0, 3, 1, 2])
             .to_owned()?;
-        //dbg!(transpose_start.elapsed());
-        let mut builder = Variable::builder();
-        if let Some(node) = input.node() {
-            builder.edge(node, move |output_grad| todo!());
-        }
-        let weight = self.weight.to_variable();
-        if let Some(node) = weight.node() {
-            let im2col_matrix = ScalarTensor::from(im2col_matrix);
-            builder.edge(node, move |output_grad| {
-                //let output_grad_transpose_start = Instant::now();
-                let output_grad = output_grad
-                    .permuted_axes([0, 2, 3, 1])
-                    .into_owned()?
-                    .into_shape([batch_size * oh * ow, outputs])?;
-                //dbg!(output_grad_transpose_start.elapsed());
-                //let weight_grad_start = Instant::now();
-                let weight_grad = im2col_matrix
-                    .t()
-                    .dot(&output_grad)?
-                    .into_shape([inputs, fh, fw, outputs])
-                    .unwrap();
-                //dbg!(weight_grad_start.elapsed());
-                Ok(weight_grad.into())
-            });
-        }
         let output = builder.build(output.into());
         self.activation.forward(output)
     }
