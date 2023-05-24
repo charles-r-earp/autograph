@@ -51,7 +51,7 @@ serde = { workspace = true, features = ["derive", "rc"] }
 derive_more = "0.99.11"
 thiserror = "1.0.23"
 approx = "0.5.0"
-prettytable-rs = "0.8.0"
+#prettytable-rs = "0.8.0"
 bytemuck = "1.4.1"
 byteorder = { version = "1.4.3", optional = true }
 dirs = { version = "3.0.2", optional = true }

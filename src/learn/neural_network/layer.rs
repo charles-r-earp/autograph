@@ -1,12 +1,12 @@
 use super::autograd::{
-    Parameter, Parameter1, Parameter2, ParameterViewMut1, ParameterViewMut2, ParameterViewMutD,
-    Variable, Variable2,
+    Parameter, Parameter1, Parameter2, Parameter4, ParameterViewMut1, ParameterViewMut2,
+    ParameterViewMut4, ParameterViewMutD, Variable, Variable2, Variable4,
 };
 use crate::{
     buffer::{Buffer, ScalarBuffer, ScalarData, ScalarSliceMut},
     device::Device,
     krnl::krnl_core::half::bf16,
-    ops::AddAssign,
+    ops::{AddAssign, Im2ColConv2, Im2ColConv2Options},
     scalar::{Scalar, ScalarType},
     tensor::{ScalarArcTensor, ScalarTensor, ScalarTensorBase, Tensor, TensorView, TensorViewMut},
 };
@@ -23,6 +23,133 @@ use std::any::Any;
 
 pub mod builder {
     use super::*;
+
+    pub struct Conv2Builder<A = Identity> {
+        inputs: usize,
+        outputs: usize,
+        filter: [usize; 2],
+        bias: bool,
+        scalar_type: ScalarType,
+        device: Device,
+        activation: A,
+    }
+
+    impl Conv2Builder {
+        pub(super) fn new() -> Self {
+            Self {
+                inputs: 0,
+                outputs: 0,
+                filter: [0, 0],
+                bias: false,
+                scalar_type: ScalarType::F32,
+                device: Device::host(),
+                activation: Identity,
+            }
+        }
+    }
+
+    impl<A> Conv2Builder<A> {
+        pub fn inputs(self, inputs: usize) -> Self {
+            Self { inputs, ..self }
+        }
+        pub fn outputs(self, outputs: usize) -> Self {
+            Self { outputs, ..self }
+        }
+        pub fn filter(self, filter: [usize; 2]) -> Self {
+            Self { filter, ..self }
+        }
+        pub fn bias(self, bias: bool) -> Self {
+            Self { bias, ..self }
+        }
+        pub fn activation<A2>(self, activation: A2) -> Conv2Builder<A2> {
+            let Self {
+                inputs,
+                outputs,
+                filter,
+                bias,
+                activation: _,
+                scalar_type,
+                device,
+            } = self;
+            Conv2Builder {
+                inputs,
+                outputs,
+                filter,
+                bias,
+                activation,
+                scalar_type,
+                device,
+            }
+        }
+        pub fn scalar_type(self, scalar_type: ScalarType) -> Self {
+            Self {
+                scalar_type,
+                ..self
+            }
+        }
+        pub fn device(self, device: Device) -> Self {
+            Self { device, ..self }
+        }
+        pub fn build(self) -> Result<Conv2<A>> {
+            let Self {
+                inputs,
+                outputs,
+                filter,
+                bias,
+                activation,
+                scalar_type,
+                device,
+            } = self;
+            if !matches!(scalar_type, ScalarType::BF16 | ScalarType::F32) {
+                bail!("Dense {scalar_type:?} not supported!");
+            }
+            let a = if inputs > 0 {
+                f32::sqrt(2. / inputs as f32)
+            } else {
+                0.
+            };
+            let mut rng = thread_rng();
+            let weight_iter = Uniform::new(-a, a)
+                .sample_iter(&mut rng)
+                .take(inputs * filter[0] * filter[1] * outputs);
+            let weight = match scalar_type {
+                ScalarType::BF16 => ScalarBuffer::from(Buffer::from(
+                    weight_iter.map(bf16::from_f32).collect::<Vec<_>>(),
+                )),
+                ScalarType::F32 => {
+                    ScalarBuffer::from(Buffer::from(weight_iter.collect::<Vec<_>>()))
+                }
+                _ => unreachable!(),
+            };
+            let weight = weight.into_device(device.clone())?;
+            let weight = Parameter::from(
+                ScalarTensor::from(weight)
+                    .into_shape([inputs, filter[0], filter[1], outputs])
+                    .unwrap(),
+            );
+            let bias = if bias {
+                let bias_iter = Uniform::new(-a, a).sample_iter(rng).take(outputs);
+                let bias = match scalar_type {
+                    ScalarType::BF16 => ScalarBuffer::from(Buffer::from(
+                        bias_iter.map(bf16::from_f32).collect::<Vec<_>>(),
+                    )),
+                    ScalarType::F32 => {
+                        ScalarBuffer::from(Buffer::from(bias_iter.collect::<Vec<_>>()))
+                    }
+                    _ => unreachable!(),
+                };
+                let bias = bias.into_device(device)?;
+                Some(Parameter::from(ScalarTensor::from(bias)))
+            } else {
+                None
+            };
+            Ok(Conv2 {
+                weight,
+                bias,
+                activation,
+            })
+        }
+    }
 
     pub struct DenseBuilder<A = Identity> {
         inputs: usize,
@@ -143,7 +270,7 @@ pub mod builder {
         }
     }
 }
-use builder::DenseBuilder;
+use builder::{Conv2Builder, DenseBuilder};
 
 pub struct LayerMut<'a> {
     inner: &'a mut dyn Layer,
@@ -194,6 +321,112 @@ pub trait Layer {
 pub trait Forward<X> {
     type Output;
     fn forward(&self, input: X) -> Result<Self::Output>;
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Conv2<A = Identity> {
+    weight: Parameter4,
+    bias: Option<Parameter1>,
+    activation: A,
+}
+
+impl Conv2 {
+    pub fn builder() -> Conv2Builder {
+        Conv2Builder::new()
+    }
+    pub fn weight_view_mut(&mut self) -> ParameterViewMut4 {
+        todo!()
+    }
+    pub fn bias_view_mut(&mut self) -> Result<Option<ParameterViewMut1>> {
+        todo!()
+    }
+    pub fn into_device(self, _device: Device) -> Result<Self> {
+        todo!()
+    }
+    pub fn to_device_mut(&mut self, _device: Device) -> Result<()> {
+        todo!()
+    }
+}
+
+impl<A> Layer for Conv2<A> {
+    fn set_training(&mut self, training: bool) -> Result<()> {
+        self.weight.set_training(training);
+        if let Some(bias) = self.bias.as_mut() {
+            bias.set_training(training);
+        }
+        Ok(())
+    }
+    fn parameters_mut(&mut self) -> Result<Vec<ParameterViewMutD>> {
+        let mut parameters = Vec::new();
+        parameters.push(self.weight.make_view_mut()?.into_dyn());
+        if let Some(bias) = self.bias.as_mut() {
+            parameters.push(bias.make_view_mut()?.into_dyn());
+        }
+        Ok(parameters)
+    }
+}
+
+impl<A: Forward<Variable4, Output = Variable4>> Forward<Variable4> for Conv2<A> {
+    type Output = Variable4;
+    fn forward(&self, input: Variable4) -> Result<Variable4> {
+        let input_value = input.value().view().try_into_tensor_view::<f32>().unwrap();
+        let (batch_size, inputs, ih, iw) = input.dim();
+        let (inputs2, fh, fw, outputs) = self.weight.dim();
+        assert_eq!(inputs, inputs2);
+        let options = Im2ColConv2Options {
+            filter: [fh, fw],
+            ..Im2ColConv2Options::default()
+        };
+        let [oh, ow] = options.output_shape([ih, iw]);
+        //use std::time::Instant;
+        //let im2col_start = Instant::now();
+        let im2col_matrix = input_value.im2col_conv2(options)?;
+        //dbg!(im2col_start.elapsed());
+        let weight_value = self
+            .weight
+            .value()
+            .view()
+            .try_into_tensor_view::<f32>()
+            .unwrap()
+            .into_shape([inputs * fh * fw, outputs])
+            .unwrap();
+        //let dot_start = Instant::now();
+        let output = im2col_matrix.dot(&weight_value)?;
+        //dbg!(dot_start.elapsed());
+        //let transpose_start = Instant::now();
+        let output = output
+            .into_shape([batch_size, oh, ow, outputs])
+            .unwrap()
+            .permuted_axes([0, 3, 1, 2])
+            .to_owned()?;
+        //dbg!(transpose_start.elapsed());
+        let mut builder = Variable::builder();
+        if let Some(node) = input.node() {
+            builder.edge(node, move |output_grad| todo!());
+        }
+        let weight = self.weight.to_variable();
+        if let Some(node) = weight.node() {
+            let im2col_matrix = ScalarTensor::from(im2col_matrix);
+            builder.edge(node, move |output_grad| {
+                //let output_grad_transpose_start = Instant::now();
+                let output_grad = output_grad
+                    .permuted_axes([0, 2, 3, 1])
+                    .into_owned()?
+                    .into_shape([batch_size * oh * ow, outputs])?;
+                //dbg!(output_grad_transpose_start.elapsed());
+                //let weight_grad_start = Instant::now();
+                let weight_grad = im2col_matrix
+                    .t()
+                    .dot(&output_grad)?
+                    .into_shape([inputs, fh, fw, outputs])
+                    .unwrap();
+                //dbg!(weight_grad_start.elapsed());
+                Ok(weight_grad.into())
+            });
+        }
+        let output = builder.build(output.into());
+        self.activation.forward(output)
+    }
 }
 
 ///```no_run
@@ -505,6 +738,7 @@ mod kernels {
             *dx = relu_backward_impl(x, dy);
         }
     }
+    #[cfg(feature = "device")]
     pub use device::*;
 }
 use kernels::{relu_backward_impl, relu_impl};

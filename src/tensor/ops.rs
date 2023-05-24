@@ -1,10 +1,14 @@
 use super::*;
 use crate::ops::AddAssign;
+#[cfg(feature = "neural-network")]
+use crate::ops::{Im2ColConv2, Im2ColConv2Options};
 #[cfg(feature = "device")]
 use anyhow::format_err;
 use dry::macro_for;
 use half::{bf16, f16};
 use krnl::krnl_core::num_traits::ToPrimitive;
+#[cfg(feature = "neural-network")]
+use ndarray::{Data as ArrayData, Array2};
 #[cfg(feature = "device")]
 use krnl::macros::module;
 
@@ -356,6 +360,59 @@ fn scalar_assign(
     }
 }
 
+#[cfg(feature = "neural-network")]
+impl<T: Scalar, S: ArrayData<Elem = T>> Im2ColConv2 for ArrayBase<S, Ix4> {
+    type Output = Array2<T>;
+    fn im2col_conv2(&self, options: Im2ColConv2Options) -> Result<Self::Output> {
+        let input = self.as_standard_layout();
+        let (bs, ic, ih, iw) = input.dim();
+        let [oh, ow] = options.output_shape([ih, iw]);
+        let Im2ColConv2Options {
+            filter: [fh, fw],
+            padding: [ph, pw],
+            stride: [sh, sw],
+            dilation: [dh, dw],
+        } = options;
+        let mut output = unsafe { Array::uninitialized([bs, oh, ow, ic, fh * fw]) };
+        for (input, mut output) in input.outer_iter().zip(output.outer_iter_mut()) {
+            for (input, mut output) in input.outer_iter().zip(output.axis_iter_mut(Axis(2))) {
+                for (hid, mut output) in output.outer_iter_mut().enumerate() {
+                    for (wid, mut output) in output.outer_iter_mut().enumerate() {
+                        for fi in 0..fh {
+                            for fj in 0..fw {
+                                let hidx = -(ph as isize) + (fi * dh + sh * hid) as isize;
+                                let widx = -(pw as isize) + (fj * dw + sw * wid) as isize;
+                                let fidx = fi * fw + fj;
+                                if hidx >= 0
+                                    && hidx < ih as isize
+                                    && widx >= 0
+                                    && widx < iw as isize
+                                {
+                                    unsafe {
+                                        *output.uget_mut(fidx) = *input.uget((hidx as usize, widx as usize));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(output.into_shape([bs * oh * ow, ic * fh * fw]).unwrap())
+    }
+}
+
+#[cfg(feature = "neural-network")]
+impl<T: Scalar, S: Data<Elem = T>> Im2ColConv2 for TensorBase<S, Ix4> {
+    type Output = Tensor2<T>;
+    fn im2col_conv2(&self, options: Im2ColConv2Options) -> Result<Self::Output> {
+        if let Some(input) = self.as_array() {
+            return input.im2col_conv2(options).map(Into::into);
+        }
+        todo!()
+    }
+}
+
 #[cfg_attr(feature = "device", module)]
 mod kernels {
     use dry::macro_for;
@@ -468,6 +525,6 @@ mod kernels {
                 }
             }
         });
-    }); 
+    });
 }
 use kernels::BinaryOp;

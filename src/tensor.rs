@@ -1628,7 +1628,7 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     /// Converts into a [`Tensor`].
     pub fn into_owned(self) -> Result<Tensor<T, D>> {
         if !self.is_contiguous() {
-            todo!();
+            return self.into_standard_layout();
         }
         Ok(TensorBase {
             dim: self.dim,
@@ -1693,39 +1693,36 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
         let vec = self.buffer.into_vec()?;
         Ok(Array::from_shape_vec(self.dim.clone().strides(self.strides.clone()), vec).unwrap())
     }
-    /// Returns the tensor as an array if on the host and contiguous
+    /// Returns the tensor as an array if on the host
     pub fn as_array(&self) -> Option<ArrayView<T, D>> {
-        if let Some(slice) = self.as_slice_memory_order() {
-            if let Some(host_slice) = slice.as_host_slice() {
-                return Some(unsafe {
-                    ArrayView::from_shape_ptr(
-                        self.dim.clone().strides(self.strides.clone()),
-                        host_slice.as_ptr(),
-                    )
-                });
-            }
+        if let Some(host_slice) = self.buffer.as_host_slice() {
+            Some(unsafe {
+                ArrayView::from_shape_ptr(
+                    self.dim.clone().strides(self.strides.clone()),
+                    &host_slice[self.offset] as *const T,
+                )
+            })
+        } else {
+            None
         }
-        None
     }
     pub fn as_array_mut(&mut self) -> Option<ArrayViewMut<T, D>>
     where
         S: DataMut,
     {
-        if let Some(mut slice) = self.as_slice_memory_order_mut() {
-            if let Some(host_slice) = slice.as_host_slice_mut() {
-                let host_slice = unsafe {
-                    std::slice::from_raw_parts_mut(host_slice.as_mut_ptr(), host_slice.len())
-                };
-                return Some(
-                    ArrayViewMut::from_shape(
-                        self.dim.clone().strides(self.strides.clone()),
-                        host_slice,
-                    )
-                    .unwrap(),
-                );
-            }
+        if let Some(host_slice) = self.buffer.as_host_slice_mut() {
+            let host_slice = unsafe {
+                std::slice::from_raw_parts_mut(host_slice.as_mut_ptr(), host_slice.len())
+            };
+            Some(unsafe {
+                ArrayViewMut::from_shape_ptr(
+                    self.dim.clone().strides(self.strides.clone()),
+                    &mut host_slice[self.offset] as *mut T,
+                )
+            })
+        } else {
+            None
         }
-        None
     }
 }
 

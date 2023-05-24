@@ -258,6 +258,9 @@ impl<D: Dimension> Variable<D> {
     pub fn shape(&self) -> &[usize] {
         self.value.shape()
     }
+    pub fn dim(&self) -> D::Pattern {
+        self.value.dim()
+    }
     pub fn raw_dim(&self) -> D {
         self.value.raw_dim()
     }
@@ -455,16 +458,7 @@ impl Dot<Self> for Variable2 {
         if let Some(node) = rhs.node() {
             let lhs = lhs.value().clone();
             builder.edge(node, move |output_grad| {
-                /*let output_grad_array =
-                    output_grad.view().cast_into_tensor::<f32>()?.into_array()?;
-                dbg!(output_grad_array);
-                let lhs_array = lhs.view().cast_into_tensor::<f32>()?.into_array()?;
-                dbg!(lhs_array);*/
-                let input_grad = lhs.t().dot(&output_grad)?;
-                /*let input_grad_array = input_grad.view().cast_into_tensor::<f32>()?.into_array()?;
-                dbg!(input_grad_array);
-                todo!();*/
-                Ok(input_grad.into())
+                lhs.t().dot(&output_grad).map(Into::into)
             });
         }
         let value = lhs.value().dot(rhs.value())?.into();
@@ -488,10 +482,12 @@ pub struct ParameterBase<S: ScalarData, D: Dimension> {
 pub type Parameter<D> = ParameterBase<ScalarArcBufferRepr, D>;
 pub type Parameter1 = Parameter<Ix1>;
 pub type Parameter2 = Parameter<Ix2>;
+pub type Parameter4 = Parameter<Ix4>;
 
 pub type ParameterViewMut<'a, D> = ParameterBase<ScalarSliceMutRepr<'a>, D>;
 pub type ParameterViewMut1<'a> = ParameterViewMut<'a, Ix1>;
 pub type ParameterViewMut2<'a> = ParameterViewMut<'a, Ix2>;
+pub type ParameterViewMut4<'a> = ParameterViewMut<'a, Ix4>;
 pub type ParameterViewMutD<'a> = ParameterViewMut<'a, IxDyn>;
 
 impl<S: ScalarData, D: Dimension> ParameterBase<S, D> {
@@ -522,6 +518,9 @@ impl<S: ScalarData, D: Dimension> ParameterBase<S, D> {
     }
     pub fn shape(&self) -> &[usize] {
         self.value.shape()
+    }
+    pub fn dim(&self) -> D::Pattern {
+        self.value.dim()
     }
     pub fn raw_dim(&self) -> D {
         self.value.raw_dim()

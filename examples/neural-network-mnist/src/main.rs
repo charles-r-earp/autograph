@@ -7,7 +7,7 @@ use autograph::{
         criterion::{Accuracy, Criterion, CrossEntropyLoss},
         neural_network::{
             autograd::{ParameterViewMutD, Variable2, Variable4},
-            layer::{Dense, Forward, Layer, Relu},
+            layer::{Conv2, Dense, Forward, Layer, Relu},
             optimizer::{Optimizer, SGD},
         },
     },
@@ -45,6 +45,7 @@ impl DatasetKind {
 #[derive(Clone, Copy, ValueEnum, Debug)]
 enum ModelKind {
     Linear,
+    ConvNet,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -84,14 +85,66 @@ impl Forward<Variable4> for Linear {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+struct ConvNet {
+    conv: Conv2<Relu>,
+    dense: Dense,
+}
+
+impl ConvNet {
+    fn new(device: Device, scalar_type: ScalarType) -> Result<Self> {
+        let conv = Conv2::builder()
+            .device(device.clone())
+            .scalar_type(scalar_type)
+            .inputs(1)
+            .outputs(6)
+            .filter([5, 5])
+            .activation(Relu)
+            .build()?;
+        let dense = Dense::builder()
+            .device(device)
+            .scalar_type(scalar_type)
+            .inputs(6 * 24 * 24)
+            .outputs(10)
+            .bias(true)
+            .build()?;
+        Ok(Self { conv, dense })
+    }
+}
+
+impl Layer for ConvNet {
+    fn set_training(&mut self, training: bool) -> Result<()> {
+        self.dense.set_training(training)?;
+        self.conv.set_training(training)?;
+        Ok(())
+    }
+    fn parameters_mut(&mut self) -> Result<Vec<ParameterViewMutD>> {
+        Ok(self
+            .dense
+            .parameters_mut()?
+            .into_iter()
+            .chain(self.conv.parameters_mut()?)
+            .collect())
+    }
+}
+
+impl Forward<Variable4> for ConvNet {
+    type Output = Variable2;
+    fn forward(&self, input: Variable4) -> Result<Self::Output> {
+        input.forward(&self.conv)?.flatten()?.forward(&self.dense)
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 enum Model {
     Linear(Linear),
+    ConvNet(ConvNet),
 }
 
 impl Model {
     fn new(kind: ModelKind, device: Device, scalar_type: ScalarType) -> Result<Self> {
         match kind {
             ModelKind::Linear => Ok(Self::Linear(Linear::new(device, scalar_type)?)),
+            ModelKind::ConvNet => Ok(Self::ConvNet(ConvNet::new(device, scalar_type)?)),
         }
     }
 }
@@ -102,12 +155,16 @@ impl Layer for Model {
             Self::Linear(x) => {
                 x.set_training(training)?;
             }
+            Self::ConvNet(x) => {
+                x.set_training(training)?;
+            }
         }
         Ok(())
     }
     fn parameters_mut(&mut self) -> Result<Vec<ParameterViewMutD>> {
         match self {
             Self::Linear(x) => x.parameters_mut(),
+            Self::ConvNet(x) => x.parameters_mut(),
         }
     }
 }
@@ -117,6 +174,7 @@ impl Forward<Variable4> for Model {
     fn forward(&self, input: Variable4) -> Result<Self::Output> {
         match self {
             Self::Linear(linear) => linear.forward(input),
+            Self::ConvNet(conv_net) => conv_net.forward(input),
         }
     }
 }
