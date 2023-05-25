@@ -89,6 +89,34 @@ pub(crate) trait Col2ImConv2 {
     fn col2im_conv2(&self, options: Col2ImConv2Options) -> Result<Self::Output>;
 }
 
+#[cfg(feature = "neural-network")]
+pub struct MaxPool2Options {
+    pub(crate) size: [usize; 2],
+    pub(crate) strides: [usize; 2],
+}
+
+#[cfg(feature = "neural-network")]
+impl MaxPool2Options {
+    pub(crate) fn output_shape(&self, input_shape: [usize; 2]) -> [usize; 2] {
+        let mut shape = input_shape;
+        for (a, (x, s)) in shape.iter_mut().zip(self.size.into_iter().zip(self.strides)) {
+            *a = (*a - x) / s + 1;
+        }
+        shape
+    }
+}
+
+#[cfg(feature = "neural-network")]
+pub(crate) trait MaxPool2 {
+    type Output;
+    fn max_pool2(&self, options: MaxPool2Options) -> Result<Self::Output>;
+}
+
+#[cfg(feature = "neural-network")]
+pub(crate) trait MaxPool2Backward<DY> {
+    fn max_pool2_backward(&mut self, output_grad: DY, options: MaxPool2Options) -> Result<()>;
+}
+
 /*
 /// Dot (matrix) product.
 pub(crate) trait Dot<R> {

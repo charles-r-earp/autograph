@@ -6,7 +6,7 @@ use crate::{
     buffer::{Buffer, ScalarBuffer, ScalarData, ScalarSliceMut},
     device::Device,
     krnl::krnl_core::half::bf16,
-    ops::{AddAssign, Col2ImConv2, Col2ImConv2Options, Im2ColConv2, Im2ColConv2Options},
+    ops::{AddAssign, Col2ImConv2, Col2ImConv2Options, Im2ColConv2, Im2ColConv2Options, MaxPool2 as _, MaxPool2Options, MaxPool2Backward as _},
     scalar::{Scalar, ScalarType},
     tensor::{ScalarArcTensor, ScalarTensor, ScalarTensorBase, Tensor, TensorView, TensorViewMut},
 };
@@ -269,8 +269,32 @@ pub mod builder {
             })
         }
     }
+
+    pub struct MaxPool2Builder {
+        size: [usize; 2],
+        strides: [usize; 2],
+    }
+
+    impl MaxPool2Builder {
+        pub(super) fn new() -> Self {
+            Self {
+                size: [0, 0],
+                strides: [1, 1],
+            }
+        }
+        pub fn size(self, size: [usize; 2]) -> Self {
+            Self { size, ..self }
+        }
+        pub fn strides(self, strides: [usize; 2]) -> Self {
+            Self { strides, ..self }
+        }
+        pub fn build(self) -> MaxPool2 {
+            let Self { size, strides } = self;
+            MaxPool2 { size, strides }
+        }
+    }
 }
-use builder::{Conv2Builder, DenseBuilder};
+use builder::*;
 
 pub struct LayerMut<'a> {
     inner: &'a mut dyn Layer,
@@ -502,6 +526,42 @@ impl<A: Forward<Variable2, Output = Variable2> + Any> Forward<Variable2> for Den
             output.add_assign(&bias.to_variable())?;
         }
         self.activation.forward(output)
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct MaxPool2 {
+    size: [usize; 2],
+    strides: [usize; 2],
+}
+
+impl MaxPool2 {
+    pub fn builder() -> MaxPool2Builder {
+        MaxPool2Builder::new()
+    }
+}
+
+impl Forward<Variable4> for MaxPool2 {
+    type Output = Variable4;
+    fn forward(&self, input: Variable4) -> Result<Self::Output> {
+        let options = MaxPool2Options {
+            size: self.size,
+            strides: self.strides,
+        };
+        let mut builder = Variable::builder();
+        if let Some(node) = input.node() {
+            let mut input = input.value().clone();
+            let options = MaxPool2Options {
+                size: self.size,
+                strides: self.strides,
+            };
+            builder.edge(node, |output_grad| {
+                input.make_view_mut()?.max_pool2_backward(output_grad, options)?;
+                Ok(input)
+            });
+        }
+        let output = input.value().max_pool2(options)?;
+        Ok(builder.build(output.into()))
     }
 }
 
