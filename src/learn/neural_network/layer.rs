@@ -6,7 +6,10 @@ use crate::{
     buffer::{Buffer, ScalarBuffer, ScalarData, ScalarSliceMut},
     device::Device,
     krnl::krnl_core::half::bf16,
-    ops::{AddAssign, Col2ImConv2, Col2ImConv2Options, Im2ColConv2, Im2ColConv2Options, MaxPool2 as _, MaxPool2Options, MaxPool2Backward as _},
+    ops::{
+        AddAssign, Col2ImConv2, Col2ImConv2Options, Im2ColConv2, Im2ColConv2Options, MaxPool2 as _,
+        MaxPool2Backward as _, MaxPool2Options,
+    },
     scalar::{Scalar, ScalarType},
     tensor::{ScalarArcTensor, ScalarTensor, ScalarTensorBase, Tensor, TensorView, TensorViewMut},
 };
@@ -556,7 +559,9 @@ impl Forward<Variable4> for MaxPool2 {
                 strides: self.strides,
             };
             builder.edge(node, |output_grad| {
-                input.make_view_mut()?.max_pool2_backward(output_grad, options)?;
+                input
+                    .make_view_mut()?
+                    .max_pool2_backward(output_grad, options)?;
                 Ok(input)
             });
         }

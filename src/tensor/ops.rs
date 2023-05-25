@@ -1,7 +1,10 @@
 use super::*;
 use crate::ops::AddAssign;
 #[cfg(feature = "neural-network")]
-use crate::ops::{Col2ImConv2, Col2ImConv2Options, Im2ColConv2, Im2ColConv2Options, MaxPool2, MaxPool2Options, MaxPool2Backward};
+use crate::ops::{
+    Col2ImConv2, Col2ImConv2Options, Im2ColConv2, Im2ColConv2Options, MaxPool2, MaxPool2Backward,
+    MaxPool2Options,
+};
 #[cfg(feature = "device")]
 use anyhow::format_err;
 use dry::{macro_for, macro_wrap};
@@ -499,7 +502,7 @@ impl<S: ScalarData> Col2ImConv2 for ScalarTensorBase<S, Ix2> {
 }
 
 #[cfg(feature = "neural-network")]
-impl<T: Scalar, S: ArrayData<Elem=T>> MaxPool2 for ArrayBase<S, Ix4> {
+impl<T: Scalar, S: ArrayData<Elem = T>> MaxPool2 for ArrayBase<S, Ix4> {
     type Output = Array4<T>;
     fn max_pool2(&self, options: MaxPool2Options) -> Result<Self::Output> {
         let (bs, c, ih, iw) = self.dim();
@@ -511,18 +514,18 @@ impl<T: Scalar, S: ArrayData<Elem=T>> MaxPool2 for ArrayBase<S, Ix4> {
         let mut output = Array::zeros([bs, c, oh, ow]);
         for (x, mut y) in self.outer_iter().zip(output.outer_iter_mut()) {
             for (x, mut y) in x.outer_iter().zip(y.outer_iter_mut()) {
-                for ((row, col), y) in y.indexed_iter_mut() { 
+                for ((row, col), y) in y.indexed_iter_mut() {
                     let mut m = T::default();
-                    for i in 0 .. h {
-                        for j in 0 .. w {
+                    for i in 0..h {
+                        for j in 0..w {
                             let x = x[(row * sh + i, col * sw + j)];
                             if (i == 0 && j == 0) || x > m {
                                 m = x;
-                            } 
+                            }
                         }
                     }
                     *y = m;
-                } 
+                }
             }
         }
         Ok(output)
@@ -530,7 +533,7 @@ impl<T: Scalar, S: ArrayData<Elem=T>> MaxPool2 for ArrayBase<S, Ix4> {
 }
 
 #[cfg(feature = "neural-network")]
-impl<T: Scalar, S: Data<Elem=T>> MaxPool2 for TensorBase<S, Ix4> {
+impl<T: Scalar, S: Data<Elem = T>> MaxPool2 for TensorBase<S, Ix4> {
     type Output = Tensor4<T>;
     fn max_pool2(&self, options: MaxPool2Options) -> Result<Self::Output> {
         if let Some(input) = self.as_array() {
@@ -557,8 +560,14 @@ impl<S: ScalarData> MaxPool2 for ScalarTensorBase<S, Ix4> {
 }
 
 #[cfg(feature = "neural-network")]
-impl<T: Scalar, S1: ArrayDataMut<Elem=T>, S2: ArrayData<Elem=T>> MaxPool2Backward<ArrayBase<S2, Ix4>> for ArrayBase<S1, Ix4> {
-    fn max_pool2_backward(&mut self, output_grad: ArrayBase<S2, Ix4>, options: MaxPool2Options) -> Result<()> {
+impl<T: Scalar, S1: ArrayDataMut<Elem = T>, S2: ArrayData<Elem = T>>
+    MaxPool2Backward<ArrayBase<S2, Ix4>> for ArrayBase<S1, Ix4>
+{
+    fn max_pool2_backward(
+        &mut self,
+        output_grad: ArrayBase<S2, Ix4>,
+        options: MaxPool2Options,
+    ) -> Result<()> {
         let (bs, c, ih, iw) = self.dim();
         let [oh, ow] = options.output_shape([ih, iw]);
         let MaxPool2Options {
@@ -567,21 +576,21 @@ impl<T: Scalar, S1: ArrayDataMut<Elem=T>, S2: ArrayData<Elem=T>> MaxPool2Backwar
         } = options;
         for (mut dx, dy) in self.outer_iter_mut().zip(output_grad.outer_iter()) {
             for (mut dx, dy) in dx.outer_iter_mut().zip(dy.outer_iter()) {
-                for ((row, col), dy) in dy.indexed_iter() { 
+                for ((row, col), dy) in dy.indexed_iter() {
                     let mut m = T::default();
                     let mut mi = 0;
                     let mut mj = 0;
-                    for i in 0 .. h {
-                        for j in 0 .. w {
+                    for i in 0..h {
+                        for j in 0..w {
                             let mut dx = &mut dx[(row * sh + i, col * sw + j)];
                             if (i == 0 && j == 0) || *dx > m {
                                 m = *dx;
-                            } 
+                            }
                             *dx = T::default();
                         }
                     }
                     dx[(mi, mj)] = *dy;
-                } 
+                }
             }
         }
         Ok(())
@@ -589,8 +598,14 @@ impl<T: Scalar, S1: ArrayDataMut<Elem=T>, S2: ArrayData<Elem=T>> MaxPool2Backwar
 }
 
 #[cfg(feature = "neural-network")]
-impl<T: Scalar, S1: DataMut<Elem=T>, S2: Data<Elem=T>> MaxPool2Backward<TensorBase<S2, Ix4>> for TensorBase<S1, Ix4> {
-    fn max_pool2_backward(&mut self, output_grad: TensorBase<S2, Ix4>, options: MaxPool2Options) -> Result<()> {
+impl<T: Scalar, S1: DataMut<Elem = T>, S2: Data<Elem = T>> MaxPool2Backward<TensorBase<S2, Ix4>>
+    for TensorBase<S1, Ix4>
+{
+    fn max_pool2_backward(
+        &mut self,
+        output_grad: TensorBase<S2, Ix4>,
+        options: MaxPool2Options,
+    ) -> Result<()> {
         if let Some((mut dx, dy)) = self.as_array_mut().zip(output_grad.as_array()) {
             return dx.max_pool2_backward(dy, options);
         }
@@ -599,10 +614,20 @@ impl<T: Scalar, S1: DataMut<Elem=T>, S2: Data<Elem=T>> MaxPool2Backward<TensorBa
 }
 
 #[cfg(feature = "neural-network")]
-impl<S1: ScalarDataMut, S2: ScalarData> MaxPool2Backward<ScalarTensorBase<S2, Ix4>> for ScalarTensorBase<S1, Ix4> {
-    fn max_pool2_backward(&mut self, output_grad: ScalarTensorBase<S2, Ix4>, options: MaxPool2Options) -> Result<()> {
+impl<S1: ScalarDataMut, S2: ScalarData> MaxPool2Backward<ScalarTensorBase<S2, Ix4>>
+    for ScalarTensorBase<S1, Ix4>
+{
+    fn max_pool2_backward(
+        &mut self,
+        output_grad: ScalarTensorBase<S2, Ix4>,
+        options: MaxPool2Options,
+    ) -> Result<()> {
         if self.scalar_type() != output_grad.scalar_type() {
-            bail!("Expected {:?} found {:?}", self.scalar_type(), output_grad.scalar_type());
+            bail!(
+                "Expected {:?} found {:?}",
+                self.scalar_type(),
+                output_grad.scalar_type()
+            );
         }
         macro_wrap!(paste! { match self.scalar_type() {
             macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
@@ -612,7 +637,10 @@ impl<S1: ScalarDataMut, S2: ScalarData> MaxPool2Backward<ScalarTensorBase<S2, Ix
             })
             _ => (),
         }});
-        bail!("max_pool2_backward {:?} unimplemented!()", self.scalar_type())
+        bail!(
+            "max_pool2_backward {:?} unimplemented!()",
+            self.scalar_type()
+        )
     }
 }
 

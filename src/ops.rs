@@ -99,7 +99,10 @@ pub struct MaxPool2Options {
 impl MaxPool2Options {
     pub(crate) fn output_shape(&self, input_shape: [usize; 2]) -> [usize; 2] {
         let mut shape = input_shape;
-        for (a, (x, s)) in shape.iter_mut().zip(self.size.into_iter().zip(self.strides)) {
+        for (a, (x, s)) in shape
+            .iter_mut()
+            .zip(self.size.into_iter().zip(self.strides))
+        {
             *a = (*a - x) / s + 1;
         }
         shape
