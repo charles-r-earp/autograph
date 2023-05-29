@@ -1,39 +1,29 @@
 use anyhow::Result;
 use tch::{
     kind::Kind,
-    nn::{Linear, LinearConfig, ModuleT, Optimizer, OptimizerConfig, Sgd, VarStore},
+    nn::{
+        Conv2D, ConvConfig, Linear, LinearConfig, Module, Optimizer, OptimizerConfig, Sgd, VarStore,
+    },
     Device, Reduction, Tensor,
 };
 
-pub struct LinearClassifier {
+pub struct Lenet5Classifier {
     device: Device,
     kind: Kind,
-    inputs: usize,
-    outputs: usize,
-    linear: Linear,
+    model: Lenet5,
     optimizer: Option<Optimizer>,
     var_store: VarStore,
 }
 
-impl LinearClassifier {
-    pub fn new(device: Device, kind: Kind, inputs: usize, outputs: usize) -> Result<Self> {
+impl Lenet5Classifier {
+    pub fn new(device: Device, kind: Kind) -> Result<Self> {
         let mut var_store = VarStore::new(device);
-        let linear = tch::nn::linear(
-            var_store.root(),
-            inputs as i64,
-            outputs as i64,
-            LinearConfig {
-                bias: true,
-                ..LinearConfig::default()
-            },
-        );
+        let model = Lenet5::new(&var_store);
         var_store.set_kind(kind);
         Ok(Self {
             device,
             kind,
-            inputs,
-            outputs,
-            linear,
+            model,
             optimizer: None,
             var_store,
         })
@@ -52,25 +42,72 @@ impl LinearClassifier {
         })
     }
     pub fn infer(&self, batch_size: usize) -> Result<()> {
-        let x = Tensor::zeros(
-            [batch_size as i64, self.inputs as i64],
-            (self.kind, self.device),
-        );
-        let mut y = vec![0f32; batch_size * self.outputs];
-        self.linear
-            .forward_t(&x, false)
-            .copy_data(&mut y, batch_size * self.outputs);
+        let x = Tensor::zeros([batch_size as i64, 1, 28, 28], (self.kind, self.device));
+        let mut y = vec![0f32; batch_size * 10];
+        self.model.forward(&x).copy_data(&mut y, batch_size * 10);
         Ok(())
     }
     pub fn train(&mut self, batch_size: usize) -> Result<()> {
-        let x = Tensor::zeros(
-            [batch_size as i64, self.inputs as i64],
-            (self.kind, self.device),
-        );
+        let x = Tensor::zeros([batch_size as i64, 1, 28, 28], (self.kind, self.device));
         let t = Tensor::zeros([batch_size as i64], (Kind::Uint8, self.device));
-        let y = self.linear.forward_t(&x, true);
+        let y = self.model.forward(&x);
         let loss = y.cross_entropy_loss::<Tensor>(&t, None, Reduction::Sum, -1, 0.);
         self.optimizer.as_mut().unwrap().backward_step(&loss);
         Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct Lenet5 {
+    conv1: Conv2D,
+    conv2: Conv2D,
+    dense1: Linear,
+    dense2: Linear,
+    dense3: Linear,
+}
+
+impl Lenet5 {
+    fn new(var_store: &VarStore) -> Self {
+        let conv1 = tch::nn::conv2d(var_store.root(), 1, 6, 5, ConvConfig::default());
+        let conv2 = tch::nn::conv2d(var_store.root(), 6, 16, 5, ConvConfig::default());
+        let dense1 = tch::nn::linear(var_store.root(), 16 * 4 * 4, 128, LinearConfig::default());
+        let dense2 = tch::nn::linear(var_store.root(), 128, 84, LinearConfig::default());
+        let dense3 = tch::nn::linear(
+            var_store.root(),
+            84,
+            10,
+            LinearConfig {
+                bias: true,
+                ..LinearConfig::default()
+            },
+        );
+        Self {
+            conv1,
+            conv2,
+            dense1,
+            dense2,
+            dense3,
+        }
+    }
+}
+
+impl Module for Lenet5 {
+    fn forward(&self, xs: &Tensor) -> Tensor {
+        let Self {
+            conv1,
+            conv2,
+            dense1,
+            dense2,
+            dense3,
+        } = self;
+        let x = conv1.forward(xs).relu().max_pool2d_default(2);
+        let x = conv2
+            .forward(&x)
+            .relu()
+            .max_pool2d_default(2)
+            .flatten(1, -1);
+        let x = dense1.forward(&x).relu();
+        let x = dense2.forward(&x).relu();
+        dense3.forward(&x)
     }
 }

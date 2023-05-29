@@ -686,8 +686,16 @@ fn scalar_relu_backward<D: Dimension>(
             _ => todo!(),
         }
         return Ok(output_grad);
+    } else {
+        match scalar_type {
+            ScalarType::F32 => 
+                Ok(relu_backward::<f32, D>(
+                    output.view().try_into().unwrap(),
+                    output_grad.view().try_into().unwrap(),
+                )?.into_shared()?.into()),
+            _ => todo!(),
+        }
     }
-    todo!()
 }
 
 fn relu_backward_mut<T: Scalar, D: Dimension>(

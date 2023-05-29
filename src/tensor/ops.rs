@@ -7,7 +7,9 @@ use crate::ops::{
 };
 #[cfg(feature = "device")]
 use anyhow::format_err;
-use dry::{macro_for, macro_wrap};
+use dry::macro_for;
+#[cfg(feature = "neural-network")]
+use dry::macro_wrap;
 use half::{bf16, f16};
 use krnl::krnl_core::num_traits::ToPrimitive;
 #[cfg(feature = "device")]
@@ -376,7 +378,7 @@ impl<T: Scalar, S: ArrayData<Elem = T>> Im2ColConv2 for ArrayBase<S, Ix4> {
             stride: [sh, sw],
             dilation: [dh, dw],
         } = options;
-        let mut output = Array::zeros([bs, oh, ow, c, fh * fw]);
+        let mut output = Array::uninit([bs, oh, ow, c, fh * fw]);
         for (input, mut output) in input.outer_iter().zip(output.outer_iter_mut()) {
             for (input, mut output) in input.outer_iter().zip(output.axis_iter_mut(Axis(2))) {
                 for (hid, mut output) in output.outer_iter_mut().enumerate() {
@@ -391,7 +393,9 @@ impl<T: Scalar, S: ArrayData<Elem = T>> Im2ColConv2 for ArrayBase<S, Ix4> {
                                     && widx >= 0
                                     && widx < iw as isize
                                 {
-                                    output[fidx] = input[(hidx as usize, widx as usize)];
+                                    unsafe {
+                                        output.uget_mut(fidx).write(*input.uget((hidx as usize, widx as usize)));
+                                    }
                                 }
                             }
                         }
@@ -399,6 +403,7 @@ impl<T: Scalar, S: ArrayData<Elem = T>> Im2ColConv2 for ArrayBase<S, Ix4> {
                 }
             }
         }
+        let output = unsafe { output.assume_init() };
         Ok(output.into_shape([bs * oh * ow, c * fh * fw]).unwrap())
     }
 }
@@ -447,7 +452,7 @@ impl<T: Scalar, S: ArrayData<Elem = T>> Col2ImConv2 for ArrayBase<S, Ix2> {
         let bs = rows / (ih * iw);
         let c = cols / (fh * fw);
         let input = input.into_shape([bs, ih, iw, c, fh * fw]).unwrap();
-        let mut output = Array::zeros([bs, c, oh, ow]);
+        let mut output = Array::uninit([bs, c, oh, ow]);
         for (input, mut output) in input.outer_iter().zip(output.outer_iter_mut()) {
             for (input, mut output) in input.axis_iter(Axis(2)).zip(output.outer_iter_mut()) {
                 for (hid, input) in input.outer_iter().enumerate() {
@@ -462,7 +467,9 @@ impl<T: Scalar, S: ArrayData<Elem = T>> Col2ImConv2 for ArrayBase<S, Ix2> {
                                     && widx >= 0
                                     && widx < ow as isize
                                 {
-                                    output[(hidx as usize, widx as usize)] += input[fidx];
+                                    unsafe {
+                                        output.uget_mut((hidx as usize, widx as usize)).write(*input.uget(fidx));
+                                    }
                                 }
                             }
                         }
@@ -470,6 +477,9 @@ impl<T: Scalar, S: ArrayData<Elem = T>> Col2ImConv2 for ArrayBase<S, Ix2> {
                 }
             }
         }
+        let output = unsafe {
+            output.assume_init()
+        };
         Ok(output)
     }
 }
@@ -511,7 +521,7 @@ impl<T: Scalar, S: ArrayData<Elem = T>> MaxPool2 for ArrayBase<S, Ix4> {
             size: [h, w],
             strides: [sh, sw],
         } = options;
-        let mut output = Array::zeros([bs, c, oh, ow]);
+        let mut output = Array::uninit([bs, c, oh, ow]);
         for (x, mut y) in self.outer_iter().zip(output.outer_iter_mut()) {
             for (x, mut y) in x.outer_iter().zip(y.outer_iter_mut()) {
                 for ((row, col), y) in y.indexed_iter_mut() {
@@ -524,10 +534,13 @@ impl<T: Scalar, S: ArrayData<Elem = T>> MaxPool2 for ArrayBase<S, Ix4> {
                             }
                         }
                     }
-                    *y = m;
+                    y.write(m);
                 }
             }
         }
+        let output = unsafe {
+            output.assume_init()
+        };
         Ok(output)
     }
 }
@@ -568,8 +581,6 @@ impl<T: Scalar, S1: ArrayDataMut<Elem = T>, S2: ArrayData<Elem = T>>
         output_grad: ArrayBase<S2, Ix4>,
         options: MaxPool2Options,
     ) -> Result<()> {
-        let (bs, c, ih, iw) = self.dim();
-        let [oh, ow] = options.output_shape([ih, iw]);
         let MaxPool2Options {
             size: [h, w],
             strides: [sh, sw],
@@ -582,14 +593,18 @@ impl<T: Scalar, S1: ArrayDataMut<Elem = T>, S2: ArrayData<Elem = T>>
                     let mut mj = 0;
                     for i in 0..h {
                         for j in 0..w {
-                            let mut dx = &mut dx[(row * sh + i, col * sw + j)];
+                            let dx = unsafe { dx.uget_mut((row * sh + i, col * sw + j)) };
                             if (i == 0 && j == 0) || *dx > m {
                                 m = *dx;
+                                mi = i;
+                                mj = j;
                             }
                             *dx = T::default();
                         }
                     }
-                    dx[(mi, mj)] = *dy;
+                    unsafe {
+                        *dx.uget_mut((mi, mj)) = *dy;
+                    }
                 }
             }
         }

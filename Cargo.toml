@@ -45,7 +45,7 @@ autobenches = false
 [dependencies]
 krnl = { git = "https://github.com/charles-r-earp/krnl", default-features = false }
 anyhow.workspace = true
-ndarray = { workspace = true, features = ["serde", "rayon"] }
+ndarray = { workspace = true, features = ["serde", "rayon", "matrixmultiply-threading"] }
 rand = { version = "0.8.4", optional = true }
 serde = { workspace = true, features = ["derive", "rc"] }
 derive_more = "0.99.11"

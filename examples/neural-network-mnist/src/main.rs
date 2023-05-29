@@ -354,7 +354,7 @@ struct Options {
     dataset: DatasetKind,
     #[arg(long)]
     offline: bool,
-    #[arg(long, value_enum, default_value_t = ModelKind::Linear)]
+    #[arg(long, value_enum, default_value_t = ModelKind::Lenet5)]
     model: ModelKind,
     #[arg(long)]
     device: Option<usize>,
@@ -595,16 +595,23 @@ fn train<'a, I: Iterator<Item = Result<(ScalarTensor4, ScalarCowTensor1<'a>)>>>(
     mut train_iter: I,
 ) -> Result<Stats> {
     let mut train_stats = Stats::default();
+    //let mut train_iter = train_iter.take(10);
     while let Some((x, t)) = train_iter.by_ref().next().transpose()? {
         train_stats.count += x.shape().first().unwrap();
         model.set_training(true)?;
+        //let start = Instant::now();
         let y = model.forward(x.into())?;
+        //println!("forward: {:?}", start.elapsed());
         train_stats.correct += Accuracy.eval(y.value().view(), t.view())?;
         let loss = CrossEntropyLoss::default().eval(y, t.into_shared()?)?;
+        //let start = Instant::now();
         loss.backward()?;
+        //println!("backward: {:?}", start.elapsed());
+        //let start = Instant::now();
         for parameter in model.parameters_mut()? {
             optimizer.update(learning_rate, parameter)?;
         }
+        //println!("update: {:?}", start.elapsed());
         train_stats.loss += loss
             .into_value()
             .cast_into_tensor::<f32>()?

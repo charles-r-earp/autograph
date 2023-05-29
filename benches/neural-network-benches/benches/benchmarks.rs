@@ -52,12 +52,11 @@ pub fn criterion_benchmark(c: &mut Criterion) {
         let device_name = if device.is_device() { "device" } else { "host" };
 
         c.bench_function(
-            &format!("autograph_linear_classifier_infer_{device_name}"),
+            &format!("autograph_infer_{infer_batch_size}_{device_name}"),
             |b| {
-                use autograph_backend::LinearClassifier;
+                use autograph_backend::Lenet5Classifier;
 
-                let model =
-                    LinearClassifier::new(device.clone(), ScalarType::F32, 28 * 28, 10).unwrap();
+                let model = Lenet5Classifier::new(device.clone(), ScalarType::F32).unwrap();
                 b.iter(|| {
                     model.infer(infer_batch_size).unwrap();
                 });
@@ -65,11 +64,11 @@ pub fn criterion_benchmark(c: &mut Criterion) {
         );
 
         c.bench_function(
-            &format!("autograph_linear_classifier_train_{device_name}"),
+            &format!("autograph_train_{train_batch_size}_{device_name}"),
             |b| {
-                use autograph_backend::LinearClassifier;
+                use autograph_backend::Lenet5Classifier;
 
-                let mut model = LinearClassifier::new(device.clone(), ScalarType::F32, 28 * 28, 10)
+                let mut model = Lenet5Classifier::new(device.clone(), ScalarType::F32)
                     .unwrap()
                     .with_sgd(true);
                 b.iter(|| {
@@ -81,7 +80,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
 
     #[cfg(feature = "tch")]
     {
-        use tch::{kind::Kind, Device, Tensor};
+        use tch::{kind::Kind, Device};
 
         let mut devices = vec![Device::Cpu];
         if tch::utils::has_cuda() {
@@ -92,26 +91,32 @@ pub fn criterion_benchmark(c: &mut Criterion) {
         for device in [Device::Cpu, Device::Cuda(tch_device_index)] {
             let device_name = if device.is_cuda() { "device" } else { "host" };
 
-            c.bench_function(&format!("tch_linear_classifier_infer_{device_name}"), |b| {
-                use tch_backend::LinearClassifier;
+            c.bench_function(
+                &format!("tch_infer_{infer_batch_size}_{device_name}"),
+                |b| {
+                    use tch_backend::Lenet5Classifier;
 
-                let model = LinearClassifier::new(device, Kind::Float, 28 * 28, 10).unwrap();
-                b.iter(|| {
-                    model.infer(infer_batch_size).unwrap();
-                });
-            });
+                    let model = Lenet5Classifier::new(device, Kind::Float).unwrap();
+                    b.iter(|| {
+                        model.infer(infer_batch_size).unwrap();
+                    });
+                },
+            );
 
-            c.bench_function(&format!("tch_linear_classifier_train_{device_name}"), |b| {
-                use tch_backend::LinearClassifier;
+            c.bench_function(
+                &format!("tch_train_{train_batch_size}_{device_name}"),
+                |b| {
+                    use tch_backend::Lenet5Classifier;
 
-                let mut model = LinearClassifier::new(device, Kind::Float, 28 * 28, 10)
-                    .unwrap()
-                    .with_sgd(true)
-                    .unwrap();
-                b.iter(|| {
-                    model.train(train_batch_size).unwrap();
-                });
-            });
+                    let mut model = Lenet5Classifier::new(device, Kind::Float)
+                        .unwrap()
+                        .with_sgd(true)
+                        .unwrap();
+                    b.iter(|| {
+                        model.train(train_batch_size).unwrap();
+                    });
+                },
+            );
         }
     }
 }

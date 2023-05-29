@@ -23,6 +23,7 @@ use ndarray::{
 use num_traits::ToPrimitive;
 use parking_lot::{Mutex, RwLock};
 use paste::paste;
+//use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::{
     collections::VecDeque,
@@ -208,6 +209,71 @@ impl<D: Dimension> Node<D> {
         }
         Ok(())
     }
+    /*pub fn backward_par(&self) -> Result<()> {
+        let NodeInner {
+            device,
+            dim,
+            scalar_type,
+            grad,
+            edges: _,
+        } = self.inner.as_ref();
+        {
+            let mut guard = grad.write();
+            if guard.is_some() {
+                return Ok(());
+            }
+            guard.replace(ScalarArcTensor::ones(
+                device.clone(),
+                dim.clone(),
+                *scalar_type,
+            )?);
+        }
+        let start = Instant::now();
+        let result = Arc::new(Mutex::new(Ok(())));
+        let (sender, receiver) = crossbeam_channel::bounded(16);
+        let edges = std::mem::take(&mut *self.inner.edges.lock());
+        let counter = Arc::new(AtomicUsize::new(edges.len()));
+        for edge in edges {
+            sender.send(edge).unwrap();
+        }
+        let result2 = result.clone();
+        rayon::spawn_broadcast(move |_| {
+            let mut local_edge = Option::<EdgeInner>::None;
+            while counter.load(Ordering::SeqCst) > 0 {
+                let mut edge = if let Some(edge) = local_edge.take() {
+                    edge
+                } else if let Ok(edge) = receiver.try_recv() {
+                    edge
+                } else {
+                    continue;
+                };
+                if let Err(e) = (edge.op)() {
+                    let mut result = result2.lock();
+                    if result.is_ok() {
+                        *result = Err(e);
+                    }
+                    return;
+                }
+                let node = edge.node;
+                if node.ready() {
+                    let edges = std::mem::take(&mut *node.edges.lock());
+                    counter.fetch_add(edges.len(), Ordering::SeqCst);
+                    std::mem::drop(node);
+                    let mut edges = edges.into_iter();
+                    local_edge = edges.next();
+                    for edge in edges {
+                        sender.send(edge);
+                    }
+                }
+                counter.fetch_sub(1, Ordering::SeqCst);
+            }
+        });
+        while Arc::strong_count(&result) > 1 {
+            std::thread::yield_now();
+        }
+        dbg!(start.elapsed());
+        Arc::try_unwrap(result).ok().unwrap().into_inner()
+    }*/
     fn into_dyn(self) -> Node<IxDyn> {
         Node {
             inner: self.inner,
@@ -289,6 +355,12 @@ impl Variable0 {
         }
         Ok(())
     }
+    /*pub fn backward_par(&self) -> Result<()> {
+        if let Some(node) = self.node.as_ref() {
+            node.backward_par()?;
+        }
+        Ok(())
+    }*/
 }
 
 impl<D: Dimension + 'static> Variable<D> {
