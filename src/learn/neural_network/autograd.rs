@@ -2,6 +2,8 @@ use super::{
     layer::Forward,
     optimizer::{OptimizerId, State as OptimizerState, Value as OptimizerValue},
 };
+#[cfg(feature = "device")]
+use crate::tensor::ScalarTensorView;
 use crate::{
     buffer::{ScalarArcBufferRepr, ScalarData, ScalarDataMut, ScalarDataOwned, ScalarSliceMutRepr},
     device::Device,
@@ -9,7 +11,7 @@ use crate::{
     scalar::{Scalar, ScalarType},
     tensor::{
         ArcTensor, ScalarArcTensor, ScalarArcTensorD, ScalarTensor, ScalarTensorBase,
-        ScalarTensorView, ScalarTensorViewMut, Tensor, TensorView,
+        ScalarTensorViewMut, Tensor, TensorView,
     },
 };
 use anyhow::{bail, Error, Result};
@@ -20,6 +22,7 @@ use krnl::macros::module;
 use ndarray::{
     linalg::Dot, Array, Dimension, IntoDimension, Ix0, Ix1, Ix2, Ix4, IxDyn, ShapeError,
 };
+#[cfg(feature = "device")]
 use num_traits::ToPrimitive;
 use parking_lot::{Mutex, RwLock};
 use paste::paste;
@@ -744,13 +747,13 @@ impl OptimState<'_> {
     fn as_ref(&self) -> &Option<Arc<OptimizerState>> {
         match self {
             Self::State(x) => x,
-            Self::StateMut(x) => &*x,
+            Self::StateMut(x) => x,
         }
     }
     fn as_mut(&mut self) -> &mut Option<Arc<OptimizerState>> {
         match self {
             Self::State(x) => x,
-            Self::StateMut(x) => &mut *x,
+            Self::StateMut(x) => x,
         }
     }
     fn get(&self) -> Option<&OptimizerState> {

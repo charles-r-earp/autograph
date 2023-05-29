@@ -6,6 +6,7 @@ use krnl::{macros::module, scalar::ScalarElem};
 use ndarray::linalg::Dot;
 use paste::paste;
 
+#[allow(clippy::too_many_arguments)]
 #[cfg(feature = "device")]
 #[module]
 mod kernels {
@@ -365,7 +366,7 @@ fn gemm(
                         .with_groups(groups.into());
                     let reduce_kernel = kernels::[<reduce_k_ $T>]::builder()?.build(device.clone())?;
                     let mut c_tmp = unsafe {
-                        Buffer::<$T>::uninit(c.device(), (groups_k * m * n) as usize)?
+                        Buffer::<$T>::uninit(device, (groups_k * m * n) as usize)?
                     };
                     unsafe {
                         gemm_kernel
@@ -378,7 +379,6 @@ fn gemm(
                     let a = Slice::<$T>::try_from(a.clone()).unwrap();
                     let b = Slice::<$T>::try_from(b.clone()).unwrap();
                     let c = SliceMut::<$T>::try_from(c.as_scalar_slice_mut()).unwrap();
-                    c.device().wait()?;
                     let gemm_kernel = kernels::[<gemm_ $T>]::builder()?
                         .specialize(
                             m, k, n, rsa, csa, rsb, csb, rsc, csc, tm, tn,
@@ -405,7 +405,8 @@ impl<T: Scalar, S1: Data<Elem = T>, S2: Data<Elem = T>> Dot<TensorBase<S2, Ix2>>
     type Output = Result<Tensor2<T>>;
     fn dot(&self, rhs: &TensorBase<S2, Ix2>) -> Self::Output {
         if let Some((lhs_array, rhs_array)) = self.as_array().zip(rhs.as_array()) {
-            // TODO: bf16 is very slow because it falls back to naive alg, min is handle more shapes here
+            /*
+             // TODO: bf16 is very slow because it falls back to naive alg, min is handle more shapes here
             if matches!(T::scalar_type(), ScalarType::BF16)
                 && lhs_array.is_standard_layout()
                 && rhs_array.is_standard_layout()
@@ -446,7 +447,7 @@ impl<T: Scalar, S1: Data<Elem = T>, S2: Data<Elem = T>> Dot<TensorBase<S2, Ix2>>
                 )
                 .cast_into()
                 .unwrap());
-            }
+            }*/
             return Ok(lhs_array.dot(&rhs_array).into());
         }
         #[cfg(not(feature = "device"))]

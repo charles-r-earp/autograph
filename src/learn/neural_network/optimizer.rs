@@ -3,10 +3,12 @@ use crate::{
     device::Device,
     scalar::{Scalar, ScalarElem, ScalarType},
     tensor::{
-        ScalarTensor, ScalarTensorD, ScalarTensorView, ScalarTensorViewMut, ScalarTensorViewMutD,
+        ScalarTensor, ScalarTensorD, ScalarTensorViewMutD,
         TensorViewD, TensorViewMutD,
     },
 };
+#[cfg(feature = "device")]
+use crate::tensor::{ScalarTensorView, ScalarTensorViewMut};
 use anyhow::{bail, Result};
 #[cfg(feature = "device")]
 use krnl::macros::module;

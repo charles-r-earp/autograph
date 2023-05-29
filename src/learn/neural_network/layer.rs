@@ -2,8 +2,10 @@ use super::autograd::{
     Parameter, Parameter1, Parameter2, Parameter4, ParameterViewMut1, ParameterViewMut2,
     ParameterViewMut4, ParameterViewMutD, Variable, Variable2, Variable4,
 };
+#[cfg(feature = "device")]
+use crate::buffer::ScalarSliceMut;
 use crate::{
-    buffer::{Buffer, ScalarBuffer, ScalarData, ScalarSliceMut},
+    buffer::{Buffer, ScalarBuffer, ScalarData},
     device::Device,
     krnl::krnl_core::half::bf16,
     ops::{
@@ -414,7 +416,6 @@ impl<A: Forward<Variable4, Output = Variable4>> Forward<Variable4> for Conv2<A> 
         let output_matrix = im2col_matrix.dot(&weight_matrix.t())?;
         let mut builder = Variable::builder();
         if let Some(node) = input.node() {
-            let weight_matrix = weight_matrix.clone();
             builder.edge(node, move |output_grad| {
                 let options = Col2ImConv2Options {
                     shape: [oh, ow],
@@ -589,11 +590,11 @@ impl<D: Dimension + 'static> Forward<Variable<D>> for Relu {
         let mut builder = Variable::builder();
         if let Some(node) = input.node() {
             let input = input.value().clone();
-            builder.edge(&node, move |output_grad| {
+            builder.edge(node, move |output_grad| {
                 scalar_relu_backward(input, output_grad)
             });
         }
-        Ok(builder.build(scalar_relu(input.into_value())?.into()))
+        Ok(builder.build(scalar_relu(input.into_value())?))
     }
 }
 
@@ -685,14 +686,15 @@ fn scalar_relu_backward<D: Dimension>(
             }
             _ => todo!(),
         }
-        return Ok(output_grad);
+        Ok(output_grad)
     } else {
         match scalar_type {
-            ScalarType::F32 => 
-                Ok(relu_backward::<f32, D>(
-                    output.view().try_into().unwrap(),
-                    output_grad.view().try_into().unwrap(),
-                )?.into_shared()?.into()),
+            ScalarType::F32 => Ok(relu_backward::<f32, D>(
+                output.view().try_into().unwrap(),
+                output_grad.view().try_into().unwrap(),
+            )?
+            .into_shared()?
+            .into()),
             _ => todo!(),
         }
     }
@@ -775,7 +777,7 @@ fn relu_backward<T: Scalar, D: Dimension>(
 mod kernels {
     #[cfg(not(target_arch = "spirv"))]
     use krnl::krnl_core;
-    use krnl_core::{macros::kernel, scalar::Scalar};
+    use krnl_core::scalar::Scalar;
 
     pub fn relu_impl<T: Scalar>(x: T) -> T {
         if x >= T::zero() {
@@ -796,6 +798,7 @@ mod kernels {
     #[cfg(any(feature = "device", target_arch = "spirv"))]
     pub mod device {
         use super::*;
+        use krnl_core::macros::kernel;
 
         #[kernel(threads(256))]
         pub fn relu_mut_f32(#[item] x: &mut f32) {

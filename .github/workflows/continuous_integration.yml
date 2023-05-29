@@ -43,4 +43,4 @@ jobs:
         run: cargo fmt --all -- --check
         continue-on-error: true
       - name: Clippy
-        run: cargo clippy -- -D warnings
+        run: cargo clippy --no-default-features --features "neural-network" -- -D warnings

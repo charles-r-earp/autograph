@@ -681,10 +681,10 @@ impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
             None
         }
     }
-    fn as_raw_scalar_slice_offset(&self) -> (ScalarSlice, usize) {
+    pub fn as_raw_scalar_slice_offset(&self) -> (ScalarSlice, usize) {
         (self.buffer.as_scalar_slice(), self.offset)
     }
-    fn as_raw_scalar_slice_offset_mut(&mut self) -> (ScalarSliceMut, usize)
+    pub fn as_raw_scalar_slice_offset_mut(&mut self) -> (ScalarSliceMut, usize)
     where
         S: ScalarDataMut,
     {
@@ -1691,20 +1691,16 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
             todo!()
         }
         let vec = self.buffer.into_vec()?;
-        Ok(Array::from_shape_vec(self.dim.clone().strides(self.strides.clone()), vec).unwrap())
+        Ok(Array::from_shape_vec(self.dim.strides(self.strides), vec).unwrap())
     }
     /// Returns the tensor as an array if on the host
     pub fn as_array(&self) -> Option<ArrayView<T, D>> {
-        if let Some(host_slice) = self.buffer.as_host_slice() {
-            Some(unsafe {
-                ArrayView::from_shape_ptr(
-                    self.dim.clone().strides(self.strides.clone()),
-                    &host_slice[self.offset] as *const T,
-                )
-            })
-        } else {
-            None
-        }
+        self.buffer.as_host_slice().map(|host_slice| unsafe {
+            ArrayView::from_shape_ptr(
+                self.dim.clone().strides(self.strides.clone()),
+                &host_slice[self.offset] as *const T,
+            )
+        })
     }
     pub fn as_array_mut(&mut self) -> Option<ArrayViewMut<T, D>>
     where

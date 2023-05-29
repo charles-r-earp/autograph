@@ -1,10 +1,12 @@
+#[cfg(feature = "device")]
 use crate::{
-    buffer::{Buffer, Data, ScalarData},
+    buffer::Buffer,
+    tensor::{ScalarTensorView1, ScalarTensorView2},
+};
+use crate::{
+    buffer::{Data, ScalarData},
     scalar::Scalar,
-    tensor::{
-        ScalarTensorBase, ScalarTensorView1, ScalarTensorView2, TensorBase, TensorView1,
-        TensorView2,
-    },
+    tensor::{ScalarTensorBase, TensorBase, TensorView1, TensorView2},
 };
 use anyhow::{bail, Result};
 use dry::macro_for;
@@ -12,7 +14,9 @@ use half::bf16;
 #[cfg(feature = "device")]
 use krnl::macros::module;
 use ndarray::{ArrayBase, ArrayView1, ArrayView2, Data as ArrayData, Ix1, Ix2};
-use num_traits::{Float, ToPrimitive, Unsigned};
+#[cfg(feature = "device")]
+use num_traits::ToPrimitive;
+use num_traits::{Float, Unsigned};
 
 pub trait Criterion<X, T> {
     type Output;
@@ -158,7 +162,7 @@ impl<T1: Scalar + Float, S1: Data<Elem = T1>, T2: Scalar + Unsigned, S2: Data<El
         target: TensorBase<S2, Ix1>,
     ) -> Result<Self::Output> {
         if let Some((input, target)) = input.as_array().zip(target.as_array()) {
-            Ok(cross_entropy_loss_host(input, target).into())
+            Ok(cross_entropy_loss_host(input, target))
         } else {
             #[cfg(not(feature = "device"))]
             {

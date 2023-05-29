@@ -4,16 +4,19 @@ use crate::{
     learn::criterion::{Criterion, CrossEntropyLoss},
     scalar::{Scalar, ScalarElem, ScalarType},
     tensor::{
-        ScalarArcTensor, ScalarArcTensor1, ScalarTensor, ScalarTensorView, Tensor, Tensor2,
+        ScalarArcTensor, ScalarArcTensor1,  Tensor2,
         TensorView1, TensorView2,
     },
 };
+#[cfg(feature = "device")]
+use crate::tensor::{ScalarTensor, ScalarTensorView, Tensor};
 use anyhow::{bail, Result};
-//use half::bf16;
 #[cfg(feature = "device")]
 use krnl::macros::module;
 use ndarray::Array2;
-use num_traits::{Float, ToPrimitive, Unsigned};
+use num_traits::{Float,  Unsigned};
+#[cfg(feature = "device")]
+use num_traits::ToPrimitive;
 
 impl Criterion<Variable2, ScalarArcTensor1> for CrossEntropyLoss {
     type Output = Variable0;

@@ -7,11 +7,11 @@ use crate::ops::{
 };
 #[cfg(feature = "device")]
 use anyhow::format_err;
-use dry::macro_for;
 #[cfg(feature = "neural-network")]
-use dry::macro_wrap;
+use dry::{macro_for, macro_wrap};
 use half::{bf16, f16};
-use krnl::krnl_core::num_traits::ToPrimitive;
+#[cfg(feature = "device")]
+use num_traits::ToPrimitive;
 #[cfg(feature = "device")]
 use krnl::macros::module;
 #[cfg(feature = "neural-network")]
@@ -394,7 +394,9 @@ impl<T: Scalar, S: ArrayData<Elem = T>> Im2ColConv2 for ArrayBase<S, Ix4> {
                                     && widx < iw as isize
                                 {
                                     unsafe {
-                                        output.uget_mut(fidx).write(*input.uget((hidx as usize, widx as usize)));
+                                        output
+                                            .uget_mut(fidx)
+                                            .write(*input.uget((hidx as usize, widx as usize)));
                                     }
                                 }
                             }
@@ -468,7 +470,9 @@ impl<T: Scalar, S: ArrayData<Elem = T>> Col2ImConv2 for ArrayBase<S, Ix2> {
                                     && widx < ow as isize
                                 {
                                     unsafe {
-                                        output.uget_mut((hidx as usize, widx as usize)).write(*input.uget(fidx));
+                                        output
+                                            .uget_mut((hidx as usize, widx as usize))
+                                            .write(*input.uget(fidx));
                                     }
                                 }
                             }
@@ -477,9 +481,7 @@ impl<T: Scalar, S: ArrayData<Elem = T>> Col2ImConv2 for ArrayBase<S, Ix2> {
                 }
             }
         }
-        let output = unsafe {
-            output.assume_init()
-        };
+        let output = unsafe { output.assume_init() };
         Ok(output)
     }
 }
@@ -538,9 +540,7 @@ impl<T: Scalar, S: ArrayData<Elem = T>> MaxPool2 for ArrayBase<S, Ix4> {
                 }
             }
         }
-        let output = unsafe {
-            output.assume_init()
-        };
+        let output = unsafe { output.assume_init() };
         Ok(output)
     }
 }
@@ -661,9 +661,11 @@ impl<S1: ScalarDataMut, S2: ScalarData> MaxPool2Backward<ScalarTensorBase<S2, Ix
 
 #[cfg_attr(feature = "device", module)]
 mod kernels {
+    #[cfg(any(target_arch = "spirv", feature = "device"))]
     use dry::macro_for;
     #[cfg(not(target_arch = "spirv"))]
     use krnl::krnl_core;
+    #[cfg(any(target_arch = "spirv", feature = "device"))]
     use krnl_core::macros::kernel;
     #[cfg(target_arch = "spirv")]
     #[allow(unused_imports)]
@@ -673,6 +675,7 @@ mod kernels {
         half::{bf16, f16},
         scalar::Scalar,
     };
+    #[cfg(any(target_arch = "spirv", feature = "device"))]
     use paste::paste;
 
     #[cfg_attr(not(target_arch = "spirv"), derive(derive_more::IsVariant))]
@@ -685,7 +688,7 @@ mod kernels {
         Div = 5,
     }
 
-    #[cfg(not(target_arch = "spirv"))]
+    #[cfg(feature = "device")]
     impl BinaryOp {
         pub fn as_u32(self) -> u32 {
             self as u32
