@@ -1259,7 +1259,7 @@ impl<T: Scalar, S: DataOwned<Elem = T>, D: Dimension> TensorBase<S, D> {
         /*let buffer = if device.is_host() || dim.ndim() == 1 {
             unsafe { BufferBase::uninit(device, dim.size())? }
         } else {
-            unsafe { 
+            unsafe {
                 BufferBase::zeros(device, dim.size())?
             }
         };*/

@@ -85,13 +85,13 @@ fn cross_entropy_loss_backward<T1: Scalar + Float, T2: Scalar + Unsigned>(
             .unwrap();
         let t = ScalarTensorView::from(t)
             .try_into_tensor_view::<u8>()
-            .unwrap();     
+            .unwrap();
         /*let device = x.device();
         cross_entropy_loss_backward(x.to_device(Device::host())?.view(), t.to_device(Device::host())?.view(), dy)?
             .cast_into::<T1>()?
             .into_device(device)
             .map(Into::into)    */
-           
+
         let mut dx = unsafe { Tensor::uninit(x.device(), x.raw_dim())? };
         //dbg!((batch_size, classes, dy, t.len()));
         kernels::cross_entropy_loss_backward_f32_u8::builder()?

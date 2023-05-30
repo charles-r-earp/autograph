@@ -479,8 +479,7 @@ fn main() -> Result<()> {
             .into_par_iter()
             .zip(test_classes.axis_chunks_iter(Axis(0), options.test_batch_size))
             .map(|(x, t)| -> Result<_> {
-                let x = CowTensor::from(x)
-                    .into_scalar_cow_tensor();
+                let x = CowTensor::from(x).into_scalar_cow_tensor();
                 let x = if device.is_device() {
                     x.to_device(device.clone())?.into()
                 } else {

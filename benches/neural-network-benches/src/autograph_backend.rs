@@ -43,10 +43,10 @@ impl Lenet5Classifier {
     }
     pub fn infer(&self, batch_size: usize) -> Result<()> {
         let x = ScalarArcTensor::zeros(
-                self.device.clone(),
-                [batch_size, 1, 28, 28],
-                self.scalar_type,
-            )?;
+            self.device.clone(),
+            [batch_size, 1, 28, 28],
+            self.scalar_type,
+        )?;
         let y = self.model.forward(x.into())?;
         let _ = y
             .into_value()
@@ -59,10 +59,10 @@ impl Lenet5Classifier {
     pub fn train(&mut self, batch_size: usize) -> Result<()> {
         self.model.set_training(true)?;
         let x = ScalarArcTensor::zeros(
-                self.device.clone(),
-                [batch_size, 1, 28, 28],
-                self.scalar_type,
-            )?;
+            self.device.clone(),
+            [batch_size, 1, 28, 28],
+            self.scalar_type,
+        )?;
         let t = ScalarArcTensor::zeros(self.device.clone(), batch_size, ScalarType::U8)?;
         let y = self.model.forward(x.into())?;
         let loss = CrossEntropyLoss::default().eval(y, t)?;
