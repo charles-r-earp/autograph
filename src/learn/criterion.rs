@@ -206,17 +206,11 @@ fn cross_entropy_loss_device(input: ScalarTensorView2, target: ScalarTensorView1
     let input = input.as_slice().unwrap();
     let target = target.try_into_tensor_view::<u8>().unwrap();
     let target = target.as_slice().unwrap();
-    assert_eq!(batch_size, target.len());
     let mut output = unsafe { Buffer::uninit(input.device(), batch_size)? };
     let classes = classes.to_u32().unwrap();
-    //let device = output.device();
-    //device.wait()?;
-    //let start = Instant::now();
     kernels::cross_entropy_loss_f32_u8::builder()?
         .build(output.device())?
         .dispatch(input, target, classes, output.as_slice_mut())?;
-    //device.wait()?;
-    //println!("cross_entropy_loss: {:?}", start.elapsed());
     Ok(output.to_vec()?.iter().copied().sum())
 }
 

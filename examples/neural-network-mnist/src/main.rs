@@ -376,7 +376,7 @@ struct Options {
 
 fn main() -> Result<()> {
     let options = Options::parse();
-    eprintln!("{options:#?}");
+    println!("{options:#?}");
     let ((train_images, train_classes), (test_images, test_classes)) = match options.dataset {
         DatasetKind::Mnist | DatasetKind::FashionMnist => {
             let Mnist {
@@ -398,6 +398,9 @@ fn main() -> Result<()> {
     } else {
         Device::host()
     };
+    if let Some(info) = device.info() {
+        println!("{info:#?}");
+    }
     let scalar_type = if options.bf16 {
         ScalarType::BF16
     } else {
@@ -477,13 +480,13 @@ fn main() -> Result<()> {
             .zip(test_classes.axis_chunks_iter(Axis(0), options.test_batch_size))
             .map(|(x, t)| -> Result<_> {
                 let x = CowTensor::from(x)
-                    .into_scalar_cow_tensor()
-                    .scaled_cast(image_scale)?;
+                    .into_scalar_cow_tensor();
                 let x = if device.is_device() {
                     x.to_device(device.clone())?.into()
                 } else {
                     x
                 };
+                let x = x.scaled_cast(image_scale)?;
                 let t = CowTensor::from(t).into_scalar_cow_tensor();
                 let t = if device.is_device() {
                     t.to_device(device.clone())?.into()
@@ -595,23 +598,16 @@ fn train<'a, I: Iterator<Item = Result<(ScalarTensor4, ScalarCowTensor1<'a>)>>>(
     mut train_iter: I,
 ) -> Result<Stats> {
     let mut train_stats = Stats::default();
-    //let mut train_iter = train_iter.take(10);
     while let Some((x, t)) = train_iter.by_ref().next().transpose()? {
         train_stats.count += x.shape().first().unwrap();
         model.set_training(true)?;
-        //let start = Instant::now();
         let y = model.forward(x.into())?;
-        //println!("forward: {:?}", start.elapsed());
         train_stats.correct += Accuracy.eval(y.value().view(), t.view())?;
         let loss = CrossEntropyLoss::default().eval(y, t.into_shared()?)?;
-        //let start = Instant::now();
         loss.backward()?;
-        //println!("backward: {:?}", start.elapsed());
-        //let start = Instant::now();
         for parameter in model.parameters_mut()? {
             optimizer.update(learning_rate, parameter)?;
         }
-        //println!("update: {:?}", start.elapsed());
         train_stats.loss += loss
             .into_value()
             .cast_into_tensor::<f32>()?

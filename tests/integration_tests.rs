@@ -158,7 +158,8 @@ fn tensor_tests(device: &Device) -> Vec<Trial> {
             .chain(reorder::reorder_tests(device))
             .chain(ops::ops_tests(device)),
     );
-
+    #[cfg(feature = "learn")]
+    tests.extend(learn::learn_tests(device));
     tests
 }
 
@@ -365,6 +366,10 @@ mod reorder {
                         into_standard_layout::<$T, _>(device, [3, 3], [1, 0]);
                         into_standard_layout::<$T, _>(device, [21, 30], [1, 0]);
                     }),
+                    device_test(device, &format!("into_standard_layout4_{ty}"), |device| {
+                        into_standard_layout::<$T, _>(device, [1, 2, 3, 3], [0, 2, 3, 1]);
+                        into_standard_layout::<$T, _>(device, [2, 21, 3, 30], [0, 3, 1, 2]);
+                    }),
                 ].into_iter().map(|trial| trial.with_ignored_flag(ignore)));
         });
 
@@ -395,6 +400,76 @@ mod reorder {
             .into_array()
             .unwrap();
         assert_eq!(y, y_array);
+    }
+}
+
+#[cfg(feature = "learn")]
+mod learn {
+    use super::*;
+
+    pub fn learn_tests(device: &Device) -> Vec<Trial> {
+        let mut tests = Vec::new();
+        #[cfg(feature = "neural-network")]
+        {
+            tests.extend(neural_network::neural_network_tests(device));
+        }
+        tests
+    }
+
+    #[cfg(feature = "neural-network")]
+    mod neural_network {
+        use super::*;
+        use autograph::{
+            learn::neural_network::{
+                autograd::Variable,
+                layer::{Forward, MaxPool2},
+            },
+            tensor::Tensor1,
+        };
+
+        pub fn neural_network_tests(device: &Device) -> Vec<Trial> {
+            let mut tests = Vec::new();
+
+            if device.is_device() {
+                tests.push(device_test(device, &format!("max_pool2_f32"), |device| {
+                    let pool = MaxPool2::builder().size([2, 2]).strides([2, 2]).build();
+                    max_pool2::<f32>(device, [1, 1, 4, 4], &pool);
+                    max_pool2::<f32>(device, [1, 1, 12, 12], &pool);
+                    max_pool2::<f32>(device, [2, 3, 4, 4], &pool);
+                    max_pool2::<f32>(device, [1, 1, 24, 24], &pool);
+                }));
+            }
+            tests
+        }
+
+        fn max_pool2<T: Scalar>(device: &Device, input_shape: [usize; 4], pool: &MaxPool2) {
+            let len = input_shape.iter().product();
+            let x_vec: Vec<T> = (0..10u8)
+                .map(|x| T::from_u8(x).unwrap())
+                .cycle()
+                .take(len)
+                .collect();
+            let x_array = Array::from(x_vec).into_shape(input_shape).unwrap();
+            let x_host = Tensor::from(x_array);
+            let x_device = x_host.to_device(device.clone()).unwrap();
+            let y_host = pool
+                .forward(Variable::from(x_host))
+                .unwrap()
+                .into_value()
+                .into_owned()
+                .unwrap()
+                .try_into_tensor::<T>()
+                .unwrap();
+            let y_device = pool
+                .forward(Variable::from(x_device))
+                .unwrap()
+                .into_value()
+                .into_owned()
+                .unwrap()
+                .try_into_tensor::<T>()
+                .unwrap();
+            assert_eq!(y_host.into_array().unwrap(), y_device.into_array().unwrap());
+        }
     }
 }
 

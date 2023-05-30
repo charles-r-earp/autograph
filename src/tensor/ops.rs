@@ -11,11 +11,11 @@ use anyhow::format_err;
 use dry::{macro_for, macro_wrap};
 use half::{bf16, f16};
 #[cfg(feature = "device")]
-use num_traits::ToPrimitive;
-#[cfg(feature = "device")]
 use krnl::macros::module;
 #[cfg(feature = "neural-network")]
 use ndarray::{Array2, Array4, Data as ArrayData, DataMut as ArrayDataMut};
+#[cfg(feature = "device")]
+use num_traits::ToPrimitive;
 
 impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
     /// Converts to standard layout.
@@ -357,6 +357,64 @@ fn scalar_assign(
                 }
             });
         }
+        if ndim == 3 || ndim == 4 {
+            let [d0, d1, d2, d3] = match y.shape() {
+                [d0, d1, d2, d3] => [d0.to_u32().unwrap(), d1.to_u32().unwrap(), d2.to_u32().unwrap(), d3.to_u32().unwrap()],
+                [d1, d2, d3] => [1, d1.to_u32().unwrap(), d2.to_u32().unwrap(), d3.to_u32().unwrap()],
+                _ => unreachable!(),
+            };
+            let [sx0, sx1, sx2, sx3] = match x.strides() {
+                [sx0, sx1, sx2, sx3] => [sx0.to_i32().unwrap(), sx1.to_i32().unwrap(), sx2.to_i32().unwrap(), sx3.to_i32().unwrap()],
+                [sx1, sx2, sx3] => [(d1 * d2 * d3) as i32, sx1.to_i32().unwrap(), sx2.to_i32().unwrap(), sx3.to_i32().unwrap()],
+                _ => unreachable!(),
+            };
+            let [sy0, sy1, sy2, sy3] = match y.strides() {
+                [sy0, sy1, sy2, sy3] => [sy0.to_i32().unwrap(), sy1.to_i32().unwrap(), sy2.to_i32().unwrap(), sy3.to_i32().unwrap()],
+                [sy1, sy2, sy3] => [(d1 * d2 * d3) as i32, sy1.to_i32().unwrap(), sy2.to_i32().unwrap(), sy3.to_i32().unwrap()],
+                _ => unreachable!(),
+            };
+            let (x, offset_x) = x.as_raw_scalar_slice_offset();
+            let offset_x = offset_x.to_u32().unwrap();
+            let (mut y, offset_y) = y.as_raw_scalar_slice_offset_mut();
+            let offset_y = offset_y.to_u32().unwrap();
+            macro_for!($X in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+                if let Ok(x) = Slice::<$X>::try_from(x.clone()) {
+                    macro_for!($Y in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+                        if let Ok(y) = SliceMut::<$Y>::try_from(y.as_scalar_slice_mut()) {
+                            let builder = paste! {
+                                kernels::[<assign4_ $X _ $Y>]::builder()?
+                            };
+                            let kernel = builder
+                                .specialize(op.as_u32())?
+                                .build(device)?
+                                .with_global_threads(d0 * d1 * d2 * d3);
+                            unsafe {
+                                kernel.dispatch(
+                                    d0,
+                                    d1,
+                                    d2,
+                                    d3,
+                                    alpha.cast(),
+                                    x,
+                                    sx0,
+                                    sx1,
+                                    sx2,
+                                    sx3,
+                                    offset_x,
+                                    y,
+                                    sy0,
+                                    sy1,
+                                    sy2,
+                                    sy3,
+                                    offset_y,
+                                )?;
+                            }
+                            return Ok(());
+                        }
+                    });
+                }
+            });
+        }
         Err(format_err!(
             "assign<{}, {}> not implemented!",
             x.scalar_type().name(),
@@ -415,9 +473,10 @@ impl<T: Scalar, S: Data<Elem = T>> Im2ColConv2 for TensorBase<S, Ix4> {
     type Output = Tensor2<T>;
     fn im2col_conv2(&self, options: Im2ColConv2Options) -> Result<Self::Output> {
         if let Some(input) = self.as_array() {
-            return input.im2col_conv2(options).map(Into::into);
+            input.im2col_conv2(options).map(Into::into)
+        } else {
+            Ok(ScalarTensorView::from(self.view()).im2col_conv2(options)?.try_into_tensor().unwrap())
         }
-        todo!()
     }
 }
 
@@ -426,9 +485,46 @@ impl<S: ScalarData> Im2ColConv2 for ScalarTensorBase<S, Ix4> {
     type Output = ScalarTensor2;
     fn im2col_conv2(&self, options: Im2ColConv2Options) -> Result<Self::Output> {
         macro_wrap!(paste! { match self.scalar_type() {
-            macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+            macro_for!($T in [/*u8, i8, u16, i16, f16, bf16, u32, i32,*/ f32 /*, u64, i64, f64*/] {
                ScalarType::[<$T:upper>] => {
-                   return self.view().try_into_tensor_view::<$T>().unwrap().im2col_conv2(options).map(Into::into);
+                    let input = self.view().try_into_tensor_view::<$T>().unwrap();
+                    if let Some(input) = input.as_array() {
+                        return Ok(Tensor::from(input.im2col_conv2(options)?).into());
+                    } 
+                    let input = input.as_standard_layout()?;
+                    let (bs, c, ih, iw) = input.dim();
+                    let [oh, ow] = options.output_shape([ih, iw]);
+                    let Im2ColConv2Options {
+                        filter: [fh, fw],
+                        padding: [ph, pw],
+                        stride: [sh, sw],
+                        dilation: [dh, dw],
+                    } = options;
+                    let mut output = unsafe {
+                        Tensor::<$T, _>::uninit(input.device(), [bs * oh * ow, c * fh * fw])?
+                    };
+                    neural_network_kernels::[<im2col_conv_ $T>]::builder()?
+                        .build(output.device())?
+                        .with_global_threads(output.len().to_u32().unwrap())
+                        .dispatch(
+                            input.as_slice().unwrap(),
+                            bs.to_u32().unwrap(),
+                            c.to_u32().unwrap(),
+                            ih.to_u32().unwrap(),
+                            iw.to_u32().unwrap(),
+                            output.as_slice_mut().unwrap(),
+                            oh.to_u32().unwrap(),
+                            ow.to_u32().unwrap(),
+                            fh.to_u32().unwrap(),
+                            fw.to_u32().unwrap(),
+                            ph.to_u32().unwrap(),
+                            pw.to_u32().unwrap(),
+                            sh.to_u32().unwrap(),
+                            sw.to_u32().unwrap(),
+                            dh.to_u32().unwrap(),
+                            dw.to_u32().unwrap(),
+                        )?;
+                    return Ok(output.into());
                }
             })
             _ => (),
@@ -492,8 +588,9 @@ impl<T: Scalar, S: Data<Elem = T>> Col2ImConv2 for TensorBase<S, Ix2> {
     fn col2im_conv2(&self, options: Col2ImConv2Options) -> Result<Self::Output> {
         if let Some(input) = self.as_array() {
             return input.col2im_conv2(options).map(Into::into);
+        } else {
+            Ok(ScalarTensorView::from(self.view()).col2im_conv2(options)?.try_into_tensor().unwrap())
         }
-        todo!()
     }
 }
 
@@ -501,10 +598,81 @@ impl<T: Scalar, S: Data<Elem = T>> Col2ImConv2 for TensorBase<S, Ix2> {
 impl<S: ScalarData> Col2ImConv2 for ScalarTensorBase<S, Ix2> {
     type Output = ScalarTensor4;
     fn col2im_conv2(&self, options: Col2ImConv2Options) -> Result<Self::Output> {
+        
+        // adapted from https://github.com/CNugteren/CLBlast/blob/master/src/utilities/utilities.cpp
+        #[allow(clippy::many_single_char_names)]
+        fn eclid_gcd(mut a: usize, mut b: usize) -> (usize, usize, usize) {
+            let mut p = 0;
+            let mut q = 1;
+            let mut p_1 = 1;
+            let mut q_1 = 0;
+            loop {
+                let c = a % b;
+                if c == 0 {
+                    break;
+                }
+                let p_2 = p_1;
+                let q_2 = q_1;
+                p_1 = p;
+                q_1 = q;
+                p = p_2 - p_1 * (a / b);
+                q = q_2 - q_1 * (a / b);
+                a = b;
+                b = c;
+            }
+            (p, q, b)
+        }
+        
         macro_wrap!(paste! { match self.scalar_type() {
-            macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+            macro_for!($T in [/*u8, i8, u16, i16, f16, bf16, u32, i32,*/ f32 /*, u64, i64, f64*/] {
                ScalarType::[<$T:upper>] => {
-                   return self.view().try_into_tensor_view::<$T>().unwrap().col2im_conv2(options).map(Into::into);
+                    let input = self.view().try_into_tensor_view::<$T>().unwrap();
+                    if let Some(input) = input.as_array() {
+                        return Ok(Tensor::from(input.col2im_conv2(options)?).into());
+                    } 
+                    let input = input.as_standard_layout()?;
+                    let (rows, cols) = input.dim();
+                    let [oh, ow] = options.output_shape();
+                    let Col2ImConv2Options {
+                        shape: [ih, iw],
+                        filter: [fh, fw],
+                        padding: [ph, pw],
+                        stride: [sh, sw],
+                        dilation: [dh, dw],
+                    } = options;
+                    let bs = rows / (ih * iw);
+                    let c = cols / (fh * fw);
+                    let (s_bez_h, d_bez_h, gcd_h) = eclid_gcd(sh, dh);
+                    let (s_bez_w, d_bez_w, gcd_w) = eclid_gcd(sw, dw);
+                    let mut output = unsafe {
+                        Tensor::<$T, _>::uninit(input.device(), [bs, c, oh, ow])?
+                    };
+                    neural_network_kernels::[<col2im_conv2_ $T>]::builder()?
+                        .build(output.device())?
+                        .dispatch(
+                            input.as_slice().unwrap(),
+                            c.to_u32().unwrap(),
+                            ih.to_u32().unwrap(),
+                            iw.to_u32().unwrap(),
+                            output.as_slice_mut().unwrap(),
+                            oh.to_u32().unwrap(),
+                            ow.to_u32().unwrap(),
+                            fh.to_u32().unwrap(),
+                            fw.to_u32().unwrap(),
+                            ph.to_u32().unwrap(),
+                            pw.to_u32().unwrap(),
+                            sh.to_u32().unwrap(),
+                            sw.to_u32().unwrap(),
+                            dh.to_u32().unwrap(),
+                            dw.to_u32().unwrap(),
+                            s_bez_h.to_u32().unwrap(),
+                            s_bez_w.to_u32().unwrap(),
+                            d_bez_h.to_u32().unwrap(),
+                            d_bez_w.to_u32().unwrap(),
+                            gcd_h.to_u32().unwrap(),
+                            gcd_w.to_u32().unwrap(),
+                        )?;
+                    return Ok(output.into());
                }
             })
             _ => (),
@@ -550,9 +718,13 @@ impl<T: Scalar, S: Data<Elem = T>> MaxPool2 for TensorBase<S, Ix4> {
     type Output = Tensor4<T>;
     fn max_pool2(&self, options: MaxPool2Options) -> Result<Self::Output> {
         if let Some(input) = self.as_array() {
-            return input.max_pool2(options).map(Into::into);
+            input.max_pool2(options).map(Into::into)
+        } else {
+            Ok(ScalarTensorView::from(self.view())
+                .max_pool2(options)?
+                .try_into_tensor()
+                .unwrap())
         }
-        todo!()
     }
 }
 
@@ -561,9 +733,28 @@ impl<S: ScalarData> MaxPool2 for ScalarTensorBase<S, Ix4> {
     type Output = ScalarTensor4;
     fn max_pool2(&self, options: MaxPool2Options) -> Result<Self::Output> {
         macro_wrap!(paste! { match self.scalar_type() {
-            macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+            macro_for!($T in [/*u8, i8, u16, i16, f16, bf16, u32, i32,*/ f32 /*, u64, i64, f64*/] {
                ScalarType::[<$T:upper>] => {
-                   return self.view().try_into_tensor_view::<$T>().unwrap().max_pool2(options).map(Into::into);
+                    let input = self.view().try_into_tensor_view::<$T>().unwrap();
+                    if let Some(input) = input.as_array() {
+                        return Ok(Tensor::from(input.max_pool2(options)?).into());
+                    }
+                    #[cfg(feature = "device")] {
+                        let (bs, c, ih, iw) = self.dim();
+                        let [oh, ow] = options.output_shape([ih, iw]);
+                        let MaxPool2Options {
+                            size: [h, w],
+                            strides: [sh, sw],
+                        } = options;
+                        let mut output = unsafe {
+                            Tensor::<$T, _>::uninit(input.device(), [bs, c, oh, ow])?
+                        };
+                        neural_network_kernels::[<max_pool2_ $T>]::builder()?
+                            .specialize(h.to_u32().unwrap(), w.to_u32().unwrap(), sh.to_u32().unwrap(), sw.to_u32().unwrap())?
+                            .build(input.device())?
+                            .dispatch(input.as_slice().unwrap(), ih.to_u32().unwrap(), iw.to_u32().unwrap(), output.as_slice_mut().unwrap(), oh.to_u32().unwrap(), ow.to_u32().unwrap())?;
+                        return Ok(output.into());
+                    }
                }
             })
             _ => (),
@@ -622,9 +813,10 @@ impl<T: Scalar, S1: DataMut<Elem = T>, S2: Data<Elem = T>> MaxPool2Backward<Tens
         options: MaxPool2Options,
     ) -> Result<()> {
         if let Some((mut dx, dy)) = self.as_array_mut().zip(output_grad.as_array()) {
-            return dx.max_pool2_backward(dy, options);
+            dx.max_pool2_backward(dy, options)
+        } else {
+            ScalarTensorViewMut::from(self.view_mut()).max_pool2_backward(output_grad.view().into(), options)
         }
-        todo!()
     }
 }
 
@@ -645,9 +837,26 @@ impl<S1: ScalarDataMut, S2: ScalarData> MaxPool2Backward<ScalarTensorBase<S2, Ix
             );
         }
         macro_wrap!(paste! { match self.scalar_type() {
-            macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+            macro_for!($T in [/*u8, i8, u16, i16, f16, bf16, u32, i32,*/ f32 /*, u64, i64, f64*/] {
                ScalarType::[<$T:upper>] => {
-                   return self.view_mut().try_into_tensor_view_mut::<$T>().unwrap().max_pool2_backward(output_grad.view().try_into_tensor_view().unwrap(), options).map(Into::into);
+                    let mut input_grad = self.view_mut().try_into_tensor_view_mut::<$T>().unwrap();
+                    let output_grad = output_grad.view().try_into_tensor_view().unwrap();
+                    if let Some((mut dx, dy)) = input_grad.as_array_mut().zip(output_grad.as_array()) {
+                        return dx.max_pool2_backward(dy, options);
+                    } 
+                    #[cfg(feature = "device")] {
+                        let (_bs, _c, ih, iw) = input_grad.dim();
+                        let [oh, ow] = options.output_shape([ih, iw]);
+                        let MaxPool2Options {
+                            size: [h, w],
+                            strides: [sh, sw],
+                        } = options;
+                        neural_network_kernels::[<max_pool2_backward_ $T>]::builder()?
+                            .specialize(h.to_u32().unwrap(), w.to_u32().unwrap(), sh.to_u32().unwrap(), sw.to_u32().unwrap())?
+                            .build(input_grad.device())?
+                            .dispatch(input_grad.as_slice_mut().unwrap(), ih.to_u32().unwrap(), iw.to_u32().unwrap(), output_grad.as_slice().unwrap(), oh.to_u32().unwrap(), ow.to_u32().unwrap())?;
+                        return Ok(());
+                    }
                }
             })
             _ => (),
@@ -775,5 +984,263 @@ mod kernels {
             }
         });
     });
+    
+    #[cfg(any(target_arch = "spirv", feature = "device"))]
+    macro_for!($X in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+        macro_for!($Y in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+            paste! {
+                #[kernel(threads(256))]
+                pub unsafe fn [<assign4_ $X _ $Y>]<const OP: u32>(
+                    d0: u32,
+                    d1: u32,
+                    d2: u32,
+                    d3: u32,
+                    alpha: $Y,
+                    #[global]
+                    x: Slice<$X>,
+                    sx0: i32,
+                    sx1: i32,
+                    sx2: i32,
+                    sx3: i32,
+                    offset_x: u32,
+                    #[global]
+                    y: UnsafeSlice<$Y>,
+                    sy0: i32,
+                    sy1: i32,
+                    sy2: i32,
+                    sy3: i32,
+                    offset_y: u32,
+                ) {
+                    use krnl_core::glam::{UVec4, IVec4};
+                    
+                    let op = BinaryOp::try_from(OP).ok().unwrap();
+                    let idx = kernel.global_id();
+                    if idx >= d0 * d1 * d2 * d3 {
+                        return;
+                    }
+                    let i0 = idx / (d1 * d2 * d3);
+                    let r0 = idx % (d1 * d2 * d3);
+                    let i1 = r0 / (d2 * d3);
+                    let r1 = r0 % (d2 * d3);
+                    let i2 = r1 / d3;
+                    let i3 = r1 % d3;
+                    let i = UVec4::new(i0, i1, i2, i3).as_ivec4();
+                    let sx = IVec4::new(sx0, sx1, sx2, sx3);
+                    let sy = IVec4::new(sy0, sy1, sy2, sy3); 
+                    let x_idx = (i.dot(sx) + offset_x as i32) as usize;
+                    let y_idx = (i.dot(sy) + offset_y as i32) as usize;
+                    unsafe {
+                        *y.unsafe_index_mut(y_idx) = op.eval(alpha * x[x_idx].cast::<$Y>(), *y.unsafe_index(y_idx));
+                    }
+                }
+            }
+        });
+    });
 }
 use kernels::BinaryOp;
+
+#[cfg(feature = "device")]
+#[module]
+mod neural_network_kernels {
+    #[cfg(not(target_arch = "spirv"))]
+    use krnl::krnl_core;
+    use krnl_core::macros::kernel;
+    #[cfg(target_arch = "spirv")]
+    use krnl_core::buffer::UnsafeIndex;
+    
+    #[kernel(threads(256))]
+    pub fn im2col_conv_f32(
+        #[global] x: Slice<f32>,
+        bs: u32,
+        c: u32,
+        ih: u32,
+        iw: u32,
+        #[global] y: UnsafeSlice<f32>,
+        oh: u32,
+        ow: u32,
+        fh: u32,
+        fw: u32,
+        ph: u32,
+        pw: u32,
+        sh: u32,
+        sw: u32,
+        dh: u32,
+        dw: u32,
+    ) {
+        let idx = kernel.global_id();
+        if idx >= bs * oh * ow * c * fh * fw {
+            return;
+        }
+        let bcid = idx / (oh * ow * fh * fw);
+        let hwfid = idx % (oh * ow * fh * fw);
+        let bid = bcid / c;
+        let cid = bcid % c;
+        let hwid = hwfid / (fh * fw);
+        let fid = hwfid % (fh * fw);
+        let hid = hwid / ow;
+        let wid = hwid % ow;
+        let fi = fid / fw;
+        let fj = fid % fw;
+        let hidx = -(ph as i32) + (fi * dh + sh * hid) as i32;
+        let widx = -(pw as i32) + (fj * dw + sw * wid) as i32;
+        let x = if hidx >= 0 && hidx < ih as i32 && widx >= 0 && widx < iw as i32 {
+            x[(bcid * ih * iw + hidx as u32 * iw + widx as u32) as usize]
+        } else {
+            0.
+        };
+        let y_idx = bid * oh * ow * c * fh * fw + hid * ow * c * fh * fw + wid * c * fh * fw + cid * fh * fw + fid;
+        unsafe {
+            *y.unsafe_index_mut(y_idx as usize) = x;
+        }
+    }
+    
+    #[kernel(threads(256))]
+    pub fn col2im_conv2_f32(
+        #[global] x: Slice<f32>,
+        c: u32,
+        ih: u32,
+        iw: u32,
+        #[item] y: &mut f32,
+        oh: u32,
+        ow: u32,
+        fh: u32,
+        fw: u32,
+        ph: u32,
+        pw: u32,
+        sh: u32,
+        sw: u32,
+        dh: u32,
+        dw: u32,
+        s_bez_h: u32,
+        s_bez_w: u32,
+        d_bez_h: u32,
+        d_bez_w: u32,
+        gcd_h: u32,
+        gcd_w: u32,
+    ) {
+        let idx = kernel.item_id();
+        let bcid = idx / (oh * ow);
+        let hwid = idx % (oh * ow);
+        let bid = bcid / c;
+        let cid = bcid % c;
+        let bidx = bid * ih * iw * c * fh * fw;
+        let bidy = bid * c * oh * ow;
+        let cidx = cid * fh * fw;
+        let cidy = cid * oh * ow;
+        
+        let ow_scaled = (ow - 1) / gcd_w + 1;
+        let gcd_scale_h = hwid / ow_scaled + (ph - 1) / gcd_h + 1;
+        let gcd_scale_w = hwid % ow_scaled + (pw - 1) / gcd_w + 1;
+        let hidy = gcd_scale_h * gcd_h - ph;
+        let widy = gcd_scale_w * gcd_w - pw;
+        let th_step = sh * dh / gcd_h;
+        let tw_step = sw * dw / gcd_w;
+    
+        fn grid_ceil(x: i32, step: i32) -> i32 {
+            if x > 0 {
+                (x - 1) / step + 1
+            } else {
+                x / step * step
+            }
+        }
+    
+        let th_begin = grid_ceil(i32::max(-((s_bez_h * gcd_scale_h * sh) as i32), ((d_bez_h * gcd_scale_h - fh + 1) * dh) as i32), th_step as i32) as u32;
+        let th_end = u32::min((ih - s_bez_h * gcd_scale_h) * sh, (d_bez_h * gcd_scale_h + 1) * dh);
+        let tw_begin = grid_ceil(i32::max(-((s_bez_w * gcd_scale_w * sw) as i32), ((d_bez_w * gcd_scale_w - fw + 1) * dw) as i32), tw_step as i32) as u32;
+        let tw_end = u32::min((iw - s_bez_w * gcd_scale_w) * sw, (d_bez_w * gcd_scale_w + 1) * dw);
+    
+        let mut acc = 0.;
+        let mut th = th_begin;
+        while th < th_end {
+            let mut tw = tw_begin;
+            while tw < tw_end {
+                let fhid = d_bez_h * gcd_scale_h - th / dh;
+                let fwid = d_bez_w * gcd_scale_w - tw / dw;
+                let hid = th / sh + s_bez_h * gcd_scale_h;
+                let wid = tw / sw + s_bez_w * gcd_scale_w;
+                let fidx = fhid * fw + fwid;
+                let patch_idx = (hid * iw + wid) * c * fh * fw;
+                acc += x[(bidx + patch_idx + cidx + fidx) as usize];
+                tw += tw_step;
+            }
+            th += th_step;
+        }
+        *y = acc;
+    }
+    
+    #[kernel(threads(256))]
+    pub fn max_pool2_f32<const H: u32, const W: u32, const SH: u32, const SW: u32>(
+        #[global] x: Slice<f32>,
+        ih: u32,
+        iw: u32,
+        #[item] y: &mut f32,
+        oh: u32,
+        ow: u32,
+    ) {
+        let idx = kernel.item_id();
+        let bid = idx / (oh * ow);
+        let hwid = idx % (oh * ow);
+        let hid = hwid / ow;
+        let wid = hwid % ow;
+        
+        let x_start = bid * ih * iw;
+        let mut m = 0f32;
+        
+        let mut row = hid * SH;
+        for i in 0 .. H {
+            let mut col = wid * SW;   
+            for j in 0 .. W {
+                let x = x[(x_start + row * iw + col) as usize];
+                if i == 0 && j == 0 {
+                    m = x;
+                } else {
+                    m = m.max(x);
+                }
+                col += 1;
+            }
+            row += 1;
+        }
+        *y = m;
+    }
+    
+    #[kernel(threads(256))]
+    pub fn max_pool2_backward_f32<const H: u32, const W: u32, const SH: u32, const SW: u32>(
+        #[global] dx: UnsafeSlice<f32>,
+        ih: u32,
+        iw: u32,
+        #[item] dy: f32,
+        oh: u32,
+        ow: u32,
+    ) {
+        let idx = kernel.item_id();
+        let bid = idx / (oh * ow);
+        let hwid = idx % (oh * ow);
+        let hid = hwid / ow;
+        let wid = hwid % ow;
+        let dx_start = bid * ih * iw;
+        let mut m = 0f32;
+        let mut row = hid * SH;
+        let col = wid * SW;   
+        let mut m_idx = (dx_start + row * iw + col) as usize;        
+        for i in 0 .. H {
+            let mut col = wid * SW;   
+            for j in 0 .. W {
+                let x_idx = (dx_start + row * iw + col) as usize;
+                let dx = unsafe { dx.unsafe_index_mut(x_idx) };
+                let x = *dx;
+                *dx = 0f32;
+                if i == 0 && j == 0 {
+                    m = x;
+                } else {
+                    m = m.max(x);
+                    m_idx = x_idx;
+                }
+                col += 1;
+            }
+            row += 1;
+        }
+        unsafe {
+            *dx.unsafe_index_mut(m_idx) = dy;
+        }
+    }
+}

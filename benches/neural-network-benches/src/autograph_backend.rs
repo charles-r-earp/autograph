@@ -42,23 +42,12 @@ impl Lenet5Classifier {
         }
     }
     pub fn infer(&self, batch_size: usize) -> Result<()> {
-        let y = if self.device.is_host() {
-            let x = ScalarArcTensor::zeros(
+        let x = ScalarArcTensor::zeros(
                 self.device.clone(),
                 [batch_size, 1, 28, 28],
                 self.scalar_type,
             )?;
-            self.model.forward(x.into())?
-        } else {
-            let x =
-                ScalarArcTensor::zeros(self.device.clone(), [batch_size, 256], self.scalar_type)?;
-            self.model
-                .dense1
-                .forward(x.into())?
-                .forward(&self.model.dense2)?
-                .forward(&self.model.dense3)?
-        };
-
+        let y = self.model.forward(x.into())?;
         let _ = y
             .into_value()
             .try_into_arc_tensor::<f32>()
@@ -69,23 +58,13 @@ impl Lenet5Classifier {
     }
     pub fn train(&mut self, batch_size: usize) -> Result<()> {
         self.model.set_training(true)?;
-        let t = ScalarArcTensor::zeros(self.device.clone(), batch_size, ScalarType::U8)?;
-        let y = if self.device.is_host() {
-            let x = ScalarArcTensor::zeros(
+        let x = ScalarArcTensor::zeros(
                 self.device.clone(),
                 [batch_size, 1, 28, 28],
                 self.scalar_type,
             )?;
-            self.model.forward(x.into())?
-        } else {
-            let x =
-                ScalarArcTensor::zeros(self.device.clone(), [batch_size, 256], self.scalar_type)?;
-            self.model
-                .dense1
-                .forward(x.into())?
-                .forward(&self.model.dense2)?
-                .forward(&self.model.dense3)?
-        };
+        let t = ScalarArcTensor::zeros(self.device.clone(), batch_size, ScalarType::U8)?;
+        let y = self.model.forward(x.into())?;
         let loss = CrossEntropyLoss::default().eval(y, t)?;
         loss.backward()?;
         let optimizer = self.optimizer.as_ref().unwrap();

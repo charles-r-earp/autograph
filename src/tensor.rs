@@ -1256,7 +1256,15 @@ impl<T: Scalar, S: DataOwned<Elem = T>, D: Dimension> TensorBase<S, D> {
         Sh: ShapeBuilder<Dim = D>,
     {
         let (dim, strides) = dim_strides_from_shape(shape.into_shape());
+        /*let buffer = if device.is_host() || dim.ndim() == 1 {
+            unsafe { BufferBase::uninit(device, dim.size())? }
+        } else {
+            unsafe { 
+                BufferBase::zeros(device, dim.size())?
+            }
+        };*/
         let buffer = unsafe { BufferBase::uninit(device, dim.size())? };
+        //buffer.device().wait()?;
         Ok(Self {
             dim,
             strides,

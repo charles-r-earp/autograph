@@ -445,12 +445,9 @@ fn broadcast_backward<T: Scalar, D1: Dimension, D2: Dimension>(
             .try_into_tensor_view::<f32>()
             .unwrap();
         let n = dy.len().to_u32().unwrap();
-        assert!(n != 0);
-        let batch_size = input_dim.size().to_u32().unwrap() / n;
         let mut dx = unsafe { Tensor::uninit(dy.device(), input_dim)? };
         kernels::broadcast_backward_f32::builder()?
             .build(dx.device())?
-            .with_global_threads(batch_size)
             .dispatch(n, dy.as_slice().unwrap(), dx.as_slice_mut().unwrap())?;
         Ok(dx.cast_into().unwrap())
     }
