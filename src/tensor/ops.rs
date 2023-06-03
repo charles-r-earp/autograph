@@ -537,16 +537,12 @@ impl<S: ScalarData> Im2ColConv2 for ScalarTensorBase<S, Ix4> {
                         let mut output = unsafe {
                             Tensor::<$T, _>::uninit(input.device(), [bs * oh * ow, c * fh * fw])?
                         };
-                        neural_network_kernels::[<im2col_conv_ $T>]::builder()?
-                            .build(output.device())?
-                            .with_global_threads(output.len().to_u32().unwrap())
-                            .dispatch(
-                                input.as_slice().unwrap(),
+                        neural_network_kernels::[<im2col_conv2_ $T>]::builder()?
+                            .specialize(
                                 bs.to_u32().unwrap(),
                                 c.to_u32().unwrap(),
                                 ih.to_u32().unwrap(),
                                 iw.to_u32().unwrap(),
-                                output.as_slice_mut().unwrap(),
                                 oh.to_u32().unwrap(),
                                 ow.to_u32().unwrap(),
                                 fh.to_u32().unwrap(),
@@ -557,6 +553,12 @@ impl<S: ScalarData> Im2ColConv2 for ScalarTensorBase<S, Ix4> {
                                 sw.to_u32().unwrap(),
                                 dh.to_u32().unwrap(),
                                 dw.to_u32().unwrap(),
+                            )?
+                            .build(output.device())?
+                            .with_global_threads(output.len().to_u32().unwrap())
+                            .dispatch(
+                                input.as_slice().unwrap(),
+                                output.as_slice_mut().unwrap(),
                             )?;
                         return Ok(output.into());
                     }
@@ -1089,26 +1091,42 @@ mod neural_network_kernels {
     #[cfg(target_arch = "spirv")]
     use krnl_core::buffer::UnsafeIndex;
     use krnl_core::macros::kernel;
-
+    
     #[kernel(threads(256))]
-    pub fn im2col_conv_f32(
+    pub fn im2col_conv2_f32<
+        const BS: u32,
+        const C: u32,
+        const IH: u32,
+        const IW: u32,
+        const OH: u32,
+        const OW: u32,
+        const FH: u32,
+        const FW: u32,
+        const PH: u32,
+        const PW: u32,
+        const SH: u32,
+        const SW: u32,
+        const DH: u32,
+        const DW: u32,
+    >(
         #[global] x: Slice<f32>,
-        bs: u32,
-        c: u32,
-        ih: u32,
-        iw: u32,
         #[global] y: UnsafeSlice<f32>,
-        oh: u32,
-        ow: u32,
-        fh: u32,
-        fw: u32,
-        ph: u32,
-        pw: u32,
-        sh: u32,
-        sw: u32,
-        dh: u32,
-        dw: u32,
     ) {
+        let bs = BS;
+        let c = C;
+        let ih = IH;
+        let iw = IW;
+        let oh = OH;
+        let ow = OW;
+        let fh = FH;
+        let fw = FW;
+        let ph = PH;
+        let pw = PW;
+        let sh = SH;
+        let sw = SW;
+        let dh = DH;
+        let dw = DW;
+        
         let idx = kernel.global_id();
         if idx >= bs * oh * ow * c * fh * fw {
             return;
