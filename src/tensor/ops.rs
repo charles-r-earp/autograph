@@ -517,55 +517,57 @@ impl<T: Scalar, S: Data<Elem = T>> Im2ColConv2 for TensorBase<S, Ix4> {
 impl<S: ScalarData> Im2ColConv2 for ScalarTensorBase<S, Ix4> {
     type Output = ScalarTensor2;
     fn im2col_conv2(&self, options: Im2ColConv2Options) -> Result<Self::Output> {
-        macro_wrap!(paste! { #[allow(clippy::single_match)] match self.scalar_type() {
-            macro_for!($T in [/*u8, i8, u16, i16, f16, bf16, u32, i32,*/ f32 /*, u64, i64, f64*/] {
-               ScalarType::[<$T:upper>] => {
-                    let input = self.view().try_into_tensor_view::<$T>().unwrap();
-                    if let Some(input) = input.as_array() {
-                        return Ok(Tensor::from(input.im2col_conv2(options)?).into());
-                    }
-                    #[cfg(feature = "device")] {
-                        let input = input.as_standard_layout()?;
-                        let (bs, c, ih, iw) = input.dim();
-                        let [oh, ow] = options.output_shape([ih, iw]);
-                        let Im2ColConv2Options {
-                            filter: [fh, fw],
-                            padding: [ph, pw],
-                            stride: [sh, sw],
-                            dilation: [dh, dw],
-                        } = options;
-                        let mut output = unsafe {
-                            Tensor::<$T, _>::uninit(input.device(), [bs * oh * ow, c * fh * fw])?
-                        };
-                        neural_network_kernels::[<im2col_conv2_ $T>]::builder()?
-                            .specialize(
-                                bs.to_u32().unwrap(),
-                                c.to_u32().unwrap(),
-                                ih.to_u32().unwrap(),
-                                iw.to_u32().unwrap(),
-                                oh.to_u32().unwrap(),
-                                ow.to_u32().unwrap(),
-                                fh.to_u32().unwrap(),
-                                fw.to_u32().unwrap(),
-                                ph.to_u32().unwrap(),
-                                pw.to_u32().unwrap(),
-                                sh.to_u32().unwrap(),
-                                sw.to_u32().unwrap(),
-                                dh.to_u32().unwrap(),
-                                dw.to_u32().unwrap(),
-                            )?
-                            .build(output.device())?
-                            .with_global_threads(output.len().to_u32().unwrap())
-                            .dispatch(
-                                input.as_slice().unwrap(),
-                                output.as_slice_mut().unwrap(),
-                            )?;
-                        return Ok(output.into());
-                    }
-               }
-            })
-            _ => (),
-        }});
+        macro_wrap!(
+            paste! { #[allow(clippy::single_match)] match self.scalar_type() {
+                macro_for!($T in [/*u8, i8, u16, i16, f16, bf16, u32, i32,*/ f32 /*, u64, i64, f64*/] {
+                   ScalarType::[<$T:upper>] => {
+                        let input = self.view().try_into_tensor_view::<$T>().unwrap();
+                        if let Some(input) = input.as_array() {
+                            return Ok(Tensor::from(input.im2col_conv2(options)?).into());
+                        }
+                        #[cfg(feature = "device")] {
+                            let input = input.as_standard_layout()?;
+                            let (bs, c, ih, iw) = input.dim();
+                            let [oh, ow] = options.output_shape([ih, iw]);
+                            let Im2ColConv2Options {
+                                filter: [fh, fw],
+                                padding: [ph, pw],
+                                stride: [sh, sw],
+                                dilation: [dh, dw],
+                            } = options;
+                            let mut output = unsafe {
+                                Tensor::<$T, _>::uninit(input.device(), [bs * oh * ow, c * fh * fw])?
+                            };
+                            neural_network_kernels::[<im2col_conv2_ $T>]::builder()?
+                                .specialize(
+                                    bs.to_u32().unwrap(),
+                                    c.to_u32().unwrap(),
+                                    ih.to_u32().unwrap(),
+                                    iw.to_u32().unwrap(),
+                                    oh.to_u32().unwrap(),
+                                    ow.to_u32().unwrap(),
+                                    fh.to_u32().unwrap(),
+                                    fw.to_u32().unwrap(),
+                                    ph.to_u32().unwrap(),
+                                    pw.to_u32().unwrap(),
+                                    sh.to_u32().unwrap(),
+                                    sw.to_u32().unwrap(),
+                                    dh.to_u32().unwrap(),
+                                    dw.to_u32().unwrap(),
+                                )?
+                                .build(output.device())?
+                                .with_global_threads(output.len().to_u32().unwrap())
+                                .dispatch(
+                                    input.as_slice().unwrap(),
+                                    output.as_slice_mut().unwrap(),
+                                )?;
+                            return Ok(output.into());
+                        }
+                   }
+                })
+                _ => (),
+            }}
+        );
         bail!("im2col_conv2 {:?} unimplemented!()", self.scalar_type())
     }
 }
@@ -663,62 +665,91 @@ impl<S: ScalarData> Col2ImConv2 for ScalarTensorBase<S, Ix2> {
             (p, q, b)
         }
 
-        macro_wrap!(paste! { #[allow(clippy::single_match)] match self.scalar_type() {
-            macro_for!($T in [/*u8, i8, u16, i16, f16, bf16, u32, i32,*/ f32 /*, u64, i64, f64*/] {
-               ScalarType::[<$T:upper>] => {
-                    let input = self.view().try_into_tensor_view::<$T>().unwrap();
-                    if let Some(input) = input.as_array() {
-                        return Ok(Tensor::from(input.col2im_conv2(options)?).into());
-                    }
-                    #[cfg(feature = "device")] {
-                        let input = input.as_standard_layout()?;
-                        let (rows, cols) = input.dim();
-                        let [oh, ow] = options.output_shape();
-                        let Col2ImConv2Options {
-                            shape: [ih, iw],
-                            filter: [fh, fw],
-                            padding: [ph, pw],
-                            stride: [sh, sw],
-                            dilation: [dh, dw],
-                        } = options;
-                        let bs = rows / (ih * iw);
-                        let c = cols / (fh * fw);
-                        let (s_bez_h, d_bez_h, gcd_h) = eclid_gcd(sh, dh);
-                        let (s_bez_w, d_bez_w, gcd_w) = eclid_gcd(sw, dw);
-                        let mut output = unsafe {
-                            Tensor::<$T, _>::uninit(input.device(), [bs, c, oh, ow])?
-                        };
-                        neural_network_kernels::[<col2im_conv2_ $T>]::builder()?
-                            .build(output.device())?
-                            .dispatch(
-                                input.as_slice().unwrap(),
-                                c.to_u32().unwrap(),
-                                ih.to_u32().unwrap(),
-                                iw.to_u32().unwrap(),
-                                output.as_slice_mut().unwrap(),
-                                oh.to_u32().unwrap(),
-                                ow.to_u32().unwrap(),
-                                fh.to_u32().unwrap(),
-                                fw.to_u32().unwrap(),
-                                ph.to_u32().unwrap(),
-                                pw.to_u32().unwrap(),
-                                sh.to_u32().unwrap(),
-                                sw.to_u32().unwrap(),
-                                dh.to_u32().unwrap(),
-                                dw.to_u32().unwrap(),
-                                s_bez_h.to_u32().unwrap(),
-                                s_bez_w.to_u32().unwrap(),
-                                d_bez_h.to_u32().unwrap(),
-                                d_bez_w.to_u32().unwrap(),
-                                gcd_h.to_u32().unwrap(),
-                                gcd_w.to_u32().unwrap(),
-                            )?;
-                        return Ok(output.into());
-                    }
-               }
-            })
-            _ => (),
-        }});
+        macro_wrap!(
+            paste! { #[allow(clippy::single_match)] match self.scalar_type() {
+                macro_for!($T in [/*u8, i8, u16, i16, f16, bf16, u32, i32,*/ f32 /*, u64, i64, f64*/] {
+                   ScalarType::[<$T:upper>] => {
+                        let input = self.view().try_into_tensor_view::<$T>().unwrap();
+                        if let Some(input) = input.as_array() {
+                            return Ok(Tensor::from(input.col2im_conv2(options)?).into());
+                        }
+                        #[cfg(feature = "device")] {
+                            let input = input.as_standard_layout()?;
+                            let (rows, cols) = input.dim();
+                            let [oh, ow] = options.output_shape();
+                            let Col2ImConv2Options {
+                                shape: [ih, iw],
+                                filter: [fh, fw],
+                                padding: [ph, pw],
+                                stride: [sh, sw],
+                                dilation: [dh, dw],
+                            } = options;
+                            let bs = rows / (ih * iw);
+                            let c = cols / (fh * fw);
+                            let (s_bez_h, d_bez_h, gcd_h) = eclid_gcd(sh, dh);
+                            let (s_bez_w, d_bez_w, gcd_w) = eclid_gcd(sw, dw);
+                            let mut output = unsafe {
+                                Tensor::<$T, _>::uninit(input.device(), [bs, c, oh, ow])?
+                            };
+                            /*neural_network_kernels::[<col2im_conv2_ $T>]::builder()?
+                                .build(output.device())?
+                                .dispatch(
+                                    input.as_slice().unwrap(),
+                                    c.to_u32().unwrap(),
+                                    ih.to_u32().unwrap(),
+                                    iw.to_u32().unwrap(),
+                                    output.as_slice_mut().unwrap(),
+                                    oh.to_u32().unwrap(),
+                                    ow.to_u32().unwrap(),
+                                    fh.to_u32().unwrap(),
+                                    fw.to_u32().unwrap(),
+                                    ph.to_u32().unwrap(),
+                                    pw.to_u32().unwrap(),
+                                    sh.to_u32().unwrap(),
+                                    sw.to_u32().unwrap(),
+                                    dh.to_u32().unwrap(),
+                                    dw.to_u32().unwrap(),
+                                    s_bez_h.to_u32().unwrap(),
+                                    s_bez_w.to_u32().unwrap(),
+                                    d_bez_h.to_u32().unwrap(),
+                                    d_bez_w.to_u32().unwrap(),
+                                    gcd_h.to_u32().unwrap(),
+                                    gcd_w.to_u32().unwrap(),
+                                )?;*/
+                            neural_network_kernels::[<col2im_conv2_v2_ $T>]::builder()?
+                                .specialize(
+                                    c.to_u32().unwrap(),
+                                    ih.to_u32().unwrap(),
+                                    iw.to_u32().unwrap(),
+                                    oh.to_u32().unwrap(),
+                                    ow.to_u32().unwrap(),
+                                    fh.to_u32().unwrap(),
+                                    fw.to_u32().unwrap(),
+                                    ph.to_u32().unwrap(),
+                                    pw.to_u32().unwrap(),
+                                    sh.to_u32().unwrap(),
+                                    sw.to_u32().unwrap(),
+                                    dh.to_u32().unwrap(),
+                                    dw.to_u32().unwrap(),
+                                    s_bez_h.to_u32().unwrap(),
+                                    s_bez_w.to_u32().unwrap(),
+                                    d_bez_h.to_u32().unwrap(),
+                                    d_bez_w.to_u32().unwrap(),
+                                    gcd_h.to_u32().unwrap(),
+                                    gcd_w.to_u32().unwrap(),
+                                )?
+                                .build(output.device())?
+                                .dispatch(
+                                    input.as_slice().unwrap(),
+                                     output.as_slice_mut().unwrap(),
+                                )?;
+                            return Ok(output.into());
+                        }
+                   }
+                })
+                _ => (),
+            }}
+        );
         bail!("im2col_conv2 {:?} unimplemented!()", self.scalar_type())
     }
 }
@@ -774,34 +805,35 @@ impl<T: Scalar, S: Data<Elem = T>> MaxPool2 for TensorBase<S, Ix4> {
 impl<S: ScalarData> MaxPool2 for ScalarTensorBase<S, Ix4> {
     type Output = ScalarTensor4;
     fn max_pool2(&self, options: MaxPool2Options) -> Result<Self::Output> {
-        
-        macro_wrap!(paste! { #[allow(clippy::single_match)] match self.scalar_type() {
-            macro_for!($T in [/*u8, i8, u16, i16, f16, bf16, u32, i32,*/ f32 /*, u64, i64, f64*/] {
-               ScalarType::[<$T:upper>] => {
-                    let input = self.view().try_into_tensor_view::<$T>().unwrap();
-                    if let Some(input) = input.as_array() {
-                        return Ok(Tensor::from(input.max_pool2(options)?).into());
-                    }
-                    #[cfg(feature = "device")] {
-                        let (bs, c, ih, iw) = self.dim();
-                        let [oh, ow] = options.output_shape([ih, iw]);
-                        let MaxPool2Options {
-                            size: [h, w],
-                            strides: [sh, sw],
-                        } = options;
-                        let mut output = unsafe {
-                            Tensor::<$T, _>::uninit(input.device(), [bs, c, oh, ow])?
-                        };
-                        neural_network_kernels::[<max_pool2_ $T>]::builder()?
-                            .specialize(h.to_u32().unwrap(), w.to_u32().unwrap(), sh.to_u32().unwrap(), sw.to_u32().unwrap())?
-                            .build(input.device())?
-                            .dispatch(input.as_slice().unwrap(), ih.to_u32().unwrap(), iw.to_u32().unwrap(), output.as_slice_mut().unwrap(), oh.to_u32().unwrap(), ow.to_u32().unwrap())?;
-                        return Ok(output.into());
-                    }
-               }
-            })
-            _ => (),
-        }});
+        macro_wrap!(
+            paste! { #[allow(clippy::single_match)] match self.scalar_type() {
+                macro_for!($T in [/*u8, i8, u16, i16, f16, bf16, u32, i32,*/ f32 /*, u64, i64, f64*/] {
+                   ScalarType::[<$T:upper>] => {
+                        let input = self.view().try_into_tensor_view::<$T>().unwrap();
+                        if let Some(input) = input.as_array() {
+                            return Ok(Tensor::from(input.max_pool2(options)?).into());
+                        }
+                        #[cfg(feature = "device")] {
+                            let (bs, c, ih, iw) = self.dim();
+                            let [oh, ow] = options.output_shape([ih, iw]);
+                            let MaxPool2Options {
+                                size: [h, w],
+                                strides: [sh, sw],
+                            } = options;
+                            let mut output = unsafe {
+                                Tensor::<$T, _>::uninit(input.device(), [bs, c, oh, ow])?
+                            };
+                            neural_network_kernels::[<max_pool2_ $T>]::builder()?
+                                .specialize(h.to_u32().unwrap(), w.to_u32().unwrap(), sh.to_u32().unwrap(), sw.to_u32().unwrap())?
+                                .build(input.device())?
+                                .dispatch(input.as_slice().unwrap(), ih.to_u32().unwrap(), iw.to_u32().unwrap(), output.as_slice_mut().unwrap(), oh.to_u32().unwrap(), ow.to_u32().unwrap())?;
+                            return Ok(output.into());
+                        }
+                   }
+                })
+                _ => (),
+            }}
+        );
         bail!("max_pool2 {:?} unimplemented!()", self.scalar_type())
     }
 }
@@ -828,6 +860,7 @@ impl<T: Scalar, S1: ArrayDataMut<Elem = T>, S2: ArrayData<Elem = T>>
                     for i in 0..h {
                         for j in 0..w {
                             let dx = unsafe { dx.uget_mut((row * sh + i, col * sw + j)) };
+                            // let dx = dx.get_mut((row * sh + i, col * sw + j)).unwrap();
                             if (i == 0 && j == 0) || *dx > m {
                                 m = *dx;
                                 mi = i;
@@ -837,8 +870,9 @@ impl<T: Scalar, S1: ArrayDataMut<Elem = T>, S2: ArrayData<Elem = T>>
                         }
                     }
                     unsafe {
-                        *dx.uget_mut((mi, mj)) = *dy;
+                        *dx.uget_mut((row * sh + mi, col * sw + mj)) = *dy;
                     }
+                    // *dx.get_mut((row * sh + mi, col * sw + mj)).unwrap() = *dy;
                 }
             }
         }
@@ -880,31 +914,33 @@ impl<S1: ScalarDataMut, S2: ScalarData> MaxPool2Backward<ScalarTensorBase<S2, Ix
                 output_grad.scalar_type()
             );
         }
-        macro_wrap!(paste! { #[allow(clippy::single_match)] match self.scalar_type() {
-            macro_for!($T in [/*u8, i8, u16, i16, f16, bf16, u32, i32,*/ f32 /*, u64, i64, f64*/] {
-               ScalarType::[<$T:upper>] => {
-                    let mut input_grad = self.view_mut().try_into_tensor_view_mut::<$T>().unwrap();
-                    let output_grad = output_grad.view().try_into_tensor_view().unwrap();
-                    if let Some((mut dx, dy)) = input_grad.as_array_mut().zip(output_grad.as_array()) {
-                        return dx.max_pool2_backward(dy, options);
-                    }
-                    #[cfg(feature = "device")] {
-                        let (_bs, _c, ih, iw) = input_grad.dim();
-                        let [oh, ow] = options.output_shape([ih, iw]);
-                        let MaxPool2Options {
-                            size: [h, w],
-                            strides: [sh, sw],
-                        } = options;
-                        neural_network_kernels::[<max_pool2_backward_ $T>]::builder()?
-                            .specialize(h.to_u32().unwrap(), w.to_u32().unwrap(), sh.to_u32().unwrap(), sw.to_u32().unwrap())?
-                            .build(input_grad.device())?
-                            .dispatch(input_grad.as_slice_mut().unwrap(), ih.to_u32().unwrap(), iw.to_u32().unwrap(), output_grad.as_slice().unwrap(), oh.to_u32().unwrap(), ow.to_u32().unwrap())?;
-                        return Ok(());
-                    }
-               }
-            })
-            _ => (),
-        }});
+        macro_wrap!(
+            paste! { #[allow(clippy::single_match)] match self.scalar_type() {
+                macro_for!($T in [/*u8, i8, u16, i16, f16, bf16, u32, i32,*/ f32 /*, u64, i64, f64*/] {
+                   ScalarType::[<$T:upper>] => {
+                        let mut input_grad = self.view_mut().try_into_tensor_view_mut::<$T>().unwrap();
+                        let output_grad = output_grad.view().try_into_tensor_view().unwrap();
+                        if let Some((mut dx, dy)) = input_grad.as_array_mut().zip(output_grad.as_array()) {
+                            return dx.max_pool2_backward(dy, options);
+                        }
+                        #[cfg(feature = "device")] {
+                            let (_bs, _c, ih, iw) = input_grad.dim();
+                            let [oh, ow] = options.output_shape([ih, iw]);
+                            let MaxPool2Options {
+                                size: [h, w],
+                                strides: [sh, sw],
+                            } = options;
+                            neural_network_kernels::[<max_pool2_backward_ $T>]::builder()?
+                                .specialize(h.to_u32().unwrap(), w.to_u32().unwrap(), sh.to_u32().unwrap(), sw.to_u32().unwrap())?
+                                .build(input_grad.device())?
+                                .dispatch(input_grad.as_slice_mut().unwrap(), ih.to_u32().unwrap(), iw.to_u32().unwrap(), output_grad.as_slice().unwrap(), oh.to_u32().unwrap(), ow.to_u32().unwrap())?;
+                            return Ok(());
+                        }
+                   }
+                })
+                _ => (),
+            }}
+        );
         bail!(
             "max_pool2_backward {:?} unimplemented!()",
             self.scalar_type()
@@ -1091,7 +1127,7 @@ mod neural_network_kernels {
     #[cfg(target_arch = "spirv")]
     use krnl_core::buffer::UnsafeIndex;
     use krnl_core::macros::kernel;
-    
+
     #[kernel(threads(256))]
     pub fn im2col_conv2_f32<
         const BS: u32,
@@ -1126,7 +1162,7 @@ mod neural_network_kernels {
         let sw = SW;
         let dh = DH;
         let dw = DW;
-        
+
         let idx = kernel.global_id();
         if idx >= bs * oh * ow * c * fh * fw {
             return;
@@ -1251,6 +1287,110 @@ mod neural_network_kernels {
     }
 
     #[kernel(threads(256))]
+    pub fn col2im_conv2_v2_f32<
+        const C: u32,
+        const IH: u32,
+        const IW: u32,
+        const OH: u32,
+        const OW: u32,
+        const FH: u32,
+        const FW: u32,
+        const PH: u32,
+        const PW: u32,
+        const SH: u32,
+        const SW: u32,
+        const DH: u32,
+        const DW: u32,
+        const S_BEZ_H: u32,
+        const S_BEZ_W: u32,
+        const D_BEZ_H: u32,
+        const D_BEZ_W: u32,
+        const GCD_H: u32,
+        const GCD_W: u32,
+    >(
+        #[global] x: Slice<f32>,
+        #[item] y: &mut f32,
+    ) {
+        let c = C;
+        let [ih, iw] = [IH, IW];
+        let [oh, ow] = [OH, OW];
+        let [fh, fw] = [FH, FW];
+        let [ph, pw] = [PH, PW];
+        let [sh, sw] = [SH, SW];
+        let [dh, dw] = [DH, DW];
+        let [s_bez_h, s_bez_w] = [S_BEZ_H, S_BEZ_W];
+        let [d_bez_h, d_bez_w] = [D_BEZ_H, D_BEZ_W];
+        let [gcd_h, gcd_w] = [GCD_H, GCD_W];
+
+        let idx = kernel.item_id();
+        let bcid = idx / (oh * ow);
+        let hwid = idx % (oh * ow);
+        let bid = bcid / c;
+        let cid = bcid % c;
+        let bidx = bid * ih * iw * c * fh * fw;
+        let bidy = bid * c * oh * ow;
+        let cidx = cid * fh * fw;
+        let cidy = cid * oh * ow;
+
+        let ow_scaled = (ow - 1) / gcd_w + 1;
+        let gcd_scale_h = hwid / ow_scaled + (ph - 1) / gcd_h + 1;
+        let gcd_scale_w = hwid % ow_scaled + (pw - 1) / gcd_w + 1;
+        let hidy = gcd_scale_h * gcd_h - ph;
+        let widy = gcd_scale_w * gcd_w - pw;
+        let th_step = sh * dh / gcd_h;
+        let tw_step = sw * dw / gcd_w;
+
+        fn grid_ceil(x: i32, step: i32) -> i32 {
+            if x > 0 {
+                (x - 1) / step + 1
+            } else {
+                x / step * step
+            }
+        }
+
+        let th_begin = grid_ceil(
+            i32::max(
+                -((s_bez_h * gcd_scale_h * sh) as i32),
+                ((d_bez_h * gcd_scale_h - fh + 1) * dh) as i32,
+            ),
+            th_step as i32,
+        ) as u32;
+        let th_end = u32::min(
+            (ih - s_bez_h * gcd_scale_h) * sh,
+            (d_bez_h * gcd_scale_h + 1) * dh,
+        );
+        let tw_begin = grid_ceil(
+            i32::max(
+                -((s_bez_w * gcd_scale_w * sw) as i32),
+                ((d_bez_w * gcd_scale_w - fw + 1) * dw) as i32,
+            ),
+            tw_step as i32,
+        ) as u32;
+        let tw_end = u32::min(
+            (iw - s_bez_w * gcd_scale_w) * sw,
+            (d_bez_w * gcd_scale_w + 1) * dw,
+        );
+
+        let mut acc = 0.;
+        let mut th = th_begin;
+        while th < th_end {
+            let mut tw = tw_begin;
+            while tw < tw_end {
+                let fhid = d_bez_h * gcd_scale_h - th / dh;
+                let fwid = d_bez_w * gcd_scale_w - tw / dw;
+                let hid = th / sh + s_bez_h * gcd_scale_h;
+                let wid = tw / sw + s_bez_w * gcd_scale_w;
+                let fidx = fhid * fw + fwid;
+                let patch_idx = (hid * iw + wid) * c * fh * fw;
+                acc += x[(bidx + patch_idx + cidx + fidx) as usize];
+                tw += tw_step;
+            }
+            th += th_step;
+        }
+        *y = acc;
+    }
+
+    #[kernel(threads(256))]
     pub fn max_pool2_f32<const H: u32, const W: u32, const SH: u32, const SW: u32>(
         #[global] x: Slice<f32>,
         ih: u32,
@@ -1301,28 +1441,48 @@ mod neural_network_kernels {
         let wid = hwid % ow;
         let dx_start = bid * ih * iw;
         let mut m = 0f32;
+        let mut mi = 0;
+        let mut mj = 0;
         let mut row = hid * SH;
-        let col = wid * SW;
-        let mut m_idx = (dx_start + row * iw + col) as usize;
         for i in 0..H {
             let mut col = wid * SW;
             for j in 0..W {
-                let x_idx = (dx_start + row * iw + col) as usize;
-                let dx = unsafe { dx.unsafe_index_mut(x_idx) };
+                let dx = unsafe { dx.unsafe_index_mut((dx_start + row * ih + col) as usize) };
                 let x = *dx;
                 *dx = 0f32;
-                if i == 0 && j == 0 {
+                if (i == 0 && j == 0) || x > m {
                     m = x;
-                } else {
-                    m = m.max(x);
-                    m_idx = x_idx;
+                    mi = i;
+                    mj = j;
                 }
                 col += 1;
             }
             row += 1;
         }
+
+        let row = hid * SH + mi;
+        let col = wid * SW + mj;
         unsafe {
-            *dx.unsafe_index_mut(m_idx) = dy;
+            *dx.unsafe_index_mut((dx_start + row * iw + col) as usize) = dy;
         }
     }
 }
+/*
+#[cfg(test)]
+#[test]
+fn max_pool2_backward() {
+    use crate::ops::MaxPool2Backward;
+    let device = Device::builder().index(1).build().unwrap();
+
+    let x = Tensor::from(Buffer::from(vec![1f32, 5., 3., 4.])).into_shape([1, 1, 2, 2]).unwrap();
+    let dy = Tensor::from(Buffer::from(vec![1f32])).into_shape([1, 1, 1, 1]).unwrap();
+    let mut dx_host = x.to_owned().unwrap();
+    dx_host.max_pool2_backward(dy.view(), MaxPool2Options { size: [2, 2], strides: [2, 2] }).unwrap();
+    let dy_device = dy.to_device(device.clone()).unwrap();
+    let mut dx_device = x.to_device(device.clone()).unwrap();
+    dx_device.max_pool2_backward(dy_device.view(), MaxPool2Options { size: [2, 2], strides: [2, 2] }).unwrap();
+    let dx_host = dx_host.into_array().unwrap();
+    let dx_device = dx_device.into_array().unwrap();
+    assert_eq!(dx_host, dx_device);
+}
+*/

@@ -37,22 +37,27 @@ impl<T1: Scalar, S1: ArrayData<Elem = T1>, T2: Scalar + Unsigned, S2: ArrayData<
 }
 
 fn accuracy_host<X: Scalar, T: Scalar>(input: ArrayView2<X>, target: ArrayView1<T>) -> usize {
-    input
+    let mut correct = 0;
+    for (x, t) in input
         .outer_iter()
         .zip(target.iter().map(|x| x.to_usize().unwrap()))
-        .filter(|(input, class)| {
-            let xt = input[*class];
-            for (i, x) in input.iter().copied().enumerate() {
-                if i == *class {
-                    continue;
-                }
-                if x > xt {
-                    return false;
-                }
+    {
+        let mut m = x[0];
+        let mut mi = 0;
+        for (i, x) in x.iter().copied().enumerate() {
+            if let Some(x_f64) = x.to_f64() {
+                assert!(x_f64.is_finite());
             }
-            true
-        })
-        .count()
+            if x > m {
+                m = x;
+                mi = i;
+            }
+        }
+        if mi == t {
+            correct += 1;
+        }
+    }
+    correct
 }
 
 impl<T1: Scalar, S1: Data<Elem = T1>, T2: Scalar + Unsigned, S2: Data<Elem = T2>>
@@ -80,6 +85,9 @@ impl<S1: ScalarData, S2: ScalarData> Criterion<ScalarTensorBase<S1, Ix2>, Scalar
         input: ScalarTensorBase<S1, Ix2>,
         target: ScalarTensorBase<S2, Ix1>,
     ) -> Result<Self::Output> {
+        /*use crate::device::Device;
+        let input = input.to_device(Device::host())?;
+        let target = target.to_device(Device::host())?;*/
         if input.device().is_host() && target.device().is_host() {
             macro_for!($T1 in [bf16, f32] {
                 if input.scalar_type() == $T1::scalar_type() {
@@ -230,16 +238,22 @@ mod kernels {
         classes: u32,
         #[item] y: &mut u8,
     ) {
-        let idx = kernel.item_id();
-        let t = t[idx as usize] as u32;
-        let xt = x[(idx * classes + t) as usize];
+        let classes = classes as usize;
+        let idx = kernel.item_id() as usize;
+        let t = t[idx] as usize;
+        if t > classes {
+            *y = 0;
+            return;
+        }
+        let xt = x[idx * classes + t];
         for i in 0..classes {
-            if i != t {
-                let x = x[(idx * classes + i) as usize];
-                if x > xt {
-                    *y = 0;
-                    return;
-                }
+            if i == t {
+                continue;
+            }
+            let x = x[idx * classes + i];
+            if !(xt > x) {
+                *y = 0;
+                return;
             }
         }
         *y = 1;

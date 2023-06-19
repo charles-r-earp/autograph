@@ -366,7 +366,7 @@ struct Options {
     train_batch_size: usize,
     #[arg(long, default_value_t = 1000)]
     test_batch_size: usize,
-    #[arg(long, default_value_t = 0.01)]
+    #[arg(long, default_value_t = 0.1)]
     learning_rate: f32,
     #[arg(long)]
     momentum: Option<f32>,

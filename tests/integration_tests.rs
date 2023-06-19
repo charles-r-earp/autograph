@@ -37,15 +37,15 @@ fn main() {
         }
         let device_infos: Vec<_> = devices.iter().map(|x| x.info().unwrap()).collect();
         println!("devices: {device_infos:#?}");
-        let autograph_device = std::env::var("AUTOGRAPH_DEVICE");
-        let device_index = if let Ok(krnl_device) = autograph_device.as_ref() {
+        let krnl_device = std::env::var("KRNL_DEVICE");
+        let device_index = if let Ok(krnl_device) = krnl_device.as_ref() {
             usize::from_str(krnl_device).unwrap()
         } else {
             0
         };
-        println!("AUTOGRAPH_DEVICE = {autograph_device:?}");
+        println!("KRNL_DEVICE = {krnl_device:?}");
         println!("testing device {device_index}");
-        let device = devices.get(0).unwrap();
+        let device = devices.get(device_index).unwrap();
         tests(&Device::host())
             .into_iter()
             .chain(tests(device))

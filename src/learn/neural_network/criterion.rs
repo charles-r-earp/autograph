@@ -86,14 +86,7 @@ fn cross_entropy_loss_backward<T1: Scalar + Float, T2: Scalar + Unsigned>(
         let t = ScalarTensorView::from(t)
             .try_into_tensor_view::<u8>()
             .unwrap();
-        /*let device = x.device();
-        cross_entropy_loss_backward(x.to_device(Device::host())?.view(), t.to_device(Device::host())?.view(), dy)?
-            .cast_into::<T1>()?
-            .into_device(device)
-            .map(Into::into)    */
-
-        let mut dx = unsafe { Tensor::uninit(x.device(), x.raw_dim())? };
-        //dbg!((batch_size, classes, dy, t.len()));
+        let mut dx = unsafe { Tensor::<f32, _>::uninit(x.device(), x.raw_dim())? };
         kernels::cross_entropy_loss_backward_f32_u8::builder()?
             .build(dx.device())?
             .with_global_threads(batch_size.to_u32().unwrap())
@@ -104,11 +97,6 @@ fn cross_entropy_loss_backward<T1: Scalar + Float, T2: Scalar + Unsigned>(
                 dy,
                 dx.as_slice_mut().unwrap(),
             )?;
-        /*{
-            let dx = dx.into_array()?;
-            dbg!(dx);
-            todo!();
-        }*/
         Ok(ScalarTensor::from(dx).try_into_tensor().unwrap())
     }
 }

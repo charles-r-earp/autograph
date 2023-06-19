@@ -22,8 +22,6 @@ use krnl::macros::module;
 use ndarray::{
     linalg::Dot, Array, Dimension, IntoDimension, Ix0, Ix1, Ix2, Ix4, IxDyn, ShapeError,
 };
-#[cfg(feature = "device")]
-use num_traits::ToPrimitive;
 use parking_lot::{Mutex, RwLock};
 use paste::paste;
 //use rayon::iter::{IntoParallelIterator, ParallelIterator};
@@ -444,11 +442,19 @@ fn broadcast_backward<T: Scalar, D1: Dimension, D2: Dimension>(
         let dy = ScalarTensorView::from(output_grad)
             .try_into_tensor_view::<f32>()
             .unwrap();
-        let n = dy.len().to_u32().unwrap();
-        let mut dx = unsafe { Tensor::uninit(dy.device(), input_dim)? };
-        kernels::broadcast_backward_f32::builder()?
-            .build(dx.device())?
-            .dispatch(n, dy.as_slice().unwrap(), dx.as_slice_mut().unwrap())?;
+        //let n = dy.len().to_u32().unwrap();
+        let mut dx = unsafe { Tensor::<f32, _>::uninit(dy.device(), input_dim)? };
+        /*kernels::broadcast_backward_f32::builder()?
+        .build(dx.device())?
+        .dispatch(n, dy.as_slice().unwrap(), dx.as_slice_mut().unwrap())?;*/
+        let threads = 64;
+        unsafe {
+            kernels::broadcast_backward_v2_f32::builder()?
+                .specialize(threads)?
+                .build(dx.device())?
+                .with_groups(dx.len().try_into().unwrap())
+                .dispatch(dy.as_slice().unwrap(), dx.as_slice_mut().unwrap())?;
+        }
         Ok(dx.cast_into().unwrap())
     }
 }
@@ -822,6 +828,11 @@ pub mod kernels {
     #[cfg(not(target_arch = "spirv"))]
     use krnl::krnl_core;
     use krnl_core::macros::kernel;
+    #[cfg(target_arch = "spirv")]
+    use krnl_core::{
+        buffer::UnsafeIndex,
+        spirv_std::arch::workgroup_memory_barrier_with_group_sync as group_barrier,
+    };
 
     #[kernel(threads(256))]
     pub fn broadcast_backward_f32(n: u32, #[global] dy: Slice<f32>, #[item] dx: &mut f32) {
@@ -829,6 +840,117 @@ pub mod kernels {
         *dx = 0f32;
         for i in 0..n {
             *dx += dy[(idx * n + i) as usize];
+        }
+    }
+
+    #[cfg(target_arch = "spirv")]
+    unsafe fn subgroup_add_f32(x: f32) -> f32 {
+        use core::arch::asm;
+
+        let mut y = 0f32;
+        asm! {
+            "%u32 = OpTypeInt 32 0",
+            "%subgroup = OpConstant %u32 3",
+            "%y = OpGroupNonUniformFAdd _ %subgroup Reduce {x}",
+            "OpStore {y} %y",
+            x = in(reg) x,
+            y = in(reg) &mut y,
+        }
+        y
+    }
+
+    /*
+    #[kernel(threads(TS))]
+    pub unsafe fn broadcast_backward_v2_f32<const TS: u32>(
+        n: u32,
+        #[global] dy: Slice<f32>,
+        #[global] dx: UnsafeSlice<f32>,
+    ) {
+        use krnl_core::buffer::UnsafeIndex;
+
+        let subgroup_id = kernel.subgroup_id() as usize;
+        if subgroup_id > 0 {
+            return;
+        }
+
+        let n = n as usize;
+        let threads = TS as usize;
+        let groups = kernel.groups() as usize;
+        let group_id = kernel.group_id() as usize;
+        let subgroups = kernel.subgroups() as usize;
+        let subgroup_threads = (threads / subgroups).max(1);
+        let subgroup_thread_id = kernel.subgroup_thread_id() as usize;
+        let stride = groups * subgroup_threads;
+        let mut dx_thread = 0f32;
+        let mut idx = subgroup_thread_id;
+        while idx < n {
+            dx_thread += dy[group_id * n + idx];
+            idx += subgroup_threads;
+        }
+        unsafe {
+            dx_thread = subgroup_add_f32(dx_thread);
+        };
+        if subgroup_thread_id == 0 {
+            unsafe {
+                *dx.unsafe_index_mut(group_id) = dx_thread;
+            }
+        }
+    }
+    */
+
+    #[kernel(threads(TS))]
+    pub unsafe fn broadcast_backward_v2_f32<const TS: u32>(
+        #[global] x: Slice<f32>,
+        #[group] y_group: UnsafeSlice<f32, 1>,
+        #[global] y: UnsafeSlice<f32>,
+    ) {
+        let n = x.len() / y.len();
+        let threads = TS as usize;
+        let thread_id = kernel.thread_id() as usize;
+        let groups = kernel.groups() as usize;
+        let group_id = kernel.group_id() as usize;
+        let subgroups = kernel.subgroups() as usize;
+        let subgroup_id = kernel.subgroup_id() as usize;
+        let subgroup_thread_id = kernel.subgroup_thread_id() as usize;
+        let mut y_thread = 0f32;
+        let mut idx = 0;
+        while idx < n {
+            y_thread += x[group_id * n + idx + thread_id];
+            idx += threads;
+        }
+        unsafe {
+            y_thread = subgroup_add_f32(y_thread);
+        };
+        if subgroups == 1 {
+            if subgroup_thread_id == 0 {
+                unsafe {
+                    *y.unsafe_index_mut(group_id) = y_thread;
+                }
+            }
+        } else {
+            if subgroup_thread_id == 0 {
+                unsafe {
+                    *y_group.unsafe_index_mut(0) = y_thread;
+                }
+            }
+            for i in 1..subgroups - 1 {
+                unsafe {
+                    group_barrier();
+                }
+                if subgroup_id == i && subgroup_thread_id == 0 {
+                    unsafe {
+                        *y_group.unsafe_index_mut(0) += y_thread;
+                    }
+                }
+            }
+            unsafe {
+                group_barrier();
+            }
+            if subgroup_id == subgroups - 1 && subgroup_thread_id == 0 {
+                unsafe {
+                    *y.unsafe_index_mut(group_id) = y_group.unsafe_index(0) + y_thread;
+                }
+            }
         }
     }
 }

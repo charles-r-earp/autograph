@@ -109,7 +109,7 @@ pub mod builder {
                 bail!("Dense {scalar_type:?} not supported!");
             }
             let a = if inputs > 0 {
-                f32::sqrt(2. / inputs as f32)
+                f32::sqrt(2. / (inputs * filter[0] * filter[1]) as f32)
             } else {
                 0.
             };
