@@ -190,10 +190,8 @@ impl SGD {
     }
     fn init_state(&self, parameter: &mut ParameterViewMutD) -> Result<()> {
         if let Some(state) = parameter.optimizer_state() {
-            if state.id() == TypeId::of::<Self>() {
-                if self.momentum.is_some() == state.iter().next().is_some() {
-                    return Ok(());
-                }
+            if state.id() == TypeId::of::<Self>() && self.momentum.is_some() == state.iter().next().is_some() {
+                return Ok(());
             }
         }
         let mut key_values = Vec::new();
