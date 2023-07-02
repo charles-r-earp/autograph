@@ -1756,6 +1756,20 @@ impl<T: Scalar, S: DataOwned<Elem = T>> From<Buffer<T>> for TensorBase<S, Ix1> {
     }
 }
 
+impl<T: Scalar, S: DataOwned<Elem = T>> From<Vec<T>> for TensorBase<S, Ix1> {
+    fn from(vec: Vec<T>) -> Self {
+        let dim = vec.len().into_dimension();
+        let strides = dim.default_strides();
+        let buffer = BufferBase::from_buffer(Buffer::from(vec));
+        Self {
+            dim,
+            strides,
+            buffer,
+            offset: 0,
+        }
+    }
+}
+
 impl<'a, T: Scalar> From<Slice<'a, T>> for TensorView<'a, T, Ix1> {
     fn from(slice: Slice<'a, T>) -> Self {
         let dim = slice.len().into_dimension();

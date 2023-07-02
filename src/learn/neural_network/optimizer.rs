@@ -10,8 +10,8 @@ use anyhow::{bail, Result};
 #[cfg(feature = "device")]
 use krnl::macros::module;
 use ndarray::Zip;
-use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
+use std::any::TypeId;
 
 pub mod builder {
     use super::*;
@@ -71,8 +71,7 @@ pub mod builder {
         }
         pub fn build(self) -> SGD {
             let Self { momentum } = self;
-            let id = OptimizerId::new();
-            SGD { id, momentum }
+            SGD { momentum }
         }
     }
 }
@@ -115,9 +114,13 @@ pub enum ValueMut<'a> {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct State {
     name: String,
-    #[serde(skip)]
-    id: Option<OptimizerId>,
+    #[serde(skip, default = "default_type_id")]
+    id: TypeId,
     key_values: Vec<(String, Value)>,
+}
+
+fn default_type_id() -> TypeId {
+    TypeId::of::<()>()
 }
 
 impl State {
@@ -125,7 +128,7 @@ impl State {
         device: Device,
         scalar_type: ScalarType,
         name: String,
-        id: OptimizerId,
+        id: TypeId,
         key_values: Vec<(String, Value)>,
     ) -> Result<Self> {
         for (_key, value) in key_values.iter() {
@@ -140,15 +143,20 @@ impl State {
         }
         Ok(Self {
             name,
-            id: Some(id),
+            id,
             key_values,
         })
     }
     pub fn name(&self) -> &str {
         &self.name
     }
-    pub fn same_id(&self, id: OptimizerId) -> Option<bool> {
-        Some(self.id?.0 == id.0)
+    pub fn id(&self) -> TypeId {
+        self.id
+    }
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &Value)> {
+        self.key_values
+            .iter()
+            .map(|(key, value)| (key.as_str(), value))
     }
     pub fn iter_mut(&mut self) -> impl Iterator<Item = (&str, ValueMut)> {
         self.key_values
@@ -167,41 +175,12 @@ impl State {
     }*/
 }
 
-#[derive(Clone, Copy, Debug)]
-pub struct OptimizerId(u64);
-
-impl OptimizerId {
-    pub fn new() -> Self {
-        static COUNTER: Mutex<u64> = parking_lot::const_mutex(0);
-        let mut counter = COUNTER.lock();
-        let id = *counter;
-        if let Some(next) = id.checked_add(1) {
-            *counter = next;
-            Self(id)
-        } else {
-            #[cold]
-            fn out_of_optimizer_ids() -> ! {
-                panic!("Out of OptimizerId's!");
-            }
-            out_of_optimizer_ids()
-        }
-    }
-}
-
-impl Default for OptimizerId {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 pub trait Optimizer {
     fn update(&self, learning_rate: f32, parameter: ParameterViewMutD) -> Result<()>;
 }
 
 #[derive(Default, Debug, Serialize, Deserialize)]
 pub struct SGD {
-    #[serde(skip)]
-    id: OptimizerId,
     momentum: Option<f32>,
 }
 
@@ -211,11 +190,9 @@ impl SGD {
     }
     fn init_state(&self, parameter: &mut ParameterViewMutD) -> Result<()> {
         if let Some(state) = parameter.optimizer_state() {
-            if let Some(same) = state.same_id(self.id) {
-                if same {
+            if state.id() == TypeId::of::<Self>() {
+                if self.momentum.is_some() == state.iter().next().is_some() {
                     return Ok(());
-                } else {
-                    bail!("Different optimizer state, found {state:?}!");
                 }
             }
         }
@@ -236,7 +213,7 @@ impl SGD {
                 ),
             ));
         }
-        parameter.init_optimizer_state("SGD", self.id, key_values)
+        parameter.init_optimizer_state("SGD", TypeId::of::<Self>(), key_values)
     }
 }
 

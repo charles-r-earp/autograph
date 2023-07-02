@@ -10,11 +10,7 @@ publish = false
 autograph = { path = "../../", default-features = false, features = ["neural-network", "mnist"] }
 clap = { workspace = true, features = ["derive"] }
 rand = "0.8.5"
-rayon.workspace = true
-parking_lot.workspace = true
 crossbeam-channel.workspace = true
-serde = { workspace = true, features = ["derive"] }
-serde_json.workspace = true
 
 [features]
 default = ["device"]

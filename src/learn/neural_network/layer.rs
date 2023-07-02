@@ -301,50 +301,9 @@ pub mod builder {
 }
 use builder::*;
 
-pub struct LayerMut<'a> {
-    inner: &'a mut dyn Layer,
-}
-
-impl<'a> LayerMut<'a> {
-    pub fn new(layer: &'a mut dyn Layer) -> Self {
-        Self { inner: layer }
-    }
-}
-
-impl Layer for LayerMut<'_> {
-    fn set_training(&mut self, training: bool) -> Result<()> {
-        self.inner.set_training(training)
-    }
-    fn parameters_mut(&mut self) -> Result<Vec<ParameterViewMutD>> {
-        self.inner.parameters_mut()
-    }
-    fn layers_mut(&mut self) -> Result<Vec<LayerMut>> {
-        self.inner.layers_mut()
-    }
-    fn to_device_mut(&mut self, device: Device) -> Result<()> {
-        self.inner.to_device_mut(device)
-    }
-}
-
 pub trait Layer {
-    fn set_training(&mut self, training: bool) -> Result<()> {
-        for mut layer in self.layers_mut()? {
-            layer.set_training(training)?;
-        }
-        Ok(())
-    }
-    fn parameters_mut(&mut self) -> Result<Vec<ParameterViewMutD>> {
-        todo!()
-    }
-    fn layers_mut(&mut self) -> Result<Vec<LayerMut>> {
-        Ok(Vec::new())
-    }
-    fn to_device_mut(&mut self, device: Device) -> Result<()> {
-        for layer in self.layers_mut()?.iter_mut() {
-            layer.to_device_mut(device.clone())?;
-        }
-        Ok(())
-    }
+    fn set_training(&mut self, training: bool) -> Result<()>;
+    fn parameters_mut(&mut self) -> Result<Vec<ParameterViewMutD>>;
 }
 
 pub trait Forward<X> {

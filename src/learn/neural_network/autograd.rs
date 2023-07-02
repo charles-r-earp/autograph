@@ -1,6 +1,6 @@
 use super::{
     layer::Forward,
-    optimizer::{OptimizerId, State as OptimizerState, Value as OptimizerValue},
+    optimizer::{State as OptimizerState, Value as OptimizerValue},
 };
 #[cfg(feature = "device")]
 use crate::tensor::ScalarTensorView;
@@ -24,9 +24,9 @@ use ndarray::{
 };
 use parking_lot::{Mutex, RwLock};
 use paste::paste;
-//use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::{
+    any::TypeId,
     collections::VecDeque,
     fmt::{self, Debug},
     marker::PhantomData,
@@ -49,6 +49,16 @@ pub mod builder {
                 edges: Vec::new(),
                 _m: PhantomData::default(),
             }
+        }
+        /// Adds a node.
+        ///
+        /// Ensures a node is created even if edges are not added. May be useful for testing or for
+        /// connecting backward passes together.
+        pub fn node(mut self) -> Self {
+            if self.grad.is_none() {
+                self.grad.replace(Arc::new(RwLock::default()));
+            }
+            self
         }
         pub fn edge<D2, F>(&mut self, node: &Node<D2>, f: F)
         where
@@ -176,24 +186,26 @@ impl<D: Dimension> Node<D> {
                 .unwrap(),
         )
     }
+    /// Executes the backward pass.
     pub fn backward(&self) -> Result<()> {
-        let NodeInner {
-            device,
-            dim,
-            scalar_type,
-            grad,
-            edges: _,
-        } = self.inner.as_ref();
+        self.backward_grad(
+            ScalarArcTensor::ones(
+                self.inner.device.clone(),
+                self.inner.dim.slice(),
+                self.inner.scalar_type,
+            )?
+            .into_dimensionality::<D>()
+            .map_err(Error::msg)?,
+        )
+    }
+    /// Executes the backward pass with `grad`.
+    pub fn backward_grad(&self, grad: ScalarArcTensor<D>) -> Result<()> {
         {
-            let mut guard = grad.write();
+            let mut guard = self.inner.grad.write();
             if guard.is_some() {
                 return Ok(());
             }
-            guard.replace(ScalarArcTensor::ones(
-                device.clone(),
-                dim.clone(),
-                *scalar_type,
-            )?);
+            guard.replace(grad.into_dyn());
         }
         let mut queue = VecDeque::new();
         queue.push_back(self.inner.clone());
@@ -210,71 +222,6 @@ impl<D: Dimension> Node<D> {
         }
         Ok(())
     }
-    /*pub fn backward_par(&self) -> Result<()> {
-        let NodeInner {
-            device,
-            dim,
-            scalar_type,
-            grad,
-            edges: _,
-        } = self.inner.as_ref();
-        {
-            let mut guard = grad.write();
-            if guard.is_some() {
-                return Ok(());
-            }
-            guard.replace(ScalarArcTensor::ones(
-                device.clone(),
-                dim.clone(),
-                *scalar_type,
-            )?);
-        }
-        let start = Instant::now();
-        let result = Arc::new(Mutex::new(Ok(())));
-        let (sender, receiver) = crossbeam_channel::bounded(16);
-        let edges = std::mem::take(&mut *self.inner.edges.lock());
-        let counter = Arc::new(AtomicUsize::new(edges.len()));
-        for edge in edges {
-            sender.send(edge).unwrap();
-        }
-        let result2 = result.clone();
-        rayon::spawn_broadcast(move |_| {
-            let mut local_edge = Option::<EdgeInner>::None;
-            while counter.load(Ordering::SeqCst) > 0 {
-                let mut edge = if let Some(edge) = local_edge.take() {
-                    edge
-                } else if let Ok(edge) = receiver.try_recv() {
-                    edge
-                } else {
-                    continue;
-                };
-                if let Err(e) = (edge.op)() {
-                    let mut result = result2.lock();
-                    if result.is_ok() {
-                        *result = Err(e);
-                    }
-                    return;
-                }
-                let node = edge.node;
-                if node.ready() {
-                    let edges = std::mem::take(&mut *node.edges.lock());
-                    counter.fetch_add(edges.len(), Ordering::SeqCst);
-                    std::mem::drop(node);
-                    let mut edges = edges.into_iter();
-                    local_edge = edges.next();
-                    for edge in edges {
-                        sender.send(edge);
-                    }
-                }
-                counter.fetch_sub(1, Ordering::SeqCst);
-            }
-        });
-        while Arc::strong_count(&result) > 1 {
-            std::thread::yield_now();
-        }
-        dbg!(start.elapsed());
-        Arc::try_unwrap(result).ok().unwrap().into_inner()
-    }*/
     fn into_dyn(self) -> Node<IxDyn> {
         Node {
             inner: self.inner,
@@ -356,12 +303,6 @@ impl Variable0 {
         }
         Ok(())
     }
-    /*pub fn backward_par(&self) -> Result<()> {
-        if let Some(node) = self.node.as_ref() {
-            node.backward_par()?;
-        }
-        Ok(())
-    }*/
 }
 
 impl<D: Dimension + 'static> Variable<D> {
@@ -627,7 +568,7 @@ impl<S: ScalarData, D: Dimension> ParameterBase<S, D> {
     pub fn init_optimizer_state(
         &mut self,
         name: impl Into<String>,
-        id: OptimizerId,
+        id: TypeId,
         key_values: impl IntoIterator<Item = (String, OptimizerValue)>,
     ) -> Result<()> {
         let state = OptimizerState::new(
