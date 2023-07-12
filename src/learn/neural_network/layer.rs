@@ -423,16 +423,18 @@ impl<A: Forward<Variable4, Output = Variable4>> Forward<Variable4> for Conv2<A> 
 }
 
 ///```no_run
+/// # use autograph::{scalar::ScalarType, device::Device, learn::neural_network::layer::{Dense, Relu}};
 /// # fn main() -> anyhow::Result<()> {
 /// # let device = Device::host();
 /// let dense = Dense::builder()
 ///    .inputs(1)
 ///    .outputs(1)
-///    .bias(true))
+///    .bias(true)
 ///    .activation(Relu)
 ///    .scalar_type(ScalarType::BF16)
 ///    .device(device.clone())
 ///    .build()?;
+/// # Ok(())
 /// # }
 ///```
 #[derive(Debug, Serialize, Deserialize)]

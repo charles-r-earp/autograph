@@ -28,8 +28,8 @@ use std::{
 
 //mod accuracy;
 mod linalg;
-//mod reduce;
 mod ops;
+mod reduce;
 
 fn strides_from_array<S, D>(array: &ArrayBase<S, D>) -> D
 where
@@ -1772,6 +1772,19 @@ impl<T: Scalar, S: DataOwned<Elem = T>> From<Vec<T>> for TensorBase<S, Ix1> {
 
 impl<'a, T: Scalar> From<Slice<'a, T>> for TensorView<'a, T, Ix1> {
     fn from(slice: Slice<'a, T>) -> Self {
+        let dim = slice.len().into_dimension();
+        let strides = dim.default_strides();
+        Self {
+            dim,
+            strides,
+            buffer: slice,
+            offset: 0,
+        }
+    }
+}
+
+impl<'a, T: Scalar> From<SliceMut<'a, T>> for TensorViewMut<'a, T, Ix1> {
+    fn from(slice: SliceMut<'a, T>) -> Self {
         let dim = slice.len().into_dimension();
         let strides = dim.default_strides();
         Self {

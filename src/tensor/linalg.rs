@@ -410,13 +410,9 @@ fn gemm(
             .build(device.clone())?
             .with_groups(groups_k * groups_m * groups_n);
         if groups_k > 1 {
-            let threads = 64;
-            let reduce_kernel = kernels::reduce_k_f32::builder()?
-                .specialize(threads)?
-                .build(device.clone())?
-                .with_groups(m * n);
-            let mut c_tmp =
-                unsafe { Buffer::<f32>::uninit(device.clone(), (groups_k * m * n) as usize)? };
+            let mut c_tmp = unsafe {
+                Tensor::<f32, _>::uninit(device.clone(), [(m * n) as usize, groups_k as usize])?
+            };
             unsafe {
                 gemm_kernel.dispatch(
                     alpha,
@@ -425,10 +421,19 @@ fn gemm(
                     b,
                     offset_b,
                     0f32,
-                    c_tmp.as_slice_mut(),
+                    c_tmp.as_slice_mut().unwrap(),
                     offset_c,
                 )?;
-                reduce_kernel.dispatch(c_tmp.as_slice(), c.as_slice_mut())?;
+                /*if false {
+                    unsafe {
+                        kernels::reduce_k_f32::builder()?
+                            .specialize(64)?
+                            .build(device.clone())?
+                            .with_groups(m * n)
+                            .dispatch(c_tmp.as_slice().unwrap(), c)?;
+                    }
+                }*/
+                c_tmp.sum_axis_with(Axis(1), beta, &mut TensorViewMut::from(c))?;
             }
         } else {
             unsafe {

@@ -11,7 +11,7 @@ use krnl::{buffer::Slice, device::Device, scalar::Scalar};
 use krnl::{device::Features, scalar::ScalarType};
 #[cfg(not(target_arch = "wasm32"))]
 use libtest_mimic::{Arguments, Trial};
-use ndarray::{Array, Dimension};
+use ndarray::{Array, Array1, Axis, Dimension, IntoDimension, RemoveAxis};
 use paste::paste;
 #[cfg(not(target_arch = "wasm32"))]
 use std::str::FromStr;
@@ -156,6 +156,7 @@ fn tensor_tests(device: &Device) -> Vec<Trial> {
         linalg::linalg_tests(device)
             .into_iter()
             .chain(reorder::reorder_tests(device))
+            .chain(reduce::reduce_tests(device))
             .chain(ops::ops_tests(device)),
     );
     #[cfg(feature = "learn")]
@@ -278,7 +279,7 @@ mod linalg {
             let a_out = a_out.map(|x| x.to_f64().unwrap());
             assert_relative_eq!(a_true, a_out);
         } else {
-            assert_eq!(a_true, a_out);
+            assert_eq!(a_out, a_true);
         }
     }
 }
@@ -400,6 +401,62 @@ mod reorder {
             .into_array()
             .unwrap();
         assert_eq!(y, y_array);
+    }
+}
+
+mod reduce {
+    use super::*;
+
+    pub fn reduce_tests(device: &Device) -> Vec<Trial> {
+        let mut tests = Vec::new();
+        tests.extend([
+            device_test(device, "sum_f32", |device| {
+                for n in [4, 11, 33, 517, 1021] {
+                    sum::<f32, _>(device, n);
+                }
+            }),
+            device_test(device, "sum_axis_f32", |device| {
+                for n in [4, 11, 33, 517, 1021] {
+                    for axis in [0, 1] {
+                        sum_axis::<f32, _>(device, [n / 2, n], Axis(axis));
+                    }
+                }
+            }),
+        ]);
+        tests
+    }
+
+    fn sum<T: Scalar, E: IntoDimension>(device: &Device, shape: E) {
+        let shape = shape.into_dimension();
+        let x_array = (1..10)
+            .cycle()
+            .take(shape.size())
+            .map(|x| T::from_usize(x).unwrap())
+            .collect::<Array1<_>>()
+            .into_shape(shape.clone())
+            .unwrap();
+        let y_array = x_array.sum();
+        let x = Tensor::from(x_array).into_device(device.clone()).unwrap();
+        let y = x.sum().unwrap();
+        assert_eq!(y, y_array);
+    }
+
+    fn sum_axis<T: Scalar, E: IntoDimension>(device: &Device, shape: E, axis: Axis)
+    where
+        E::Dim: RemoveAxis,
+    {
+        let shape = shape.into_dimension();
+        let x_array = (1..10)
+            .cycle()
+            .take(shape.size())
+            .map(|x| T::from_usize(x).unwrap())
+            .collect::<Array1<_>>()
+            .into_shape(shape.clone())
+            .unwrap();
+        let y_array = x_array.sum_axis(axis);
+        let x = Tensor::from(x_array).into_device(device.clone()).unwrap();
+        let y = x.sum_axis(axis).unwrap().into_array().unwrap();
+        assert_eq!(y, y_array, "{:?} {:?}", shape.slice(), axis);
     }
 }
 

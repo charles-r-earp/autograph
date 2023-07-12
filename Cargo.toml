@@ -43,7 +43,8 @@ autobins = false
 autobenches = false
 
 [dependencies]
-krnl = { git = "https://github.com/charles-r-earp/krnl", default-features = false }
+krnl = { path = "../krnl", default-features = false }
+#krnl = { git = "https://github.com/charles-r-earp/krnl", default-features = false }
 anyhow.workspace = true
 ndarray = { workspace = true, features = ["serde", "rayon", "matrixmultiply-threading"] }
 rand = { version = "0.8.4", optional = true }
@@ -57,7 +58,7 @@ byteorder = { version = "1.4.3", optional = true }
 dirs = { version = "3.0.2", optional = true }
 downloader = { version = "0.2.6", optional = true }
 flate2 = { version = "1.0.20", optional = true }
-half = { version = "2.1.0", features = ["num-traits", "bytemuck", "serde"] }
+half = { version = "=2.1.0", features = ["num-traits", "bytemuck", "serde"] }
 http = { version = "0.2.4", optional = true }
 paste = "1.0.7"
 dry = "0.1.1"
@@ -90,6 +91,7 @@ neural-network = ["learn", "dep:crossbeam-channel", "dep:parking_lot", "dep:atom
 features = ["neural-network"]
 
 [package.metadata.krnlc.dependencies]
+half = { default-features = false, features = ["num-traits"] }
 dry = {}
 paste = {}
 crunchy = { default-features = false, features = ["limit_64"] }
