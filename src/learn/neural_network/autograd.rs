@@ -17,11 +17,11 @@ use crate::{
 use anyhow::{bail, Error, Result};
 use dry::macro_wrap;
 use half::{bf16, f16};
+#[cfg(feature = "device")]
+use ndarray::Axis;
 use ndarray::{
     linalg::Dot, Array, Dimension, IntoDimension, Ix0, Ix1, Ix2, Ix4, IxDyn, ShapeError,
 };
-#[cfg(feature = "device")]
-use ndarray::Axis;
 use parking_lot::{Mutex, RwLock};
 use paste::paste;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -176,6 +176,7 @@ impl<D: Dimension> Node<D> {
             _m: PhantomData::default(),
         }
     }
+    /// The gradient.
     pub fn grad(&self) -> Option<ScalarArcTensor<D>> {
         Some(
             self.inner
@@ -248,36 +249,51 @@ pub type Variable4 = Variable<Ix4>;
 pub type VariableD = Variable<IxDyn>;
 
 impl<D: Dimension> Variable<D> {
+    /// A `VariableBuilder` for creating nodes and edges.
     pub fn builder() -> VariableBuilder<D> {
         VariableBuilder::new()
     }
+    /// The value of the variable.
     pub fn value(&self) -> &ScalarArcTensor<D> {
         &self.value
     }
+    /// Converts the variable into a tensor.
     pub fn into_value(self) -> ScalarArcTensor<D> {
         self.value
     }
+    /// The node.
     pub fn node(&self) -> Option<&Node<D>> {
         self.node.as_ref()
     }
+    /// Maps the variable with `F`.
+    ///
+    /// Shortcut for `f.forward(self)`. This allows chaining methods together.
     pub fn forward<F: Forward<Self>>(self, f: &F) -> Result<F::Output> {
         f.forward(self)
     }
+    /// The device.
     pub fn device(&self) -> Device {
         self.value.device()
     }
+    /// The scalar_type.
     pub fn scalar_type(&self) -> ScalarType {
         self.value.scalar_type()
     }
+    /// The shape.
     pub fn shape(&self) -> &[usize] {
         self.value.shape()
     }
+    /// The dim in pattern form.
     pub fn dim(&self) -> D::Pattern {
         self.value.dim()
     }
+    /// The dim.
     pub fn raw_dim(&self) -> D {
         self.value.raw_dim()
     }
+    /// Converts into dimensionality `D2`.
+    ///
+    /// See [`TensorBase::into_dimensionality`].
     pub fn into_dimensionality<D2>(self) -> Result<Variable<D2>, ShapeError>
     where
         D2: Dimension,
@@ -288,6 +304,7 @@ impl<D: Dimension> Variable<D> {
             node: self.node.map(Node::into_dimensionality),
         })
     }
+    /// Converts into a dynamic dimensional variable.
     pub fn into_dyn(self) -> VariableD {
         Variable {
             value: self.value.into_dyn(),
@@ -297,6 +314,9 @@ impl<D: Dimension> Variable<D> {
 }
 
 impl Variable0 {
+    /// Executes the backward pass.
+    ///
+    /// See [`Node::backward`].
     pub fn backward(&self) -> Result<()> {
         if let Some(node) = self.node.as_ref() {
             node.backward()?;
@@ -306,6 +326,9 @@ impl Variable0 {
 }
 
 impl<D: Dimension + 'static> Variable<D> {
+    /// Converts into `shape`.
+    ///
+    /// See [`TensorBase::into_shape`].
     pub fn into_shape<E>(self, shape: E) -> Result<Variable<E::Dim>, ShapeError>
     where
         E: IntoDimension,
@@ -322,11 +345,16 @@ impl<D: Dimension + 'static> Variable<D> {
         }
         Ok(builder.build(self.value.into_shape(shape)?))
     }
+    /// Flattens the variable into 2 dimensions.
+    ///
+    /// See [`TensorBase::flatten`].
     pub fn flatten(self) -> Result<Variable2, ShapeError> {
         let dim = crate::tensor::flatten(self.shape());
         self.into_shape(dim)
     }
-    /// Reverses (transposes) the axes of the tensor.
+    /// Reverses (transposes) the axes of the variable.
+    ///
+    /// See [`TensorBase::reversed_axes`].
     pub fn reversed_axes(self) -> Self {
         let mut builder = Self::builder();
         if let Some(node) = self.node() {
@@ -334,9 +362,13 @@ impl<D: Dimension + 'static> Variable<D> {
         }
         builder.build(self.value.reversed_axes())
     }
+    /// Transposes the variable.
     pub fn t(&self) -> Self {
         self.clone().reversed_axes()
     }
+    /// Attempts to broadcast the variable into `dim`.
+    ///
+    /// See [`TensorBase::broadcast`].
     pub fn broadcast<E>(&self, dim: E) -> Option<Variable<E::Dim>>
     where
         E: IntoDimension,
@@ -504,15 +536,18 @@ pub type ParameterViewMut4<'a> = ParameterViewMut<'a, Ix4>;
 pub type ParameterViewMutD<'a> = ParameterViewMut<'a, IxDyn>;
 
 impl<S: ScalarData, D: Dimension> ParameterBase<S, D> {
+    /// The value of the parameter.
     pub fn value(&self) -> &ScalarTensorBase<S, D> {
         &self.value
     }
+    /// Borrows the value of the parameter as a mutable tensor view.
     pub fn value_view_mut(&mut self) -> ScalarTensorViewMut<D>
     where
         S: ScalarDataMut,
     {
         self.value.view_mut()
     }
+    /// The gradient of the parameter.
     pub fn grad(&self) -> Option<ScalarArcTensor<D>> {
         Some(
             self.grad
@@ -523,21 +558,31 @@ impl<S: ScalarData, D: Dimension> ParameterBase<S, D> {
                 .unwrap(),
         )
     }
+    /// The device.
     pub fn device(&self) -> Device {
         self.value.device()
     }
+    /// The scalar_type.
     pub fn scalar_type(&self) -> ScalarType {
         self.value.scalar_type()
     }
+    /// The shape.
     pub fn shape(&self) -> &[usize] {
         self.value.shape()
     }
+    /// The dim in pattern form.
     pub fn dim(&self) -> D::Pattern {
         self.value.dim()
     }
+    /// The dim.
     pub fn raw_dim(&self) -> D {
         self.value.raw_dim()
     }
+    /// Enables / disables training.
+    ///
+    /// If `training`, ensures that when the parameter is converted to a variable,
+    /// it will have a node for computing a gradient.
+    /// If `training` is false, discards any gradient that has been computed.
     pub fn set_training(&mut self, training: bool) {
         if training && self.grad.is_none() {
             self.grad.replace(Arc::new(RwLock::default()));
@@ -545,12 +590,15 @@ impl<S: ScalarData, D: Dimension> ParameterBase<S, D> {
             self.grad = None;
         }
     }
+    /// Borrows the optimizer state.
     pub fn optimizer_state(&self) -> Option<&OptimizerState> {
         self.optim_state.get()
     }
+    /// Borrows the optimizer state mutably.
     pub fn optimzer_state_mut(&mut self) -> Option<&mut OptimizerState> {
         self.optim_state.get_mut()
     }
+    /// Borrows the value and optimizer state mutably.
     pub fn value_view_optimizer_state_mut(
         &mut self,
     ) -> (ScalarTensorViewMut<D>, Option<&mut OptimizerState>)
@@ -559,6 +607,10 @@ impl<S: ScalarData, D: Dimension> ParameterBase<S, D> {
     {
         (self.value.view_mut(), self.optim_state.get_mut())
     }
+    /// Initializes the optimizer state.
+    ///
+    /// The `name` should be the name of the optimizer, for example "SGD".
+    /// The `id` is the [`TypeId`] of the optimizer.
     pub fn init_optimizer_state(
         &mut self,
         name: impl Into<String>,
@@ -575,6 +627,9 @@ impl<S: ScalarData, D: Dimension> ParameterBase<S, D> {
         self.optim_state.make_mut()?.replace(Arc::new(state));
         Ok(())
     }
+    /// Converts into dimensionality `D2`.
+    ///
+    /// See [`TensorBase::into_dimensionality`].
     pub fn into_dimensionality<D2>(self) -> Result<ParameterBase<S, D2>, ShapeError>
     where
         D2: Dimension,
@@ -585,6 +640,7 @@ impl<S: ScalarData, D: Dimension> ParameterBase<S, D> {
             optim_state: self.optim_state,
         })
     }
+    /// Converts into a dynamic dimensional parameter.
     pub fn into_dyn(self) -> ParameterBase<S, IxDyn> {
         ParameterBase {
             value: self.value.into_dyn(),
@@ -595,6 +651,7 @@ impl<S: ScalarData, D: Dimension> ParameterBase<S, D> {
 }
 
 impl<D: Dimension> Parameter<D> {
+    /// Converts to a `Variable`.
     pub fn to_variable(&self) -> Variable<D> {
         let value = self.value.clone();
         let node = self.grad.as_ref().map(|grad| {
@@ -608,6 +665,11 @@ impl<D: Dimension> Parameter<D> {
         });
         Variable { value, node }
     }
+    /// Makes a mutable parameter view.
+    ///
+    /// Copies the value and optimizer state if they are not exclusive.
+    ///
+    /// See [`TensorBase::make_view_mut`].
     pub fn make_view_mut(&mut self) -> Result<ParameterViewMut<D>> {
         let value = self.value.make_view_mut()?;
         let grad = self.grad.clone();
@@ -622,6 +684,7 @@ impl<D: Dimension> Parameter<D> {
             optim_state,
         })
     }
+    /// Transfers the parameter to `device` if necessary.
     pub fn to_device_mut(&mut self, device: Device) -> Result<()> {
         if device == self.value.device() {
             return Ok(());

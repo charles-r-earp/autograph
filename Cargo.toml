@@ -43,8 +43,7 @@ autobins = false
 autobenches = false
 
 [dependencies]
-krnl = { path = "../krnl", default-features = false }
-#krnl = { git = "https://github.com/charles-r-earp/krnl", default-features = false }
+krnl = { git = "https://github.com/charles-r-earp/krnl", default-features = false }
 anyhow.workspace = true
 ndarray = { workspace = true, features = ["serde", "rayon", "matrixmultiply-threading"] }
 rand = { version = "0.8.4", optional = true }

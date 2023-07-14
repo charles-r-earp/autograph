@@ -30,18 +30,26 @@ pub mod builder {
                 parameter_type: false,
             }
         }
+        /// Whether the value device should match the parameter device.
+        ///
+        /// If true, transfering the parameter to a device will copy this value
+        /// to that device. Otherwise, it will be kept on the host.
         pub fn parameter_device(self, parameter_device: bool) -> Self {
             Self {
                 parameter_device,
                 ..self
             }
         }
+        /// Whether the value scalar_type should match the parameter scalar_type.
+        ///
+        /// If true, casting the parameter will cast this value to that type.
         pub fn parameter_type(self, parameter_type: bool) -> Self {
             Self {
                 parameter_type,
                 ..self
             }
         }
+        /// Builds the value.
         pub fn build(self) -> TensorValue {
             let Self {
                 tensor,
@@ -64,6 +72,7 @@ pub mod builder {
         pub(super) fn new() -> Self {
             Self { momentum: None }
         }
+        /// Momentum. Default is 0.
         pub fn momentum(self, momentum: f32) -> Self {
             Self {
                 momentum: Some(momentum),
@@ -85,6 +94,7 @@ pub struct TensorValue {
 }
 
 impl TensorValue {
+    /// A builder for additional options.
     pub fn builder(tensor: ScalarTensorD) -> TensorValueBuilder {
         TensorValueBuilder::new(tensor)
     }
@@ -105,6 +115,7 @@ impl Value {
     }
 }
 
+#[allow(missing_docs)]
 #[derive(Debug, derive_more::Unwrap)]
 pub enum ValueMut<'a> {
     Tensor(ScalarTensorViewMutD<'a>),
@@ -176,6 +187,7 @@ impl State {
 }
 
 pub trait Optimizer {
+    /// Performs the optimization, updating the parameter with `learning_rate`.
     fn update(&self, learning_rate: f32, parameter: ParameterViewMutD) -> Result<()>;
 }
 
@@ -185,6 +197,7 @@ pub struct SGD {
 }
 
 impl SGD {
+    /// An SGD builder.
     pub fn builder() -> SGDBuilder {
         SGDBuilder::new()
     }
