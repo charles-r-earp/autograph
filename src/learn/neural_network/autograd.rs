@@ -20,6 +20,8 @@ use half::{bf16, f16};
 use ndarray::{
     linalg::Dot, Array, Dimension, IntoDimension, Ix0, Ix1, Ix2, Ix4, IxDyn, ShapeError,
 };
+#[cfg(feature = "device")]
+use ndarray::Axis;
 use parking_lot::{Mutex, RwLock};
 use paste::paste;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
