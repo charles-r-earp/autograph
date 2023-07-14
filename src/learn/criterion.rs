@@ -1,12 +1,12 @@
 #[cfg(feature = "device")]
 use crate::{
     buffer::Slice,
-    tensor::{ScalarTensorView, ScalarTensorView1, ScalarTensorView2},
+    tensor::{ScalarTensorView1, ScalarTensorView2, Tensor},
 };
 use crate::{
     buffer::{Data, ScalarData},
     scalar::Scalar,
-    tensor::{ScalarTensorBase, Tensor, TensorBase, TensorView1, TensorView2},
+    tensor::{ScalarTensorBase, ScalarTensorView, TensorBase, TensorView1, TensorView2},
 };
 use anyhow::{bail, Result};
 use dry::macro_for;
@@ -17,6 +17,7 @@ use ndarray::{ArrayBase, ArrayView1, ArrayView2, Data as ArrayData, Ix1, Ix2};
 #[cfg(feature = "device")]
 use num_traits::ToPrimitive;
 use num_traits::{Float, Unsigned};
+#[cfg(feature = "device")]
 use paste::paste;
 
 pub trait Criterion<X, T> {

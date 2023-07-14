@@ -23,8 +23,14 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
             } else {
                 output[()] = input.sum() + beta * output[()];
             }
-            Ok(())
-        } else {
+            return Ok(());
+        }
+        #[cfg(not(feature = "device"))]
+        {
+            unreachable!()
+        }
+        #[cfg(feature = "device")]
+        {
             sum(
                 self.view().into_dyn().into(),
                 beta.into(),
@@ -37,8 +43,14 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
 impl<T: Scalar, S: Data<Elem = T>, D: RemoveAxis> TensorBase<S, D> {
     pub fn sum_axis(&self, axis: Axis) -> Result<Tensor<T, D::Smaller>> {
         if let Some(input) = self.as_array() {
-            Ok(input.sum_axis(axis).into())
-        } else {
+            return Ok(input.sum_axis(axis).into());
+        }
+        #[cfg(not(feature = "device"))]
+        {
+            unreachable!()
+        }
+        #[cfg(feature = "device")]
+        {
             let mut output =
                 unsafe { Tensor::uninit(self.device(), self.raw_dim().remove_axis(axis))? };
             self.sum_axis_with(axis, T::default(), &mut output)?;
@@ -62,8 +74,14 @@ impl<T: Scalar, S: Data<Elem = T>, D: RemoveAxis> TensorBase<S, D> {
             for x in x.axis_iter(axis) {
                 y.zip_mut_with(&x, |y, x| *y += *x);
             }
-            Ok(())
-        } else {
+            return Ok(());
+        }
+        #[cfg(not(feature = "device"))]
+        {
+            unreachable!()
+        }
+        #[cfg(feature = "device")]
+        {
             sum_axis(
                 self.view().into_dyn().into(),
                 axis,
@@ -74,6 +92,7 @@ impl<T: Scalar, S: Data<Elem = T>, D: RemoveAxis> TensorBase<S, D> {
     }
 }
 
+#[cfg(feature = "device")]
 fn sum(x: ScalarTensorViewD, beta: ScalarElem, mut y: ScalarTensorViewMutD) -> Result<()> {
     if x.scalar_type() != y.scalar_type() {
         todo!();
@@ -114,6 +133,7 @@ fn sum(x: ScalarTensorViewD, beta: ScalarElem, mut y: ScalarTensorViewMutD) -> R
     todo!()
 }
 
+#[cfg(feature = "device")]
 fn sum_axis(
     x: ScalarTensorViewD,
     axis: Axis,

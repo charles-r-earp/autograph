@@ -190,7 +190,9 @@ impl SGD {
     }
     fn init_state(&self, parameter: &mut ParameterViewMutD) -> Result<()> {
         if let Some(state) = parameter.optimizer_state() {
-            if state.id() == TypeId::of::<Self>() && self.momentum.is_some() == state.iter().next().is_some() {
+            if state.id() == TypeId::of::<Self>()
+                && self.momentum.is_some() == state.iter().next().is_some()
+            {
                 return Ok(());
             }
         }
