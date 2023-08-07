@@ -15,6 +15,8 @@ use crate::{
     },
 };
 use anyhow::{bail, Error, Result};
+#[cfg(feature = "device")]
+use dry::macro_for;
 use dry::macro_wrap;
 use half::{bf16, f16};
 #[cfg(feature = "device")]
@@ -412,17 +414,20 @@ fn broadcast_backward<T: Scalar, D1: Dimension, D2: Dimension>(
     }
     #[cfg(feature = "device")]
     {
-        let dy = ScalarTensorView::from(output_grad)
-            .try_into_tensor_view::<f32>()
-            .unwrap();
-        let dx = dy
-            .into_dyn()
-            .sum_axis(Axis(0))?
-            .into_shape(input_dim)
-            .unwrap()
-            .cast_into()
-            .unwrap();
-        Ok(dx)
+        macro_for!($T in [bf16, f32] {
+            if let Ok(dy) = ScalarTensorView::from(output_grad.view())
+                .try_into_tensor_view::<$T>() {
+                let dx = dy
+                    .into_dyn()
+                    .sum_axis(Axis(0))?
+                    .into_shape(input_dim)
+                    .unwrap()
+                    .cast_into()
+                    .unwrap();
+                return Ok(dx);
+            }
+        });
+        bail!("broadcast_backward {:?} unimplemented!()", T::scalar_type())
     }
 }
 

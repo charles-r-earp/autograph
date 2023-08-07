@@ -519,7 +519,7 @@ impl<S: ScalarData> Im2ColConv2 for ScalarTensorBase<S, Ix4> {
     fn im2col_conv2(&self, options: Im2ColConv2Options) -> Result<Self::Output> {
         macro_wrap!(
             paste! { #[allow(clippy::single_match)] match self.scalar_type() {
-                macro_for!($T in [/*u8, i8, u16, i16, f16, bf16, u32, i32,*/ f32 /*, u64, i64, f64*/] {
+                macro_for!($T in [bf16, f32] {
                    ScalarType::[<$T:upper>] => {
                         let input = self.view().try_into_tensor_view::<$T>().unwrap();
                         if let Some(input) = input.as_array() {
@@ -667,7 +667,7 @@ impl<S: ScalarData> Col2ImConv2 for ScalarTensorBase<S, Ix2> {
 
         macro_wrap!(
             paste! { #[allow(clippy::single_match)] match self.scalar_type() {
-                macro_for!($T in [/*u8, i8, u16, i16, f16, bf16, u32, i32,*/ f32 /*, u64, i64, f64*/] {
+                macro_for!($T in [bf16, f32] {
                    ScalarType::[<$T:upper>] => {
                         let input = self.view().try_into_tensor_view::<$T>().unwrap();
                         if let Some(input) = input.as_array() {
@@ -691,32 +691,7 @@ impl<S: ScalarData> Col2ImConv2 for ScalarTensorBase<S, Ix2> {
                             let mut output = unsafe {
                                 Tensor::<$T, _>::uninit(input.device(), [bs, c, oh, ow])?
                             };
-                            /*neural_network_kernels::[<col2im_conv2_ $T>]::builder()?
-                                .build(output.device())?
-                                .dispatch(
-                                    input.as_slice().unwrap(),
-                                    c.to_u32().unwrap(),
-                                    ih.to_u32().unwrap(),
-                                    iw.to_u32().unwrap(),
-                                    output.as_slice_mut().unwrap(),
-                                    oh.to_u32().unwrap(),
-                                    ow.to_u32().unwrap(),
-                                    fh.to_u32().unwrap(),
-                                    fw.to_u32().unwrap(),
-                                    ph.to_u32().unwrap(),
-                                    pw.to_u32().unwrap(),
-                                    sh.to_u32().unwrap(),
-                                    sw.to_u32().unwrap(),
-                                    dh.to_u32().unwrap(),
-                                    dw.to_u32().unwrap(),
-                                    s_bez_h.to_u32().unwrap(),
-                                    s_bez_w.to_u32().unwrap(),
-                                    d_bez_h.to_u32().unwrap(),
-                                    d_bez_w.to_u32().unwrap(),
-                                    gcd_h.to_u32().unwrap(),
-                                    gcd_w.to_u32().unwrap(),
-                                )?;*/
-                            neural_network_kernels::[<col2im_conv2_v2_ $T>]::builder()?
+                            neural_network_kernels::[<col2im_conv2_ $T>]::builder()?
                                 .specialize(
                                     c.to_u32().unwrap(),
                                     ih.to_u32().unwrap(),
@@ -807,7 +782,7 @@ impl<S: ScalarData> MaxPool2 for ScalarTensorBase<S, Ix4> {
     fn max_pool2(&self, options: MaxPool2Options) -> Result<Self::Output> {
         macro_wrap!(
             paste! { #[allow(clippy::single_match)] match self.scalar_type() {
-                macro_for!($T in [/*u8, i8, u16, i16, f16, bf16, u32, i32,*/ f32 /*, u64, i64, f64*/] {
+                macro_for!($T in [bf16, f32] {
                    ScalarType::[<$T:upper>] => {
                         let input = self.view().try_into_tensor_view::<$T>().unwrap();
                         if let Some(input) = input.as_array() {
@@ -916,7 +891,7 @@ impl<S1: ScalarDataMut, S2: ScalarData> MaxPool2Backward<ScalarTensorBase<S2, Ix
         }
         macro_wrap!(
             paste! { #[allow(clippy::single_match)] match self.scalar_type() {
-                macro_for!($T in [/*u8, i8, u16, i16, f16, bf16, u32, i32,*/ f32 /*, u64, i64, f64*/] {
+                macro_for!($T in [bf16, f32] {
                    ScalarType::[<$T:upper>] => {
                         let mut input_grad = self.view_mut().try_into_tensor_view_mut::<$T>().unwrap();
                         let output_grad = output_grad.view().try_into_tensor_view().unwrap();
@@ -1122,350 +1097,264 @@ use kernels::BinaryOp;
 #[cfg(feature = "device")]
 #[module]
 mod neural_network_kernels {
+    use dry::macro_for;
     #[cfg(not(target_arch = "spirv"))]
     use krnl::krnl_core;
-    #[cfg(target_arch = "spirv")]
-    use krnl_core::buffer::UnsafeIndex;
     use krnl_core::macros::kernel;
+    #[cfg(target_arch = "spirv")]
+    use krnl_core::{buffer::UnsafeIndex, half::bf16, num_traits::Zero, scalar::Scalar};
+    use paste::paste;
 
-    #[kernel(threads(256))]
-    pub fn im2col_conv2_f32<
-        const BS: u32,
-        const C: u32,
-        const IH: u32,
-        const IW: u32,
-        const OH: u32,
-        const OW: u32,
-        const FH: u32,
-        const FW: u32,
-        const PH: u32,
-        const PW: u32,
-        const SH: u32,
-        const SW: u32,
-        const DH: u32,
-        const DW: u32,
-    >(
-        #[global] x: Slice<f32>,
-        #[global] y: UnsafeSlice<f32>,
-    ) {
-        let bs = BS;
-        let c = C;
-        let ih = IH;
-        let iw = IW;
-        let oh = OH;
-        let ow = OW;
-        let fh = FH;
-        let fw = FW;
-        let ph = PH;
-        let pw = PW;
-        let sh = SH;
-        let sw = SW;
-        let dh = DH;
-        let dw = DW;
+    macro_for!($T in [bf16, f32] {
+        paste! {
+            #[kernel(threads(256))]
+            pub fn [<im2col_conv2_ $T>]<
+                const BS: u32,
+                const C: u32,
+                const IH: u32,
+                const IW: u32,
+                const OH: u32,
+                const OW: u32,
+                const FH: u32,
+                const FW: u32,
+                const PH: u32,
+                const PW: u32,
+                const SH: u32,
+                const SW: u32,
+                const DH: u32,
+                const DW: u32,
+            >(
+                #[global] x: Slice<$T>,
+                #[global] y: UnsafeSlice<$T>,
+            ) {
+                let bs = BS;
+                let c = C;
+                let ih = IH;
+                let iw = IW;
+                let oh = OH;
+                let ow = OW;
+                let fh = FH;
+                let fw = FW;
+                let ph = PH;
+                let pw = PW;
+                let sh = SH;
+                let sw = SW;
+                let dh = DH;
+                let dw = DW;
 
-        let idx = kernel.global_id();
-        if idx >= bs * oh * ow * c * fh * fw {
-            return;
-        }
-        let bcid = idx / (oh * ow * fh * fw);
-        let hwfid = idx % (oh * ow * fh * fw);
-        let bid = bcid / c;
-        let cid = bcid % c;
-        let hwid = hwfid / (fh * fw);
-        let fid = hwfid % (fh * fw);
-        let hid = hwid / ow;
-        let wid = hwid % ow;
-        let fi = fid / fw;
-        let fj = fid % fw;
-        let hidx = -(ph as i32) + (fi * dh + sh * hid) as i32;
-        let widx = -(pw as i32) + (fj * dw + sw * wid) as i32;
-        let x = if hidx >= 0 && hidx < ih as i32 && widx >= 0 && widx < iw as i32 {
-            x[(bcid * ih * iw + hidx as u32 * iw + widx as u32) as usize]
-        } else {
-            0.
-        };
-        let y_idx = bid * oh * ow * c * fh * fw
-            + hid * ow * c * fh * fw
-            + wid * c * fh * fw
-            + cid * fh * fw
-            + fid;
-        unsafe {
-            *y.unsafe_index_mut(y_idx as usize) = x;
-        }
-    }
-
-    #[kernel(threads(256))]
-    pub fn col2im_conv2_f32(
-        #[global] x: Slice<f32>,
-        c: u32,
-        ih: u32,
-        iw: u32,
-        #[item] y: &mut f32,
-        oh: u32,
-        ow: u32,
-        fh: u32,
-        fw: u32,
-        ph: u32,
-        pw: u32,
-        sh: u32,
-        sw: u32,
-        dh: u32,
-        dw: u32,
-        s_bez_h: u32,
-        s_bez_w: u32,
-        d_bez_h: u32,
-        d_bez_w: u32,
-        gcd_h: u32,
-        gcd_w: u32,
-    ) {
-        let idx = kernel.item_id();
-        let bcid = idx / (oh * ow);
-        let hwid = idx % (oh * ow);
-        let bid = bcid / c;
-        let cid = bcid % c;
-        let bidx = bid * ih * iw * c * fh * fw;
-        let bidy = bid * c * oh * ow;
-        let cidx = cid * fh * fw;
-        let cidy = cid * oh * ow;
-
-        let ow_scaled = (ow - 1) / gcd_w + 1;
-        let gcd_scale_h = hwid / ow_scaled + (ph - 1) / gcd_h + 1;
-        let gcd_scale_w = hwid % ow_scaled + (pw - 1) / gcd_w + 1;
-        let hidy = gcd_scale_h * gcd_h - ph;
-        let widy = gcd_scale_w * gcd_w - pw;
-        let th_step = sh * dh / gcd_h;
-        let tw_step = sw * dw / gcd_w;
-
-        fn grid_ceil(x: i32, step: i32) -> i32 {
-            if x > 0 {
-                (x - 1) / step + 1
-            } else {
-                x / step * step
-            }
-        }
-
-        let th_begin = grid_ceil(
-            i32::max(
-                -((s_bez_h * gcd_scale_h * sh) as i32),
-                ((d_bez_h * gcd_scale_h - fh + 1) * dh) as i32,
-            ),
-            th_step as i32,
-        ) as u32;
-        let th_end = u32::min(
-            (ih - s_bez_h * gcd_scale_h) * sh,
-            (d_bez_h * gcd_scale_h + 1) * dh,
-        );
-        let tw_begin = grid_ceil(
-            i32::max(
-                -((s_bez_w * gcd_scale_w * sw) as i32),
-                ((d_bez_w * gcd_scale_w - fw + 1) * dw) as i32,
-            ),
-            tw_step as i32,
-        ) as u32;
-        let tw_end = u32::min(
-            (iw - s_bez_w * gcd_scale_w) * sw,
-            (d_bez_w * gcd_scale_w + 1) * dw,
-        );
-
-        let mut acc = 0.;
-        let mut th = th_begin;
-        while th < th_end {
-            let mut tw = tw_begin;
-            while tw < tw_end {
-                let fhid = d_bez_h * gcd_scale_h - th / dh;
-                let fwid = d_bez_w * gcd_scale_w - tw / dw;
-                let hid = th / sh + s_bez_h * gcd_scale_h;
-                let wid = tw / sw + s_bez_w * gcd_scale_w;
-                let fidx = fhid * fw + fwid;
-                let patch_idx = (hid * iw + wid) * c * fh * fw;
-                acc += x[(bidx + patch_idx + cidx + fidx) as usize];
-                tw += tw_step;
-            }
-            th += th_step;
-        }
-        *y = acc;
-    }
-
-    #[kernel(threads(256))]
-    pub fn col2im_conv2_v2_f32<
-        const C: u32,
-        const IH: u32,
-        const IW: u32,
-        const OH: u32,
-        const OW: u32,
-        const FH: u32,
-        const FW: u32,
-        const PH: u32,
-        const PW: u32,
-        const SH: u32,
-        const SW: u32,
-        const DH: u32,
-        const DW: u32,
-        const S_BEZ_H: u32,
-        const S_BEZ_W: u32,
-        const D_BEZ_H: u32,
-        const D_BEZ_W: u32,
-        const GCD_H: u32,
-        const GCD_W: u32,
-    >(
-        #[global] x: Slice<f32>,
-        #[item] y: &mut f32,
-    ) {
-        let c = C;
-        let [ih, iw] = [IH, IW];
-        let [oh, ow] = [OH, OW];
-        let [fh, fw] = [FH, FW];
-        let [ph, pw] = [PH, PW];
-        let [sh, sw] = [SH, SW];
-        let [dh, dw] = [DH, DW];
-        let [s_bez_h, s_bez_w] = [S_BEZ_H, S_BEZ_W];
-        let [d_bez_h, d_bez_w] = [D_BEZ_H, D_BEZ_W];
-        let [gcd_h, gcd_w] = [GCD_H, GCD_W];
-
-        let idx = kernel.item_id();
-        let bcid = idx / (oh * ow);
-        let hwid = idx % (oh * ow);
-        let bid = bcid / c;
-        let cid = bcid % c;
-        let bidx = bid * ih * iw * c * fh * fw;
-        let bidy = bid * c * oh * ow;
-        let cidx = cid * fh * fw;
-        let cidy = cid * oh * ow;
-
-        let ow_scaled = (ow - 1) / gcd_w + 1;
-        let gcd_scale_h = hwid / ow_scaled + (ph - 1) / gcd_h + 1;
-        let gcd_scale_w = hwid % ow_scaled + (pw - 1) / gcd_w + 1;
-        let hidy = gcd_scale_h * gcd_h - ph;
-        let widy = gcd_scale_w * gcd_w - pw;
-        let th_step = sh * dh / gcd_h;
-        let tw_step = sw * dw / gcd_w;
-
-        fn grid_ceil(x: i32, step: i32) -> i32 {
-            if x > 0 {
-                (x - 1) / step + 1
-            } else {
-                x / step * step
-            }
-        }
-
-        let th_begin = grid_ceil(
-            i32::max(
-                -((s_bez_h * gcd_scale_h * sh) as i32),
-                ((d_bez_h * gcd_scale_h - fh + 1) * dh) as i32,
-            ),
-            th_step as i32,
-        ) as u32;
-        let th_end = u32::min(
-            (ih - s_bez_h * gcd_scale_h) * sh,
-            (d_bez_h * gcd_scale_h + 1) * dh,
-        );
-        let tw_begin = grid_ceil(
-            i32::max(
-                -((s_bez_w * gcd_scale_w * sw) as i32),
-                ((d_bez_w * gcd_scale_w - fw + 1) * dw) as i32,
-            ),
-            tw_step as i32,
-        ) as u32;
-        let tw_end = u32::min(
-            (iw - s_bez_w * gcd_scale_w) * sw,
-            (d_bez_w * gcd_scale_w + 1) * dw,
-        );
-
-        let mut acc = 0.;
-        let mut th = th_begin;
-        while th < th_end {
-            let mut tw = tw_begin;
-            while tw < tw_end {
-                let fhid = d_bez_h * gcd_scale_h - th / dh;
-                let fwid = d_bez_w * gcd_scale_w - tw / dw;
-                let hid = th / sh + s_bez_h * gcd_scale_h;
-                let wid = tw / sw + s_bez_w * gcd_scale_w;
-                let fidx = fhid * fw + fwid;
-                let patch_idx = (hid * iw + wid) * c * fh * fw;
-                acc += x[(bidx + patch_idx + cidx + fidx) as usize];
-                tw += tw_step;
-            }
-            th += th_step;
-        }
-        *y = acc;
-    }
-
-    #[kernel(threads(256))]
-    pub fn max_pool2_f32<const H: u32, const W: u32, const SH: u32, const SW: u32>(
-        #[global] x: Slice<f32>,
-        ih: u32,
-        iw: u32,
-        #[item] y: &mut f32,
-        oh: u32,
-        ow: u32,
-    ) {
-        let idx = kernel.item_id();
-        let bid = idx / (oh * ow);
-        let hwid = idx % (oh * ow);
-        let hid = hwid / ow;
-        let wid = hwid % ow;
-
-        let x_start = bid * ih * iw;
-        let mut m = 0f32;
-
-        let mut row = hid * SH;
-        for i in 0..H {
-            let mut col = wid * SW;
-            for j in 0..W {
-                let x = x[(x_start + row * iw + col) as usize];
-                if i == 0 && j == 0 {
-                    m = x;
+                let idx = kernel.global_id();
+                if idx >= bs * oh * ow * c * fh * fw {
+                    return;
+                }
+                let bcid = idx / (oh * ow * fh * fw);
+                let hwfid = idx % (oh * ow * fh * fw);
+                let bid = bcid / c;
+                let cid = bcid % c;
+                let hwid = hwfid / (fh * fw);
+                let fid = hwfid % (fh * fw);
+                let hid = hwid / ow;
+                let wid = hwid % ow;
+                let fi = fid / fw;
+                let fj = fid % fw;
+                let hidx = -(ph as i32) + (fi * dh + sh * hid) as i32;
+                let widx = -(pw as i32) + (fj * dw + sw * wid) as i32;
+                let x = if hidx >= 0 && hidx < ih as i32 && widx >= 0 && widx < iw as i32 {
+                    x[(bcid * ih * iw + hidx as u32 * iw + widx as u32) as usize]
                 } else {
-                    m = m.max(x);
+                    $T::zero()
+                };
+                let y_idx = bid * oh * ow * c * fh * fw
+                    + hid * ow * c * fh * fw
+                    + wid * c * fh * fw
+                    + cid * fh * fw
+                    + fid;
+                unsafe {
+                    *y.unsafe_index_mut(y_idx as usize) = x;
                 }
-                col += 1;
             }
-            row += 1;
-        }
-        *y = m;
-    }
 
-    #[kernel(threads(256))]
-    pub fn max_pool2_backward_f32<const H: u32, const W: u32, const SH: u32, const SW: u32>(
-        #[global] dx: UnsafeSlice<f32>,
-        ih: u32,
-        iw: u32,
-        #[item] dy: f32,
-        oh: u32,
-        ow: u32,
-    ) {
-        let idx = kernel.item_id();
-        let bid = idx / (oh * ow);
-        let hwid = idx % (oh * ow);
-        let hid = hwid / ow;
-        let wid = hwid % ow;
-        let dx_start = bid * ih * iw;
-        let mut m = 0f32;
-        let mut mi = 0;
-        let mut mj = 0;
-        let mut row = hid * SH;
-        for i in 0..H {
-            let mut col = wid * SW;
-            for j in 0..W {
-                let dx = unsafe { dx.unsafe_index_mut((dx_start + row * ih + col) as usize) };
-                let x = *dx;
-                *dx = 0f32;
-                if (i == 0 && j == 0) || x > m {
-                    m = x;
-                    mi = i;
-                    mj = j;
+            #[kernel(threads(256))]
+            pub fn [<col2im_conv2_ $T>]<
+                const C: u32,
+                const IH: u32,
+                const IW: u32,
+                const OH: u32,
+                const OW: u32,
+                const FH: u32,
+                const FW: u32,
+                const PH: u32,
+                const PW: u32,
+                const SH: u32,
+                const SW: u32,
+                const DH: u32,
+                const DW: u32,
+                const S_BEZ_H: u32,
+                const S_BEZ_W: u32,
+                const D_BEZ_H: u32,
+                const D_BEZ_W: u32,
+                const GCD_H: u32,
+                const GCD_W: u32,
+            >(
+                #[global] x: Slice<$T>,
+                #[item] y: &mut $T,
+            ) {
+                let c = C;
+                let [ih, iw] = [IH, IW];
+                let [oh, ow] = [OH, OW];
+                let [fh, fw] = [FH, FW];
+                let [ph, pw] = [PH, PW];
+                let [sh, sw] = [SH, SW];
+                let [dh, dw] = [DH, DW];
+                let [s_bez_h, s_bez_w] = [S_BEZ_H, S_BEZ_W];
+                let [d_bez_h, d_bez_w] = [D_BEZ_H, D_BEZ_W];
+                let [gcd_h, gcd_w] = [GCD_H, GCD_W];
+
+                let idx = kernel.item_id();
+                let bcid = idx / (oh * ow);
+                let hwid = idx % (oh * ow);
+                let bid = bcid / c;
+                let cid = bcid % c;
+                let bidx = bid * ih * iw * c * fh * fw;
+                let bidy = bid * c * oh * ow;
+                let cidx = cid * fh * fw;
+                let cidy = cid * oh * ow;
+
+                let ow_scaled = (ow - 1) / gcd_w + 1;
+                let gcd_scale_h = hwid / ow_scaled + (ph - 1) / gcd_h + 1;
+                let gcd_scale_w = hwid % ow_scaled + (pw - 1) / gcd_w + 1;
+                let hidy = gcd_scale_h * gcd_h - ph;
+                let widy = gcd_scale_w * gcd_w - pw;
+                let th_step = sh * dh / gcd_h;
+                let tw_step = sw * dw / gcd_w;
+
+                fn grid_ceil(x: i32, step: i32) -> i32 {
+                    if x > 0 {
+                        (x - 1) / step + 1
+                    } else {
+                        x / step * step
+                    }
                 }
-                col += 1;
-            }
-            row += 1;
-        }
 
-        let row = hid * SH + mi;
-        let col = wid * SW + mj;
-        unsafe {
-            *dx.unsafe_index_mut((dx_start + row * iw + col) as usize) = dy;
+                let th_begin = grid_ceil(
+                    i32::max(
+                        -((s_bez_h * gcd_scale_h * sh) as i32),
+                        ((d_bez_h * gcd_scale_h - fh + 1) * dh) as i32,
+                    ),
+                    th_step as i32,
+                ) as u32;
+                let th_end = u32::min(
+                    (ih - s_bez_h * gcd_scale_h) * sh,
+                    (d_bez_h * gcd_scale_h + 1) * dh,
+                );
+                let tw_begin = grid_ceil(
+                    i32::max(
+                        -((s_bez_w * gcd_scale_w * sw) as i32),
+                        ((d_bez_w * gcd_scale_w - fw + 1) * dw) as i32,
+                    ),
+                    tw_step as i32,
+                ) as u32;
+                let tw_end = u32::min(
+                    (iw - s_bez_w * gcd_scale_w) * sw,
+                    (d_bez_w * gcd_scale_w + 1) * dw,
+                );
+
+                let mut acc = 0f32;
+                let mut th = th_begin;
+                while th < th_end {
+                    let mut tw = tw_begin;
+                    while tw < tw_end {
+                        let fhid = d_bez_h * gcd_scale_h - th / dh;
+                        let fwid = d_bez_w * gcd_scale_w - tw / dw;
+                        let hid = th / sh + s_bez_h * gcd_scale_h;
+                        let wid = tw / sw + s_bez_w * gcd_scale_w;
+                        let fidx = fhid * fw + fwid;
+                        let patch_idx = (hid * iw + wid) * c * fh * fw;
+                        acc += x[(bidx + patch_idx + cidx + fidx) as usize].cast::<f32>();
+                        tw += tw_step;
+                    }
+                    th += th_step;
+                }
+                *y = acc.cast();
+            }
+
+            #[kernel(threads(256))]
+            pub fn [<max_pool2_ $T>]<const H: u32, const W: u32, const SH: u32, const SW: u32>(
+                #[global] x: Slice<$T>,
+                ih: u32,
+                iw: u32,
+                #[item] y: &mut $T,
+                oh: u32,
+                ow: u32,
+            ) {
+                let idx = kernel.item_id();
+                let bid = idx / (oh * ow);
+                let hwid = idx % (oh * ow);
+                let hid = hwid / ow;
+                let wid = hwid % ow;
+
+                let x_start = bid * ih * iw;
+                let mut m = 0f32;
+
+                let mut row = hid * SH;
+                for i in 0..H {
+                    let mut col = wid * SW;
+                    for j in 0..W {
+                        let x = x[(x_start + row * iw + col) as usize].cast::<f32>();
+                        if i == 0 && j == 0 {
+                            m = x;
+                        } else {
+                            m = m.max(x);
+                        }
+                        col += 1;
+                    }
+                    row += 1;
+                }
+                *y = m.cast();
+            }
+
+            #[kernel(threads(256))]
+            pub fn [<max_pool2_backward_ $T>]<const H: u32, const W: u32, const SH: u32, const SW: u32>(
+                #[global] dx: UnsafeSlice<$T>,
+                ih: u32,
+                iw: u32,
+                #[item] dy: $T,
+                oh: u32,
+                ow: u32,
+            ) {
+                let idx = kernel.item_id();
+                let bid = idx / (oh * ow);
+                let hwid = idx % (oh * ow);
+                let hid = hwid / ow;
+                let wid = hwid % ow;
+                let dx_start = bid * ih * iw;
+                let mut m = 0f32;
+                let mut mi = 0;
+                let mut mj = 0;
+                let mut row = hid * SH;
+                for i in 0..H {
+                    let mut col = wid * SW;
+                    for j in 0..W {
+                        let dx = unsafe { dx.unsafe_index_mut((dx_start + row * ih + col) as usize) };
+                        let x = dx.cast::<f32>();
+                        *dx = $T::zero();
+                        if (i == 0 && j == 0) || x > m {
+                            m = x;
+                            mi = i;
+                            mj = j;
+                        }
+                        col += 1;
+                    }
+                    row += 1;
+                }
+
+                let row = hid * SH + mi;
+                let col = wid * SW + mj;
+                unsafe {
+                    *dx.unsafe_index_mut((dx_start + row * iw + col) as usize) = dy.cast();
+                }
+            }
         }
-    }
+    });
 }
 /*
 #[cfg(test)]

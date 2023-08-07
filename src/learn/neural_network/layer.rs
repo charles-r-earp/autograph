@@ -16,9 +16,11 @@ use crate::{
     tensor::{ScalarArcTensor, ScalarTensor, ScalarTensorBase, Tensor, TensorView, TensorViewMut},
 };
 use anyhow::{bail, Result};
+use dry::macro_for;
 #[cfg(feature = "device")]
 use krnl::macros::module;
 use ndarray::{linalg::Dot, Array, Dimension};
+use paste::paste;
 use rand::{
     distributions::{Distribution, Uniform},
     thread_rng,
@@ -566,19 +568,25 @@ fn scalar_relu<S: ScalarData, D: Dimension>(
     if input.is_standard_layout() {
         if let Some(input_mut) = input.get_view_mut() {
             match scalar_type {
+                ScalarType::BF16 => {
+                    relu_mut::<bf16, D>(input_mut.try_into().unwrap())?;
+                }
                 ScalarType::F32 => {
                     relu_mut::<f32, D>(input_mut.try_into().unwrap())?;
                 }
-                _ => todo!(),
+                _ => bail!("relu {scalar_type:?} unimplemented!"),
             }
             return input.into_shared();
         }
     }
     match scalar_type {
+        ScalarType::BF16 => Ok(relu::<bf16, D>(input.view().try_into().unwrap())?
+            .into_shared()?
+            .into()),
         ScalarType::F32 => Ok(relu::<f32, D>(input.view().try_into().unwrap())?
             .into_shared()?
             .into()),
-        _ => todo!(),
+        _ => bail!("Relu {scalar_type:?} unimplemented!()"),
     }
 }
 
@@ -597,17 +605,26 @@ fn relu_mut<T: Scalar, D: Dimension>(mut input: TensorViewMut<T, D>) -> Result<(
     {
         let device = input.device();
         let mut x = input.as_slice_mut().unwrap();
-        if let Ok(x) = x.as_scalar_slice_mut().try_into() {
-            kernels::relu_mut_f32::builder()?
-                .build(device)?
-                .dispatch(x)?;
-            return Ok(());
-        }
-        todo!()
+        macro_for!($T in [bf16, f32] {
+            if let Ok(x) = x.as_scalar_slice_mut().try_into() {
+                let kernel = paste! {
+                    kernels::[<relu_mut_ $T>]::builder()?
+                    .build(device)?
+                };
+                kernel
+                    .dispatch(x)?;
+                return Ok(());
+            }
+        });
+        bail!("relu_mut {:?} unimplemented!", T::scalar_type())
     }
 }
 
 fn relu<T: Scalar, D: Dimension>(input: TensorView<T, D>) -> Result<Tensor<T, D>> {
+    let scalar_type = T::scalar_type();
+    if !matches!(scalar_type, ScalarType::BF16 | ScalarType::F32) {
+        bail!("Relu {scalar_type:?} unimplemented!");
+    }
     if let Some(x) = input.as_array() {
         let y = x.map(|x| relu_impl(*x));
         return Ok(y.into());
@@ -618,17 +635,20 @@ fn relu<T: Scalar, D: Dimension>(input: TensorView<T, D>) -> Result<Tensor<T, D>
     }
     #[cfg(feature = "device")]
     {
-        let mut output = unsafe { Tensor::<T, D>::uninit(input.device(), input.raw_dim())? };
-        let x = input.as_slice().unwrap();
-        let mut y = output.as_slice_mut().unwrap();
-        if let Ok(x) = x.as_scalar_slice().try_into() {
-            let y = y.as_scalar_slice_mut().try_into().unwrap();
-            kernels::relu_f32::builder()?
-                .build(input.device())?
-                .dispatch(x, y)?;
-            return Ok(output);
-        }
-        todo!()
+        macro_for!($T in [bf16, f32] {
+            if scalar_type == $T::scalar_type() {
+                let mut output = unsafe { Tensor::<$T, D>::uninit(input.device(), input.raw_dim())? };
+                let x = input.as_slice().unwrap();
+                let mut y = output.as_slice_mut().unwrap();
+                let kernel = paste!{ kernels::[<relu_ $T>]::builder()?.build(input.device())? };
+                kernel.dispatch(
+                    x.as_scalar_slice().try_into().unwrap(),
+                    y.as_scalar_slice_mut().try_into().unwrap(),
+                )?;
+                return Ok(output.cast_into().unwrap());
+            }
+        });
+        unreachable!()
     }
 }
 
@@ -639,24 +659,36 @@ fn scalar_relu_backward<D: Dimension>(
     let scalar_type = output.scalar_type();
     if let Some(output_grad_mut) = output_grad.get_view_mut() {
         match scalar_type {
+            ScalarType::BF16 => {
+                relu_backward_mut::<bf16, D>(
+                    output.view().try_into().unwrap(),
+                    output_grad_mut.try_into().unwrap(),
+                )?;
+            }
             ScalarType::F32 => {
                 relu_backward_mut::<f32, D>(
                     output.view().try_into().unwrap(),
                     output_grad_mut.try_into().unwrap(),
                 )?;
             }
-            _ => todo!(),
+            _ => unreachable!(),
         }
         Ok(output_grad)
     } else {
         match scalar_type {
+            ScalarType::BF16 => Ok(relu_backward::<bf16, D>(
+                output.view().try_into().unwrap(),
+                output_grad.view().try_into().unwrap(),
+            )?
+            .into_shared()?
+            .into()),
             ScalarType::F32 => Ok(relu_backward::<f32, D>(
                 output.view().try_into().unwrap(),
                 output_grad.view().try_into().unwrap(),
             )?
             .into_shared()?
             .into()),
-            _ => todo!(),
+            _ => unreachable!(),
         }
     }
 }
@@ -679,18 +711,25 @@ fn relu_backward_mut<T: Scalar, D: Dimension>(
     {
         let x = input.as_slice().unwrap();
         let mut dy = output_grad.as_slice_mut().unwrap();
-        if let Some((x, dy)) = x
-            .as_scalar_slice()
-            .try_into()
-            .ok()
-            .zip(dy.as_scalar_slice_mut().try_into().ok())
-        {
-            kernels::relu_backward_mut_f32::builder()?
-                .build(input.device())?
-                .dispatch(x, dy)?;
-            return Ok(());
-        }
-        todo!()
+        macro_for!($T in [bf16, f32] {
+            if let Some((x, dy)) = x
+                .as_scalar_slice()
+                .try_into()
+                .ok()
+                .zip(dy.as_scalar_slice_mut().try_into().ok())
+            {
+                let kernel = paste! {
+                    kernels::[<relu_backward_mut_ $T>]::builder()?
+                    .build(input.device())?
+                };
+                kernel.dispatch(x, dy)?;
+                return Ok(());
+            }
+        });
+        bail!(
+            "relu_backward_mut {:?} unimplemented!()",
+            input.scalar_type()
+        );
     }
 }
 
@@ -715,30 +754,42 @@ fn relu_backward<T: Scalar, D: Dimension>(
     {
         let x = input.as_slice().unwrap();
         let dy = output_grad.as_slice().unwrap();
-        let mut input_grad = unsafe { Tensor::uninit(input.device(), input.raw_dim())? };
-        if let Some((x, dy)) = x
-            .as_scalar_slice()
-            .try_into()
-            .ok()
-            .zip(dy.as_scalar_slice().try_into().ok())
-        {
-            let dx = ScalarSliceMut::from(input_grad.as_slice_mut().unwrap())
+        macro_for!($T in [bf16, f32] {
+            if let Some((x, dy)) = x
+                .as_scalar_slice()
                 .try_into()
-                .unwrap();
-            kernels::relu_backward_f32::builder()?
-                .build(input.device())?
-                .dispatch(x, dy, dx)?;
-            return Ok(input_grad);
-        }
-        todo!()
+                .ok()
+                .zip(dy.as_scalar_slice().try_into().ok())
+            {
+                let mut input_grad = unsafe { Tensor::uninit(input.device(), input.raw_dim())? };
+                let dx = ScalarSliceMut::from(input_grad.as_slice_mut().unwrap())
+                    .try_into()
+                    .unwrap();
+                let kernel = paste! {
+                    kernels::[<relu_backward_ $T>]::builder()?
+                        .build(input.device())?
+                };
+                kernel.dispatch(x, dy, dx)?;
+                return Ok(input_grad);
+            }
+        });
+        bail!("relu_backward {:?} unimplemented!()", input.scalar_type());
     }
 }
 
 #[cfg_attr(feature = "device", module)]
 mod kernels {
+    #[cfg(any(feature = "device", target_arch = "spirv"))]
+    use dry::macro_for;
     #[cfg(not(target_arch = "spirv"))]
     use krnl::krnl_core;
+    #[cfg(target_arch = "spirv")]
+    use krnl_core::half::bf16;
+    #[cfg(any(feature = "device", target_arch = "spirv"))]
+    use krnl_core::macros::kernel;
     use krnl_core::scalar::Scalar;
+    #[cfg(any(feature = "device", target_arch = "spirv"))]
+    use paste::paste;
 
     pub fn relu_impl<T: Scalar>(x: T) -> T {
         if x >= T::zero() {
@@ -757,31 +808,28 @@ mod kernels {
     }
 
     #[cfg(any(feature = "device", target_arch = "spirv"))]
-    pub mod device {
-        use super::*;
-        use krnl_core::macros::kernel;
+    macro_for!($T in [bf16, f32] {
+        paste! {
+            #[kernel(threads(256))]
+            pub fn [<relu_mut_ $T>](#[item] x: &mut $T) {
+                *x = relu_impl(*x);
+            }
 
-        #[kernel(threads(256))]
-        pub fn relu_mut_f32(#[item] x: &mut f32) {
-            *x = relu_impl(*x);
-        }
+            #[kernel(threads(256))]
+            pub fn [<relu_ $T>](#[item] x: $T, #[item] y: &mut $T) {
+                *y = relu_impl(x);
+            }
 
-        #[kernel(threads(256))]
-        pub fn relu_f32(#[item] x: f32, #[item] y: &mut f32) {
-            *y = relu_impl(x);
-        }
+            #[kernel(threads(256))]
+            pub fn [<relu_backward_mut_ $T>](#[item] x: $T, #[item] dy: &mut $T) {
+                *dy = relu_backward_impl(x, *dy);
+            }
 
-        #[kernel(threads(256))]
-        pub fn relu_backward_mut_f32(#[item] x: f32, #[item] dy: &mut f32) {
-            *dy = relu_backward_impl(x, *dy);
+            #[kernel(threads(256))]
+            pub fn [<relu_backward_ $T>](#[item] x: $T, #[item] dy: $T, #[item] dx: &mut $T) {
+                *dx = relu_backward_impl(x, dy);
+            }
         }
-
-        #[kernel(threads(256))]
-        pub fn relu_backward_f32(#[item] x: f32, #[item] dy: f32, #[item] dx: &mut f32) {
-            *dx = relu_backward_impl(x, dy);
-        }
-    }
-    #[cfg(feature = "device")]
-    pub use device::*;
+    });
 }
 use kernels::{relu_backward_impl, relu_impl};

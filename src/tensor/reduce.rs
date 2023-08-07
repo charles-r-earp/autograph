@@ -116,7 +116,6 @@ fn sum(x: ScalarTensorViewD, beta: ScalarElem, mut y: ScalarTensorViewMutD) -> R
         if x.scalar_type() == $T::scalar_type() {
             let x = Slice::try_from(x).unwrap();
             let y = SliceMut::try_from(y).unwrap();
-            let beta = beta.cast::<$T>();
             let kernel = paste! {
                 kernels::[<sum_ $T>]::builder()?.specialize(
                     threads
@@ -124,7 +123,7 @@ fn sum(x: ScalarTensorViewD, beta: ScalarElem, mut y: ScalarTensorViewMutD) -> R
             };
             kernel.with_groups(groups).dispatch(
                 x,
-                beta,
+                beta.cast(),
                 y,
             )?;
             return Ok(());
@@ -161,11 +160,10 @@ fn sum_axis(
     let offset_x = offset_x as u32;
     let y = y.as_scalar_slice_mut().unwrap();
 
-    macro_for!($T in [u32, i32, f32, u64, i64, f64] {
+    macro_for!($T in [u32, i32, bf16, f32, u64, i64, f64] {
         if x.scalar_type() == $T::scalar_type() {
             let x = Slice::try_from(x).unwrap();
             let y = SliceMut::try_from(y).unwrap();
-            let beta = beta.cast::<$T>();
             let kernel = paste! {
                 kernels::[<sum_axis2_ $T>]::builder()?.specialize(
                     threads, bsx, sx,
@@ -174,13 +172,13 @@ fn sum_axis(
             kernel.with_groups(groups).dispatch(
                 x,
                 offset_x,
-                beta,
+                beta.cast(),
                 y,
             )?;
             return Ok(());
         }
     });
-    todo!()
+    bail!("sum_axis {:?} {axis:?}", x.scalar_type(),)
 }
 
 #[cfg(feature = "device")]
@@ -190,7 +188,7 @@ mod kernels {
     use krnl::krnl_core;
     use krnl_core::macros::kernel;
     #[cfg(target_arch = "spirv")]
-    use krnl_core::{buffer::UnsafeIndex, scalar::Scalar};
+    use krnl_core::{buffer::UnsafeIndex, half::bf16, scalar::Scalar};
     use paste::paste;
 
     #[cfg(target_arch = "spirv")]
@@ -295,28 +293,20 @@ mod kernels {
     }
 
     macro_rules! impl_subgroup_add {
-        ($t:ty => $a:ty) => {
-            #[cfg(target_arch = "spirv")]
-            impl SubgroupAdd for $t {
-                unsafe fn subgroup_add(self) -> Self {
-                    unsafe {
-                        paste! {
-                            [<subgroup_add_ $a>](self.cast::<$a>()).cast()
+        ($($t:ty),*) => {
+            $(
+                #[cfg(target_arch = "spirv")]
+                impl SubgroupAdd for $t {
+                    unsafe fn subgroup_add(self) -> Self {
+                        unsafe {
+                            paste! {
+                                [<subgroup_add_ $t>](self)
+                            }
                         }
                     }
                 }
-            }
-        };
-        ($($t:ty),*) => {
-            $(
-                impl_subgroup_add!($t => $t);
             )*
         };
-        ($($t:ty),* => $a:ty) => {
-            $(
-                impl_subgroup_add!($t => $a);
-            )*
-        }
     }
 
     impl_subgroup_add!(u32, i32, f32, u64, i64, f64);
@@ -327,7 +317,7 @@ mod kernels {
                 #[kernel(threads(TS))]
                 pub fn [<sum_ $t>]<const TS: u32>(
                     #[global] x: Slice<$t>,
-                    beta: $t,
+                    beta: $a,
                     #[global] y: UnsafeSlice<$t>,
                 ) {
                     type T = $t;
@@ -349,17 +339,16 @@ mod kernels {
                         idx += subgroup_threads;
                     }
                     unsafe {
-                        y_thread = y_thread.subgroup_add().cast::<T>();
+                        y_thread = y_thread.subgroup_add();
                     };
                     if thread_id == 0 {
-                        if beta == T::default() {
+                        if beta != A::default() {
                             unsafe {
-                                *y.unsafe_index_mut(0) = y_thread;
+                                y_thread += beta * y.unsafe_index(0).cast::<A>();
                             }
-                        } else {
-                            unsafe {
-                                *y.unsafe_index_mut(0) = y_thread + beta * *y.unsafe_index(0);
-                            }
+                        }
+                        unsafe {
+                            *y.unsafe_index_mut(0) = y_thread.cast::<T>();
                         }
                     }
                 }
@@ -368,7 +357,7 @@ mod kernels {
                 pub fn [<sum_axis2_ $t>]<const TS: u32, const BSX: i32, const SX: i32>(
                     #[global] x: Slice<$t>,
                     offset_x: u32,
-                    beta: $t,
+                    beta: $a,
                     #[global] y: UnsafeSlice<$t>,
                 ) {
                     type T = $t;
@@ -392,17 +381,16 @@ mod kernels {
                         idx += subgroup_threads;
                     }
                     unsafe {
-                        y_thread = y_thread.subgroup_add().cast::<T>();
+                        y_thread = y_thread.subgroup_add();
                     };
                     if thread_id == 0 {
-                        if beta == T::default() {
+                        if beta != A::default() {
                             unsafe {
-                                *y.unsafe_index_mut(group_id) = y_thread;
+                                y_thread += beta * y.unsafe_index(group_id).cast::<A>();
                             }
-                        } else {
-                            unsafe {
-                                *y.unsafe_index_mut(group_id) = y_thread + beta * *y.unsafe_index(group_id);
-                            }
+                        }
+                        unsafe {
+                            *y.unsafe_index_mut(group_id) = y_thread.cast::<T>();
                         }
                     }
                 }
@@ -420,5 +408,6 @@ mod kernels {
         }
     }
 
+    impl_sum!(bf16 => f32);
     impl_sum!(u32, i32, f32, u64, i64, f64);
 }

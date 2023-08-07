@@ -223,17 +223,30 @@ fn cross_entropy_loss_host<T1: Scalar + Float, T2: Scalar + Unsigned>(
 
 #[cfg(feature = "device")]
 fn cross_entropy_loss_device(input: ScalarTensorView2, target: ScalarTensorView1) -> Result<f32> {
-    let input = input.try_into_tensor_view::<f32>().unwrap();
-    let (batch_size, classes) = input.dim();
-    let input = input.as_slice().unwrap();
-    let target = target.try_into_tensor_view::<u8>().unwrap();
-    let target = target.as_slice().unwrap();
-    let mut output = unsafe { Tensor::uninit(input.device(), batch_size)? };
-    let classes = classes.to_u32().unwrap();
-    kernels::cross_entropy_loss_f32_u8::builder()?
-        .build(output.device())?
-        .dispatch(input, target, classes, output.as_slice_mut().unwrap())?;
-    output.sum()
+    macro_for!($T1 in [bf16, f32] {
+        if let Ok(input) = TensorView2::<$T1>::try_from(input.view()) {
+            let (batch_size, classes) = input.dim();
+            let input = input.as_slice().unwrap();
+            macro_for!($T2 in [u8, u16, u32] {
+                if let Ok(target) = TensorView1::<$T2>::try_from(target.view()) {
+                    let target = target.as_slice().unwrap();
+                    let mut output = unsafe { Tensor::<f32, _>::uninit(input.device(), batch_size)? };
+                    let classes = classes.to_u32().unwrap();
+                    let kernel = paste! {
+                        kernels::[<cross_entropy_loss_ $T1 _ $T2>]::builder()?
+                        .build(output.device())?
+                    };
+                    kernel.dispatch(input, target, classes, output.as_slice_mut().unwrap())?;
+                    return output.sum();
+                }
+            });
+        }
+    });
+    bail!(
+        "CrossEntropyLoss {:?} {:?} unimplemented!",
+        input.scalar_type(),
+        target.scalar_type()
+    )
 }
 
 #[cfg(feature = "device")]

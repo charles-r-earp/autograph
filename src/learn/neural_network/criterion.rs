@@ -14,33 +14,44 @@ use ndarray::Array2;
 #[cfg(feature = "device")]
 use num_traits::ToPrimitive;
 use num_traits::{Float, Unsigned};
+use dry::macro_for;
+#[cfg(feature = "device")]
+use paste::paste;
+use half::bf16;
 
 impl Criterion<Variable2, ScalarArcTensor1> for CrossEntropyLoss {
     type Output = Variable0;
     fn eval(&self, input: Variable2, target: ScalarArcTensor1) -> Result<Variable0> {
-        if !matches!(input.scalar_type(), ScalarType::BF16 | ScalarType::F32) {
-            bail!("CrossEntropyLoss {:?} unimplemented!", input.scalar_type());
+        if !matches!(input.scalar_type(), ScalarType::BF16 | ScalarType::F32) || !matches!(target.scalar_type(), ScalarType::U8 | ScalarType::U16 | ScalarType::U32) {
+            bail!("CrossEntropyLoss {:?} {:?} unimplemented!", input.scalar_type(), target.scalar_type());
         }
         let mut builder = Variable0::builder();
         if let Some(node) = input.node() {
             let input = input.value().clone();
             let target = target.clone();
             builder.edge(node, move |output_grad| {
-                let input = input.cast_into_tensor::<f32>()?;
-                let target = target.cast_into_tensor::<u8>()?;
-                let dy = output_grad
-                    .into_device(Device::host())?
-                    .cast_into_tensor::<f32>()?
-                    .into_array()
-                    .unwrap()
-                    .into_scalar();
-                Ok(
-                    cross_entropy_loss_backward::<f32, u8>(input.view(), target.view(), dy)?
-                        .into_scalar_tensor()
-                        .into_shared()
-                        .unwrap(),
-                )
-            })
+                macro_for!($X in [bf16, f32] {
+                    macro_for!($T in [u8, u16, u32] {
+                        if input.scalar_type() == $X::scalar_type() && target.scalar_type() == $T::scalar_type() {
+                            let input = input.try_into_arc_tensor::<$X>().unwrap();
+                            let target = target.try_into_arc_tensor::<$T>().unwrap();
+                            let dy = output_grad
+                                .into_device(Device::host())?
+                                .cast_into_tensor::<$X>()?
+                                .into_array()
+                                .unwrap()
+                                .into_scalar();
+                            return Ok(
+                                cross_entropy_loss_backward::<$X, $T>(input.view(), target.view(), dy.cast::<f32>())?
+                                    .into_scalar_tensor()
+                                    .into_shared()
+                                    .unwrap(),
+                            );
+                        }
+                    });
+                });
+                unreachable!()   
+            });
         }
         let loss = self.eval(input.into_value(), target)?;
         let value = ScalarArcTensor::from_elem(Device::host(), (), ScalarElem::F32(loss)).unwrap();
@@ -80,67 +91,84 @@ fn cross_entropy_loss_backward<T1: Scalar + Float, T2: Scalar + Unsigned>(
     #[cfg(feature = "device")]
     {
         let (batch_size, classes) = x.dim();
-        let x = ScalarTensorView::from(x)
-            .try_into_tensor_view::<f32>()
-            .unwrap();
-        let t = ScalarTensorView::from(t)
-            .try_into_tensor_view::<u8>()
-            .unwrap();
-        let mut dx = unsafe { Tensor::<f32, _>::uninit(x.device(), x.raw_dim())? };
-        kernels::cross_entropy_loss_backward_f32_u8::builder()?
-            .build(dx.device())?
-            .with_global_threads(batch_size.to_u32().unwrap())
-            .dispatch(
-                x.as_slice().unwrap(),
-                t.as_slice().unwrap(),
-                classes.to_u32().unwrap(),
-                dy,
-                dx.as_slice_mut().unwrap(),
-            )?;
-        Ok(ScalarTensor::from(dx).try_into_tensor().unwrap())
+        macro_for!($X in [bf16, f32] {
+            macro_for!($T in [u8, u16, u32] {
+                if x.scalar_type() == $X::scalar_type() && t.scalar_type() == $T::scalar_type() {
+                    let x = ScalarTensorView::from(x)
+                        .try_into_tensor_view::<$X>()
+                        .unwrap();
+                    let t = ScalarTensorView::from(t)
+                        .try_into_tensor_view::<$T>()
+                        .unwrap();
+                    let mut dx = unsafe { Tensor::<$X, _>::uninit(x.device(), x.raw_dim())? };
+                    let kernel = paste! { kernels::[<cross_entropy_loss_backward_ $X _ $T>]::builder()?.build(dx.device())? };
+                    kernel
+                        .with_global_threads(batch_size.to_u32().unwrap())
+                        .dispatch(
+                            x.as_slice().unwrap(),
+                            t.as_slice().unwrap(),
+                            classes.to_u32().unwrap(),
+                            dy,
+                            dx.as_slice_mut().unwrap(),
+                        )?;
+                    return Ok(ScalarTensor::from(dx).try_into_tensor().unwrap());
+                }
+            });
+        });
+        unreachable!()
     }
 }
 
 #[cfg(feature = "device")]
 #[module]
 mod kernels {
+    use dry::macro_for;
     #[cfg(not(target_arch = "spirv"))]
     use krnl::krnl_core;
     use krnl_core::macros::kernel;
     #[cfg(target_arch = "spirv")]
     use krnl_core::{
         buffer::UnsafeIndex,
+        half::bf16,
         num_traits::{Float, ToPrimitive},
+        scalar::Scalar,
     };
+    use paste::paste;
 
-    #[kernel(threads(256))]
-    pub fn cross_entropy_loss_backward_f32_u8(
-        #[global] x: Slice<f32>,
-        #[global] t: Slice<u8>,
-        classes: u32,
-        dy: f32,
-        #[global] dx: UnsafeSlice<f32>,
-    ) {
-        let idx = kernel.global_id();
-        if idx as usize > t.len() {
-            return;
-        }
-        let mut m = x[(idx * classes) as usize];
-        for i in 1..classes {
-            let x = x[(idx * classes + i) as usize];
-            m = m.max(x);
-        }
-        let mut s = 0f32;
-        for i in 0..classes {
-            let x = x[(idx * classes + i) as usize];
-            s += (x - m).exp();
-        }
-        let t = t[idx as usize].to_u32().unwrap();
-        for i in 0..classes {
-            let x = x[(idx * classes + i) as usize];
-            let t = (i == t) as u8 as f32;
-            let dx = unsafe { dx.unsafe_index_mut((idx * classes + i) as usize) };
-            *dx = (dy * ((x - m).exp() / s - t));
-        }
-    }
+    macro_for!($X in [bf16, f32] {
+        macro_for!($T in [u8, u16, u32] {
+            paste! {
+                #[kernel(threads(256))]
+                pub fn [<cross_entropy_loss_backward_ $X _ $T>](
+                    #[global] x: Slice<$X>,
+                    #[global] t: Slice<$T>,
+                    classes: u32,
+                    dy: f32,
+                    #[global] dx: UnsafeSlice<$X>,
+                ) {
+                    let idx = kernel.global_id();
+                    if idx as usize > t.len() {
+                        return;
+                    }
+                    let mut m = x[(idx * classes) as usize].cast::<f32>();
+                    for i in 1..classes {
+                        let x = x[(idx * classes + i) as usize].cast::<f32>();
+                        m = m.max(x);
+                    }
+                    let mut s = 0f32;
+                    for i in 0..classes {
+                        let x = x[(idx * classes + i) as usize].cast::<f32>();
+                        s += (x - m).exp();
+                    }
+                    let t = t[idx as usize].to_u32().unwrap();
+                    for i in 0..classes {
+                        let x = x[(idx * classes + i) as usize].cast::<f32>();
+                        let t = (i == t) as u8 as f32;
+                        let dx = unsafe { dx.unsafe_index_mut((idx * classes + i) as usize) };
+                        *dx = (dy * ((x - m).exp() / s - t)).cast();
+                    }
+                }
+            }
+        });
+    });
 }
