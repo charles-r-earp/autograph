@@ -16,11 +16,15 @@ use crate::{
     tensor::{ScalarArcTensor, ScalarTensor, ScalarTensorBase, Tensor, TensorView, TensorViewMut},
 };
 use anyhow::{bail, Result};
+#[cfg(feature = "device")]
 use dry::macro_for;
+#[cfg(feature = "device")]
+use paste::paste;
+
 #[cfg(feature = "device")]
 use krnl::macros::module;
 use ndarray::{linalg::Dot, Array, Dimension};
-use paste::paste;
+
 use rand::{
     distributions::{Distribution, Uniform},
     thread_rng,

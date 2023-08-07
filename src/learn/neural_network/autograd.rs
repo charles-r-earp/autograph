@@ -49,7 +49,7 @@ pub mod builder {
             Self {
                 grad: None,
                 edges: Vec::new(),
-                _m: PhantomData::default(),
+                _m: PhantomData,
             }
         }
         /// Adds a node.
@@ -175,7 +175,7 @@ impl<D: Dimension> Node<D> {
                 grad,
                 edges: Mutex::new(edges),
             }),
-            _m: PhantomData::default(),
+            _m: PhantomData,
         }
     }
     /// The gradient.
@@ -228,13 +228,13 @@ impl<D: Dimension> Node<D> {
     fn into_dyn(self) -> Node<IxDyn> {
         Node {
             inner: self.inner,
-            _m: PhantomData::default(),
+            _m: PhantomData,
         }
     }
     fn into_dimensionality<D2: Dimension>(self) -> Node<D2> {
         Node {
             inner: self.inner,
-            _m: PhantomData::default(),
+            _m: PhantomData,
         }
     }
 }
