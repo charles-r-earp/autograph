@@ -8,22 +8,31 @@ use crate::{
     tensor::{ScalarArcTensor, ScalarArcTensor1, Tensor2, TensorView1, TensorView2},
 };
 use anyhow::{bail, Result};
+use dry::macro_for;
+use half::bf16;
 #[cfg(feature = "device")]
 use krnl::macros::module;
 use ndarray::Array2;
 #[cfg(feature = "device")]
 use num_traits::ToPrimitive;
 use num_traits::{Float, Unsigned};
-use dry::macro_for;
 #[cfg(feature = "device")]
 use paste::paste;
-use half::bf16;
 
 impl Criterion<Variable2, ScalarArcTensor1> for CrossEntropyLoss {
     type Output = Variable0;
     fn eval(&self, input: Variable2, target: ScalarArcTensor1) -> Result<Variable0> {
-        if !matches!(input.scalar_type(), ScalarType::BF16 | ScalarType::F32) || !matches!(target.scalar_type(), ScalarType::U8 | ScalarType::U16 | ScalarType::U32) {
-            bail!("CrossEntropyLoss {:?} {:?} unimplemented!", input.scalar_type(), target.scalar_type());
+        if !matches!(input.scalar_type(), ScalarType::BF16 | ScalarType::F32)
+            || !matches!(
+                target.scalar_type(),
+                ScalarType::U8 | ScalarType::U16 | ScalarType::U32
+            )
+        {
+            bail!(
+                "CrossEntropyLoss {:?} {:?} unimplemented!",
+                input.scalar_type(),
+                target.scalar_type()
+            );
         }
         let mut builder = Variable0::builder();
         if let Some(node) = input.node() {
@@ -50,7 +59,7 @@ impl Criterion<Variable2, ScalarArcTensor1> for CrossEntropyLoss {
                         }
                     });
                 });
-                unreachable!()   
+                unreachable!()
             });
         }
         let loss = self.eval(input.into_value(), target)?;
