@@ -117,9 +117,9 @@ fn sum(x: ScalarTensorViewD, beta: ScalarElem, mut y: ScalarTensorViewMutD) -> R
             let x = Slice::try_from(x).unwrap();
             let y = SliceMut::try_from(y).unwrap();
             let kernel = paste! {
-                kernels::[<sum_ $T>]::builder()?.specialize(
+                kernels::[<sum_ $T>]::builder()?.with_threads(threads).specialize(
                     threads
-                )?.build(y.device())?
+                ).build(y.device())?
             };
             kernel.with_groups(groups).dispatch(
                 x,
@@ -165,9 +165,11 @@ fn sum_axis(
             let x = Slice::try_from(x).unwrap();
             let y = SliceMut::try_from(y).unwrap();
             let kernel = paste! {
-                kernels::[<sum_axis2_ $T>]::builder()?.specialize(
+                kernels::[<sum_axis2_ $T>]::builder()?
+                    .with_threads(threads)
+                    .specialize(
                     threads, bsx, sx,
-                )?.build(y.device())?
+                ).build(y.device())?
             };
             kernel.with_groups(groups).dispatch(
                 x,
@@ -314,7 +316,7 @@ mod kernels {
     macro_rules! impl_sum {
         ($t:ty => $a:ty) => {
             paste! {
-                #[kernel(threads(TS))]
+                #[kernel]
                 pub fn [<sum_ $t>]<const TS: u32>(
                     #[global] x: Slice<$t>,
                     beta: $a,
@@ -323,12 +325,12 @@ mod kernels {
                     type T = $t;
                     type A = $a;
                     let n = x.len() / y.len();
-                    let thread_id = kernel.thread_id() as usize;
-                    let subgroup_id = kernel.subgroup_id() as usize;
+                    let thread_id = kernel.thread_id as usize;
+                    let subgroup_id = kernel.subgroup_id as usize;
                     if subgroup_id > 0 {
                         return;
                     }
-                    let subgroup_threads = (TS / kernel.subgroups()) as usize;
+                    let subgroup_threads = (TS / kernel.subgroups) as usize;
                     let mut y_thread = A::default();
                     let mut idx = 0;
                     while idx < n {
@@ -353,7 +355,7 @@ mod kernels {
                     }
                 }
 
-                #[kernel(threads(TS))]
+                #[kernel]
                 pub fn [<sum_axis2_ $t>]<const TS: u32, const BSX: i32, const SX: i32>(
                     #[global] x: Slice<$t>,
                     offset_x: u32,
@@ -363,14 +365,14 @@ mod kernels {
                     type T = $t;
                     type A = $a;
                     let n = x.len() / y.len();
-                    let group_id = kernel.group_id() as usize;
-                    let thread_id = kernel.thread_id() as usize;
-                    let subgroup_id = kernel.subgroup_id() as usize;
+                    let group_id = kernel.group_id as usize;
+                    let thread_id = kernel.thread_id as usize;
+                    let subgroup_id = kernel.subgroup_id as usize;
                     if subgroup_id > 0 {
                         return;
                     }
                     let mut x_start = group_id as i32 * BSX + offset_x as i32;
-                    let subgroup_threads = (TS / kernel.subgroups()) as usize;
+                    let subgroup_threads = (TS / kernel.subgroups) as usize;
                     let mut y_thread = A::default();
                     let mut idx = 0;
                     while idx < n {

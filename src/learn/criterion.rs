@@ -263,7 +263,7 @@ mod kernels {
     macro_for!($T1 in [bf16, f32] {
         macro_for!($T2 in [u8, u16, u32] {
             paste! {
-                #[kernel(threads(256))]
+                #[kernel]
                 pub fn [<accuracy_ $T1 _ $T2>](
                     #[global] x: Slice<$T1>,
                     #[global] t: Slice<$T2>,
@@ -271,7 +271,7 @@ mod kernels {
                     #[item] y: &mut u32,
                 ) {
                     let classes = classes as usize;
-                    let idx = kernel.item_id() as usize;
+                    let idx = kernel.item_id as usize;
                     let t = t[idx] as usize;
                     if t > classes {
                         *y = 0;
@@ -291,7 +291,7 @@ mod kernels {
                     *y = 1;
                 }
 
-                #[kernel(threads(256))]
+                #[kernel]
                 pub fn [<cross_entropy_loss_ $T1 _ $T2>](
                     #[global] x: Slice<$T1>,
                     #[global] t: Slice<$T2>,
@@ -299,7 +299,7 @@ mod kernels {
                     #[item] y: &mut f32,
                 ) {
                     let classes = classes as usize;
-                    let idx = kernel.item_id() as usize;
+                    let idx = kernel.item_id as usize;
                     let mut m = x[(idx * classes) as usize].cast::<f32>();
                     for i in 1..classes {
                         let x = x[(idx * classes + i) as usize].cast::<f32>();

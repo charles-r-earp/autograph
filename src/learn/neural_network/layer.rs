@@ -814,22 +814,22 @@ mod kernels {
     #[cfg(any(feature = "device", target_arch = "spirv"))]
     macro_for!($T in [bf16, f32] {
         paste! {
-            #[kernel(threads(256))]
+            #[kernel]
             pub fn [<relu_mut_ $T>](#[item] x: &mut $T) {
                 *x = relu_impl(*x);
             }
 
-            #[kernel(threads(256))]
+            #[kernel]
             pub fn [<relu_ $T>](#[item] x: $T, #[item] y: &mut $T) {
                 *y = relu_impl(x);
             }
 
-            #[kernel(threads(256))]
+            #[kernel]
             pub fn [<relu_backward_mut_ $T>](#[item] x: $T, #[item] dy: &mut $T) {
                 *dy = relu_backward_impl(x, *dy);
             }
 
-            #[kernel(threads(256))]
+            #[kernel]
             pub fn [<relu_backward_ $T>](#[item] x: $T, #[item] dy: $T, #[item] dx: &mut $T) {
                 *dx = relu_backward_impl(x, dy);
             }

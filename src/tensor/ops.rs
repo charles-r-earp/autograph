@@ -289,7 +289,7 @@ fn scalar_assign(
                                 kernels::[<assign_ $X _ $Y>]::builder()?
                             };
                             builder
-                            .specialize(op.as_u32())?
+                            .specialize(op.as_u32())
                             .build(device)?
                             .dispatch(
                                 alpha.cast(),
@@ -335,9 +335,9 @@ fn scalar_assign(
                                 kernels::[<assign2_ $X _ $Y>]::builder()?
                             };
                             builder
-                            .specialize(op.as_u32())?
+                            .specialize(op.as_u32())
                             .build(device)?
-                            .with_global_threads([cols, rows].into())
+                            .with_global_threads(rows * cols)
                             .dispatch(
                                 rows,
                                 cols,
@@ -415,7 +415,7 @@ fn scalar_assign(
                                 kernels::[<assign4_ $X _ $Y>]::builder()?
                             };
                             let kernel = builder
-                                .specialize(op.as_u32())?
+                                .specialize(op.as_u32())
                                 .build(device)?
                                 .with_global_threads(d0 * d1 * d2 * d3);
                             unsafe {
@@ -539,6 +539,7 @@ impl<S: ScalarData> Im2ColConv2 for ScalarTensorBase<S, Ix4> {
                                 Tensor::<$T, _>::uninit(input.device(), [bs * oh * ow, c * fh * fw])?
                             };
                             neural_network_kernels::[<im2col_conv2_ $T>]::builder()?
+                                .with_threads(256)
                                 .specialize(
                                     bs.to_u32().unwrap(),
                                     c.to_u32().unwrap(),
@@ -554,7 +555,7 @@ impl<S: ScalarData> Im2ColConv2 for ScalarTensorBase<S, Ix4> {
                                     sw.to_u32().unwrap(),
                                     dh.to_u32().unwrap(),
                                     dw.to_u32().unwrap(),
-                                )?
+                                )
                                 .build(output.device())?
                                 .with_global_threads(output.len().to_u32().unwrap())
                                 .dispatch(
@@ -712,7 +713,7 @@ impl<S: ScalarData> Col2ImConv2 for ScalarTensorBase<S, Ix2> {
                                     d_bez_w.to_u32().unwrap(),
                                     gcd_h.to_u32().unwrap(),
                                     gcd_w.to_u32().unwrap(),
-                                )?
+                                )
                                 .build(output.device())?
                                 .dispatch(
                                     input.as_slice().unwrap(),
@@ -799,7 +800,7 @@ impl<S: ScalarData> MaxPool2 for ScalarTensorBase<S, Ix4> {
                                 Tensor::<$T, _>::uninit(input.device(), [bs, c, oh, ow])?
                             };
                             neural_network_kernels::[<max_pool2_ $T>]::builder()?
-                                .specialize(h.to_u32().unwrap(), w.to_u32().unwrap(), sh.to_u32().unwrap(), sw.to_u32().unwrap())?
+                                .specialize(h.to_u32().unwrap(), w.to_u32().unwrap(), sh.to_u32().unwrap(), sw.to_u32().unwrap())
                                 .build(input.device())?
                                 .dispatch(input.as_slice().unwrap(), ih.to_u32().unwrap(), iw.to_u32().unwrap(), output.as_slice_mut().unwrap(), oh.to_u32().unwrap(), ow.to_u32().unwrap())?;
                             return Ok(output.into());
@@ -906,7 +907,7 @@ impl<S1: ScalarDataMut, S2: ScalarData> MaxPool2Backward<ScalarTensorBase<S2, Ix
                                 strides: [sh, sw],
                             } = options;
                             neural_network_kernels::[<max_pool2_backward_ $T>]::builder()?
-                                .specialize(h.to_u32().unwrap(), w.to_u32().unwrap(), sh.to_u32().unwrap(), sw.to_u32().unwrap())?
+                                .specialize(h.to_u32().unwrap(), w.to_u32().unwrap(), sh.to_u32().unwrap(), sw.to_u32().unwrap())
                                 .build(input_grad.device())?
                                 .dispatch(input_grad.as_slice_mut().unwrap(), ih.to_u32().unwrap(), iw.to_u32().unwrap(), output_grad.as_slice().unwrap(), oh.to_u32().unwrap(), ow.to_u32().unwrap())?;
                             return Ok(());
@@ -929,11 +930,11 @@ mod kernels {
     use dry::macro_for;
     #[cfg(not(target_arch = "spirv"))]
     use krnl::krnl_core;
-    #[cfg(any(target_arch = "spirv", feature = "device"))]
-    use krnl_core::macros::kernel;
     #[cfg(target_arch = "spirv")]
     #[allow(unused_imports)]
-    use krnl_core::{buffer::UnsafeIndex, glam::Vec2Swizzles};
+    use krnl_core::buffer::UnsafeIndex;
+    #[cfg(any(target_arch = "spirv", feature = "device"))]
+    use krnl_core::macros::kernel;
     #[allow(unused_imports)]
     use krnl_core::{
         half::{bf16, f16},
@@ -991,7 +992,7 @@ mod kernels {
     macro_for!($X in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
         macro_for!($Y in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
             paste! {
-                #[kernel(threads(256))]
+                #[kernel]
                 pub fn [<assign_ $X _ $Y>]<const OP: u32>(
                     alpha: $Y,
                     #[item]
@@ -1010,7 +1011,7 @@ mod kernels {
     macro_for!($X in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
         macro_for!($Y in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
             paste! {
-                #[kernel(threads(16, 16))]
+                #[kernel]
                 pub fn [<assign2_ $X _ $Y>]<const OP: u32>(
                     rows: u32,
                     cols: u32,
@@ -1027,7 +1028,9 @@ mod kernels {
                     offset_y: u32,
                 ) {
                     let op = BinaryOp::try_from(OP).ok().unwrap();
-                    let [global_row, global_col] = kernel.global_id().yx().to_array();
+                    let global_id = kernel.global_id;
+                    let global_row = global_id / cols;
+                    let global_col = global_id % cols;
                     if global_row < rows && global_col < cols {
                         let x_idx = (global_row as i32 * rsx + global_col as i32 * csx + offset_x as i32) as usize;
                         let y_idx = (global_row as i32 * rsy + global_col as i32 * csy + offset_y as i32) as usize;
@@ -1044,7 +1047,7 @@ mod kernels {
     macro_for!($X in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
         macro_for!($Y in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
             paste! {
-                #[kernel(threads(256))]
+                #[kernel]
                 pub unsafe fn [<assign4_ $X _ $Y>]<const OP: u32>(
                     d0: u32,
                     d1: u32,
@@ -1066,10 +1069,8 @@ mod kernels {
                     sy3: i32,
                     offset_y: u32,
                 ) {
-                    use krnl_core::glam::{UVec4, IVec4};
-
                     let op = BinaryOp::try_from(OP).ok().unwrap();
-                    let idx = kernel.global_id();
+                    let idx = kernel.global_id;
                     if idx >= d0 * d1 * d2 * d3 {
                         return;
                     }
@@ -1079,11 +1080,9 @@ mod kernels {
                     let r1 = r0 % (d2 * d3);
                     let i2 = r1 / d3;
                     let i3 = r1 % d3;
-                    let i = UVec4::new(i0, i1, i2, i3).as_ivec4();
-                    let sx = IVec4::new(sx0, sx1, sx2, sx3);
-                    let sy = IVec4::new(sy0, sy1, sy2, sy3);
-                    let x_idx = (i.dot(sx) + offset_x as i32) as usize;
-                    let y_idx = (i.dot(sy) + offset_y as i32) as usize;
+                    let [i0, i1, i2, i3] = [i0 as i32, i1 as i32, i2 as i32, i3 as i32];
+                    let x_idx = (sx0 * i0 + sx1 * i1 + sx2 * i2 + sx3 * i3 + offset_x as i32) as usize;
+                    let y_idx = (sy0 * i0 + sy1 * i1 + sy2 * i2 + sy3 * i3 + offset_y as i32) as usize;
                     unsafe {
                         *y.unsafe_index_mut(y_idx) = op.eval(alpha * x[x_idx].cast::<$Y>(), *y.unsafe_index(y_idx));
                     }
@@ -1107,7 +1106,7 @@ mod neural_network_kernels {
 
     macro_for!($T in [bf16, f32] {
         paste! {
-            #[kernel(threads(256))]
+            #[kernel]
             pub fn [<im2col_conv2_ $T>]<
                 const BS: u32,
                 const C: u32,
@@ -1142,7 +1141,7 @@ mod neural_network_kernels {
                 let dh = DH;
                 let dw = DW;
 
-                let idx = kernel.global_id();
+                let idx = kernel.global_id;
                 if idx >= bs * oh * ow * c * fh * fw {
                     return;
                 }
@@ -1173,7 +1172,7 @@ mod neural_network_kernels {
                 }
             }
 
-            #[kernel(threads(256))]
+            #[kernel]
             pub fn [<col2im_conv2_ $T>]<
                 const C: u32,
                 const IH: u32,
@@ -1209,7 +1208,7 @@ mod neural_network_kernels {
                 let [d_bez_h, d_bez_w] = [D_BEZ_H, D_BEZ_W];
                 let [gcd_h, gcd_w] = [GCD_H, GCD_W];
 
-                let idx = kernel.item_id();
+                let idx = kernel.item_id;
                 let bcid = idx / (oh * ow);
                 let hwid = idx % (oh * ow);
                 let bid = bcid / c;
@@ -1277,7 +1276,7 @@ mod neural_network_kernels {
                 *y = acc.cast();
             }
 
-            #[kernel(threads(256))]
+            #[kernel]
             pub fn [<max_pool2_ $T>]<const H: u32, const W: u32, const SH: u32, const SW: u32>(
                 #[global] x: Slice<$T>,
                 ih: u32,
@@ -1286,7 +1285,7 @@ mod neural_network_kernels {
                 oh: u32,
                 ow: u32,
             ) {
-                let idx = kernel.item_id();
+                let idx = kernel.item_id;
                 let bid = idx / (oh * ow);
                 let hwid = idx % (oh * ow);
                 let hid = hwid / ow;
@@ -1312,7 +1311,7 @@ mod neural_network_kernels {
                 *y = m.cast();
             }
 
-            #[kernel(threads(256))]
+            #[kernel]
             pub fn [<max_pool2_backward_ $T>]<const H: u32, const W: u32, const SH: u32, const SW: u32>(
                 #[global] dx: UnsafeSlice<$T>,
                 ih: u32,
@@ -1321,7 +1320,7 @@ mod neural_network_kernels {
                 oh: u32,
                 ow: u32,
             ) {
-                let idx = kernel.item_id();
+                let idx = kernel.item_id;
                 let bid = idx / (oh * ow);
                 let hwid = idx % (oh * ow);
                 let hid = hwid / ow;

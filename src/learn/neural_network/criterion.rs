@@ -110,7 +110,7 @@ fn cross_entropy_loss_backward<T1: Scalar + Float, T2: Scalar + Unsigned>(
                         .try_into_tensor_view::<$T>()
                         .unwrap();
                     let mut dx = unsafe { Tensor::<$X, _>::uninit(x.device(), x.raw_dim())? };
-                    let kernel = paste! { kernels::[<cross_entropy_loss_backward_ $X _ $T>]::builder()?.build(dx.device())? };
+                    let kernel = paste! { kernels::[<cross_entropy_loss_backward_ $X _ $T>]::builder()?.with_threads(256).build(dx.device())? };
                     kernel
                         .with_global_threads(batch_size.to_u32().unwrap())
                         .dispatch(
@@ -147,7 +147,7 @@ mod kernels {
     macro_for!($X in [bf16, f32] {
         macro_for!($T in [u8, u16, u32] {
             paste! {
-                #[kernel(threads(256))]
+                #[kernel]
                 pub fn [<cross_entropy_loss_backward_ $X _ $T>](
                     #[global] x: Slice<$X>,
                     #[global] t: Slice<$T>,
@@ -155,7 +155,7 @@ mod kernels {
                     dy: f32,
                     #[global] dx: UnsafeSlice<$X>,
                 ) {
-                    let idx = kernel.global_id();
+                    let idx = kernel.global_id;
                     if idx as usize > t.len() {
                         return;
                     }

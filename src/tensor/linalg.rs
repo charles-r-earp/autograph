@@ -30,7 +30,7 @@ mod kernels {
     macro_rules! impl_gemm {
         ($t:ty => $a:ty) => {
             paste! {
-                #[kernel(threads(64))]
+                #[kernel]
                 pub unsafe fn [<gemm_$t>]<
                     const M: u32,
                     const K: u32,
@@ -77,7 +77,7 @@ mod kernels {
                     let groups_mn = groups_m * groups_n;
                     let global_unroll = groups_k * unroll;
 
-                    let group_id = kernel.group_id() as usize;
+                    let group_id = kernel.group_id as usize;
                     let group_k = group_id / groups_mn;
                     let group_mn = group_id % groups_mn;
                     let group_m = group_mn / groups_n;
@@ -86,7 +86,7 @@ mod kernels {
                     let mut global_k = group_k * unroll;
                     let global_n = group_n * n_group;
 
-                    let thread_id = kernel.thread_id() as usize;
+                    let thread_id = kernel.thread_id as usize;
                     let thread_m = thread_id / threads_n;
                     let thread_n = thread_id % threads_n;
 
@@ -277,7 +277,7 @@ mod kernels {
         y
     }
 
-    #[kernel(threads(TS))]
+    #[kernel]
     pub unsafe fn reduce_k_f32<const TS: u32>(
         #[global] x: Slice<f32>,
         #[group] y_group: UnsafeSlice<f32, 1>,
@@ -285,12 +285,12 @@ mod kernels {
     ) {
         let n = x.len() / y.len();
         let threads = TS as usize;
-        let thread_id = kernel.thread_id() as usize;
-        let groups = kernel.groups() as usize;
-        let group_id = kernel.group_id() as usize;
-        let subgroups = kernel.subgroups() as usize;
-        let subgroup_id = kernel.subgroup_id() as usize;
-        let subgroup_thread_id = kernel.subgroup_thread_id() as usize;
+        let thread_id = kernel.thread_id as usize;
+        let groups = kernel.groups as usize;
+        let group_id = kernel.group_id as usize;
+        let subgroups = kernel.subgroups as usize;
+        let subgroup_id = kernel.subgroup_id as usize;
+        let subgroup_thread_id = kernel.subgroup_thread_id as usize;
         let mut y_thread = 0f32;
         let mut idx = 0;
         while idx < n {
@@ -406,7 +406,8 @@ fn gemm(
         let groups_m = m / m_group + (m % m_group != 0) as u32;
         let groups_n = n / n_group + (n % n_group != 0) as u32;
         let gemm_kernel = kernels::gemm_f32::builder()?
-            .specialize(m, k, n, groups_k, rsa, csa, rsb, csb, rsc, csc)?
+            .with_threads(64)
+            .specialize(m, k, n, groups_k, rsa, csa, rsb, csb, rsc, csc)
             .build(device.clone())?
             .with_groups(groups_k * groups_m * groups_n);
         if groups_k > 1 {
@@ -465,7 +466,8 @@ fn gemm(
             let groups_m = m / m_group + (m % m_group != 0) as u32;
             let groups_n = n / n_group + (n % n_group != 0) as u32;
             let gemm_kernel = paste! { kernels::[<gemm_ $T>]::builder()? }
-                .specialize(m, k, n, groups_k, rsa, csa, rsb, csb, rsc, csc)?
+                .with_threads(64)
+                .specialize(m, k, n, groups_k, rsa, csa, rsb, csb, rsc, csc)
                 .build(device.clone())?
                 .with_groups(groups_m * groups_n);
             unsafe {

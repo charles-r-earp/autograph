@@ -340,7 +340,7 @@ mod kernels {
     #[cfg(any(feature = "device", target_arch = "spirv"))]
     pub mod device {
         use super::*;
-        #[kernel(threads(256))]
+        #[kernel]
         pub fn sgd_update_with_momentum_f32(
             #[item] w: &mut f32,
             #[item] dw: f32,
