@@ -7,9 +7,12 @@ use crate::{
     tensor::{ScalarTensor, ScalarTensorD, ScalarTensorViewMutD, TensorViewD, TensorViewMutD},
 };
 use anyhow::{bail, Result};
+use dry::macro_for;
+use half::bf16;
 #[cfg(feature = "device")]
 use krnl::macros::module;
 use ndarray::Zip;
+use paste::paste;
 use serde::{Deserialize, Serialize};
 use std::any::TypeId;
 
@@ -245,7 +248,13 @@ impl Optimizer for SGD {
                 let (_, velocity) = state.iter_mut().next().unwrap();
                 let velocity = velocity.unwrap_tensor();
                 match scalar_type {
-                    ScalarType::BF16 => todo!(),
+                    ScalarType::BF16 => sgd_update_with_momentum::<bf16>(
+                        value.try_into().unwrap(),
+                        learning_rate,
+                        grad.try_into().unwrap(),
+                        momentum,
+                        velocity.try_into().unwrap(),
+                    )?,
                     ScalarType::F32 => sgd_update_with_momentum::<f32>(
                         value.try_into().unwrap(),
                         learning_rate,
@@ -303,25 +312,32 @@ fn sgd_update_with_momentum<T: Scalar>(
     }
     #[cfg(feature = "device")]
     {
-        let mut value = ScalarTensorViewMut::from(value)
-            .try_into_tensor_view_mut::<f32>()
-            .unwrap();
-        let grad = ScalarTensorView::from(grad)
-            .try_into_tensor_view::<f32>()
-            .unwrap();
-        let mut velocity = ScalarTensorViewMut::from(velocity)
-            .try_into_tensor_view_mut::<f32>()
-            .unwrap();
-        kernels::sgd_update_with_momentum_f32::builder()?
-            .build(value.device())?
-            .dispatch(
-                value.as_slice_mut().unwrap(),
-                grad.as_slice().unwrap(),
-                learning_rate,
-                momentum,
-                velocity.as_slice_mut().unwrap(),
-            )?;
-        Ok(())
+        macro_for!($T in [bf16, f32] {
+            if value.scalar_type() == $T::scalar_type() {
+                let mut value = ScalarTensorViewMut::from(value)
+                    .try_into_tensor_view_mut::<$T>()
+                    .unwrap();
+                let grad = ScalarTensorView::from(grad)
+                    .try_into_tensor_view::<$T>()
+                    .unwrap();
+                let mut velocity = ScalarTensorViewMut::from(velocity)
+                    .try_into_tensor_view_mut::<$T>()
+                    .unwrap();
+                let kernel = paste! {
+                    kernels::[<sgd_update_with_momentum_ $T>]::builder()?
+                    .build(value.device())?
+                };
+                return kernel
+                    .dispatch(
+                        value.as_slice_mut().unwrap(),
+                        grad.as_slice().unwrap(),
+                        learning_rate,
+                        momentum,
+                        velocity.as_slice_mut().unwrap(),
+                    );
+            }
+        });
+        unreachable!()
     }
 }
 
@@ -340,6 +356,24 @@ mod kernels {
     #[cfg(any(feature = "device", target_arch = "spirv"))]
     pub mod device {
         use super::*;
+        #[cfg(target_arch = "spirv")]
+        use krnl_core::half::bf16;
+
+        #[kernel]
+        pub fn sgd_update_with_momentum_bf16(
+            #[item] w: &mut bf16,
+            #[item] dw: bf16,
+            lr: f32,
+            m: f32,
+            #[item] v: &mut bf16,
+        ) {
+            let mut w_f32 = w.to_f32();
+            let mut v_f32 = v.to_f32();
+            sgd_update_with_momentum(&mut w_f32, dw.to_f32(), lr, m, &mut v_f32);
+            *w = bf16::from_f32(w_f32);
+            *v = bf16::from_f32(v_f32);
+        }
+
         #[kernel]
         pub fn sgd_update_with_momentum_f32(
             #[item] w: &mut f32,

@@ -15,7 +15,8 @@ use crate::{
     scalar::{Scalar, ScalarType},
     tensor::{ScalarArcTensor, ScalarTensor, ScalarTensorBase, Tensor, TensorView, TensorViewMut},
 };
-use anyhow::{bail, Result};
+use anyhow::{bail, Error, Result};
+pub use autograph_derive::*;
 #[cfg(feature = "device")]
 use dry::macro_for;
 #[cfg(feature = "device")]
@@ -317,6 +318,60 @@ pub trait Forward<X> {
     fn forward(&self, input: X) -> Result<Self::Output>;
 }
 
+impl<T: Layer> Layer for Option<T> {
+    fn set_training(&mut self, training: bool) -> Result<()> {
+        if let Some(layer) = self.as_mut() {
+            layer.set_training(training)
+        } else {
+            Ok(())
+        }
+    }
+    fn parameters_mut(&mut self) -> Result<Vec<ParameterViewMutD>> {
+        if let Some(layer) = self.as_mut() {
+            layer.parameters_mut()
+        } else {
+            Ok(Vec::new())
+        }
+    }
+}
+
+impl<X, T: Forward<X, Output = X>> Forward<X> for Option<T> {
+    type Output = X;
+    fn forward(&self, input: X) -> Result<Self::Output> {
+        if let Some(layer) = self.as_ref() {
+            layer.forward(input)
+        } else {
+            Ok(input)
+        }
+    }
+}
+
+impl<T: Layer> Layer for Vec<T> {
+    fn set_training(&mut self, training: bool) -> Result<()> {
+        for layer in self.iter_mut() {
+            layer.set_training(training)?;
+        }
+        Ok(())
+    }
+    fn parameters_mut(&mut self) -> Result<Vec<ParameterViewMutD>> {
+        let mut parameters = Vec::with_capacity(self.len());
+        for layer in self.iter_mut() {
+            parameters.push(layer.parameters_mut()?);
+        }
+        Ok(parameters.into_iter().flatten().collect())
+    }
+}
+
+impl<X, T: Forward<X, Output = X>> Forward<X> for Vec<T> {
+    type Output = X;
+    fn forward(&self, mut input: X) -> Result<Self::Output> {
+        for layer in self.iter() {
+            input = layer.forward(input)?;
+        }
+        Ok(input)
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Conv2<A = Identity> {
     weight: Parameter4,
@@ -500,7 +555,8 @@ impl<A: Forward<Variable2, Output = Variable2> + Any> Forward<Variable2> for Den
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Layer, Debug, Serialize, Deserialize)]
+#[autograph(crate=crate)]
 pub struct MaxPool2 {
     size: [usize; 2],
     strides: [usize; 2],
@@ -538,7 +594,19 @@ impl Forward<Variable4> for MaxPool2 {
     }
 }
 
-#[derive(Default, Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Default, Clone, Copy, Layer, Debug, Serialize, Deserialize)]
+#[autograph(crate=crate)]
+pub struct Flatten;
+
+impl<D: Dimension + 'static> Forward<Variable<D>> for Flatten {
+    type Output = Variable2;
+    fn forward(&self, input: Variable<D>) -> Result<Variable2> {
+        input.flatten().map_err(Error::msg)
+    }
+}
+
+#[derive(Layer, Default, Clone, Copy, Debug, Serialize, Deserialize)]
+#[autograph(crate=crate)]
 pub struct Identity;
 
 impl<X> Forward<X> for Identity {
@@ -548,7 +616,8 @@ impl<X> Forward<X> for Identity {
     }
 }
 
-#[derive(Default, Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Layer, Default, Clone, Copy, Debug, Serialize, Deserialize)]
+#[autograph(crate=crate)]
 pub struct Relu;
 
 impl<D: Dimension + 'static> Forward<Variable<D>> for Relu {

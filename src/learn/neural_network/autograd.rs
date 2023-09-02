@@ -4,6 +4,8 @@ use super::{
 };
 #[cfg(feature = "device")]
 use crate::tensor::ScalarTensorView;
+#[cfg(doc)]
+use crate::tensor::TensorBase;
 use crate::{
     buffer::{ScalarArcBufferRepr, ScalarData, ScalarDataMut, ScalarDataOwned, ScalarSliceMutRepr},
     device::Device,

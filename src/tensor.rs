@@ -590,14 +590,14 @@ impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
     pub fn t(&self) -> ScalarTensorView<D> {
         self.view().reversed_axes()
     }
-    /// See https://docs.rs/ndarray/0.15.6/ndarray/struct.ArrayBase.html#method.index_axis
+    /// See <https://docs.rs/ndarray/0.15.6/ndarray/struct.ArrayBase.html#method.index_axis>
     pub fn index_axis(&self, axis: Axis, index: usize) -> ScalarTensorView<D::Smaller>
     where
         D: RemoveAxis,
     {
         self.view().index_axis_into(axis, index)
     }
-    /// See https://docs.rs/ndarray/0.15.6/ndarray/struct.ArrayBase.html#method.index_axis_mut
+    /// See <https://docs.rs/ndarray/0.15.6/ndarray/struct.ArrayBase.html#method.index_axis_mut>
     pub fn index_axis_mut(&mut self, axis: Axis, index: usize) -> ScalarTensorViewMut<D::Smaller>
     where
         S: ScalarDataMut,
@@ -619,7 +619,12 @@ impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
             offset: self.offset,
         }
     }
-    /// https://docs.rs/ndarray/0.15.6/ndarray/struct.ArrayBase.html#method.collapse_axis
+    /// Selects `index` along the `axis`, collapsing the axis into length one.
+    ///
+    /// **panics**
+    /// - `axis` or `index` is out of bounds.
+    ///
+    /// See [`TensorBase::collapse_axis`].
     pub fn collapse_axis(&mut self, axis: Axis, index: usize) {
         let offset =
             collapse_axis(&mut self.dim, &self.strides, axis, index) + self.offset as isize;
@@ -1482,14 +1487,22 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     pub fn t(&self) -> TensorView<T, D> {
         self.view().reversed_axes()
     }
-    /// See https://docs.rs/ndarray/0.15.6/ndarray/struct.ArrayBase.html#method.index_axis
+    /// Returns a view restricted to index along the `axis`, with the `axis` removed.
+    ///
+    /// **panics**
+    /// - `axis` or `index` is out of bounds.
+    /// See <https://docs.rs/ndarray/0.15.6/ndarray/struct.ArrayBase.html#method.index_axis>
     pub fn index_axis(&self, axis: Axis, index: usize) -> TensorView<T, D::Smaller>
     where
         D: RemoveAxis,
     {
         self.view().index_axis_into(axis, index)
     }
-    /// See https://docs.rs/ndarray/0.15.6/ndarray/struct.ArrayBase.html#method.index_axis_mut
+    /// Returns a mutable view restricted to index along the `axis`, with the `axis` removed.
+    ///
+    /// **panics**
+    /// - `axis` or `index` is out of bounds.
+    /// See <https://docs.rs/ndarray/0.15.6/ndarray/struct.ArrayBase.html#method.index_axis_mut>
     pub fn index_axis_mut(&mut self, axis: Axis, index: usize) -> TensorViewMut<T, D::Smaller>
     where
         S: DataMut,
@@ -1497,6 +1510,10 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     {
         self.view_mut().index_axis_into(axis, index)
     }
+    /// Returns a tensor restricted to index along the `axis`, with the `axis` removed.
+    ///
+    /// **panics**
+    /// - `axis` or `index` is out of bounds.
     pub fn index_axis_into(mut self, axis: Axis, index: usize) -> TensorBase<S, D::Smaller>
     where
         D: RemoveAxis,
@@ -1511,7 +1528,12 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
             offset: self.offset,
         }
     }
-    /// https://docs.rs/ndarray/0.15.6/ndarray/struct.ArrayBase.html#method.collapse_axis
+    /// Selects `index` along the `axis`, collapsing the axis into length one.
+    ///
+    /// **panics**
+    /// - `axis` or `index` is out of bounds.
+    ///
+    /// See <https://docs.rs/ndarray/0.15.6/ndarray/struct.ArrayBase.html#method.collapse_axis>
     pub fn collapse_axis(&mut self, axis: Axis, index: usize) {
         let offset =
             collapse_axis(&mut self.dim, &self.strides, axis, index) + self.offset as isize;
@@ -1613,7 +1635,7 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     }
     /// Transfers the tensor into the `device`.
     ///
-    /// See [`Buffer::into_device()`](crate::device::buffer::BufferBase::into_device()).
+    /// See [`Buffer::into_device()`](crate::buffer::BufferBase::into_device()).
     ///
     /// **Errors**
     /// See [`BufferBase::into_device()`].

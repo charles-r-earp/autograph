@@ -1,5 +1,5 @@
 [workspace]
-members = ["examples/neural-network-mnist", "benches/*"]
+members = ["examples/*", "benches/*"]
 
 [workspace.package]
 version = "0.2.0-alpha"
@@ -23,6 +23,7 @@ parking_lot = "0.12.1"
 serde = { version = "1.0.126" }
 serde_json = "1.0.96"
 ndarray = { version = "0.15.6", default-features = false }
+bytemuck = "1.4.1"
 
 [package]
 name = "autograph"
@@ -43,6 +44,7 @@ autobins = false
 autobenches = false
 
 [dependencies]
+autograph_derive = { path = "autograph_derive", optional = true }
 krnl = { git = "https://github.com/charles-r-earp/krnl", default-features = false }
 anyhow.workspace = true
 ndarray = { workspace = true, features = ["serde", "rayon", "matrixmultiply-threading"] }
@@ -51,7 +53,7 @@ serde = { workspace = true, features = ["derive", "rc"] }
 derive_more = "0.99.11"
 thiserror = "1.0.23"
 approx = "0.5.0"
-bytemuck = "1.4.1"
+bytemuck.workspace = true
 byteorder = { version = "1.4.3", optional = true }
 dirs = { version = "3.0.2", optional = true }
 downloader = { version = "0.2.6", optional = true }
@@ -83,7 +85,7 @@ device = ["krnl/device", "dep:crunchy", "dep:once_cell"]
 dataset = ["dep:rand"]
 mnist = ["dataset", "dep:dirs", "dep:flate2", "dep:downloader", "dep:byteorder", "dep:http"]
 learn = []
-neural-network = ["learn", "dep:crossbeam-channel", "dep:parking_lot", "dep:atomicbox", "dep:rand", "dep:once_cell"]
+neural-network = ["learn", "dep:autograph_derive", "dep:crossbeam-channel", "dep:parking_lot", "dep:atomicbox", "dep:rand", "dep:once_cell"]
 
 [package.metadata.krnlc]
 features = ["neural-network"]

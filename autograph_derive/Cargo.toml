@@ -13,8 +13,9 @@ proc-macro = true
 
 [dependencies]
 syn = { version = "1.0.33", features = ["full"] }
+derive-syn-parse = "0.1.5"
 quote = "1.0.7"
 proc-macro2 = "1.0.18"
 
 [dev-dependencies]
-autograph = { path = "../", features = ["neural_network"] }
+autograph = { path = "../", features = ["neural-network"] }

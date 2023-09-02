@@ -1,13 +1,13 @@
 use autograph::{device::Device, scalar::ScalarType};
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use neural_network_benches::autograph_backend;
 #[cfg(feature = "tch")]
 use neural_network_benches::tch_backend;
+use num_format::{Locale, ToFormattedString};
 use std::str::FromStr;
 
 pub fn criterion_benchmark(c: &mut Criterion) {
-    #[cfg_attr(not(feature = "cuda"), allow(unused))]
-    let device_index = if cfg!(feature = "device") {
+    let device_index = {
         let krnl_device = std::env::var("KRNL_DEVICE");
         println!("KRNL_DEVICE = {krnl_device:?}");
         let device_index = if let Ok(krnl_device) = krnl_device.as_ref() {
@@ -17,107 +17,161 @@ pub fn criterion_benchmark(c: &mut Criterion) {
         };
         println!("testing device {device_index}");
         device_index
-    } else {
-        0
     };
 
     #[cfg_attr(not(feature = "cuda"), allow(unused))]
-    let tch_device_index = if cfg!(feature = "tch") {
-        let tch_device = std::env::var("TCH_DEVICE");
-        println!("TCH_DEVICE = {tch_device:?}");
-        let tch_device_index = if let Ok(tch_device) = tch_device.as_ref() {
-            usize::from_str(tch_device).unwrap()
+    let cuda_device_index = if cfg!(feature = "cuda") {
+        let cuda_device = std::env::var("CUDA_DEVICE");
+        println!("CUDA_DEVICE = {cuda_device:?}");
+        let cuda_device_index = if let Ok(cuda_device) = cuda_device.as_ref() {
+            usize::from_str(cuda_device).unwrap()
         } else {
             0
         };
-        #[cfg(feature = "tch")]
-        if tch::utils::has_cuda() {
-            println!("testing tch device {tch_device_index}");
-        }
-        tch_device_index
+        println!("testing cuda device {cuda_device_index}");
+        cuda_device_index
     } else {
         0
     };
 
-    let train_batch_size = 100;
-    let infer_batch_size = 1000;
-
-    let mut devices = vec![Device::host()];
-
-    if cfg!(feature = "device") {
-        devices.push(Device::builder().index(device_index).build().unwrap());
-    }
-
-    for device in devices {
-        let device_name = if device.is_device() { "device" } else { "host" };
-
-        c.bench_function(
-            &format!("autograph_infer_{infer_batch_size}_{device_name}"),
-            |b| {
-                use autograph_backend::Lenet5Classifier;
-
-                let model = Lenet5Classifier::new(device.clone(), ScalarType::F32).unwrap();
-                b.iter(|| {
-                    model.infer(infer_batch_size).unwrap();
-                });
-            },
-        );
-
-        c.bench_function(
-            &format!("autograph_train_{train_batch_size}_{device_name}"),
-            |b| {
-                use autograph_backend::Lenet5Classifier;
-
-                let mut model = Lenet5Classifier::new(device.clone(), ScalarType::F32)
-                    .unwrap()
-                    .with_sgd(true);
-                b.iter(|| {
-                    model.train(train_batch_size).unwrap();
-                });
-            },
-        );
-    }
-
-    #[cfg(feature = "tch")]
     {
-        use tch::{kind::Kind, Device};
+        // training
+        let train_batch_size = 100;
+        let mut g = c.benchmark_group(format!(
+            "LeNet5(training, batch_size = {})",
+            train_batch_size.to_formatted_string(&Locale::en)
+        ));
+        {
+            let scalar_types = [ScalarType::BF16, ScalarType::F32];
+            let devices = if cfg!(feature = "device") {
+                vec![
+                    Device::host(),
+                    Device::builder().index(device_index).build().unwrap(),
+                ]
+            } else {
+                vec![Device::host()]
+            };
+            for device in devices {
+                let device_name = if device.is_device() { "device" } else { "host" };
+                for scalar_type in scalar_types {
+                    let scalar_name = scalar_type.name();
+                    let name = format!("{scalar_name}_{device_name}");
+                    let id = BenchmarkId::new("autograph", name);
+                    g.bench_function(id, |b| {
+                        use autograph_backend::Lenet5Classifier;
+                        let mut model = Lenet5Classifier::new(device.clone(), scalar_type)
+                            .unwrap()
+                            .with_sgd(true);
+                        b.iter(|| {
+                            model.train(train_batch_size).unwrap();
+                        });
+                    });
+                }
+            }
+        }
+        #[cfg(feature = "tch")]
+        {
+            use tch::{kind::Kind, Device};
 
-        let mut devices = vec![Device::Cpu];
-        if tch::utils::has_cuda() {
-            let device = Device::Cuda(tch_device_index);
-            devices.push(device);
+            let kinds = [Kind::BFloat16, Kind::Float];
+            let devices = if cfg!(feature = "cuda") {
+                vec![Device::Cpu, Device::Cuda(cuda_device_index)]
+            } else {
+                vec![Device::Cpu]
+            };
+            for device in devices {
+                let device_name = if device.is_cuda() { "device" } else { "host" };
+                for kind in kinds {
+                    let kind_name = match kind {
+                        Kind::BFloat16 => "bf16",
+                        Kind::Float => "f32",
+                        _ => unreachable!(),
+                    };
+                    let name = format!("{kind_name}_{device_name}");
+                    let id = BenchmarkId::new("tch", name);
+                    g.bench_function(id, |b| {
+                        use tch_backend::Lenet5Classifier;
+                        let mut model = Lenet5Classifier::new(device, kind)
+                            .unwrap()
+                            .with_sgd(true)
+                            .unwrap();
+                        b.iter(|| {
+                            model.train(train_batch_size).unwrap();
+                        });
+                    });
+                }
+            }
+        }
+    }
+
+    {
+        // inference
+        let infer_batch_size = 1000;
+        let mut g = c.benchmark_group(format!(
+            "LeNet5(inference, batch_size = {})",
+            infer_batch_size.to_formatted_string(&Locale::en)
+        ));
+
+        {
+            let scalar_types = [ScalarType::BF16, ScalarType::F32];
+            let devices = if cfg!(feature = "device") {
+                vec![
+                    Device::host(),
+                    Device::builder().index(device_index).build().unwrap(),
+                ]
+            } else {
+                vec![Device::host()]
+            };
+            for device in devices {
+                let device_name = if device.is_device() { "device" } else { "host" };
+                for scalar_type in scalar_types {
+                    let scalar_name = scalar_type.name();
+                    let name = format!("{scalar_name}_{device_name}");
+                    let id = BenchmarkId::new("autograph", name);
+                    g.bench_function(id, |b| {
+                        use autograph_backend::Lenet5Classifier;
+                        let model = Lenet5Classifier::new(device.clone(), scalar_type).unwrap();
+                        b.iter(|| {
+                            model.infer(infer_batch_size).unwrap();
+                        });
+                    });
+                }
+            }
         }
 
-        for device in [Device::Cpu, Device::Cuda(tch_device_index)] {
-            let device_name = if device.is_cuda() { "device" } else { "host" };
+        #[cfg(feature = "tch")]
+        {
+            use tch::{kind::Kind, Device};
 
-            c.bench_function(
-                &format!("tch_infer_{infer_batch_size}_{device_name}"),
-                |b| {
-                    use tch_backend::Lenet5Classifier;
-
-                    let model = Lenet5Classifier::new(device, Kind::Float).unwrap();
-                    b.iter(|| {
-                        model.infer(infer_batch_size).unwrap();
+            let kinds = [Kind::BFloat16, Kind::Float];
+            let devices = if cfg!(feature = "cuda") {
+                vec![Device::Cpu, Device::Cuda(cuda_device_index)]
+            } else {
+                vec![Device::Cpu]
+            };
+            for device in devices {
+                let device_name = if device.is_cuda() { "device" } else { "host" };
+                for kind in kinds {
+                    let kind_name = match kind {
+                        Kind::BFloat16 => "bf16",
+                        Kind::Float => "f32",
+                        _ => unreachable!(),
+                    };
+                    let name = format!("{kind_name}_{device_name}");
+                    let id = BenchmarkId::new("tch", name);
+                    g.bench_function(id, |b| {
+                        use tch_backend::Lenet5Classifier;
+                        let model = Lenet5Classifier::new(device, kind).unwrap();
+                        b.iter(|| {
+                            model.infer(infer_batch_size).unwrap();
+                        });
                     });
-                },
-            );
-
-            c.bench_function(
-                &format!("tch_train_{train_batch_size}_{device_name}"),
-                |b| {
-                    use tch_backend::Lenet5Classifier;
-
-                    let mut model = Lenet5Classifier::new(device, Kind::Float)
-                        .unwrap()
-                        .with_sgd(true)
-                        .unwrap();
-                    b.iter(|| {
-                        model.train(train_batch_size).unwrap();
-                    });
-                },
-            );
+                }
+            }
         }
+    }
+    if cfg!(all(feature = "device", feature = "tch")) {
+        eprintln!("warning: sig abort in torch on exit when vulkan is used");
     }
 }
 
