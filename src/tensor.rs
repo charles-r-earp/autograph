@@ -1,3 +1,42 @@
+/*!
+```
+# use krnl::device::Device;
+use autograph::tensor::{Tensor, TensorView};
+use anyhow::Result;
+use ndarray::{Array, arr2, linalg::Dot};
+
+# fn main() -> Result<()> {
+# let device = Device::host();
+// Create a tensor from an array
+let a = Tensor::from(arr2(&[
+    [1f32, 2.],
+    [3., 4.],
+]))
+    // Moves to device, no copy if device is Device::host().
+    .into_device(device.clone())?;
+// Alternatively, create a tensor from an array view.
+let a = arr2(&[
+    [1f32, 2.],
+    [3., 4.],
+]);
+// This will fail if the view has negative strides.
+let a = TensorView::try_from(a.view()).unwrap()
+    .to_device(device.clone())?;
+// Create a tensor from a vec, same as above.
+let b = Tensor::from(vec![5f32, 6., 7., 8.]).into_shape([2, 2]).unwrap()
+    .into_device(device.clone())?;
+// Compute a dot product (matrix multiplication) and move back to host.
+let c = a.dot(&b)?.into_device(Device::host())?;
+// Borrow as an array view.
+let c_view = c.as_array().unwrap();
+// Move into an array
+let c = c.into_array()?;
+
+# Ok(())
+# }
+```
+*/
+
 #[cfg(doc)]
 use crate::device::error::DeviceLost;
 use crate::{
@@ -26,7 +65,6 @@ use std::{
     fmt::{self, Debug},
 };
 
-//mod accuracy;
 mod linalg;
 mod ops;
 mod reduce;
@@ -130,7 +168,7 @@ fn permuted_axes<D: Dimension>(dim: D, strides: D, axes: D) -> (D, D) {
 /// are met to construct an array from the data buffer, `dim`, and `strides`.
 /// (The data buffer being a slice or `Vec` guarantees that it contains no more
 /// than `isize::MAX` bytes.)
-pub fn size_of_shape_checked<D: Dimension>(dim: &D) -> Result<usize, ShapeError> {
+fn size_of_shape_checked<D: Dimension>(dim: &D) -> Result<usize, ShapeError> {
     use ndarray::ErrorKind;
     let size_nonzero = dim
         .slice()
@@ -219,6 +257,9 @@ fn collapse_axis<D: Dimension>(dims: &mut D, strides: &D, Axis(axis): Axis, inde
 }
 
 /// Dynamically typed multi-dimensional matrix.
+///
+/// Use [`TryInto`] to convert into a [`TensorBase`].
+/// Use [`From`] to convert from a ['TensorBase'].
 #[derive(Clone)]
 pub struct ScalarTensorBase<S: ScalarData, D: Dimension> {
     dim: D,
@@ -474,6 +515,9 @@ impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
             offset: self.offset,
         })
     }
+    /// Act like a larger size and/or shape array by *broadcasting* into a larger shape, if possible.
+    ///
+    /// See [`TensorBase::broadcast`].
     pub fn broadcast<E>(&self, dim: E) -> Option<ScalarTensorView<E::Dim>>
     where
         E: IntoDimension,
@@ -507,6 +551,7 @@ impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
             offset: self.offset,
         }
     }
+    /// Mutably borrows the tensor as a mutable view if possible.
     pub fn get_view_mut(&mut self) -> Option<ScalarTensorViewMut<D>> {
         if self.offset == 0 && self.is_contiguous() {
             let buffer = self.buffer.get_scalar_slice_mut()?;
@@ -520,6 +565,9 @@ impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
             None
         }
     }
+    /// Mutably borrows the tensor as a mutable view.
+    ///
+    /// See [`TensorBase::make_view_mut`].
     pub fn make_view_mut(&mut self) -> Result<ScalarTensorViewMut<D>>
     where
         S: ScalarDataOwned,
@@ -590,14 +638,18 @@ impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
     pub fn t(&self) -> ScalarTensorView<D> {
         self.view().reversed_axes()
     }
-    /// See <https://docs.rs/ndarray/0.15.6/ndarray/struct.ArrayBase.html#method.index_axis>
+    /// Returns a view restricted to `index` along the `axis`, with the axis removed.
+    ///
+    /// See [`TensorBase::index_axis`].
     pub fn index_axis(&self, axis: Axis, index: usize) -> ScalarTensorView<D::Smaller>
     where
         D: RemoveAxis,
     {
         self.view().index_axis_into(axis, index)
     }
-    /// See <https://docs.rs/ndarray/0.15.6/ndarray/struct.ArrayBase.html#method.index_axis_mut>
+    /// Returns a mutable view restricted to index along the `axis`, with the `axis` removed.
+    ///
+    /// See [`TensorBase::index_axis_mut`].
     pub fn index_axis_mut(&mut self, axis: Axis, index: usize) -> ScalarTensorViewMut<D::Smaller>
     where
         S: ScalarDataMut,
@@ -605,6 +657,9 @@ impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
     {
         self.view_mut().index_axis_into(axis, index)
     }
+    /// Returns a mutable view restricted to index along the `axis`, with the `axis` removed.
+    ///
+    /// See [`TensorBase::index_axis_into`].
     pub fn index_axis_into(mut self, axis: Axis, index: usize) -> ScalarTensorBase<S, D::Smaller>
     where
         D: RemoveAxis,
@@ -621,7 +676,7 @@ impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
     }
     /// Selects `index` along the `axis`, collapsing the axis into length one.
     ///
-    /// **panics**
+    /// **Panics**
     /// - `axis` or `index` is out of bounds.
     ///
     /// See [`TensorBase::collapse_axis`].
@@ -686,15 +741,20 @@ impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
             None
         }
     }
+    /// Borrows the tensor as a slice and offset.
     pub fn as_raw_scalar_slice_offset(&self) -> (ScalarSlice, usize) {
         (self.buffer.as_scalar_slice(), self.offset)
     }
+    /// Mutably borrows the tensor as a mutable slice and offset.
     pub fn as_raw_scalar_slice_offset_mut(&mut self) -> (ScalarSliceMut, usize)
     where
         S: ScalarDataMut,
     {
         (self.buffer.as_scalar_slice_mut(), self.offset)
     }
+    /// Transfers the tensor into the `device`.
+    ///
+    /// See [`TensorBase::into_device`].
     pub fn into_device(self, device: Device) -> Result<ScalarTensor<D>> {
         if self.device() == device {
             self.into_owned()
@@ -710,6 +770,9 @@ impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
             self.into_owned()?.into_device(device)
         }
     }
+    /// Transfers the tensor to the `device`.
+    ///
+    /// See [`Tensor::to_device`].
     pub fn to_device(&self, device: Device) -> Result<ScalarTensor<D>> {
         if self.device() == device {
             self.to_owned()
@@ -717,6 +780,9 @@ impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
             self.view().into_device(device)
         }
     }
+    /// Transfers the tensor into the `device` in place.
+    ///
+    /// See [`Tensor::to_device_mut`].
     pub fn to_device_mut(&mut self, device: Device) -> Result<()>
     where
         S: ScalarDataOwned,
@@ -739,6 +805,9 @@ impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
             Ok(())
         }
     }
+    /// Transfers the tensor into the `device` as a scalar arc tensor.
+    ///
+    /// See [`TensorBase::into_device_shared`].
     pub fn into_device_shared(self, device: Device) -> Result<ScalarArcTensor<D>> {
         if self.device() == device {
             self.into_shared()
@@ -746,6 +815,9 @@ impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
             self.to_device(device).map(Into::into)
         }
     }
+    /// Transfers the tensor to the `device` as a scalar arc tensor.
+    ///
+    /// See [`TensorBase::to_device_shared`].
     pub fn to_device_shared(&self, device: Device) -> Result<ScalarArcTensor<D>> {
         if device == self.device() {
             self.to_shared()
@@ -808,30 +880,37 @@ impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
 }
 
 impl<D: Dimension> ScalarTensor<D> {
+    /// Attempt to convert to a tensor.
     pub fn try_into_tensor<T: Scalar>(self) -> Result<Tensor<T, D>, Self> {
         self.try_into()
     }
 }
 
 impl<D: Dimension> ScalarArcTensor<D> {
+    /// Attempt to convert to an arc tensor.
     pub fn try_into_arc_tensor<T: Scalar>(self) -> Result<ArcTensor<T, D>, Self> {
         self.try_into()
     }
 }
 
 impl<'a, D: Dimension> ScalarTensorView<'a, D> {
+    /// Attempt to convert to a tensor view.
     pub fn try_into_tensor_view<T: Scalar>(self) -> Result<TensorView<'a, T, D>, Self> {
         self.try_into()
     }
 }
 
 impl<'a, D: Dimension> ScalarTensorViewMut<'a, D> {
+    /// Attempt to convert to a mutable tensor view.
     pub fn try_into_tensor_view_mut<T: Scalar>(self) -> Result<TensorViewMut<'a, T, D>, Self> {
         self.try_into()
     }
 }
 
 impl<D: Dimension> ScalarArcTensor<D> {
+    /// Act like a larger size and/or shape array by *broadcasting* into a larger shape, if possible.
+    ///
+    /// See [`ArcTensor::broadcast_shared`].
     pub fn broadcast_shared<E>(&self, dim: E) -> Option<ScalarArcTensor<E::Dim>>
     where
         E: IntoDimension,
@@ -1021,28 +1100,20 @@ impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
             offset: 0,
         })
     }
+    /// Casts the tensor into a new tensor.
+    ///
+    /// See [`BufferBase::cast()`](crate::buffer::BufferBase::cast()).
     pub fn cast_into_tensor<T: Scalar>(self) -> Result<Tensor<T, D>> {
         Ok(self.cast_into(T::scalar_type())?.try_into().unwrap())
     }
-    /*
-    /// Scales the tensor into a new tensor.
-    pub fn scale_into<Y: Scalar>(self, alpha: Y) -> Result<Tensor<Y, D>> {
-        todo!()
-        /*
-        let buffer = match self.data.try_into_buffer() {
-            Ok(buffer) => buffer.scale_into(alpha)?,
-            Err(data) => data.as_slice().scale_into(alpha)?,
-        };
-        Ok(TensorBase {
-            dim: self.dim,
-            strides: self.strides,
-            data: OwnedRepr(buffer),
-        })*/
-    }*/
 }
 
+/*
 // Logits
 impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
+    /// A one hot vector given class labels.
+    ///
+    /// Output shape = [input_shape.., `classes`].
     pub fn to_one_hot(
         self,
         classes: usize,
@@ -1082,7 +1153,7 @@ impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
             scalar_type
         );
     }
-}
+}*/
 
 #[derive(Serialize, Deserialize)]
 #[serde(bound(
@@ -1134,6 +1205,9 @@ impl<'de, S: ScalarDataOwned, D1: Dimension + Deserialize<'de>> Deserialize<'de>
 }
 
 /// Multi-dimensional matrix.
+///
+/// Use [`Into`] to convert to a [`ScalarTensorBase`].
+/// Use [`TryFrom`] to convert from a [`ScalarTensorBase`].
 #[derive(Clone)]
 pub struct TensorBase<S: Data, D: Dimension> {
     dim: D,
@@ -1397,10 +1471,19 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
             offset: self.offset,
         })
     }
+    /// Flattens the trailing dimensions into a 2 dimensional tensor.
+    ///
+    /// The output has shape [d0, d1 * d2 .. * dn].
+    ///
+    /// **Errors**
+    /// See [`TensorBase::into_shape`].
     pub fn flatten(self) -> Result<TensorBase<S, Ix2>, ShapeError> {
         let dim = flatten(self.shape());
         self.into_shape(dim)
     }
+    /// Act like a larger size and/or shape array by *broadcasting* into a larger shape, if possible.
+    ///
+    /// See <https://docs.rs/ndarray/0.15.6/ndarray/struct.ArrayBase.html#method.broadcast>
     pub fn broadcast<E>(&self, dim: E) -> Option<TensorView<T, E::Dim>>
     where
         E: IntoDimension,
@@ -1413,7 +1496,6 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
             offset: self.offset,
         })
     }
-
     /// Borrows the tensor as a [`TensorView`].
     pub fn view(&self) -> TensorView<T, D> {
         TensorView {
@@ -1435,14 +1517,51 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
             offset: self.offset,
         }
     }
+    /// Mutably borrows the tensor as a mutable view if possible.
     pub fn get_view_mut(&mut self) -> Option<TensorViewMut<T, D>> {
-        todo!()
+        if self.offset == 0 && self.is_contiguous() {
+            let buffer = self.buffer.get_slice_mut()?;
+            Some(TensorViewMut {
+                dim: self.dim.clone(),
+                strides: self.strides.clone(),
+                buffer,
+                offset: 0,
+            })
+        } else {
+            None
+        }
     }
+    /// Mutably borrows the tensor as a mutable view.
+    ///
+    /// Copies the data into a new tensor if necessary.
+    ///
+    /// See [`TensorBase::to_owned`].
     pub fn make_view_mut(&mut self) -> Result<TensorViewMut<T, D>>
     where
         S: DataOwned,
     {
-        todo!()
+        if self.offset == 0 && self.is_contiguous() {
+            Ok(TensorViewMut {
+                dim: self.dim.clone(),
+                strides: self.strides.clone(),
+                buffer: self.buffer.make_slice_mut()?,
+                offset: 0,
+            })
+        } else {
+            let tensor = self.to_owned()?;
+            *self = Self {
+                dim: tensor.dim,
+                strides: tensor.strides,
+                buffer: BufferBase::from_buffer(tensor.buffer),
+                offset: 0,
+            };
+            Ok(TensorViewMut {
+                dim: self.dim.clone(),
+                strides: self.strides.clone(),
+                buffer: self.buffer.get_slice_mut().unwrap(),
+                offset: 0,
+            })
+        }
     }
     /// Whether the tensor is contiguous.
     ///
@@ -1489,7 +1608,7 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     }
     /// Returns a view restricted to index along the `axis`, with the `axis` removed.
     ///
-    /// **panics**
+    /// **Panics**
     /// - `axis` or `index` is out of bounds.
     /// See <https://docs.rs/ndarray/0.15.6/ndarray/struct.ArrayBase.html#method.index_axis>
     pub fn index_axis(&self, axis: Axis, index: usize) -> TensorView<T, D::Smaller>
@@ -1500,7 +1619,7 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     }
     /// Returns a mutable view restricted to index along the `axis`, with the `axis` removed.
     ///
-    /// **panics**
+    /// **Panics**
     /// - `axis` or `index` is out of bounds.
     /// See <https://docs.rs/ndarray/0.15.6/ndarray/struct.ArrayBase.html#method.index_axis_mut>
     pub fn index_axis_mut(&mut self, axis: Axis, index: usize) -> TensorViewMut<T, D::Smaller>
@@ -1512,7 +1631,7 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     }
     /// Returns a tensor restricted to index along the `axis`, with the `axis` removed.
     ///
-    /// **panics**
+    /// **Panics**
     /// - `axis` or `index` is out of bounds.
     pub fn index_axis_into(mut self, axis: Axis, index: usize) -> TensorBase<S, D::Smaller>
     where
@@ -1530,7 +1649,7 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     }
     /// Selects `index` along the `axis`, collapsing the axis into length one.
     ///
-    /// **panics**
+    /// **Panics**
     /// - `axis` or `index` is out of bounds.
     ///
     /// See <https://docs.rs/ndarray/0.15.6/ndarray/struct.ArrayBase.html#method.collapse_axis>
@@ -1595,15 +1714,20 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
             None
         }
     }
+    /// Borrows the tensor as a slice and offset.
     pub fn as_raw_slice_offset(&self) -> (Slice<T>, usize) {
         (self.buffer.as_slice(), self.offset)
     }
+    /// Mutably borrows the tensor as a mutable slice and offset.
     pub fn as_raw_slice_offset_mut(&mut self) -> (SliceMut<T>, usize)
     where
         S: DataMut,
     {
         (self.buffer.as_slice_mut(), self.offset)
     }
+    /// Transfers the tensor to the `device`.
+    ///
+    /// See [`Tensor::into_device`].
     pub fn to_device(&self, device: Device) -> Result<Tensor<T, D>> {
         if self.device() == device {
             self.to_owned()
@@ -1611,6 +1735,19 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
             self.view().into_device(device)
         }
     }
+    /// Transfers the tensor to the `device`.
+    ///
+    /// See [`Tensor::to_device`].
+    pub fn to_device_shared(&self, device: Device) -> Result<ArcTensor<T, D>> {
+        if self.device() == device {
+            self.to_shared()
+        } else {
+            self.to_device(device).map(Into::into)
+        }
+    }
+    /// Transfers the tensor to the `device` in place.
+    ///
+    /// See [`crate::buffer::BufferBase::to_device_mut`].
     pub fn to_device_mut(&mut self, device: Device) -> Result<()>
     where
         S: DataOwned,
@@ -1636,9 +1773,6 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     /// Transfers the tensor into the `device`.
     ///
     /// See [`Buffer::into_device()`](crate::buffer::BufferBase::into_device()).
-    ///
-    /// **Errors**
-    /// See [`BufferBase::into_device()`].
     pub fn into_device(self, device: Device) -> Result<Tensor<T, D>> {
         if device == self.device() {
             self.into_owned()
@@ -1654,7 +1788,24 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
             })
         }
     }
-
+    /// Transfers the tensor into the `device`.
+    ///
+    /// See [`ArcBuffer::into_device_shared()`](crate::buffer::BufferBase::into_device_shared()).
+    pub fn into_device_shared(self, device: Device) -> Result<ArcTensor<T, D>> {
+        if device == self.device() {
+            self.into_shared()
+        } else if !self.is_contiguous() {
+            todo!()
+        } else {
+            let buffer = self.buffer.to_device_shared(device)?;
+            Ok(ArcTensor {
+                dim: self.dim,
+                strides: self.strides,
+                buffer,
+                offset: 0,
+            })
+        }
+    }
     /// Converts into a [`Tensor`].
     pub fn into_owned(self) -> Result<Tensor<T, D>> {
         if !self.is_contiguous() {
@@ -1714,7 +1865,7 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     }
     /// Moves the tensor into an [`Array`].
     ///
-    /// **errors**
+    /// **Errors**
     /// See [`Buffer::into_vec()`].
     pub fn into_array(self) -> Result<Array<T, D>> {
         if !self.is_contiguous() {
@@ -1723,7 +1874,7 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
         let vec = self.buffer.into_vec()?;
         Ok(Array::from_shape_vec(self.dim.strides(self.strides), vec).unwrap())
     }
-    /// Returns the tensor as an array if on the host
+    /// Borrows the tensor as an array view if on the host.
     pub fn as_array(&self) -> Option<ArrayView<T, D>> {
         self.buffer.as_host_slice().map(|host_slice| unsafe {
             ArrayView::from_shape_ptr(
@@ -1732,6 +1883,7 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
             )
         })
     }
+    /// Mutably borrows the tensor as an a mutable array view if on the host.
     pub fn as_array_mut(&mut self) -> Option<ArrayViewMut<T, D>>
     where
         S: DataMut,
@@ -1753,14 +1905,34 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
 }
 
 impl<T: Scalar, D: Dimension> Tensor<T, D> {
+    /// Converts to a scalar tensor.
     pub fn into_scalar_tensor(self) -> ScalarTensor<D> {
         self.into()
     }
 }
 
 impl<'a, T: Scalar, D: Dimension> CowTensor<'a, T, D> {
+    /// Converts to a scalar cow tensor.
     pub fn into_scalar_cow_tensor(self) -> ScalarCowTensor<'a, D> {
         self.into()
+    }
+}
+
+impl<T: Scalar, D: Dimension> ArcTensor<T, D> {
+    /// Act like a larger size and/or shape array by *broadcasting* into a larger shape, if possible.
+    ///
+    /// See [`TensorBase::broadcast`].
+    pub fn broadcast_shared<E>(&self, dim: E) -> Option<ArcTensor<T, E::Dim>>
+    where
+        E: IntoDimension,
+    {
+        let (dim, strides) = broadcast(&self.dim, &self.strides, dim)?;
+        Some(ArcTensor {
+            dim,
+            strides,
+            buffer: self.buffer.clone(),
+            offset: self.offset,
+        })
     }
 }
 
@@ -1852,10 +2024,12 @@ impl<'a, T: Scalar, D: Dimension> From<ArrayView<'a, T, D>> for CowTensor<'a, T,
 
 impl<'a, T: Scalar, D: Dimension> TryFrom<ArrayView<'a, T, D>> for TensorView<'a, T, D> {
     type Error = anyhow::Error;
+    /// **Errors**
+    /// - The `array` is not contiguous.
     fn try_from(array: ArrayView<'a, T, D>) -> Result<Self> {
         let slice = array
             .as_slice_memory_order()
-            .ok_or_else(|| anyhow!("Shape not contiguous!"))?;
+            .ok_or_else(|| anyhow!("Not contiguous!"))?;
         // We want to return 'a, not a new borrow.
         let slice = unsafe { std::slice::from_raw_parts(slice.as_ptr(), slice.len()) };
         let dim = array.raw_dim();

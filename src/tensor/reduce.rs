@@ -3,6 +3,7 @@ use super::*;
 use krnl::macros::module;
 
 impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
+    /// Sums the tensor.
     pub fn sum(&self) -> Result<T> {
         if let Some(input) = self.as_array() {
             Ok(input.sum())
@@ -12,6 +13,7 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
             Ok(output.into_array()?.into_scalar())
         }
     }
+    /// Sums the tensor with `output`.
     pub fn sum_with<S2: DataMut<Elem = T>>(
         &self,
         beta: T,
@@ -41,6 +43,7 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
 }
 
 impl<T: Scalar, S: Data<Elem = T>, D: RemoveAxis> TensorBase<S, D> {
+    /// Sums the tensor along `axis`.
     pub fn sum_axis(&self, axis: Axis) -> Result<Tensor<T, D::Smaller>> {
         if let Some(input) = self.as_array() {
             return Ok(input.sum_axis(axis).into());
@@ -57,6 +60,7 @@ impl<T: Scalar, S: Data<Elem = T>, D: RemoveAxis> TensorBase<S, D> {
             Ok(output)
         }
     }
+    /// Sums the tensor along `axis` with `output`.
     pub fn sum_axis_with<S2: DataMut<Elem = T>>(
         &self,
         axis: Axis,

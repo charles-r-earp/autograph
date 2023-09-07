@@ -3,7 +3,7 @@ use super::autograd::{Variable0, Variable2};
 use crate::tensor::{ScalarTensor, ScalarTensorView, Tensor};
 use crate::{
     device::Device,
-    learn::criterion::{Criterion, CrossEntropyLoss},
+    learn::criterion::CrossEntropyLoss,
     scalar::{Scalar, ScalarElem, ScalarType},
     tensor::{ScalarArcTensor, ScalarArcTensor1, Tensor2, TensorView1, TensorView2},
 };
@@ -19,10 +19,13 @@ use num_traits::{Float, Unsigned};
 #[cfg(feature = "device")]
 use paste::paste;
 
-impl Criterion<Variable2, ScalarArcTensor1> for CrossEntropyLoss {
+/// Implemented for:
+/// - input: bf16, f32
+/// - target: u8, u16, u32
+impl CrossEntropyLoss<ScalarArcTensor1> for Variable2 {
     type Output = Variable0;
-    fn eval(&self, input: Variable2, target: ScalarArcTensor1) -> Result<Variable0> {
-        if !matches!(input.scalar_type(), ScalarType::BF16 | ScalarType::F32)
+    fn cross_entropy_loss(&self, target: ScalarArcTensor1) -> Result<Variable0> {
+        if !matches!(self.scalar_type(), ScalarType::BF16 | ScalarType::F32)
             || !matches!(
                 target.scalar_type(),
                 ScalarType::U8 | ScalarType::U16 | ScalarType::U32
@@ -30,13 +33,13 @@ impl Criterion<Variable2, ScalarArcTensor1> for CrossEntropyLoss {
         {
             bail!(
                 "CrossEntropyLoss {:?} {:?} unimplemented!",
-                input.scalar_type(),
+                self.scalar_type(),
                 target.scalar_type()
             );
         }
         let mut builder = Variable0::builder();
-        if let Some(node) = input.node() {
-            let input = input.value().clone();
+        if let Some(node) = self.node() {
+            let input = self.value().clone();
             let target = target.clone();
             builder.edge(node, move |output_grad| {
                 macro_for!($X in [bf16, f32] {
@@ -62,7 +65,7 @@ impl Criterion<Variable2, ScalarArcTensor1> for CrossEntropyLoss {
                 unreachable!()
             });
         }
-        let loss = self.eval(input.into_value(), target)?;
+        let loss = self.value().cross_entropy_loss(target)?;
         let value = ScalarArcTensor::from_elem(Device::host(), (), ScalarElem::F32(loss)).unwrap();
         Ok(builder.build(value))
     }

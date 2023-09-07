@@ -1,7 +1,9 @@
 use anyhow::Result;
 //use ndarray::{Dimension, IntoDimension};
 
+/// AddAssign that returns a [`Result`].
 pub trait AddAssign<R> {
+    /// Performs the operations `self += rhs`.
     fn add_assign(&mut self, rhs: R) -> Result<()>;
 }
 
@@ -89,6 +91,7 @@ pub(crate) trait Col2ImConv2 {
     fn col2im_conv2(&self, options: Col2ImConv2Options) -> Result<Self::Output>;
 }
 
+#[doc(hidden)]
 #[cfg(feature = "neural-network")]
 pub struct MaxPool2Options {
     pub(crate) size: [usize; 2],

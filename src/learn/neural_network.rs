@@ -1,6 +1,13 @@
 /*!
 
-```rust
+```
+# use anyhow::Result;
+# use autograph::{device::Device, scalar::ScalarType, tensor::Tensor};
+# use autograph::learn::neural_network;
+# use neural_network::autograd::{Variable2, Variable4};
+# use neural_network::layer::{Layer, Forward, Conv2, Dense, MaxPool2, Flatten, Relu};
+# use neural_network::optimizer::{Optimizer, SGD};
+# use autograph::learn::criterion::CrossEntropyLoss;
 #[derive(Layer, Forward, Debug)]
 #[autograph(forward(Variable4, Output=Variable2))]
 struct LeNet5 {
@@ -77,15 +84,26 @@ impl LeNet5 {
     }
 }
 
+# fn main() -> Result<()> {
+# let device = Device::host();
+# let model = LeNet5::new(device.clone(), ScalarType::F32)?;
+# let x = Variable4::from(Tensor::<f32, _>::zeros(device.clone(), [1, 1, 28, 28])?);
+# let optimizer = SGD::builder().build();
+# let learning_rate = 0.01;
 let y = model.forward(x)?;
-let loss = CrossEntropyLoss::default().eval(y, t)?;
+let loss = y.cross_entropy_loss(t)?;
 loss.backward()?;
 for parameter in model.parameters_mut()? {
     optimizer.update(learning_rate, parameter)?;
 }
+# Ok(())
+# }
 */
 
+/// Autograd.
 pub mod autograd;
 mod criterion;
+/// Layers.
 pub mod layer;
+/// Optimizers.
 pub mod optimizer;

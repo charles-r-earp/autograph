@@ -1,3 +1,5 @@
+#[cfg(doc)]
+use super::autograd::Parameter;
 use super::autograd::ParameterViewMutD;
 #[cfg(feature = "device")]
 use crate::tensor::{ScalarTensorView, ScalarTensorViewMut};
@@ -16,9 +18,11 @@ use paste::paste;
 use serde::{Deserialize, Serialize};
 use std::any::TypeId;
 
+/// Optimizer builders.
 pub mod builder {
     use super::*;
 
+    /// Builder for creating a [`TensorValue`].
     pub struct TensorValueBuilder {
         tensor: ScalarTensorD,
         parameter_device: bool,
@@ -67,6 +71,7 @@ pub mod builder {
         }
     }
 
+    /// Builder for creating a [`SGD`].
     pub struct SGDBuilder {
         momentum: Option<f32>,
     }
@@ -76,11 +81,15 @@ pub mod builder {
             Self { momentum: None }
         }
         /// Momentum. Default is 0.
+        ///
+        /// If `momentum` is greater than 0, a "velocity" tensor will
+        /// be added to the [`State`] of each [`Parameter`].
         pub fn momentum(self, momentum: f32) -> Self {
             Self {
                 momentum: Some(momentum),
             }
         }
+        /// Builds the optimizer.
         pub fn build(self) -> SGD {
             let Self { momentum } = self;
             SGD { momentum }
@@ -89,6 +98,7 @@ pub mod builder {
 }
 use builder::*;
 
+/// Tensor value.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TensorValue {
     tensor: ScalarTensorD,
@@ -97,15 +107,18 @@ pub struct TensorValue {
 }
 
 impl TensorValue {
-    /// A builder for additional options.
+    /// A builder for creating a [`TensorValue`].
     pub fn builder(tensor: ScalarTensorD) -> TensorValueBuilder {
         TensorValueBuilder::new(tensor)
     }
 }
 
+/// [`State`] value.
 #[derive(Debug, Serialize, Deserialize)]
 pub enum Value {
+    /// A tensor.
     Tensor(TensorValue),
+    /// An elem.
     Elem(ScalarElem),
 }
 
@@ -118,13 +131,36 @@ impl Value {
     }
 }
 
-#[allow(missing_docs)]
-#[derive(Debug, derive_more::Unwrap)]
+/// Mutable [`Value`].
+#[derive(Debug)]
 pub enum ValueMut<'a> {
+    /// A tensor.
     Tensor(ScalarTensorViewMutD<'a>),
+    /// An elem.
     Elem(&'a mut ScalarElem),
 }
 
+impl<'a> ValueMut<'a> {
+    fn unwrap_tensor(self) -> ScalarTensorViewMutD<'a> {
+        if let Self::Tensor(tensor) = self {
+            tensor
+        } else {
+            panic!("Expected tensor!")
+        }
+    }
+    fn unwrap_elem(self) -> ScalarElem {
+        if let Self::Elem(elem) = self {
+            *elem
+        } else {
+            panic!("Expected elem!")
+        }
+    }
+}
+
+/// Optimizer State.
+///
+/// Created with [`ParameterBase::init_optimizer_state()`](super::autograd::ParameterBase::init_optimizer_state).
+/// Stores per parameter training progress.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct State {
     name: String,
@@ -145,13 +181,15 @@ impl State {
         id: TypeId,
         key_values: Vec<(String, Value)>,
     ) -> Result<Self> {
-        for (_key, value) in key_values.iter() {
+        for (key, value) in key_values.iter() {
             if let Value::Tensor(tensor_value) = value {
-                if tensor_value.parameter_device && tensor_value.tensor.device() != device {
-                    bail!("Wrong device!");
+                let value_device = tensor_value.tensor.device();
+                if tensor_value.parameter_device && value_device != device {
+                    bail!("Expected {name:?}.{key:?} device {value_device:?} to match parameter {device:?}!");
                 }
-                if tensor_value.parameter_type && tensor_value.tensor.scalar_type() != scalar_type {
-                    bail!("Wrong type!");
+                let value_scalar_type = tensor_value.tensor.scalar_type();
+                if tensor_value.parameter_type && value_scalar_type != scalar_type {
+                    bail!("Expected {name:?}.{key:?} scalar_type {value_scalar_type:?} to match parameter {scalar_type:?}!");
                 }
             }
         }
@@ -161,39 +199,92 @@ impl State {
             key_values,
         })
     }
+    /// Name of the [`Optimizer`].
     pub fn name(&self) -> &str {
         &self.name
     }
+    /// Type id of the [`Optimizer`].
     pub fn id(&self) -> TypeId {
         self.id
     }
+    /// Iterator over keys and values.
     pub fn iter(&self) -> impl Iterator<Item = (&str, &Value)> {
         self.key_values
             .iter()
             .map(|(key, value)| (key.as_str(), value))
     }
+    /// Iterator over keys and mutable values.
     pub fn iter_mut(&mut self) -> impl Iterator<Item = (&str, ValueMut)> {
         self.key_values
             .iter_mut()
             .map(|(key, value)| (key.as_str(), value.as_mut()))
     }
     pub(crate) fn to_owned(&self) -> Result<Self> {
-        todo!()
+        let mut key_values = Vec::with_capacity(self.key_values.len());
+        for (key, value) in self.key_values.iter() {
+            let value = match value {
+                Value::Tensor(tensor_value) => Value::Tensor(TensorValue {
+                    tensor: tensor_value.tensor.to_owned()?,
+                    parameter_type: tensor_value.parameter_type,
+                    parameter_device: tensor_value.parameter_device,
+                }),
+                Value::Elem(elem) => Value::Elem(*elem),
+            };
+            key_values.push((key.clone(), value));
+        }
+        Ok(Self {
+            name: self.name.clone(),
+            id: self.id,
+            key_values,
+        })
     }
-    /*
     pub(crate) fn to_device(&self, device: Device) -> Result<Self> {
-        todo!()
+        let mut key_values = Vec::with_capacity(self.key_values.len());
+        for (key, value) in self.key_values.iter() {
+            let value = match value {
+                Value::Tensor(tensor_value) => {
+                    let tensor = if tensor_value.parameter_device {
+                        tensor_value.tensor.to_device(device.clone())?
+                    } else {
+                        tensor_value.tensor.to_owned()?
+                    };
+                    Value::Tensor(TensorValue {
+                        tensor,
+                        parameter_type: tensor_value.parameter_type,
+                        parameter_device: tensor_value.parameter_device,
+                    })
+                }
+                Value::Elem(elem) => Value::Elem(*elem),
+            };
+            key_values.push((key.clone(), value));
+        }
+        Ok(Self {
+            name: self.name.clone(),
+            id: self.id,
+            key_values,
+        })
     }
-    pub(crate) fn to_device_mut(&mut self, device: Device) -> Result<()> {
-        todo!()
+    /*pub(crate) fn to_device_mut(&mut self, device: Device) -> Result<()> {
+        for (_, value) in self.key_values.iter_mut() {
+            if let Value::Tensor(tensor_value) = value {
+                if tensor_value.parameter_device {
+                    tensor_value.tensor.to_device_mut(device.clone())?;
+                }
+            }
+        }
+        Ok(())
     }*/
 }
 
+/// Optimizer.
 pub trait Optimizer {
     /// Performs the optimization, updating the parameter with `learning_rate`.
     fn update(&self, learning_rate: f32, parameter: ParameterViewMutD) -> Result<()>;
 }
 
+/// Stochastic Gradient Descent.
+///
+/// Implemented for bf16 and f32.
 #[derive(Default, Debug, Serialize, Deserialize)]
 pub struct SGD {
     momentum: Option<f32>,
@@ -233,6 +324,7 @@ impl SGD {
     }
 }
 
+/// Implemented for bf16 and f32.
 impl Optimizer for SGD {
     fn update(&self, learning_rate: f32, mut parameter: ParameterViewMutD) -> Result<()> {
         let scalar_type = parameter.scalar_type();

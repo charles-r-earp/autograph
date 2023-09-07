@@ -4,8 +4,6 @@ use super::{
 };
 #[cfg(feature = "device")]
 use crate::tensor::ScalarTensorView;
-#[cfg(doc)]
-use crate::tensor::TensorBase;
 use crate::{
     buffer::{ScalarArcBufferRepr, ScalarData, ScalarDataMut, ScalarDataOwned, ScalarSliceMutRepr},
     device::Device,
@@ -16,6 +14,8 @@ use crate::{
         ScalarTensorViewMut, Tensor, TensorView,
     },
 };
+#[cfg(doc)]
+use crate::{learn::neural_network::optimizer::Optimizer, tensor::TensorBase};
 use anyhow::{bail, Error, Result};
 #[cfg(feature = "device")]
 use dry::macro_for;
@@ -24,7 +24,8 @@ use half::{bf16, f16};
 #[cfg(feature = "device")]
 use ndarray::Axis;
 use ndarray::{
-    linalg::Dot, Array, Dimension, IntoDimension, Ix0, Ix1, Ix2, Ix4, IxDyn, ShapeError,
+    linalg::Dot, Array, Dimension, IntoDimension, Ix0, Ix1, Ix2, Ix3, Ix4, Ix5, Ix6, IxDyn,
+    ShapeError,
 };
 use parking_lot::{Mutex, RwLock};
 use paste::paste;
@@ -37,9 +38,24 @@ use std::{
     sync::{Arc, Weak},
 };
 
+/// Builders.
 pub mod builder {
     use super::*;
 
+    /// VariableBuilder.
+    ///
+    ///```no_run
+    /// # let input: Variable2 = todo!();
+    /// let mut builder = Variable::builder();
+    /// if let Some(node) = input.node() {
+    ///     // Add an edge computing the input gradient from the output gradient.
+    ///     builder.edge(node, |output_grad: ScalarArcTensor2| -> Result<ScalarArcTensor2> { todo!() });
+    /// }
+    /// let output_value: ScalarArcTensor2 = todo!();
+    /// # let _ = {
+    /// builder.build(output_value)
+    /// # };
+    ///```
     pub struct VariableBuilder<D: Dimension> {
         grad: Option<Arc<RwLock<Option<ScalarArcTensorD>>>>,
         edges: Vec<EdgeInner>,
@@ -64,6 +80,13 @@ pub mod builder {
             }
             self
         }
+        /// Adds an edge.
+        ///
+        /// During the backward pass, for each edge to `node`, `f` computes the gradient of `node`
+        /// given the gradient of `self`.
+        /// When multiple edges compute the same gradient, they are added together.
+        /// Once there are no more edges needed to compute a gradient for a node, its edges can
+        /// be computed.
         pub fn edge<D2, F>(&mut self, node: &Node<D2>, f: F)
         where
             D2: Dimension,
@@ -107,6 +130,7 @@ pub mod builder {
             });
             self.edges.push(EdgeInner { name, op, node })
         }
+        /// Builds the variable with `value`.
         pub fn build(self, value: ScalarArcTensor<D>) -> Variable<D> {
             let node = if let Some(grad) = self.grad {
                 Some(Node::new(
@@ -155,6 +179,10 @@ impl NodeInner {
     }
 }
 
+/// Node.
+///
+/// Nodes store gradients and can be connected via [`VariableBuilder::edge()`] to
+/// form a graph that is traversed in [`.backward()`].
 #[derive(Clone, Debug)]
 pub struct Node<D: Dimension> {
     inner: Arc<NodeInner>,
@@ -241,15 +269,35 @@ impl<D: Dimension> Node<D> {
     }
 }
 
+/// Variable.
+///
+/// Variables are tensors with an optional [`Node`] that stores a gradient. Numerical operations
+/// on variables with a node creates a graph of edges that is traversed during the backward pass
+/// to compute the gradients.
+///
+/// Variables can be created from tensors via [`From`].
+/// Use [`builder()`](Variable::builder) to create a Variable as a function of another variable.
 #[derive(Clone, Debug)]
 pub struct Variable<D: Dimension> {
     value: ScalarArcTensor<D>,
     node: Option<Node<D>>,
 }
 
+/// Variable with 1 element
 pub type Variable0 = Variable<Ix0>;
+/// Variable with 1 dimension
+pub type Variable1 = Variable<Ix1>;
+/// Variable with 2 dimensions
 pub type Variable2 = Variable<Ix2>;
+/// Variable with 3 dimensions
+pub type Variable3 = Variable<Ix3>;
+/// Variable with 4 dimensions
 pub type Variable4 = Variable<Ix4>;
+/// Variable with 5 dimensions
+pub type Variable5 = Variable<Ix5>;
+/// Variable with 6 dimensions
+pub type Variable6 = Variable<Ix6>;
+/// Variable with dynamic dimensions
 pub type VariableD = Variable<IxDyn>;
 
 impl<D: Dimension> Variable<D> {
@@ -518,6 +566,15 @@ impl Dot<Self> for Variable2 {
     }
 }
 
+/// Parameter.
+///
+/// Parameter values are updated during training by the [`Optimizer`]. A Parameter
+/// can be converted to a [`Variable`] via [`.to_variable()`](Parameter::to_variable),
+/// which allows it to be used in operations.
+/// During training, [`.set_training(true)`](Parameter::set_training) ensures that
+/// the variable created from this parameter has a [`Node`].
+/// A parameter stores the [`OptimizerState`] which can be updated during training
+/// in [`Optimizer::update`]. Training progress may be saved by serializing with [`serde`].
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(bound(
     serialize = "D: Serialize",
@@ -531,15 +588,44 @@ pub struct ParameterBase<S: ScalarData, D: Dimension> {
     optim_state: OptimState<'static>,
 }
 
+/// Parameter with a [`ScalarArcTensor`] value.
+///
+/// See [`ParameterBase`].
 pub type Parameter<D> = ParameterBase<ScalarArcBufferRepr, D>;
+/// Parameter with 1 element
+pub type Parameter0 = Parameter<Ix0>;
+/// Parameter with 1 dimension
 pub type Parameter1 = Parameter<Ix1>;
+/// Parameter with 2 dimensions
 pub type Parameter2 = Parameter<Ix2>;
+/// Parameter with 3 dimensions
+pub type Parameter3 = Parameter<Ix3>;
+/// Parameter with 4 dimensions
 pub type Parameter4 = Parameter<Ix4>;
+/// Parameter with 5 dimensions
+pub type Parameter5 = Parameter<Ix5>;
+/// Parameter with 6 dimensions
+pub type Parameter6 = Parameter<Ix6>;
 
+/// Mutable parameter view.
+///
+/// See [`ParameterBase`].
 pub type ParameterViewMut<'a, D> = ParameterBase<ScalarSliceMutRepr<'a>, D>;
+/// Mutable parameter view with 1 element
+pub type ParameterViewMut0<'a> = ParameterViewMut<'a, Ix0>;
+/// Mutable parameter view with 1 dimension
 pub type ParameterViewMut1<'a> = ParameterViewMut<'a, Ix1>;
+/// Mutable parameter view with 2 dimensions
 pub type ParameterViewMut2<'a> = ParameterViewMut<'a, Ix2>;
+/// Mutable parameter view with 3 dimensions
+pub type ParameterViewMut3<'a> = ParameterViewMut<'a, Ix3>;
+/// Mutable parameter view with 4 dimensions
 pub type ParameterViewMut4<'a> = ParameterViewMut<'a, Ix4>;
+/// Mutable parameter view with 5 dimensions
+pub type ParameterViewMut5<'a> = ParameterViewMut<'a, Ix5>;
+/// Mutable parameter view with 6 dimensions
+pub type ParameterViewMut6<'a> = ParameterViewMut<'a, Ix6>;
+/// Mutable parameter view with dynamic dimensions
 pub type ParameterViewMutD<'a> = ParameterViewMut<'a, IxDyn>;
 
 impl<S: ScalarData, D: Dimension> ParameterBase<S, D> {
@@ -587,8 +673,8 @@ impl<S: ScalarData, D: Dimension> ParameterBase<S, D> {
     }
     /// Enables / disables training.
     ///
-    /// If `training`, ensures that when the parameter is converted to a variable,
-    /// it will have a node for computing a gradient.
+    /// If `training`, ensures that when the parameter is converted to a [`Variable`],
+    /// it will have a [`Node`] for computing a gradient.
     /// If `training` is false, discards any gradient that has been computed.
     pub fn set_training(&mut self, training: bool) {
         if training && self.grad.is_none() {
@@ -691,12 +777,27 @@ impl<D: Dimension> Parameter<D> {
             optim_state,
         })
     }
+    /// Moves the parameter into `device`.
+    ///
+    /// See [`.to_device_mut()`](Self::to_device_mut).
+    pub fn into_device(self, device: Device) -> Result<Self> {
+        let mut parameter = self.clone();
+        parameter.to_device_mut(device)?;
+        Ok(parameter)
+    }
     /// Transfers the parameter to `device` if necessary.
     pub fn to_device_mut(&mut self, device: Device) -> Result<()> {
-        if device == self.value.device() {
-            return Ok(());
+        self.value.to_device_mut(device.clone())?;
+        if let Some(grad) = self.grad.as_mut() {
+            let value = if let Some(value) = grad.read().clone() {
+                Some(value.clone().into_device_shared(device.clone())?)
+            } else {
+                None
+            };
+            *grad = Arc::new(RwLock::new(value));
         }
-        self.value.to_device_mut(device)
+        self.optim_state.to_device_mut(device)?;
+        Ok(())
     }
 }
 
@@ -782,9 +883,15 @@ impl OptimState<'_> {
         }
         Ok(self.as_mut())
     }
-    /*fn to_device_mut(&mut self, device: Device) -> Result<()> {
-        todo!()
-    }*/
+    fn to_device_mut(&mut self, device: Device) -> Result<()> {
+        let inner = self.as_mut();
+        if let Some(state) = inner.as_mut() {
+            if Arc::get_mut(state).is_none() {
+                *state = Arc::new(state.as_ref().to_device(device)?);
+            }
+        }
+        Ok(())
+    }
 }
 
 impl Default for OptimState<'_> {

@@ -13,6 +13,7 @@ GPGPU kernels implemented with [**krnl**](https://github.com/charles-r-earp/krnl
 - Fully extensible, in Rust.
 */
 #![forbid(unsafe_op_in_unsafe_fn)]
+#![warn(missing_docs)]
 
 #[cfg(feature = "derive")]
 #[allow(unused_imports)]

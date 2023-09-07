@@ -16,6 +16,7 @@ use krnl::macros::module;
 use ndarray::{Array2, Array4, Data as ArrayData, DataMut as ArrayDataMut};
 #[cfg(feature = "device")]
 use num_traits::ToPrimitive;
+use num_traits::Unsigned;
 
 impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
     /// Converts to standard layout.
@@ -63,6 +64,13 @@ impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
             self.as_standard_layout()?.into_shared()
         }
     }
+    /// Performs the operation `self += alpha * rhs`.
+    ///
+    /// Broadcasts `rhs` to the shape of `self`.
+    ///
+    /// **Errors**
+    /// - Broadcasting is not possible.
+    /// - The operation could not be executed on the device.
     pub fn scaled_add<S2, D2>(
         &mut self,
         alpha: ScalarElem,
@@ -80,6 +88,10 @@ impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
             self.view_mut().into_dyn(),
         )
     }
+    /// Performs the operation `self as _ * alpha`.
+    ///
+    /// **Errors**
+    /// - The operation could not be executed on the device.
     pub fn scaled_cast(&self, alpha: ScalarElem) -> Result<ScalarTensor<D>> {
         let mut output =
             unsafe { ScalarTensor::uninit(self.device(), self.raw_dim(), alpha.scalar_type())? };
@@ -91,6 +103,13 @@ impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
         )?;
         Ok(output)
     }
+    /// Copies `rhs` to `self`.
+    ///
+    /// Broadcasts `rhs` to shape of `self`.
+    ///
+    /// **Errors**
+    /// - Broadcasting is not possible.
+    /// - The operation could not be executed on the device.
     pub fn assign<S2, D2>(&mut self, rhs: &ScalarTensorBase<S2, D2>) -> Result<()>
     where
         S: ScalarDataMut,
@@ -167,6 +186,13 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
             self.as_standard_layout()?.into_shared()
         }
     }
+    /// Performs the operation `self += alpha * rhs`.
+    ///
+    /// Broadcasts `rhs` to the shape of `self`.
+    ///
+    /// **Errors**
+    /// - Broadcasting is not possible.
+    /// - The operation could not be executed on the device.
     pub fn scaled_add<S2, D2>(&mut self, alpha: T, rhs: &TensorBase<S2, D2>) -> Result<()>
     where
         S: DataMut,
@@ -180,6 +206,27 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
             self.view_mut().into_dyn(),
         )
     }
+    /// Performs the operation `self as _ * alpha`.
+    ///
+    /// **Errors**
+    /// - The operation could not be executed on the device.
+    pub fn scaled_cast<T2: Scalar>(&self, alpha: T2) -> Result<Tensor<T2, D>> {
+        let mut output = unsafe { Tensor::<T2, D>::uninit(self.device(), self.raw_dim())? };
+        scalar_assign(
+            BinaryOp::Identity,
+            alpha.into(),
+            self.view().into_dyn().into(),
+            output.view_mut().into_dyn().into(),
+        )?;
+        Ok(output)
+    }
+    /// Copies `rhs` to `self`.
+    ///
+    /// Broadcasts `rhs` to shape of `self`.
+    ///
+    /// **Errors**
+    /// - Broadcasting is not possible.
+    /// - The operation could not be executed on the device.
     pub fn assign<S2, D2>(&mut self, rhs: &TensorBase<S2, D2>) -> Result<()>
     where
         S: DataMut,
@@ -450,6 +497,78 @@ fn scalar_assign(
             x.scalar_type().name(),
             y.scalar_type().name()
         ))
+    }
+}
+
+impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
+    /// A one hot vector given class labels.
+    ///
+    /// See [`TensorBase::to_one_hot`].
+    pub fn to_one_hot(
+        &self,
+        classes: usize,
+        scalar_type: ScalarType,
+    ) -> Result<ScalarTensor<D::Larger>> {
+        macro_for!($X in [u8, u16, u32, u64] {
+            macro_for!($Y in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+                if self.scalar_type() == $X::scalar_type() && scalar_type == $Y::scalar_type() {
+                    let input = self.view().try_into_tensor_view::<$X>().unwrap();
+                    let output = input.to_one_hot::<$Y>(classes)?;
+                    return Ok(output.into());
+                }
+            });
+        });
+        bail!(
+            "to_one_hot {:?} {:?} unimplemented!",
+            self.scalar_type(),
+            scalar_type
+        );
+    }
+}
+
+impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
+    /// A one hot vector given class labels.
+    ///
+    /// Output shape = [input_shape.., `classes`].
+    pub fn to_one_hot<T2: Scalar>(&self, classes: usize) -> Result<Tensor<T2, D::Larger>> {
+        let mut dim = D::Larger::zeros(self.dim.ndim() + 1);
+        for (x, y) in self
+            .shape()
+            .iter()
+            .copied()
+            .chain([classes])
+            .zip(dim.slice_mut())
+        {
+            *y = x;
+        }
+        if let Some(input) = self.as_array() {
+            let mut output = Array::zeros(dim);
+            for (x, y) in input
+                .iter()
+                .zip(output.as_slice_mut().unwrap().chunks_mut(classes))
+            {
+                y[x.to_usize().unwrap()] = T2::one();
+            }
+            return Ok(Tensor::from(output));
+        }
+        todo!();
+        /*
+        macro_for!($X in [u8, u16, u32, u64] {
+            if let Ok(input) = TensorView::<$X, D>::try_from(self.view()) {
+                let input = input.as_array().unwrap();
+
+                macro_for!($Y in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+                    if scalar_type == $Y::scalar_type() {
+
+                    }
+                });
+            }
+        });*/
+        bail!(
+            "to_one_hot {:?} {:?} unimplemented!",
+            self.scalar_type(),
+            T2::scalar_type()
+        );
     }
 }
 

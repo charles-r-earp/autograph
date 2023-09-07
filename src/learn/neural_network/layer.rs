@@ -2,6 +2,8 @@ use super::autograd::{
     Parameter, Parameter1, Parameter2, Parameter4, ParameterViewMut1, ParameterViewMut2,
     ParameterViewMut4, ParameterViewMutD, Variable, Variable2, Variable4,
 };
+#[cfg(doc)]
+use super::optimizer::Optimizer;
 #[cfg(feature = "device")]
 use crate::buffer::ScalarSliceMut;
 use crate::{
@@ -33,9 +35,11 @@ use rand::{
 use serde::{Deserialize, Serialize};
 use std::any::Any;
 
+/// Layer builders.
 pub mod builder {
     use super::*;
 
+    /// Builder for creating a [`Conv2`].
     pub struct Conv2Builder<A = Identity> {
         inputs: usize,
         outputs: usize,
@@ -61,18 +65,23 @@ pub mod builder {
     }
 
     impl<A> Conv2Builder<A> {
+        /// Sets the number of input channels.
         pub fn inputs(self, inputs: usize) -> Self {
             Self { inputs, ..self }
         }
+        /// Sets the number of output channels.
         pub fn outputs(self, outputs: usize) -> Self {
             Self { outputs, ..self }
         }
+        /// Sets size of the filter.
         pub fn filter(self, filter: [usize; 2]) -> Self {
             Self { filter, ..self }
         }
+        /// Add a bias. Defaults to false.
         pub fn bias(self, bias: bool) -> Self {
             Self { bias, ..self }
         }
+        /// Add an activation layer.
         pub fn activation<A2>(self, activation: A2) -> Conv2Builder<A2> {
             let Self {
                 inputs,
@@ -93,15 +102,24 @@ pub mod builder {
                 device,
             }
         }
+        /// Sets the scalar type. Defaults to F32.
+        ///
+        /// BF16 and F32 are implemented.
         pub fn scalar_type(self, scalar_type: ScalarType) -> Self {
             Self {
                 scalar_type,
                 ..self
             }
         }
+        /// Sets the device. Defaults to the host.
         pub fn device(self, device: Device) -> Self {
             Self { device, ..self }
         }
+        /// Builds the layer.
+        ///
+        /// **Errors**
+        /// - The `scalar_type` is not BF16 or F32.
+        /// - Initializing parameters on the `device` failed.
         pub fn build(self) -> Result<Conv2<A>> {
             let Self {
                 inputs,
@@ -113,7 +131,7 @@ pub mod builder {
                 device,
             } = self;
             if !matches!(scalar_type, ScalarType::BF16 | ScalarType::F32) {
-                bail!("Dense {scalar_type:?} not supported!");
+                bail!("Dense {scalar_type:?} not implemented!");
             }
             let a = if inputs > 0 {
                 f32::sqrt(2. / (inputs * filter[0] * filter[1]) as f32)
@@ -163,6 +181,7 @@ pub mod builder {
         }
     }
 
+    /// Builder for creating a [`Dense`].
     pub struct DenseBuilder<A = Identity> {
         inputs: usize,
         outputs: usize,
@@ -186,15 +205,19 @@ pub mod builder {
     }
 
     impl<A> DenseBuilder<A> {
+        /// Sets the number of input channels.
         pub fn inputs(self, inputs: usize) -> Self {
             Self { inputs, ..self }
         }
+        /// Sets the number of output channels.
         pub fn outputs(self, outputs: usize) -> Self {
             Self { outputs, ..self }
         }
+        /// Adds a bias. Defaults to false.
         pub fn bias(self, bias: bool) -> Self {
             Self { bias, ..self }
         }
+        /// Adds and activation layer.
         pub fn activation<A2>(self, activation: A2) -> DenseBuilder<A2> {
             let Self {
                 inputs,
@@ -213,15 +236,24 @@ pub mod builder {
                 device,
             }
         }
+        /// Sets the scalar type. Defaults to F32.
+        ///
+        /// BF16 and F32 are implemented.
         pub fn scalar_type(self, scalar_type: ScalarType) -> Self {
             Self {
                 scalar_type,
                 ..self
             }
         }
+        /// Sets the device. Defaults to the host.
         pub fn device(self, device: Device) -> Self {
             Self { device, ..self }
         }
+        /// Builds the layer.
+        ///
+        /// **Errors**
+        /// - The `scalar_type` is not BF16 or F32.
+        /// - Initializing parameters on the `device` failed.
         pub fn build(self) -> Result<Dense<A>> {
             let Self {
                 inputs,
@@ -232,7 +264,7 @@ pub mod builder {
                 device,
             } = self;
             if !matches!(scalar_type, ScalarType::BF16 | ScalarType::F32) {
-                bail!("Dense {scalar_type:?} not supported!");
+                bail!("Dense {scalar_type:?} not implemented!");
             }
             let a = if inputs > 0 {
                 f32::sqrt(2. / inputs as f32)
@@ -282,6 +314,7 @@ pub mod builder {
         }
     }
 
+    /// Builder for creating a [`MaxPool2`].
     pub struct MaxPool2Builder {
         size: [usize; 2],
         strides: [usize; 2],
@@ -294,12 +327,15 @@ pub mod builder {
                 strides: [1, 1],
             }
         }
+        /// Size of the pool.
         pub fn size(self, size: [usize; 2]) -> Self {
             Self { size, ..self }
         }
+        /// The strides.
         pub fn strides(self, strides: [usize; 2]) -> Self {
             Self { strides, ..self }
         }
+        /// Builds the layer.
         pub fn build(self) -> MaxPool2 {
             let Self { size, strides } = self;
             MaxPool2 { size, strides }
@@ -308,13 +344,31 @@ pub mod builder {
 }
 use builder::*;
 
+/// Layer.
+///
+/// Typically Layers implement [`Forward<Variable<D>>`](Forward) for the appropriate
+/// dimension `D`.
+///
+/// Layer can be [derived](autograph_derive).
 pub trait Layer {
+    /// Prepares for training or inference.
+    ///
+    /// Calls [`.set_training(training)`](Parameter::set_training) on each parameter and
+    /// [`.set_training(training)`][Layer::set_training] on each child layer as appropriate.
     fn set_training(&mut self, training: bool) -> Result<()>;
+    /// Mutable parameter views of the parameters of the layer.
+    ///
+    /// The mutable parameter views can be provided to [`Optimizer::update()`](Optimizer::update).
     fn parameters_mut(&mut self) -> Result<Vec<ParameterViewMutD>>;
 }
 
+/// Forward.
+///
+/// Forward can be [derived](autograph_derive).
 pub trait Forward<X> {
+    /// The type of the Output.
     type Output;
+    /// Executes the forward pass given `input`.
     fn forward(&self, input: X) -> Result<Self::Output>;
 }
 
@@ -372,6 +426,26 @@ impl<X, T: Forward<X, Output = X>> Forward<X> for Vec<T> {
     }
 }
 
+/// Convolutional layer with 2 dimensions.
+///
+/// Implemented for bf16 and f32.
+///
+/// # Example
+///```no_run
+/// # use autograph::{scalar::ScalarType, device::Device, learn::neural_network::layer::{Conv2, Relu}};
+/// # fn main() -> anyhow::Result<()> {
+/// # let device = Device::host();
+/// let conv = Conv2::builder()
+///    .inputs(1)
+///    .outputs(1)
+///    .bias(true)
+///    .activation(Relu)
+///    .scalar_type(ScalarType::BF16)
+///    .device(device.clone())
+///    .build()?;
+/// # Ok(())
+/// # }
+///```
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Conv2<A = Identity> {
     weight: Parameter4,
@@ -380,20 +454,33 @@ pub struct Conv2<A = Identity> {
 }
 
 impl Conv2 {
+    /// Returns a builder for creating a [`Conv2`].
     pub fn builder() -> Conv2Builder {
         Conv2Builder::new()
     }
+    /// The weight as a mutable parameter view.
     pub fn weight_view_mut(&mut self) -> ParameterViewMut4 {
         todo!()
     }
+    /// The bias as a mutable parameter_view.
     pub fn bias_view_mut(&mut self) -> Result<Option<ParameterViewMut1>> {
         todo!()
     }
-    pub fn into_device(self, _device: Device) -> Result<Self> {
-        todo!()
+    /// Moves the layer into `device`.
+    pub fn into_device(self, device: Device) -> Result<Self> {
+        Ok(Self {
+            weight: self.weight.into_device(device.clone())?,
+            bias: self.bias.map(|b| b.into_device(device)).transpose()?,
+            ..self
+        })
     }
-    pub fn to_device_mut(&mut self, _device: Device) -> Result<()> {
-        todo!()
+    /// Moves the layer to `device` in place.
+    pub fn to_device_mut(&mut self, device: Device) -> Result<()> {
+        self.weight.to_device_mut(device.clone())?;
+        if let Some(bias) = self.bias.as_mut() {
+            bias.to_device_mut(device)?;
+        }
+        Ok(())
     }
 }
 
@@ -483,6 +570,11 @@ impl<A: Forward<Variable4, Output = Variable4>> Forward<Variable4> for Conv2<A> 
     }
 }
 
+/// A fully connected linear layer.
+///
+/// Implemented for bf16 and f32.
+///
+/// # Example
 ///```no_run
 /// # use autograph::{scalar::ScalarType, device::Device, learn::neural_network::layer::{Dense, Relu}};
 /// # fn main() -> anyhow::Result<()> {
@@ -506,23 +598,36 @@ pub struct Dense<A = Identity> {
 }
 
 impl Dense {
+    /// Returns a builder for creating a [`Dense`].
     pub fn builder() -> DenseBuilder {
         DenseBuilder::new()
     }
 }
 
 impl<A> Dense<A> {
-    pub fn weight_view_mut(&mut self) -> ParameterViewMut2 {
-        todo!()
+    /// The weight as a mutable parameter view.
+    pub fn weight_view_mut(&mut self) -> Result<ParameterViewMut2> {
+        self.weight.make_view_mut()
     }
+    /// The bias as a mutable parameter view.
     pub fn bias_view_mut(&mut self) -> Result<Option<ParameterViewMut1>> {
-        todo!()
+        self.bias.as_mut().map(Parameter::make_view_mut).transpose()
     }
-    pub fn into_device(self, _device: Device) -> Result<Self> {
-        todo!()
+    /// Moves the layer into `device`.
+    pub fn into_device(self, device: Device) -> Result<Self> {
+        Ok(Self {
+            weight: self.weight.into_device(device.clone())?,
+            bias: self.bias.map(|b| b.into_device(device)).transpose()?,
+            ..self
+        })
     }
-    pub fn to_device_mut(&mut self, _device: Device) -> Result<()> {
-        todo!()
+    /// Transferes the layer to `device` in place.
+    pub fn to_device_mut(&mut self, device: Device) -> Result<()> {
+        self.weight.to_device_mut(device.clone())?;
+        if let Some(bias) = self.bias.as_mut() {
+            bias.to_device_mut(device)?;
+        }
+        Ok(())
     }
 }
 
@@ -555,6 +660,9 @@ impl<A: Forward<Variable2, Output = Variable2> + Any> Forward<Variable2> for Den
     }
 }
 
+/// MaxPool2.
+///
+/// Implemented for bf16 and f32.
 #[derive(Layer, Debug, Serialize, Deserialize)]
 #[autograph(crate=crate)]
 pub struct MaxPool2 {
@@ -563,6 +671,7 @@ pub struct MaxPool2 {
 }
 
 impl MaxPool2 {
+    /// Returns a builder for creating a [`MaxPool2`].
     pub fn builder() -> MaxPool2Builder {
         MaxPool2Builder::new()
     }
@@ -594,6 +703,9 @@ impl Forward<Variable4> for MaxPool2 {
     }
 }
 
+/// Flatten.
+///
+/// See [`Variable::flatten()`](Variable::flatten).
 #[derive(Default, Clone, Copy, Layer, Debug, Serialize, Deserialize)]
 #[autograph(crate=crate)]
 pub struct Flatten;
@@ -605,6 +717,7 @@ impl<D: Dimension + 'static> Forward<Variable<D>> for Flatten {
     }
 }
 
+/// Identity.
 #[derive(Layer, Default, Clone, Copy, Debug, Serialize, Deserialize)]
 #[autograph(crate=crate)]
 pub struct Identity;
@@ -616,6 +729,9 @@ impl<X> Forward<X> for Identity {
     }
 }
 
+/// ReLU.
+///
+/// Implemented for bf16 and f32.
 #[derive(Layer, Default, Clone, Copy, Debug, Serialize, Deserialize)]
 #[autograph(crate=crate)]
 pub struct Relu;

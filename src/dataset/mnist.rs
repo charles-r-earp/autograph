@@ -64,6 +64,7 @@ pub mod builders {
         pub fn download(self, download: bool) -> Self {
             Self { download, ..self }
         }
+        /// Print messages to stderr. Defaults to false.
         pub fn verbose(self, verbose: bool) -> Self {
             Self { verbose, ..self }
         }
@@ -82,6 +83,7 @@ use builders::MnistBuilder;
 
 /// The MNIST dataset.
 pub struct Mnist {
+    /// The kind of MNIST.
     pub kind: MnistKind,
     /// The train images.
     ///
@@ -205,10 +207,6 @@ fn download(kind: MnistKind, mnist_path: &Path, names: &[&str]) -> Result<()> {
         .retries(10)
         .build()?;
     let summaries = downloader.download(&downloads)?;
-    /*
-    let summaries = std::thread::spawn(move || downloader.download(&downloads))
-        .join()
-        .unwrap()?;*/
     for summary in summaries {
         match summary {
             Ok(_) => (),

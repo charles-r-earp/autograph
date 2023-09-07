@@ -4,7 +4,7 @@ use autograph::{
     device::Device,
     krnl::krnl_core::half::bf16,
     learn::{
-        criterion::{Accuracy, Criterion, CrossEntropyLoss},
+        criterion::{Accuracy, CrossEntropyLoss},
         neural_network::{
             autograd::{Variable, Variable2, Variable4},
             layer::{Conv2, Dense, Flatten, Forward, Layer, MaxPool2, Relu},
@@ -195,8 +195,8 @@ fn main() -> Result<()> {
         let test_acc = test_stats.accuracy();
         let epoch_elapsed = epoch_start.elapsed();
         println!(
-                "[{epoch}] train_loss: {train_loss} train_acc: {train_acc}% {train_correct}/{train_count} test_loss: {test_loss} test_acc: {test_acc}% {test_correct}/{test_count} elapsed: {epoch_elapsed:?}"
-            );
+            "[{epoch}] train_loss: {train_loss} train_acc: {train_acc}% {train_correct}/{train_count} test_loss: {test_loss} test_acc: {test_acc}% {test_correct}/{test_count} elapsed: {epoch_elapsed:?}"
+        );
     }
     println!("Finished in {:?}.", start.elapsed());
     Ok(())
@@ -276,8 +276,8 @@ fn train<I: Iterator<Item = Result<(Tensor4<u8>, Tensor1<u8>)>>>(
         let x = Variable::from(ScalarTensor::from(x).scaled_cast(image_scale)?);
         let t = ScalarTensor::from(t).into_shared()?;
         let y = model.forward(x)?;
-        stats.correct += Accuracy.eval(y.value().view(), t.view())?;
-        let loss = CrossEntropyLoss::default().eval(y, t)?;
+        stats.correct += y.value().accuracy(t.view())?;
+        let loss = y.cross_entropy_loss(t)?;
         stats.loss += loss
             .value()
             .view()
@@ -304,8 +304,8 @@ fn test<I: Iterator<Item = Result<(Tensor4<u8>, Tensor1<u8>)>>>(
         let x = Variable::from(ScalarTensor::from(x).scaled_cast(image_scale)?);
         let t = ScalarTensor::from(t).into_shared()?;
         let y = model.forward(x)?;
-        stats.correct += Accuracy.eval(y.value().view(), t.view())?;
-        let loss = CrossEntropyLoss::default().eval(y, t)?;
+        stats.correct += y.value().accuracy(t.view())?;
+        let loss = y.cross_entropy_loss(t)?;
         stats.loss += loss
             .into_value()
             .cast_into_tensor::<f32>()?

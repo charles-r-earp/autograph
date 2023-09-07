@@ -3,7 +3,7 @@ use autograph::{
     device::Device,
     half::bf16,
     learn::{
-        criterion::{Criterion, CrossEntropyLoss},
+        criterion::CrossEntropyLoss,
         neural_network::{
             autograd::{Variable2, Variable4},
             layer::{Conv2, Dense, Flatten, Forward, Layer, MaxPool2, Relu},
@@ -77,7 +77,7 @@ impl LeNet5Classifier {
         )?;
         let t = ScalarArcTensor::zeros(self.device.clone(), batch_size, ScalarType::U8)?;
         let y = self.model.forward(x.into())?;
-        let loss = CrossEntropyLoss::default().eval(y, t)?;
+        let loss = y.cross_entropy_loss(t)?;
         loss.backward()?;
         let optimizer = self.optimizer.as_ref().unwrap();
         let learning_rate = 0.01;
