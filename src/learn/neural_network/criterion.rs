@@ -71,7 +71,9 @@ impl CrossEntropyLoss<ScalarArcTensor1> for Variable2 {
     }
 }
 
-fn cross_entropy_loss_backward<T1: Scalar + Float, T2: Scalar + Unsigned>(
+// public for testing
+#[doc(hidden)]
+pub fn cross_entropy_loss_backward<T1: Scalar + Float, T2: Scalar + Unsigned>(
     x: TensorView2<T1>,
     t: TensorView1<T2>,
     mut dy: f32,

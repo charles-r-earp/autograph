@@ -13,7 +13,7 @@ use dry::macro_for;
 use half::bf16;
 #[cfg(feature = "device")]
 use krnl::macros::module;
-use ndarray::{ArrayBase, ArrayView1, ArrayView2, Data as ArrayData, Ix1, Ix2};
+use ndarray::{ArrayView1, ArrayView2, Ix1, Ix2};
 #[cfg(feature = "device")]
 use num_traits::ToPrimitive;
 use num_traits::{Float, Unsigned};
@@ -28,32 +28,31 @@ pub trait Accuracy<T> {
     fn accuracy(&self, target: T) -> Result<usize>;
 }
 
-impl<T1: Scalar, S1: ArrayData<Elem = T1>, T2: Scalar + Unsigned, S2: ArrayData<Elem = T2>>
-    Accuracy<ArrayBase<S2, Ix1>> for ArrayBase<S1, Ix2>
-{
-    fn accuracy(&self, target: ArrayBase<S2, Ix1>) -> Result<usize> {
-        let mut correct = 0;
-        for (x, t) in self
-            .outer_iter()
-            .zip(target.iter().map(|x| x.to_usize().unwrap()))
-        {
-            let mut m = x[0];
-            let mut mi = 0;
-            for (i, x) in x.iter().copied().enumerate() {
-                if let Some(x_f64) = x.to_f64() {
-                    assert!(x_f64.is_finite());
-                }
-                if x > m {
-                    m = x;
-                    mi = i;
-                }
+fn accuracy_host<T1: Scalar, T2: Scalar + Unsigned>(
+    input: ArrayView2<T1>,
+    target: ArrayView1<T2>,
+) -> usize {
+    let mut correct = 0;
+    for (x, t) in input
+        .outer_iter()
+        .zip(target.iter().map(|x| x.to_usize().unwrap()))
+    {
+        let mut m = x[0];
+        let mut mi = 0;
+        for (i, x) in x.iter().copied().enumerate() {
+            if let Some(x_f64) = x.to_f64() {
+                assert!(x_f64.is_finite());
             }
-            if mi == t {
-                correct += 1;
+            if x > m {
+                m = x;
+                mi = i;
             }
         }
-        Ok(correct)
+        if mi == t {
+            correct += 1;
+        }
     }
+    correct
 }
 
 /// Implemented for:
@@ -64,7 +63,7 @@ impl<T1: Scalar, S1: Data<Elem = T1>, T2: Scalar + Unsigned, S2: Data<Elem = T2>
 {
     fn accuracy(&self, target: TensorBase<S2, Ix1>) -> Result<usize> {
         if let Some((input, target)) = self.as_array().zip(target.as_array()) {
-            input.accuracy(target)
+            Ok(accuracy_host(input, target))
         } else {
             ScalarTensorView::from(self.view()).accuracy(ScalarTensorView::from(target.view()))
         }

@@ -116,7 +116,7 @@ fn sum(x: ScalarTensorViewD, beta: ScalarElem, mut y: ScalarTensorViewMutD) -> R
     let x = x.as_scalar_slice().unwrap();
     let y = y.as_scalar_slice_mut().unwrap();
 
-    macro_for!($T in [u32, i32, f32, u64, i64, f64] {
+    macro_for!($T in [bf16, u32, i32, f32, u64, i64, f64] {
         if x.scalar_type() == $T::scalar_type() {
             let x = Slice::try_from(x).unwrap();
             let y = SliceMut::try_from(y).unwrap();
@@ -164,7 +164,7 @@ fn sum_axis(
     let offset_x = offset_x as u32;
     let y = y.as_scalar_slice_mut().unwrap();
 
-    macro_for!($T in [u32, i32, bf16, f32, u64, i64, f64] {
+    macro_for!($T in [bf16, u32, i32, f32, u64, i64, f64] {
         if x.scalar_type() == $T::scalar_type() {
             let x = Slice::try_from(x).unwrap();
             let y = SliceMut::try_from(y).unwrap();

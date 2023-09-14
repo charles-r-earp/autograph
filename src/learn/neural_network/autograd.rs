@@ -45,6 +45,8 @@ pub mod builder {
     /// VariableBuilder.
     ///
     ///```no_run
+    /// # use anyhow::Result;
+    /// # use autograph::{tensor::ScalarArcTensor2, learn::neural_network::autograd::{Variable, Variable2}};
     /// # let input: Variable2 = todo!();
     /// let mut builder = Variable::builder();
     /// if let Some(node) = input.node() {

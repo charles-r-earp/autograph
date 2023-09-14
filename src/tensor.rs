@@ -52,12 +52,12 @@ use crate::{
 };
 use anyhow::{anyhow, bail, Result};
 use dry::macro_for;
-use krnl::krnl_core::half::{bf16, f16};
+use krnl::krnl_core::half::bf16;
 use ndarray::{
     Array, ArrayBase, ArrayView, ArrayViewMut, Axis, Dimension, IntoDimension, Ix0, Ix1, Ix2, Ix3,
     Ix4, Ix5, Ix6, IxDyn, RawArrayView, RemoveAxis, ShapeBuilder, ShapeError, StrideShape,
 };
-use num_traits::{One, ToPrimitive};
+use num_traits::ToPrimitive;
 use paste::paste;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::{
@@ -1795,7 +1795,9 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
         if device == self.device() {
             self.into_shared()
         } else if !self.is_contiguous() {
-            todo!()
+            self.view()
+                .into_standard_layout()?
+                .into_device_shared(device)
         } else {
             let buffer = self.buffer.to_device_shared(device)?;
             Ok(ArcTensor {

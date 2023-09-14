@@ -1,7 +1,10 @@
 #![allow(warnings)]
 
 use anyhow::Result;
-use autograph::tensor::{Tensor, TensorView};
+use autograph::{
+    scalar::ScalarElem,
+    tensor::{ScalarTensorViewD, Tensor, TensorView},
+};
 use dry::macro_for;
 use half::{bf16, f16};
 #[cfg(feature = "device")]
@@ -78,6 +81,72 @@ fn features_for_scalar_size(size: usize) -> Features {
 
 fn features_for_scalar(scalar_type: ScalarType) -> Features {
     features_for_scalar_size(scalar_type.size()).with_shader_float64(scalar_type == ScalarType::F64)
+}
+
+fn check_approx_eq(a: ScalarTensorViewD, b: ScalarTensorViewD, epsilon: Option<ScalarElem>) {
+    use approx::assert_relative_eq;
+    let scalar_type = a.scalar_type();
+    if matches!(scalar_type, ScalarType::F16 | ScalarType::BF16) {
+        let a = a
+            .cast_into(ScalarType::F32)
+            .unwrap()
+            .try_into_tensor::<f32>()
+            .unwrap()
+            .into_array()
+            .unwrap();
+        let b = b
+            .cast_into(ScalarType::F32)
+            .unwrap()
+            .try_into_tensor::<f32>()
+            .unwrap()
+            .into_array()
+            .unwrap();
+        if let Some(epsilon) = epsilon {
+            let epsilon = epsilon.cast::<f32>();
+            assert_relative_eq!(a, b, epsilon = epsilon, max_relative = epsilon);
+        } else {
+            assert_relative_eq!(a, b);
+        }
+    } else if scalar_type == ScalarType::F32 {
+        let a = a
+            .try_into_tensor_view::<f32>()
+            .unwrap()
+            .into_array()
+            .unwrap();
+        let b = b
+            .try_into_tensor_view::<f32>()
+            .unwrap()
+            .into_array()
+            .unwrap();
+        assert_relative_eq!(a, b);
+    } else if scalar_type == ScalarType::F64 {
+        let a = a
+            .try_into_tensor_view::<f64>()
+            .unwrap()
+            .into_array()
+            .unwrap();
+        let b = b
+            .try_into_tensor_view::<f64>()
+            .unwrap()
+            .into_array()
+            .unwrap();
+        assert_relative_eq!(a, b);
+    } else {
+        check_eq(a, b);
+    }
+}
+
+fn check_eq(a: ScalarTensorViewD, b: ScalarTensorViewD) {
+    macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+        if a.scalar_type() == $T::scalar_type() {
+            let a = a.try_into_tensor_view::<$T>().unwrap();
+            let a = a.as_array().unwrap();
+            let b = b.try_into_tensor_view::<$T>().unwrap();
+            let b = b.as_array().unwrap();
+            assert_eq!(a, b);
+            return;
+        }
+    });
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -287,6 +356,7 @@ mod linalg {
 mod ops {
     use super::*;
     use ndarray::{Array1, IntoDimension};
+    use num_traits::Unsigned;
 
     pub fn ops_tests(device: &Device) -> Vec<Trial> {
         let mut tests = Vec::new();
@@ -296,22 +366,37 @@ mod ops {
             Features::empty()
         };
         macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
-                let scalar_type = $T::scalar_type();
-                let ignore = device.is_device() &&
-                    !features.contains(&features_for_scalar(scalar_type));
-                let ty = scalar_type.name();
-                let lens = [7, 64, 300];
-                tests.extend([
-                    device_test(device, &format!("scaled_add_{ty}"), |device| {
-                        for n in [7, 64, 300] {
-                            scaled_add::<$T>(device, &[n]);
-                        }
-                        scaled_add::<$T>(device, &[3, 5]);
-                        scaled_add::<$T>(device, &[21, 14]);
-                    }),
-                ].into_iter().map(|trial| trial.with_ignored_flag(ignore)));
+            let scalar_type = $T::scalar_type();
+            let ignore = device.is_device() &&
+                !features.contains(&features_for_scalar(scalar_type));
+            let ty = scalar_type.name();
+            let lens = [7, 64, 300];
+            tests.push(
+                device_test(device, &format!("scaled_add_{ty}"), |device| {
+                    for n in [7, 64, 300] {
+                        scaled_add::<$T>(device, &[n]);
+                    }
+                    scaled_add::<$T>(device, &[3, 5]);
+                    scaled_add::<$T>(device, &[21, 14]);
+                }).with_ignored_flag(ignore)
+            );
         });
-
+        macro_for!($X in [u8, u16, u32, u64] {
+            let x_ty = $X::scalar_type();
+            macro_for!($Y in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+                let y_ty = $Y::scalar_type();
+                let ignore = device.is_device()
+                && (!features.contains(&features_for_scalar(x_ty)) ||
+                    !features.contains(&features_for_scalar(y_ty)));
+                tests.push(device_test(device, &format!("one_hot_{}_{}", x_ty.name(), y_ty.name()), |device| {
+                    for n in [7, 64, 300] {
+                        for classes in [5, 10, 100] {
+                            one_hot::<$X, $Y>(device, &[n], classes);
+                        }
+                    }
+                }).with_ignored_flag(ignore));
+            });
+        });
         tests
     }
 
@@ -341,6 +426,32 @@ mod ops {
         y_array.scaled_add(alpha, &x_array);
         y.scaled_add(alpha, &x).unwrap();
         let y = y.into_array().unwrap();
+        assert_eq!(y, y_array);
+    }
+
+    fn one_hot<X: Scalar + Unsigned, Y: Scalar>(device: &Device, shape: &[usize], classes: usize) {
+        let dim = shape.into_dimension();
+        let x_array = (0..classes)
+            .cycle()
+            .take(dim.size())
+            .map(|x| X::from_usize(x).unwrap())
+            .collect::<Array1<_>>()
+            .into_shape(shape)
+            .unwrap();
+        let mut y_shape: Vec<_> = shape.iter().copied().chain([classes]).collect();
+        let mut y_array = x_array
+            .iter()
+            .copied()
+            .flat_map(|x| {
+                (0..classes)
+                    .into_iter()
+                    .map(move |i| Y::from_u32((i == x.to_usize().unwrap()) as u32).unwrap())
+            })
+            .collect::<Array<Y, _>>()
+            .into_shape(y_shape.as_slice())
+            .unwrap();
+        let x = Tensor::from(x_array).into_device(device.clone()).unwrap();
+        let y = x.to_one_hot::<Y>(classes).unwrap().into_array().unwrap();
         assert_eq!(y, y_array);
     }
 }
@@ -409,20 +520,30 @@ mod reduce {
 
     pub fn reduce_tests(device: &Device) -> Vec<Trial> {
         let mut tests = Vec::new();
-        tests.extend([
-            device_test(device, "sum_f32", |device| {
-                for n in [4, 11, 33, 517, 1021] {
-                    sum::<f32, _>(device, n);
-                }
-            }),
-            device_test(device, "sum_axis_f32", |device| {
-                for n in [4, 11, 33, 517, 1021] {
-                    for axis in [0, 1] {
-                        sum_axis::<f32, _>(device, [n / 2, n], Axis(axis));
+        let features = device
+            .info()
+            .map(|info| info.features())
+            .unwrap_or(Features::empty());
+        macro_for!($T in [/*u8, i8, u16, i16, f16,*/ bf16, u32, i32, f32, u64, i64, f64] {
+            let scalar_type = $T::scalar_type();
+            let ignore = device.is_device() &&
+                !features.contains(&features_for_scalar(scalar_type));
+            let ty_name = scalar_type.name();
+            tests.extend([
+                device_test(device, &format!("sum_{ty_name}"), |device| {
+                    for n in [4, 11, 33, 517, 1021] {
+                        sum::<$T, _>(device, n);
                     }
-                }
-            }),
-        ]);
+                }).with_ignored_flag(ignore),
+                device_test(device, &format!("sum_axis_{ty_name}"), |device| {
+                    for n in [4, 11, 33, 517, 1021] {
+                        for axis in [0, 1] {
+                            sum_axis::<$T, _>(device, [n / 2, n], Axis(axis));
+                        }
+                    }
+                }).with_ignored_flag(ignore),
+            ]);
+        });
         tests
     }
 
@@ -438,7 +559,17 @@ mod reduce {
         let y_array = x_array.sum();
         let x = Tensor::from(x_array).into_device(device.clone()).unwrap();
         let y = x.sum().unwrap();
-        assert_eq!(y, y_array);
+        let y = Tensor::from(vec![y]).into_shape(()).unwrap().into_dyn();
+        let y_array = Tensor::from(vec![y_array])
+            .into_shape(())
+            .unwrap()
+            .into_dyn();
+        let epsilon = if matches!(T::scalar_type(), ScalarType::F16 | ScalarType::BF16) {
+            Some(ScalarElem::F32(shape.size() as f32))
+        } else {
+            None
+        };
+        check_approx_eq(y.view().into(), y_array.view().into(), epsilon);
     }
 
     fn sum_axis<T: Scalar, E: IntoDimension>(device: &Device, shape: E, axis: Axis)
@@ -455,22 +586,149 @@ mod reduce {
             .unwrap();
         let y_array = x_array.sum_axis(axis);
         let x = Tensor::from(x_array).into_device(device.clone()).unwrap();
-        let y = x.sum_axis(axis).unwrap().into_array().unwrap();
-        assert_eq!(y, y_array, "{:?} {:?}", shape.slice(), axis);
+        let y_array = Tensor::from(y_array).into_dyn();
+        let y = x
+            .sum_axis(axis)
+            .unwrap()
+            .into_device(Device::host())
+            .unwrap()
+            .into_dyn();
+        let epsilon = if matches!(T::scalar_type(), ScalarType::F16 | ScalarType::BF16) {
+            Some(ScalarElem::F32(shape[axis.0] as f32))
+        } else {
+            None
+        };
+        check_approx_eq(y.view().into(), y_array.view().into(), epsilon);
     }
 }
 
 #[cfg(feature = "learn")]
 mod learn {
     use super::*;
+    use approx::assert_relative_eq;
+    use autograph::learn::criterion::CrossEntropyLoss;
 
     pub fn learn_tests(device: &Device) -> Vec<Trial> {
         let mut tests = Vec::new();
+        tests.extend(criterion::criterion_tests(device));
         #[cfg(feature = "neural-network")]
         {
             tests.extend(neural_network::neural_network_tests(device));
         }
         tests
+    }
+
+    mod criterion {
+        use super::*;
+        use autograph::learn::criterion::Accuracy;
+        use num_traits::{Float, Unsigned};
+
+        pub fn criterion_tests(device: &Device) -> Vec<Trial> {
+            let mut tests = Vec::new();
+            let features = device
+                .info()
+                .map(|info| info.features())
+                .unwrap_or(Features::empty());
+            macro_for!($X in [bf16, f32] {
+                macro_for!($T in [u8, u16, u32] {
+                    let ignore = device.is_device()
+                        && (
+                            !features.contains(&features_for_scalar($X::scalar_type()))
+                            || !features.contains(&features_for_scalar($T::scalar_type()))
+                        );
+                    tests.push(device_test(device, &format!("accuracy_{}_{}", $X::scalar_type().name(), $T::scalar_type().name()), |device| {
+                        for (batch_size, classes) in [
+                            (1, 8),
+                            (31, 16),
+                            (1000, 100),
+                        ] {
+                            accuracy::<$X, $T>(&device, batch_size, classes);
+                        }
+                    }).with_ignored_flag(ignore));
+                });
+            });
+            macro_for!($X in [bf16, f32] {
+                macro_for!($T in [u8, u16, u32] {
+                    let ignore = device.is_device()
+                        && (
+                            !features.contains(&features_for_scalar($X::scalar_type()))
+                            || !features.contains(&features_for_scalar($T::scalar_type()))
+                        );
+                    tests.push(device_test(device, &format!("cross_entropy_loss_{}_{}", $X::scalar_type().name(), $T::scalar_type().name()), |device| {
+                        for (batch_size, classes) in [
+                            (1, 8),
+                            (31, 16),
+                            (1000, 100),
+                        ] {
+                            cross_entropy_loss::<$X, $T>(&device, batch_size, classes);
+                        }
+                    }).with_ignored_flag(ignore));
+                });
+            });
+            tests
+        }
+
+        fn accuracy<X: Scalar + Float, T: Scalar + Unsigned>(
+            device: &Device,
+            batch_size: usize,
+            classes: usize,
+        ) {
+            let x_vec: Vec<X> = (0..classes)
+                .map(|x| X::from_usize(x).unwrap())
+                .cycle()
+                .skip(classes / 2 + 1)
+                .take(batch_size * classes)
+                .collect();
+            let t_vec: Vec<T> = (0..classes)
+                .cycle()
+                .map(|t| T::from_usize(t).unwrap())
+                .take(batch_size)
+                .collect();
+            let x_array = Array::from(x_vec)
+                .into_shape([batch_size, classes])
+                .unwrap();
+            let t_array = Array::from(t_vec);
+            let x_host = Tensor::from(x_array);
+            let t_host = Tensor::from(t_array);
+            let x_device = x_host.to_device(device.clone()).unwrap();
+            let t_device = t_host.to_device(device.clone()).unwrap();
+            let y_host = x_host.accuracy(t_host).unwrap();
+            let y_device = x_device.accuracy(t_device).unwrap();
+            assert_eq!(y_host, y_device);
+        }
+
+        fn cross_entropy_loss<X: Scalar + Float, T: Scalar + Unsigned>(
+            device: &Device,
+            batch_size: usize,
+            classes: usize,
+        ) {
+            let x_vec: Vec<X> = (0..10u8)
+                .map(|x| X::from_u8(x).unwrap())
+                .cycle()
+                .take(batch_size * classes)
+                .collect();
+            let t_vec: Vec<T> = (0..classes)
+                .cycle()
+                .map(|t| T::from_usize(t).unwrap())
+                .take(batch_size)
+                .collect();
+            let x_array = Array::from(x_vec)
+                .into_shape([batch_size, classes])
+                .unwrap();
+            let t_array = Array::from(t_vec);
+            let x_host = Tensor::from(x_array);
+            let t_host = Tensor::from(t_array);
+            let x_device = x_host.to_device(device.clone()).unwrap();
+            let t_device = t_host.to_device(device.clone()).unwrap();
+            let y_host = x_host.cross_entropy_loss(t_host).unwrap();
+            let y_device = x_device.cross_entropy_loss(t_device).unwrap();
+            let epsilon = if X::scalar_type() == ScalarType::BF16 {
+                batch_size as f32 * 0.001
+            } else {
+                batch_size as f32 * f32::EPSILON
+            };
+            assert_relative_eq!(y_host, y_device, epsilon = epsilon, max_relative = epsilon);
+        }
     }
 
     #[cfg(feature = "neural-network")]
@@ -483,20 +741,82 @@ mod learn {
             },
             tensor::Tensor1,
         };
+        use num_traits::{Float, Unsigned};
 
         pub fn neural_network_tests(device: &Device) -> Vec<Trial> {
             let mut tests = Vec::new();
-
+            let features = device
+                .info()
+                .map(|info| info.features())
+                .unwrap_or(Features::empty());
             if device.is_device() {
-                tests.push(device_test(device, &format!("max_pool2_f32"), |device| {
-                    let pool = MaxPool2::builder().size([2, 2]).strides([2, 2]).build();
-                    max_pool2::<f32>(device, [1, 1, 4, 4], &pool);
-                    max_pool2::<f32>(device, [1, 1, 12, 12], &pool);
-                    max_pool2::<f32>(device, [2, 3, 4, 4], &pool);
-                    max_pool2::<f32>(device, [1, 1, 24, 24], &pool);
-                }));
+                macro_for!($X in [bf16, f32] {
+                    macro_for!($T in [u8, u16, u32] {
+                        let ignore = device.is_device()
+                        && (
+                            !features.contains(&features_for_scalar($X::scalar_type()))
+                            || !features.contains(&features_for_scalar($T::scalar_type()))
+                        );
+                        tests.push(device_test(device, &format!("cross_entropy_loss_backward_{}_{}", $X::scalar_type().name(), $T::scalar_type().name()), |device| {
+                            for (batch_size, classes) in [
+                                (1, 8),
+                                (31, 16),
+                                (1000, 100),
+                            ] {
+                                cross_entropy_loss_backward::<$X, $T>(device, batch_size, classes);
+                            }
+                        }).with_ignored_flag(ignore));
+                    });
+                });
+                macro_for!($T in [bf16, f32] {
+                    let ignore = device.is_device()
+                    && !features.contains(&features_for_scalar($T::scalar_type()));
+                    tests.push(device_test(device, &format!("max_pool2_{}", $T::scalar_type().name()), |device| {
+                        let pool = MaxPool2::builder().size([2, 2]).strides([2, 2]).build();
+                        max_pool2::<$T>(device, [1, 1, 4, 4], &pool);
+                        max_pool2::<$T>(device, [1, 1, 12, 12], &pool);
+                        max_pool2::<$T>(device, [2, 3, 4, 4], &pool);
+                        max_pool2::<$T>(device, [1, 1, 24, 24], &pool);
+                    }).with_ignored_flag(ignore));
+                });
             }
             tests
+        }
+
+        fn cross_entropy_loss_backward<X: Scalar + Float, T: Scalar + Unsigned>(
+            device: &Device,
+            batch_size: usize,
+            classes: usize,
+        ) {
+            use autograph::learn::neural_network::criterion::cross_entropy_loss_backward as backward;
+            let x_vec: Vec<X> = (0..10u8)
+                .map(|x| X::from_u8(x).unwrap())
+                .cycle()
+                .take(batch_size * classes)
+                .collect();
+            let t_vec: Vec<T> = (0..classes)
+                .cycle()
+                .map(|t| T::from_usize(t).unwrap())
+                .take(batch_size)
+                .collect();
+            let x_array = Array::from(x_vec)
+                .into_shape([batch_size, classes])
+                .unwrap();
+            let t_array = Array::from(t_vec);
+            let x_host = Tensor::from(x_array);
+            let t_host = Tensor::from(t_array);
+            let x_device = x_host.to_device(device.clone()).unwrap();
+            let t_device = t_host.to_device(device.clone()).unwrap();
+            let dy = 1f32;
+            let y_host = backward(x_host.view(), t_host.view(), dy)
+                .unwrap()
+                .into_dyn();
+            let y_device = backward(x_device.view(), t_device.view(), dy)
+                .unwrap()
+                .into_device(Device::host())
+                .unwrap()
+                .into_dyn();
+            check_approx_eq(y_host.view().into(), y_device.view().into(), None);
         }
 
         fn max_pool2<T: Scalar>(device: &Device, input_shape: [usize; 4], pool: &MaxPool2) {

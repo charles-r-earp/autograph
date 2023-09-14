@@ -526,7 +526,7 @@ impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
     }
 }
 
-impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
+impl<T: Scalar + Unsigned, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     /// A one hot vector given class labels.
     ///
     /// Output shape = [input_shape.., `classes`].
@@ -551,19 +551,24 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
             }
             return Ok(Tensor::from(output));
         }
-        todo!();
-        /*
+        let input = self.as_standard_layout()?;
         macro_for!($X in [u8, u16, u32, u64] {
-            if let Ok(input) = TensorView::<$X, D>::try_from(self.view()) {
-                let input = input.as_array().unwrap();
-
+            if T::scalar_type() == $X::scalar_type() {
+                let input = ScalarTensorView::from(input.view()).try_into_tensor_view::<$X>().unwrap();
                 macro_for!($Y in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
-                    if scalar_type == $Y::scalar_type() {
-
+                    if T2::scalar_type() == $Y::scalar_type() {
+                        let mut output = unsafe {
+                            Tensor::uninit(self.device(), dim)?
+                        };
+                        let kernel = paste! {
+                            kernels::[<one_hot_ $X _ $Y>]::builder()?.build(input.device())?
+                        };
+                        kernel.dispatch(input.as_slice().unwrap(), output.as_slice_mut().unwrap())?;
+                        return Ok(output.cast_into().unwrap());
                     }
                 });
             }
-        });*/
+        });
         bail!(
             "to_one_hot {:?} {:?} unimplemented!",
             self.scalar_type(),
@@ -1205,6 +1210,29 @@ mod kernels {
                     unsafe {
                         *y.unsafe_index_mut(y_idx) = op.eval(alpha * x[x_idx].cast::<$Y>(), *y.unsafe_index(y_idx));
                     }
+                }
+            }
+        });
+    });
+
+    #[cfg(any(target_arch = "spirv", feature = "device"))]
+    macro_for!($X in [u8, u16, u32, u64] {
+        macro_for!($Y in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+            paste! {
+                #[kernel]
+                pub fn [<one_hot_ $X _ $Y>](
+                    #[global] x: Slice<$X>,
+                    #[item] y: &mut $Y,
+                ) {
+                    type Y = $Y;
+                    use krnl_core::num_traits::{FromPrimitive, ToPrimitive};
+
+                    let idx = kernel.item_id as usize;
+                    let classes = kernel.items as usize / x.len();
+                    let x_idx = idx / classes;
+                    let y_class = idx % classes;
+                    let class = x[x_idx].to_usize().unwrap();
+                    *y = Y::from_u32((y_class == class) as u32).unwrap();
                 }
             }
         });

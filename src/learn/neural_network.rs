@@ -2,7 +2,7 @@
 
 ```
 # use anyhow::Result;
-# use autograph::{device::Device, scalar::ScalarType, tensor::Tensor};
+# use autograph::{device::Device, scalar::ScalarType, tensor::{Tensor, ScalarArcTensor}};
 # use autograph::learn::neural_network;
 # use neural_network::autograd::{Variable2, Variable4};
 # use neural_network::layer::{Layer, Forward, Conv2, Dense, MaxPool2, Flatten, Relu};
@@ -86,8 +86,9 @@ impl LeNet5 {
 
 # fn main() -> Result<()> {
 # let device = Device::host();
-# let model = LeNet5::new(device.clone(), ScalarType::F32)?;
+# let mut model = LeNet5::new(device.clone(), ScalarType::F32)?;
 # let x = Variable4::from(Tensor::<f32, _>::zeros(device.clone(), [1, 1, 28, 28])?);
+# let t = ScalarArcTensor::zeros(device.clone(), [1], ScalarType::U8)?;
 # let optimizer = SGD::builder().build();
 # let learning_rate = 0.01;
 let y = model.forward(x)?;
@@ -102,7 +103,9 @@ for parameter in model.parameters_mut()? {
 
 /// Autograd.
 pub mod autograd;
-mod criterion;
+// public for testing
+#[doc(hidden)]
+pub mod criterion;
 /// Layers.
 pub mod layer;
 /// Optimizers.

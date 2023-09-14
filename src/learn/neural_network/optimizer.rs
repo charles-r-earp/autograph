@@ -148,13 +148,14 @@ impl<'a> ValueMut<'a> {
             panic!("Expected tensor!")
         }
     }
+    /*
     fn unwrap_elem(self) -> ScalarElem {
         if let Self::Elem(elem) = self {
             *elem
         } else {
             panic!("Expected elem!")
         }
-    }
+    }*/
 }
 
 /// Optimizer State.
