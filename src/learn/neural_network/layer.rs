@@ -15,7 +15,10 @@ use crate::{
         MaxPool2Backward as _, MaxPool2Options,
     },
     scalar::{Scalar, ScalarType},
-    tensor::{ScalarArcTensor, ScalarTensor, ScalarTensorBase, Tensor, TensorView, TensorViewMut},
+    tensor::{
+        ScalarArcTensor, ScalarArcTensor4, ScalarTensor, ScalarTensorBase, Tensor, TensorView,
+        TensorViewMut,
+    },
 };
 use anyhow::{bail, Error, Result};
 pub use autograph_derive::*;
@@ -513,7 +516,7 @@ impl<A: Forward<Variable4, Output = Variable4>> Forward<Variable4> for Conv2<A> 
             ..Im2ColConv2Options::default()
         };
         let [oh, ow] = options.output_shape([ih, iw]);
-        let im2col_matrix = input.value().im2col_conv2(options)?;
+        let im2col_matrix = input.value().im2col_conv2(&options)?;
         let weight_matrix = self
             .weight
             .value()
@@ -531,7 +534,7 @@ impl<A: Forward<Variable4, Output = Variable4>> Forward<Variable4> for Conv2<A> 
                 };
                 output_grad
                     .dot(&weight_matrix)?
-                    .col2im_conv2(options)
+                    .col2im_conv2(&options)
                     .map(Into::into)
             });
         }
@@ -703,6 +706,25 @@ impl Forward<Variable4> for MaxPool2 {
     }
 }
 
+// for testing
+#[doc(hidden)]
+impl MaxPool2 {
+    pub fn backward(
+        &self,
+        mut input: ScalarArcTensor4,
+        output_grad: ScalarArcTensor4,
+    ) -> Result<ScalarArcTensor4> {
+        let options = MaxPool2Options {
+            size: self.size,
+            strides: self.strides,
+        };
+        input
+            .make_view_mut()?
+            .max_pool2_backward(output_grad, options)?;
+        Ok(input)
+    }
+}
+
 /// Flatten.
 ///
 /// See [`Variable::flatten()`](Variable::flatten).
@@ -747,6 +769,18 @@ impl<D: Dimension + 'static> Forward<Variable<D>> for Relu {
             });
         }
         Ok(builder.build(scalar_relu(input.into_value())?))
+    }
+}
+
+// for testing
+#[doc(hidden)]
+impl Relu {
+    pub fn backward<D: Dimension>(
+        &self,
+        output: ScalarArcTensor<D>,
+        output_grad: ScalarArcTensor<D>,
+    ) -> Result<ScalarArcTensor<D>> {
+        scalar_relu_backward(output, output_grad)
     }
 }
 

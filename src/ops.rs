@@ -7,12 +7,15 @@ pub trait AddAssign<R> {
     fn add_assign(&mut self, rhs: R) -> Result<()>;
 }
 
+// pub for tests
+#[doc(hidden)]
 #[cfg(feature = "neural-network")]
-pub(crate) struct Im2ColConv2Options {
-    pub(crate) filter: [usize; 2],
-    pub(crate) padding: [usize; 2],
-    pub(crate) stride: [usize; 2],
-    pub(crate) dilation: [usize; 2],
+#[derive(Clone)]
+pub struct Im2ColConv2Options {
+    pub filter: [usize; 2],
+    pub padding: [usize; 2],
+    pub stride: [usize; 2],
+    pub dilation: [usize; 2],
 }
 
 #[cfg(feature = "neural-network")]
@@ -27,9 +30,11 @@ impl Default for Im2ColConv2Options {
     }
 }
 
+// pub for tests
+#[doc(hidden)]
 #[cfg(feature = "neural-network")]
 impl Im2ColConv2Options {
-    pub(crate) fn output_shape(&self, input_shape: [usize; 2]) -> [usize; 2] {
+    pub fn output_shape(&self, input_shape: [usize; 2]) -> [usize; 2] {
         let mut shape = input_shape;
         for ((a, f), (s, (p, d))) in shape.iter_mut().zip(self.filter).zip(
             self.stride
@@ -42,19 +47,24 @@ impl Im2ColConv2Options {
     }
 }
 
+// pub for tests
+#[doc(hidden)]
 #[cfg(feature = "neural-network")]
-pub(crate) trait Im2ColConv2 {
+pub trait Im2ColConv2 {
     type Output;
-    fn im2col_conv2(&self, options: Im2ColConv2Options) -> Result<Self::Output>;
+    fn im2col_conv2(&self, options: &Im2ColConv2Options) -> Result<Self::Output>;
 }
 
+// pub for tests
+#[doc(hidden)]
 #[cfg(feature = "neural-network")]
-pub(crate) struct Col2ImConv2Options {
-    pub(crate) shape: [usize; 2],
-    pub(crate) filter: [usize; 2],
-    pub(crate) padding: [usize; 2],
-    pub(crate) stride: [usize; 2],
-    pub(crate) dilation: [usize; 2],
+#[derive(Clone)]
+pub struct Col2ImConv2Options {
+    pub shape: [usize; 2],
+    pub filter: [usize; 2],
+    pub padding: [usize; 2],
+    pub stride: [usize; 2],
+    pub dilation: [usize; 2],
 }
 
 #[cfg(feature = "neural-network")]
@@ -85,10 +95,12 @@ impl Col2ImConv2Options {
     }
 }
 
+// pub for tests
+#[doc(hidden)]
 #[cfg(feature = "neural-network")]
-pub(crate) trait Col2ImConv2 {
+pub trait Col2ImConv2 {
     type Output;
-    fn col2im_conv2(&self, options: Col2ImConv2Options) -> Result<Self::Output>;
+    fn col2im_conv2(&self, options: &Col2ImConv2Options) -> Result<Self::Output>;
 }
 
 #[doc(hidden)]

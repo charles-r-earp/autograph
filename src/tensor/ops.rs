@@ -580,7 +580,7 @@ impl<T: Scalar + Unsigned, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
 #[cfg(feature = "neural-network")]
 impl<T: Scalar, S: ArrayData<Elem = T>> Im2ColConv2 for ArrayBase<S, Ix4> {
     type Output = Array2<T>;
-    fn im2col_conv2(&self, options: Im2ColConv2Options) -> Result<Self::Output> {
+    fn im2col_conv2(&self, options: &Im2ColConv2Options) -> Result<Self::Output> {
         let input = self.as_standard_layout();
         let (bs, c, ih, iw) = input.dim();
         let [oh, ow] = options.output_shape([ih, iw]);
@@ -589,7 +589,7 @@ impl<T: Scalar, S: ArrayData<Elem = T>> Im2ColConv2 for ArrayBase<S, Ix4> {
             padding: [ph, pw],
             stride: [sh, sw],
             dilation: [dh, dw],
-        } = options;
+        } = options.clone();
         let mut output = Array::uninit([bs, oh, ow, c, fh * fw]);
         for (input, mut output) in input.outer_iter().zip(output.outer_iter_mut()) {
             for (input, mut output) in input.outer_iter().zip(output.axis_iter_mut(Axis(2))) {
@@ -625,7 +625,7 @@ impl<T: Scalar, S: ArrayData<Elem = T>> Im2ColConv2 for ArrayBase<S, Ix4> {
 #[cfg(feature = "neural-network")]
 impl<T: Scalar, S: Data<Elem = T>> Im2ColConv2 for TensorBase<S, Ix4> {
     type Output = Tensor2<T>;
-    fn im2col_conv2(&self, options: Im2ColConv2Options) -> Result<Self::Output> {
+    fn im2col_conv2(&self, options: &Im2ColConv2Options) -> Result<Self::Output> {
         if let Some(input) = self.as_array() {
             input.im2col_conv2(options).map(Into::into)
         } else {
@@ -640,7 +640,7 @@ impl<T: Scalar, S: Data<Elem = T>> Im2ColConv2 for TensorBase<S, Ix4> {
 #[cfg(feature = "neural-network")]
 impl<S: ScalarData> Im2ColConv2 for ScalarTensorBase<S, Ix4> {
     type Output = ScalarTensor2;
-    fn im2col_conv2(&self, options: Im2ColConv2Options) -> Result<Self::Output> {
+    fn im2col_conv2(&self, options: &Im2ColConv2Options) -> Result<Self::Output> {
         macro_wrap!(
             paste! { #[allow(clippy::single_match)] match self.scalar_type() {
                 macro_for!($T in [bf16, f32] {
@@ -658,7 +658,7 @@ impl<S: ScalarData> Im2ColConv2 for ScalarTensorBase<S, Ix4> {
                                 padding: [ph, pw],
                                 stride: [sh, sw],
                                 dilation: [dh, dw],
-                            } = options;
+                            } = options.clone();
                             let mut output = unsafe {
                                 Tensor::<$T, _>::uninit(input.device(), [bs * oh * ow, c * fh * fw])?
                             };
@@ -700,7 +700,7 @@ impl<S: ScalarData> Im2ColConv2 for ScalarTensorBase<S, Ix4> {
 #[cfg(feature = "neural-network")]
 impl<T: Scalar, S: ArrayData<Elem = T>> Col2ImConv2 for ArrayBase<S, Ix2> {
     type Output = Array4<T>;
-    fn col2im_conv2(&self, options: Col2ImConv2Options) -> Result<Self::Output> {
+    fn col2im_conv2(&self, options: &Col2ImConv2Options) -> Result<Self::Output> {
         let input = self.as_standard_layout();
         let (rows, cols) = input.dim();
         let [oh, ow] = options.output_shape();
@@ -710,11 +710,11 @@ impl<T: Scalar, S: ArrayData<Elem = T>> Col2ImConv2 for ArrayBase<S, Ix2> {
             padding: [ph, pw],
             stride: [sh, sw],
             dilation: [dh, dw],
-        } = options;
+        } = options.clone();
         let bs = rows / (ih * iw);
         let c = cols / (fh * fw);
         let input = input.into_shape([bs, ih, iw, c, fh * fw]).unwrap();
-        let mut output = Array::uninit([bs, c, oh, ow]);
+        let mut output = Array::zeros([bs, c, oh, ow]);
         for (input, mut output) in input.outer_iter().zip(output.outer_iter_mut()) {
             for (input, mut output) in input.axis_iter(Axis(2)).zip(output.outer_iter_mut()) {
                 for (hid, input) in input.outer_iter().enumerate() {
@@ -729,10 +729,10 @@ impl<T: Scalar, S: ArrayData<Elem = T>> Col2ImConv2 for ArrayBase<S, Ix2> {
                                     && widx >= 0
                                     && widx < ow as isize
                                 {
+                                    // TODO: accumulate in f32 to reduce error
                                     unsafe {
-                                        output
-                                            .uget_mut((hidx as usize, widx as usize))
-                                            .write(*input.uget(fidx));
+                                        *output.uget_mut((hidx as usize, widx as usize)) +=
+                                            *input.uget(fidx);
                                     }
                                 }
                             }
@@ -741,7 +741,6 @@ impl<T: Scalar, S: ArrayData<Elem = T>> Col2ImConv2 for ArrayBase<S, Ix2> {
                 }
             }
         }
-        let output = unsafe { output.assume_init() };
         Ok(output)
     }
 }
@@ -749,7 +748,7 @@ impl<T: Scalar, S: ArrayData<Elem = T>> Col2ImConv2 for ArrayBase<S, Ix2> {
 #[cfg(feature = "neural-network")]
 impl<T: Scalar, S: Data<Elem = T>> Col2ImConv2 for TensorBase<S, Ix2> {
     type Output = Tensor4<T>;
-    fn col2im_conv2(&self, options: Col2ImConv2Options) -> Result<Self::Output> {
+    fn col2im_conv2(&self, options: &Col2ImConv2Options) -> Result<Self::Output> {
         if let Some(input) = self.as_array() {
             input.col2im_conv2(options).map(Into::into)
         } else {
@@ -764,7 +763,7 @@ impl<T: Scalar, S: Data<Elem = T>> Col2ImConv2 for TensorBase<S, Ix2> {
 #[cfg(feature = "neural-network")]
 impl<S: ScalarData> Col2ImConv2 for ScalarTensorBase<S, Ix2> {
     type Output = ScalarTensor4;
-    fn col2im_conv2(&self, options: Col2ImConv2Options) -> Result<Self::Output> {
+    fn col2im_conv2(&self, options: &Col2ImConv2Options) -> Result<Self::Output> {
         // adapted from https://github.com/CNugteren/CLBlast/blob/master/src/utilities/utilities.cpp
         #[allow(clippy::many_single_char_names)]
         #[cfg(feature = "device")]
@@ -808,7 +807,7 @@ impl<S: ScalarData> Col2ImConv2 for ScalarTensorBase<S, Ix2> {
                                 padding: [ph, pw],
                                 stride: [sh, sw],
                                 dilation: [dh, dw],
-                            } = options;
+                            } = options.clone();
                             let bs = rows / (ih * iw);
                             let c = cols / (fh * fw);
                             let (s_bez_h, d_bez_h, gcd_h) = eclid_gcd(sh, dh);

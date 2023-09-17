@@ -737,8 +737,9 @@ mod learn {
         use autograph::{
             learn::neural_network::{
                 autograd::Variable,
-                layer::{Forward, MaxPool2},
+                layer::{Forward, MaxPool2, Relu},
             },
+            ops::{Col2ImConv2, Col2ImConv2Options, Im2ColConv2, Im2ColConv2Options},
             tensor::Tensor1,
         };
         use num_traits::{Float, Unsigned};
@@ -749,37 +750,96 @@ mod learn {
                 .info()
                 .map(|info| info.features())
                 .unwrap_or(Features::empty());
-            if device.is_device() {
-                macro_for!($X in [bf16, f32] {
-                    macro_for!($T in [u8, u16, u32] {
-                        let ignore = device.is_device()
-                        && (
-                            !features.contains(&features_for_scalar($X::scalar_type()))
-                            || !features.contains(&features_for_scalar($T::scalar_type()))
-                        );
-                        tests.push(device_test(device, &format!("cross_entropy_loss_backward_{}_{}", $X::scalar_type().name(), $T::scalar_type().name()), |device| {
-                            for (batch_size, classes) in [
-                                (1, 8),
-                                (31, 16),
-                                (1000, 100),
-                            ] {
-                                cross_entropy_loss_backward::<$X, $T>(device, batch_size, classes);
-                            }
-                        }).with_ignored_flag(ignore));
-                    });
-                });
-                macro_for!($T in [bf16, f32] {
+
+            macro_for!($X in [bf16, f32] {
+                macro_for!($T in [u8, u16, u32] {
                     let ignore = device.is_device()
-                    && !features.contains(&features_for_scalar($T::scalar_type()));
-                    tests.push(device_test(device, &format!("max_pool2_{}", $T::scalar_type().name()), |device| {
-                        let pool = MaxPool2::builder().size([2, 2]).strides([2, 2]).build();
-                        max_pool2::<$T>(device, [1, 1, 4, 4], &pool);
-                        max_pool2::<$T>(device, [1, 1, 12, 12], &pool);
-                        max_pool2::<$T>(device, [2, 3, 4, 4], &pool);
-                        max_pool2::<$T>(device, [1, 1, 24, 24], &pool);
+                    && (
+                        !features.contains(&features_for_scalar($X::scalar_type()))
+                        || !features.contains(&features_for_scalar($T::scalar_type()))
+                    );
+                    tests.push(device_test(device, &format!("cross_entropy_loss_backward_{}_{}", $X::scalar_type().name(), $T::scalar_type().name()), |device| {
+                        for (batch_size, classes) in [
+                            (1, 8),
+                            (31, 16),
+                            (1000, 100),
+                        ] {
+                            cross_entropy_loss_backward::<$X, $T>(device, batch_size, classes);
+                        }
                     }).with_ignored_flag(ignore));
                 });
-            }
+            });
+            macro_for!($T in [bf16, f32] {
+                let ignore = device.is_device()
+                && !features.contains(&features_for_scalar($T::scalar_type()));
+                let input_shapes = [
+                    [1, 1, 5, 5],
+                    [1, 1, 12, 12],
+                    [2, 3, 5, 5],
+                    [1, 1, 24, 24],
+                ];
+                tests.extend([
+                    device_test(device, &format!("im2col_conv2_{}", $T::scalar_type().name()), move |device| {
+                        let options = Im2ColConv2Options {
+                            filter: [5, 5],
+                            .. Default::default()
+                        };
+                        for input_shape in input_shapes {
+                            im2col_conv2::<$T>(device, input_shape, &options);
+                        }
+                    }).with_ignored_flag(ignore),
+                    device_test(device, &format!("col2im_conv2_{}", $T::scalar_type().name()), move |device| {
+                        let options = Im2ColConv2Options {
+                            filter: [5, 5],
+                            .. Default::default()
+                        };
+                        for input_shape in input_shapes {
+                            col2im_conv2::<$T>(device, input_shape, &options);
+                        }
+                    }).with_ignored_flag(ignore),
+                ]);
+            });
+            macro_for!($T in [bf16, f32] {
+                let ignore = device.is_device()
+                && !features.contains(&features_for_scalar($T::scalar_type()));
+                let input_shapes = [
+                    [1, 1, 4, 4],
+                    [1, 1, 12, 12],
+                    [2, 3, 4, 4],
+                    [1, 1, 24, 24],
+                ];
+                tests.extend([
+                    device_test(device, &format!("max_pool2_{}", $T::scalar_type().name()), move |device| {
+                        let pool = MaxPool2::builder().size([2, 2]).strides([2, 2]).build();
+                        for input_shape in input_shapes {
+                            max_pool2::<$T>(device, input_shape, &pool);
+                        }
+                    }).with_ignored_flag(ignore),
+                    device_test(device, &format!("max_pool2_backward_{}", $T::scalar_type().name()), move |device| {
+                        let pool = MaxPool2::builder().size([2, 2]).strides([2, 2]).build();
+                        for input_shape in input_shapes {
+                            max_pool2_backward::<$T>(device, input_shape, &pool);
+                        }
+                    }).with_ignored_flag(ignore),
+                ]);
+            });
+            macro_for!($T in [bf16, f32] {
+                let ignore = device.is_device()
+                && !features.contains(&features_for_scalar($T::scalar_type()));
+                let input_shapes = [[1, 8], [15, 20]];
+                tests.extend([
+                    device_test(device, &format!("relu_{}", $T::scalar_type().name()), move |device| {
+                        for input_shape in input_shapes {
+                            relu::<$T>(device, input_shape);
+                        }
+                    }).with_ignored_flag(ignore),
+                    device_test(device, &format!("relu_backward_{}", $T::scalar_type().name()), move |device| {
+                        for input_shape in input_shapes {
+                            relu_backward::<$T>(device, input_shape);
+                        }
+                    }).with_ignored_flag(ignore),
+                ]);
+            });
             tests
         }
 
@@ -808,15 +868,70 @@ mod learn {
             let x_device = x_host.to_device(device.clone()).unwrap();
             let t_device = t_host.to_device(device.clone()).unwrap();
             let dy = 1f32;
-            let y_host = backward(x_host.view(), t_host.view(), dy)
+            let dx_host = backward(x_host.view(), t_host.view(), dy)
                 .unwrap()
                 .into_dyn();
-            let y_device = backward(x_device.view(), t_device.view(), dy)
+            let dx_device = backward(x_device.view(), t_device.view(), dy)
                 .unwrap()
                 .into_device(Device::host())
                 .unwrap()
                 .into_dyn();
-            check_approx_eq(y_host.view().into(), y_device.view().into(), None);
+            check_approx_eq(dx_host.view().into(), dx_device.view().into(), None);
+        }
+
+        fn im2col_conv2<T: Scalar>(
+            device: &Device,
+            input_shape: [usize; 4],
+            options: &Im2ColConv2Options,
+        ) {
+            let len = input_shape.iter().product();
+            let x_vec: Vec<T> = (1..=len).map(|x| T::from_usize(x).unwrap()).collect();
+            let x_array = Array::from(x_vec).into_shape(input_shape).unwrap();
+            let x_host = Tensor::from(x_array);
+            let x_device = x_host.to_device(device.clone()).unwrap();
+            let y_host = x_host.im2col_conv2(options).unwrap();
+            let y_device = x_device.im2col_conv2(options).unwrap();
+            assert_eq!(y_host.into_array().unwrap(), y_device.into_array().unwrap());
+        }
+
+        fn col2im_conv2<T: Scalar>(
+            device: &Device,
+            input_shape: [usize; 4],
+            options: &Im2ColConv2Options,
+        ) {
+            let [batch_size, channels, ih, iw] = input_shape;
+            let len = input_shape.iter().product();
+            let x_vec: Vec<T> = (1..=len).map(|x| T::from_usize(x).unwrap()).collect();
+            let x_array = Array::from(x_vec).into_shape(input_shape).unwrap();
+            let x_host = Tensor::from(x_array);
+            let y_host = x_host.im2col_conv2(options).unwrap();
+            let [oh, ow] = options.output_shape([ih, iw]);
+            let col2im_options = Col2ImConv2Options {
+                shape: [oh, ow],
+                filter: options.filter,
+                padding: options.padding,
+                stride: options.stride,
+                dilation: options.dilation,
+            };
+            let dy_vec: Vec<T> = (1..=y_host.len())
+                .map(|x| T::from_usize(x).unwrap())
+                .collect();
+            let dy_array = Array::from(dy_vec).into_shape(y_host.raw_dim()).unwrap();
+            let dy_host = Tensor::from(dy_array);
+            let dy_device = dy_host.to_device(device.clone()).unwrap();
+            let dx_host = dy_host.col2im_conv2(&col2im_options).unwrap();
+            let dx_device = dy_device.col2im_conv2(&col2im_options).unwrap();
+            let [fh, fw] = options.filter;
+            let epsilon = if T::scalar_type() == ScalarType::BF16 {
+                Some(ScalarElem::F32((fh * fw) as f32))
+            } else {
+                None
+            };
+            check_approx_eq(
+                dx_host.view().into_dyn().into(),
+                dx_device.view().into_dyn().into(),
+                epsilon,
+            );
         }
 
         fn max_pool2<T: Scalar>(device: &Device, input_shape: [usize; 4], pool: &MaxPool2) {
@@ -846,6 +961,123 @@ mod learn {
                 .try_into_tensor::<T>()
                 .unwrap();
             assert_eq!(y_host.into_array().unwrap(), y_device.into_array().unwrap());
+        }
+
+        fn max_pool2_backward<T: Scalar>(
+            device: &Device,
+            input_shape: [usize; 4],
+            pool: &MaxPool2,
+        ) {
+            let len = input_shape.iter().product();
+            let x_vec: Vec<T> = (0..10u8)
+                .map(|x| T::from_u8(x).unwrap())
+                .cycle()
+                .take(len)
+                .collect();
+            let x_array = Array::from(x_vec).into_shape(input_shape).unwrap();
+            let x_host = Tensor::from(x_array).into_shared().unwrap();
+            let x_device = x_host.to_device(device.clone()).unwrap();
+            let y_host = pool
+                .forward(Variable::from(x_host.clone()))
+                .unwrap()
+                .into_value()
+                .into_owned()
+                .unwrap()
+                .try_into_tensor::<T>()
+                .unwrap();
+            let dy_vec: Vec<T> = (0..y_host.len())
+                .map(|x| T::from_usize(x).unwrap())
+                .collect();
+            let dy_array = Array::from(dy_vec).into_shape(y_host.raw_dim()).unwrap();
+            let dy_host = Tensor::from(dy_array).into_shared().unwrap();
+            let x_device = x_host.to_device_shared(device.clone()).unwrap();
+            let dy_device = dy_host.to_device_shared(device.clone()).unwrap();
+            let dx_host = pool
+                .backward(x_host.into(), dy_host.into())
+                .unwrap()
+                .into_owned()
+                .unwrap()
+                .try_into_tensor::<T>()
+                .unwrap();
+            let dx_device = pool
+                .backward(x_device.into(), dy_device.into())
+                .unwrap()
+                .into_owned()
+                .unwrap()
+                .try_into_tensor::<T>()
+                .unwrap();
+            assert_eq!(
+                dx_host.into_array().unwrap(),
+                dx_device.into_array().unwrap()
+            );
+        }
+
+        fn relu<T: Scalar>(device: &Device, input_shape: [usize; 2]) {
+            let len = input_shape.iter().product();
+            let x_vec: Vec<T> = (-10i8..10)
+                .map(|x| T::from_i8(x).unwrap())
+                .cycle()
+                .take(len)
+                .collect();
+            let x_array = Array::from(x_vec).into_shape(input_shape).unwrap();
+            let x_host = Tensor::from(x_array);
+            let x_device = x_host.to_device(device.clone()).unwrap();
+            let y_host = Relu
+                .forward(Variable::from(x_host))
+                .unwrap()
+                .into_value()
+                .into_owned()
+                .unwrap()
+                .try_into_tensor::<T>()
+                .unwrap();
+            let y_device = Relu
+                .forward(Variable::from(x_device))
+                .unwrap()
+                .into_value()
+                .into_owned()
+                .unwrap()
+                .try_into_tensor::<T>()
+                .unwrap();
+            assert_eq!(y_host.into_array().unwrap(), y_device.into_array().unwrap());
+        }
+
+        fn relu_backward<T: Scalar>(device: &Device, input_shape: [usize; 2]) {
+            let len = input_shape.iter().product();
+            let y_vec: Vec<T> = (-1i8..1)
+                .map(|x| T::from_i8(x).unwrap())
+                .cycle()
+                .take(len)
+                .collect();
+            let dy_vec: Vec<T> = (0..len).map(|x| T::from_usize(x).unwrap()).collect();
+            let y_array = Array::from(y_vec).into_shape(input_shape).unwrap();
+            let dy_array = Array::from(dy_vec).into_shape(input_shape).unwrap();
+            let y_host = Tensor::from(y_array).into_shared().unwrap();
+            let dy_host = Tensor::from(dy_array).into_shared().unwrap();
+            let y_device = y_host.to_device_shared(device.clone()).unwrap();
+            let dy_device = dy_host.to_device_shared(device.clone()).unwrap();
+            for (dy_host, dy_device) in [
+                (dy_host.clone(), dy_device.clone()), // relu_backward
+                (dy_host, dy_device),                 // relu_backward_mut
+            ] {
+                let dx_host = Relu
+                    .backward(y_host.clone().into(), dy_host.into())
+                    .unwrap()
+                    .into_owned()
+                    .unwrap()
+                    .try_into_tensor::<T>()
+                    .unwrap();
+                let dx_device = Relu
+                    .backward(y_device.clone().into(), dy_device.into())
+                    .unwrap()
+                    .into_owned()
+                    .unwrap()
+                    .try_into_tensor::<T>()
+                    .unwrap();
+                assert_eq!(
+                    dx_host.into_array().unwrap(),
+                    dx_device.into_array().unwrap()
+                );
+            }
         }
     }
 }
