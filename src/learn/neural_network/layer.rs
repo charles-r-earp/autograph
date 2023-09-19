@@ -462,12 +462,12 @@ impl Conv2 {
         Conv2Builder::new()
     }
     /// The weight as a mutable parameter view.
-    pub fn weight_view_mut(&mut self) -> ParameterViewMut4 {
-        todo!()
+    pub fn weight_view_mut(&mut self) -> Result<ParameterViewMut4> {
+        self.weight.make_view_mut()
     }
     /// The bias as a mutable parameter_view.
     pub fn bias_view_mut(&mut self) -> Result<Option<ParameterViewMut1>> {
-        todo!()
+        self.bias.as_mut().map(Parameter::make_view_mut).transpose()
     }
     /// Moves the layer into `device`.
     pub fn into_device(self, device: Device) -> Result<Self> {
@@ -510,7 +510,7 @@ impl<A: Forward<Variable4, Output = Variable4>> Forward<Variable4> for Conv2<A> 
     fn forward(&self, input: Variable4) -> Result<Variable4> {
         let (batch_size, inputs, ih, iw) = input.dim();
         let (outputs, inputs2, fh, fw) = self.weight.dim();
-        assert_eq!(inputs, inputs2);
+        debug_assert_eq!(inputs, inputs2);
         let options = Im2ColConv2Options {
             filter: [fh, fw],
             ..Im2ColConv2Options::default()
