@@ -272,6 +272,9 @@ fn layer_impl(input: TokenStream2) -> Result<TokenStream2> {
     })
 }
 
+/// Derive for Layer.
+///
+/// See [`autograph_derive`](crate).
 #[proc_macro_derive(Layer, attributes(autograph, layer))]
 pub fn layer(input: TokenStream) -> TokenStream {
     match layer_impl(input.into()) {
@@ -329,6 +332,9 @@ fn forward_impl(input: TokenStream2) -> Result<TokenStream2> {
         .collect())
 }
 
+/// Derive for Forward.
+///
+/// See [`autograph_derive`](crate).
 #[proc_macro_derive(Forward, attributes(autograph, layer))]
 pub fn forward(input: TokenStream) -> TokenStream {
     match forward_impl(input.into()) {

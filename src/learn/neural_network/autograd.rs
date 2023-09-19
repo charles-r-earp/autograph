@@ -274,7 +274,7 @@ impl<D: Dimension> Node<D> {
 /// Variable.
 ///
 /// Variables are tensors with an optional [`Node`] that stores a gradient. Numerical operations
-/// on variables with a node creates a graph of edges that is traversed during the backward pass
+/// on variables with a node create a graph of edges that is traversed during the backward pass
 /// to compute the gradients.
 ///
 /// Variables can be created from tensors via [`From`].
