@@ -52,11 +52,13 @@ use crate::{
 };
 use anyhow::{anyhow, bail, Result};
 use dry::macro_for;
+#[cfg(feature = "device")]
 use krnl::krnl_core::half::bf16;
 use ndarray::{
     Array, ArrayBase, ArrayView, ArrayViewMut, Axis, Dimension, IntoDimension, Ix0, Ix1, Ix2, Ix3,
     Ix4, Ix5, Ix6, IxDyn, RawArrayView, RemoveAxis, ShapeBuilder, ShapeError, StrideShape,
 };
+#[cfg(feature = "device")]
 use num_traits::ToPrimitive;
 use paste::paste;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};

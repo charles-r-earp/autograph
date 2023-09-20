@@ -551,7 +551,9 @@ impl<T: Scalar + Unsigned, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
             }
             return Ok(Tensor::from(output));
         }
+        #[cfg(feature = "device")]
         let input = self.as_standard_layout()?;
+        #[cfg(feature = "device")]
         macro_for!($X in [u8, u16, u32, u64] {
             if T::scalar_type() == $X::scalar_type() {
                 let input = ScalarTensorView::from(input.view()).try_into_tensor_view::<$X>().unwrap();

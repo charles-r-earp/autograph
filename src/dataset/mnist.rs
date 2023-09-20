@@ -203,7 +203,7 @@ fn download(kind: MnistKind, mnist_path: &Path, names: &[&str]) -> Result<()> {
         })
         .collect();
     let mut downloader = Downloader::builder()
-        .download_folder(&mnist_path)
+        .download_folder(mnist_path)
         .retries(10)
         .build()?;
     let summaries = downloader.download(&downloads)?;
@@ -229,7 +229,7 @@ fn unzip(mnist_path: &Path, name: &str) -> Result<Vec<u8>> {
     let n = if train { 60_000 } else { 10_000 };
     let gz_path = mnist_path.join(name).with_extension("gz");
     let mut data = Vec::new();
-    let mut decoder = GzDecoder::new(File::open(&gz_path)?);
+    let mut decoder = GzDecoder::new(File::open(gz_path)?);
     ensure!(decoder.read_i32::<BigEndian>().unwrap() == magic);
     ensure!(decoder.read_i32::<BigEndian>().unwrap() == n as i32);
     if image {

@@ -810,13 +810,13 @@ mod learn {
                 ];
                 tests.extend([
                     device_test(device, &format!("max_pool2_{}", $T::scalar_type().name()), move |device| {
-                        let pool = MaxPool2::builder().size([2, 2]).strides([2, 2]).build();
+                        let pool = MaxPool2::builder().filter([2, 2]).build();
                         for input_shape in input_shapes {
                             max_pool2::<$T>(device, input_shape, &pool);
                         }
                     }).with_ignored_flag(ignore),
                     device_test(device, &format!("max_pool2_backward_{}", $T::scalar_type().name()), move |device| {
-                        let pool = MaxPool2::builder().size([2, 2]).strides([2, 2]).build();
+                        let pool = MaxPool2::builder().filter([2, 2]).build();
                         for input_shape in input_shapes {
                             max_pool2_backward::<$T>(device, input_shape, &pool);
                         }

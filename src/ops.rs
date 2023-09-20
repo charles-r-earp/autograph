@@ -103,9 +103,9 @@ pub trait Col2ImConv2 {
     fn col2im_conv2(&self, options: &Col2ImConv2Options) -> Result<Self::Output>;
 }
 
-#[doc(hidden)]
 #[cfg(feature = "neural-network")]
-pub struct MaxPool2Options {
+#[derive(Clone)]
+pub(crate) struct MaxPool2Options {
     pub(crate) size: [usize; 2],
     pub(crate) strides: [usize; 2],
 }

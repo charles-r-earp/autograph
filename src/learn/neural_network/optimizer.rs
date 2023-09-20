@@ -9,11 +9,13 @@ use crate::{
     tensor::{ScalarTensor, ScalarTensorD, ScalarTensorViewMutD, TensorViewD, TensorViewMutD},
 };
 use anyhow::{bail, Result};
+#[cfg(feature = "device")]
 use dry::macro_for;
 use half::bf16;
 #[cfg(feature = "device")]
 use krnl::macros::module;
 use ndarray::Zip;
+#[cfg(feature = "device")]
 use paste::paste;
 use serde::{Deserialize, Serialize};
 use std::any::TypeId;

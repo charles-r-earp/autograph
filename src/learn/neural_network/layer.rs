@@ -1,6 +1,6 @@
 use super::autograd::{
-    Parameter, Parameter1, Parameter2, Parameter4, ParameterViewMut1, ParameterViewMut2,
-    ParameterViewMut4, ParameterViewMutD, Variable, Variable2, Variable4,
+    Parameter, Parameter1, Parameter2, ParameterViewMut, ParameterViewMut1, ParameterViewMut2,
+    ParameterViewMutD, Variable, Variable1, Variable2, Variable3, Variable4,
 };
 #[cfg(doc)]
 use super::optimizer::Optimizer;
@@ -29,7 +29,7 @@ use paste::paste;
 
 #[cfg(feature = "device")]
 use krnl::macros::module;
-use ndarray::{linalg::Dot, Array, Dimension};
+use ndarray::{linalg::Dot, Array, Dimension, IntoDimension, Ix1, Ix2};
 
 use rand::{
     distributions::{Distribution, Uniform},
@@ -42,23 +42,35 @@ use std::any::Any;
 pub mod builder {
     use super::*;
 
-    /// Builder for creating a [`Conv2`].
-    pub struct Conv2Builder<A = Identity> {
+    fn dim_ones<D: Dimension>() -> D {
+        let mut dim = D::default();
+        dim.slice_mut().iter_mut().for_each(|x| *x = 1);
+        dim
+    }
+
+    /// Builder for creating a [`Conv`].
+    pub struct ConvBuilder<D: Dimension, A = Identity> {
         inputs: usize,
         outputs: usize,
-        filter: [usize; 2],
+        filter: D,
+        padding: D,
+        stride: D,
+        dilation: D,
         bias: bool,
         scalar_type: ScalarType,
         device: Device,
         activation: A,
     }
 
-    impl Conv2Builder {
+    impl<D: Dimension> ConvBuilder<D> {
         pub(super) fn new() -> Self {
             Self {
                 inputs: 0,
                 outputs: 0,
-                filter: [0, 0],
+                filter: D::default(),
+                padding: D::default(),
+                stride: dim_ones(),
+                dilation: dim_ones(),
                 bias: false,
                 scalar_type: ScalarType::F32,
                 device: Device::host(),
@@ -67,7 +79,7 @@ pub mod builder {
         }
     }
 
-    impl<A> Conv2Builder<A> {
+    impl<D: Dimension, A> ConvBuilder<D, A> {
         /// Sets the number of input channels.
         pub fn inputs(self, inputs: usize) -> Self {
             Self { inputs, ..self }
@@ -77,28 +89,58 @@ pub mod builder {
             Self { outputs, ..self }
         }
         /// Sets size of the filter.
-        pub fn filter(self, filter: [usize; 2]) -> Self {
-            Self { filter, ..self }
+        pub fn filter(self, filter: impl IntoDimension<Dim = D>) -> Self {
+            Self {
+                filter: filter.into_dimension(),
+                ..self
+            }
+        }
+        /// Adds padding.
+        pub fn padding(self, padding: impl IntoDimension<Dim = D>) -> Self {
+            Self {
+                padding: padding.into_dimension(),
+                ..self
+            }
+        }
+        /// Sets the stride. Defaults to 1.
+        pub fn stride(self, stride: impl IntoDimension<Dim = D>) -> Self {
+            Self {
+                stride: stride.into_dimension(),
+                ..self
+            }
+        }
+        /// Sets the dilation. Defaults to 1.
+        pub fn dilation(self, dilation: impl IntoDimension<Dim = D>) -> Self {
+            Self {
+                dilation: dilation.into_dimension(),
+                ..self
+            }
         }
         /// Add a bias. Defaults to false.
         pub fn bias(self, bias: bool) -> Self {
             Self { bias, ..self }
         }
         /// Add an activation layer.
-        pub fn activation<A2>(self, activation: A2) -> Conv2Builder<A2> {
+        pub fn activation<A2>(self, activation: A2) -> ConvBuilder<D, A2> {
             let Self {
                 inputs,
                 outputs,
                 filter,
+                padding,
+                stride,
+                dilation,
                 bias,
                 activation: _,
                 scalar_type,
                 device,
             } = self;
-            Conv2Builder {
+            ConvBuilder {
                 inputs,
                 outputs,
                 filter,
+                padding,
+                stride,
+                dilation,
                 bias,
                 activation,
                 scalar_type,
@@ -123,28 +165,35 @@ pub mod builder {
         /// **Errors**
         /// - The `scalar_type` is not BF16 or F32.
         /// - Initializing parameters on the `device` failed.
-        pub fn build(self) -> Result<Conv2<A>> {
+        pub fn build(self) -> Result<Conv<D, A>> {
             let Self {
                 inputs,
                 outputs,
                 filter,
+                padding,
+                stride,
+                dilation,
                 bias,
                 activation,
                 scalar_type,
                 device,
             } = self;
             if !matches!(scalar_type, ScalarType::BF16 | ScalarType::F32) {
-                bail!("Dense {scalar_type:?} not implemented!");
+                bail!("Conv {scalar_type:?} not implemented!");
             }
             let a = if inputs > 0 {
-                f32::sqrt(2. / (inputs * filter[0] * filter[1]) as f32)
+                f32::sqrt(2. / (inputs * filter.size()) as f32)
             } else {
                 0.
             };
             let mut rng = thread_rng();
+            let mut weight_dim = <D::Larger as Dimension>::Larger::zeros(2 + filter.ndim());
+            weight_dim[0] = outputs;
+            weight_dim[1] = inputs;
+            weight_dim.slice_mut()[2..].copy_from_slice(filter.slice());
             let weight_iter = Uniform::new(-a, a)
                 .sample_iter(&mut rng)
-                .take(outputs * inputs * filter[0] * filter[1]);
+                .take(weight_dim.size());
             let weight = match scalar_type {
                 ScalarType::BF16 => ScalarBuffer::from(Buffer::from(
                     weight_iter.map(bf16::from_f32).collect::<Vec<_>>(),
@@ -155,11 +204,8 @@ pub mod builder {
                 _ => unreachable!(),
             };
             let weight = weight.into_device(device.clone())?;
-            let weight = Parameter::from(
-                ScalarTensor::from(weight)
-                    .into_shape([outputs, inputs, filter[0], filter[1]])
-                    .unwrap(),
-            );
+            let weight =
+                Parameter::from(ScalarTensor::from(weight).into_shape(weight_dim).unwrap());
             let bias = if bias {
                 let bias_iter = Uniform::new(-a, a).sample_iter(rng).take(outputs);
                 let bias = match scalar_type {
@@ -176,8 +222,11 @@ pub mod builder {
             } else {
                 None
             };
-            Ok(Conv2 {
+            Ok(Conv {
                 weight,
+                padding,
+                stride,
+                dilation,
                 bias,
                 activation,
             })
@@ -317,31 +366,38 @@ pub mod builder {
         }
     }
 
-    /// Builder for creating a [`MaxPool2`].
-    pub struct MaxPool2Builder {
-        size: [usize; 2],
-        strides: [usize; 2],
+    /// Builder for creating a [`MaxPool`].
+    pub struct MaxPoolBuilder<D: Dimension> {
+        filter: D,
+        stride: Option<D>,
     }
 
-    impl MaxPool2Builder {
+    impl<D: Dimension> MaxPoolBuilder<D> {
         pub(super) fn new() -> Self {
             Self {
-                size: [0, 0],
-                strides: [1, 1],
+                filter: D::default(),
+                stride: None,
             }
         }
-        /// Size of the pool.
-        pub fn size(self, size: [usize; 2]) -> Self {
-            Self { size, ..self }
+        /// Sets the size of the pool filter.
+        pub fn filter(self, filter: impl IntoDimension<Dim = D>) -> Self {
+            Self {
+                filter: filter.into_dimension(),
+                ..self
+            }
         }
-        /// The strides.
-        pub fn strides(self, strides: [usize; 2]) -> Self {
-            Self { strides, ..self }
+        /// Sets the stride. Defaults to filter.
+        pub fn stride(self, stride: impl IntoDimension<Dim = D>) -> Self {
+            Self {
+                stride: Some(stride.into_dimension()),
+                ..self
+            }
         }
         /// Builds the layer.
-        pub fn build(self) -> MaxPool2 {
-            let Self { size, strides } = self;
-            MaxPool2 { size, strides }
+        pub fn build(self) -> MaxPool<D> {
+            let Self { filter, stride } = self;
+            let stride = stride.unwrap_or(filter.clone());
+            MaxPool { filter, stride }
         }
     }
 }
@@ -429,7 +485,9 @@ impl<X, T: Forward<X, Output = X>> Forward<X> for Vec<T> {
     }
 }
 
-/// Convolutional layer with 2 dimensions.
+/// Convolutional layer.
+///
+/// See [`Conv1`] and [`Conv2`].
 ///
 /// Implemented for bf16 and f32.
 ///
@@ -441,6 +499,7 @@ impl<X, T: Forward<X, Output = X>> Forward<X> for Vec<T> {
 /// let conv = Conv2::builder()
 ///    .inputs(1)
 ///    .outputs(1)
+///    .filter([5, 5])
 ///    .bias(true)
 ///    .activation(Relu)
 ///    .scalar_type(ScalarType::BF16)
@@ -450,19 +509,40 @@ impl<X, T: Forward<X, Output = X>> Forward<X> for Vec<T> {
 /// # }
 ///```
 #[derive(Debug, Serialize, Deserialize)]
-pub struct Conv2<A = Identity> {
-    weight: Parameter4,
+#[serde(bound(
+    serialize = "D: Serialize, <D::Larger as Dimension>::Larger: Serialize, A: Serialize",
+    deserialize = "D: Deserialize<'de>, <D::Larger as Dimension>::Larger: Deserialize<'de>, A: Deserialize<'de>",
+))]
+pub struct Conv<D: Dimension, A = Identity> {
+    weight: Parameter<<D::Larger as Dimension>::Larger>,
+    padding: D,
+    stride: D,
+    dilation: D,
     bias: Option<Parameter1>,
     activation: A,
 }
 
-impl Conv2 {
-    /// Returns a builder for creating a [`Conv2`].
-    pub fn builder() -> Conv2Builder {
-        Conv2Builder::new()
+/// Convolutional layer with 1 dimension.
+///
+/// See [`Conv`].
+pub type Conv1<A = Identity> = Conv<Ix1, A>;
+/// Convolutional layer with 2 dimensions.
+///
+/// See [`Conv`].
+pub type Conv2<A = Identity> = Conv<Ix2, A>;
+
+impl<D: Dimension> Conv<D> {
+    /// Returns a builder for creating a [`Conv`].
+    pub fn builder() -> ConvBuilder<D> {
+        ConvBuilder::new()
     }
+}
+
+impl<D: Dimension, A> Conv<D, A> {
     /// The weight as a mutable parameter view.
-    pub fn weight_view_mut(&mut self) -> Result<ParameterViewMut4> {
+    pub fn weight_view_mut(
+        &mut self,
+    ) -> Result<ParameterViewMut<<D::Larger as Dimension>::Larger>> {
         self.weight.make_view_mut()
     }
     /// The bias as a mutable parameter_view.
@@ -487,7 +567,7 @@ impl Conv2 {
     }
 }
 
-impl<A> Layer for Conv2<A> {
+impl<D: Dimension, A> Layer for Conv<D, A> {
     fn set_training(&mut self, training: bool) -> Result<()> {
         self.weight.set_training(training);
         if let Some(bias) = self.bias.as_mut() {
@@ -505,70 +585,128 @@ impl<A> Layer for Conv2<A> {
     }
 }
 
+struct ConvOptions<D: Dimension> {
+    padding: D,
+    stride: D,
+    dilation: D,
+}
+
+fn conv2(
+    input: Variable4,
+    weight: Variable4,
+    options: ConvOptions<Ix2>,
+    bias: Option<Variable1>,
+) -> Result<Variable4> {
+    let (batch_size, inputs, ih, iw) = input.dim();
+    let (outputs, inputs2, fh, fw) = weight.dim();
+    debug_assert_eq!(inputs, inputs2);
+    let (ph, pw) = options.padding.into_pattern();
+    let (sh, sw) = options.stride.into_pattern();
+    let (dh, dw) = options.dilation.into_pattern();
+    let options = Im2ColConv2Options {
+        filter: [fh, fw],
+        padding: [ph, pw],
+        stride: [sh, sw],
+        dilation: [dh, dw],
+    };
+    let [oh, ow] = options.output_shape([ih, iw]);
+    let im2col_matrix = input.value().im2col_conv2(&options)?;
+    let weight_matrix = weight
+        .value()
+        .clone()
+        .into_shape([outputs, inputs * fh * fw])
+        .unwrap();
+    let output_matrix = im2col_matrix.dot(&weight_matrix.t())?;
+    let mut builder = Variable::builder();
+    if let Some(node) = input.node() {
+        builder.edge(node, move |output_grad| {
+            let options = Col2ImConv2Options {
+                shape: [oh, ow],
+                filter: [fh, fw],
+                ..Col2ImConv2Options::default()
+            };
+            output_grad
+                .dot(&weight_matrix)?
+                .col2im_conv2(&options)
+                .map(Into::into)
+        });
+    }
+    if let Some(node) = weight.node() {
+        builder.edge(node, move |output_grad| {
+            let weight_grad = output_grad
+                .t()
+                .dot(&im2col_matrix)?
+                .into_shape([outputs, inputs, fh, fw])
+                .unwrap();
+            Ok(weight_grad.into())
+        });
+    }
+    let output_matrix = builder.build(output_matrix.into());
+    let mut builder = Variable::builder();
+    if let Some(node) = output_matrix.node() {
+        builder.edge(node, move |output_grad| {
+            Ok(output_grad
+                .permuted_axes([0, 2, 3, 1])
+                .into_owned()?
+                .into_shape([batch_size * oh * ow, outputs])
+                .unwrap()
+                .into())
+        });
+    }
+    let output = output_matrix
+        .value()
+        .view()
+        .into_shape([batch_size, oh, ow, outputs])
+        .unwrap()
+        .permuted_axes([0, 3, 1, 2])
+        .to_owned()?;
+    let mut output = builder.build(output.into());
+    if let Some(bias) = bias {
+        output.add_assign(&bias)?;
+    }
+    Ok(output)
+}
+
+impl<A: Forward<Variable3, Output = Variable3>> Forward<Variable3> for Conv1<A> {
+    type Output = Variable3;
+    fn forward(&self, input: Variable3) -> Result<Variable3> {
+        let (n, ic, ih) = input.dim();
+        let input = input.into_shape([n, ic, ih, 1]).map_err(Error::msg)?;
+        let (outputs, inputs, fh) = self.weight.dim();
+        let weight = self
+            .weight
+            .to_variable()
+            .into_shape([outputs, inputs, fh, 1])
+            .map_err(Error::msg)?;
+        let ph = self.padding.into_pattern();
+        let sh = self.stride.into_pattern();
+        let dh = self.dilation.into_pattern();
+        let options = ConvOptions {
+            padding: [ph, 1].into_dimension(),
+            stride: [sh, 1].into_dimension(),
+            dilation: [dh, 1].into_dimension(),
+        };
+        let bias = self.bias.as_ref().map(Parameter::to_variable);
+        let output = conv2(input, weight, options, bias)?;
+        let (n2, oc, oh, ow) = output.dim();
+        debug_assert_eq!(n, n2);
+        debug_assert_eq!(ow, 1);
+        let output = output.into_shape([n, oc, oh]).map_err(Error::msg)?;
+        self.activation.forward(output)
+    }
+}
+
 impl<A: Forward<Variable4, Output = Variable4>> Forward<Variable4> for Conv2<A> {
     type Output = Variable4;
     fn forward(&self, input: Variable4) -> Result<Variable4> {
-        let (batch_size, inputs, ih, iw) = input.dim();
-        let (outputs, inputs2, fh, fw) = self.weight.dim();
-        debug_assert_eq!(inputs, inputs2);
-        let options = Im2ColConv2Options {
-            filter: [fh, fw],
-            ..Im2ColConv2Options::default()
-        };
-        let [oh, ow] = options.output_shape([ih, iw]);
-        let im2col_matrix = input.value().im2col_conv2(&options)?;
-        let weight_matrix = self
-            .weight
-            .value()
-            .clone()
-            .into_shape([outputs, inputs * fh * fw])
-            .unwrap();
-        let output_matrix = im2col_matrix.dot(&weight_matrix.t())?;
-        let mut builder = Variable::builder();
-        if let Some(node) = input.node() {
-            builder.edge(node, move |output_grad| {
-                let options = Col2ImConv2Options {
-                    shape: [oh, ow],
-                    filter: [fh, fw],
-                    ..Col2ImConv2Options::default()
-                };
-                output_grad
-                    .dot(&weight_matrix)?
-                    .col2im_conv2(&options)
-                    .map(Into::into)
-            });
-        }
         let weight = self.weight.to_variable();
-        if let Some(node) = weight.node() {
-            builder.edge(node, move |output_grad| {
-                let weight_grad = output_grad
-                    .t()
-                    .dot(&im2col_matrix)?
-                    .into_shape([outputs, inputs, fh, fw])
-                    .unwrap();
-                Ok(weight_grad.into())
-            });
-        }
-        let output_matrix = builder.build(output_matrix.into());
-        let mut builder = Variable::builder();
-        if let Some(node) = output_matrix.node() {
-            builder.edge(node, move |output_grad| {
-                Ok(output_grad
-                    .permuted_axes([0, 2, 3, 1])
-                    .into_owned()?
-                    .into_shape([batch_size * oh * ow, outputs])
-                    .unwrap()
-                    .into())
-            });
-        }
-        let output = output_matrix
-            .value()
-            .view()
-            .into_shape([batch_size, oh, ow, outputs])
-            .unwrap()
-            .permuted_axes([0, 3, 1, 2])
-            .to_owned()?;
-        let output = builder.build(output.into());
+        let options = ConvOptions {
+            padding: self.padding,
+            stride: self.stride,
+            dilation: self.dilation,
+        };
+        let bias = self.bias.as_ref().map(Parameter::to_variable);
+        let output = conv2(input, weight, options, bias)?;
         self.activation.forward(output)
     }
 }
@@ -663,38 +801,67 @@ impl<A: Forward<Variable2, Output = Variable2> + Any> Forward<Variable2> for Den
     }
 }
 
-/// MaxPool2.
+/// MaxPool.
 ///
+/// See [`MaxPool1`] and [`MaxPool2`].
 /// Implemented for bf16 and f32.
 #[derive(Layer, Debug, Serialize, Deserialize)]
 #[autograph(crate=crate)]
-pub struct MaxPool2 {
-    size: [usize; 2],
-    strides: [usize; 2],
+pub struct MaxPool<D: Dimension> {
+    filter: D,
+    stride: D,
 }
 
-impl MaxPool2 {
-    /// Returns a builder for creating a [`MaxPool2`].
-    pub fn builder() -> MaxPool2Builder {
-        MaxPool2Builder::new()
+/// MaxPool with 1 dimension.
+///
+/// See [`MaxPool`].
+pub type MaxPool1 = MaxPool<Ix1>;
+/// MaxPool with 2 dimensions.
+///
+/// See [`MaxPool`].
+pub type MaxPool2 = MaxPool<Ix2>;
+
+impl<D: Dimension> MaxPool<D> {
+    /// Returns a builder for creating a [`MaxPool`].
+    pub fn builder() -> MaxPoolBuilder<D> {
+        MaxPoolBuilder::new()
+    }
+}
+
+impl Forward<Variable3> for MaxPool1 {
+    type Output = Variable3;
+    fn forward(&self, input: Variable3) -> Result<Self::Output> {
+        let (n, c, ih) = input.dim();
+        let input = input.into_shape([n, c, ih, 1]).map_err(Error::msg)?;
+        let fh = self.filter.into_pattern();
+        let sh = self.stride.into_pattern();
+        let output = MaxPool2 {
+            filter: [fh, 1].into_dimension(),
+            stride: [sh, 1].into_dimension(),
+        }
+        .forward(input)?;
+        let (n2, c2, oh, ow) = output.dim();
+        debug_assert_eq!(n, n2);
+        debug_assert_eq!(c, c2);
+        debug_assert_eq!(ow, 1);
+        output.into_shape([n, c, oh]).map_err(Error::msg)
     }
 }
 
 impl Forward<Variable4> for MaxPool2 {
     type Output = Variable4;
     fn forward(&self, input: Variable4) -> Result<Self::Output> {
+        let (fh, fw) = self.filter.into_pattern();
+        let (sh, sw) = self.stride.into_pattern();
         let options = MaxPool2Options {
-            size: self.size,
-            strides: self.strides,
+            size: [fh, fw],
+            strides: [sh, sw],
         };
         let mut builder = Variable::builder();
         if let Some(node) = input.node() {
             let mut input = input.value().clone();
-            let options = MaxPool2Options {
-                size: self.size,
-                strides: self.strides,
-            };
-            builder.edge(node, |output_grad| {
+            let options = options.clone();
+            builder.edge(node, move |output_grad| {
                 input
                     .make_view_mut()?
                     .max_pool2_backward(output_grad, options)?;
@@ -714,9 +881,11 @@ impl MaxPool2 {
         mut input: ScalarArcTensor4,
         output_grad: ScalarArcTensor4,
     ) -> Result<ScalarArcTensor4> {
+        let (fh, fw) = self.filter.into_pattern();
+        let (sh, sw) = self.stride.into_pattern();
         let options = MaxPool2Options {
-            size: self.size,
-            strides: self.strides,
+            size: [fh, fw],
+            strides: [sh, sw],
         };
         input
             .make_view_mut()?
