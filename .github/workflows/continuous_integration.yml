@@ -31,7 +31,31 @@ jobs:
       run: cargo build --all-features --all-targets
       continue-on-error: true
     - name: Test 
-      run: cargo test --no-default-features 
+      run: cargo test --no-default-features
+  krnlc: 
+    runs-on: ubuntu-latest
+    # spirv tools install copied from https://github.com/EmbarkStudios/rust-gpu/blob/main/.github/workflows/ci.yaml
+    env:
+      spirv_tools_version: "20221024"
+      spirv_tools_linux_url: "https://storage.googleapis.com/spirv-tools/artifacts/prod/graphics_shader_compiler/spirv-tools/linux-clang-release/continuous/1863/20221024-094528/install.tgz"
+    steps: 
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: nightly
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: nightly-2023-04-15
+          components: rust-src, rustc-dev, llvm-tools-preview
+      name: Install spirv-tools
+      run: |
+        sudo apt install libwayland-cursor0 libxkbcommon-dev libwayland-dev
+        mkdir "${HOME}/spirv-tools"
+        curl -fL "$spirv_tools_linux_url" | tar -xz -C "${HOME}/spirv-tools"
+        echo "${HOME}/spirv-tools/install/bin" >> $GITHUB_PATH
+      - name: Install krnlc
+        run: cargo +nightly-2023-04-15 install krnlc --git=https://github.com/charles-r-earp/krnl --locked -v --no-default-features --features use-installed-tools
+      - name: krnlc
+        run: krnlc -p autograph -v --check
   lint:
     name: Lint
     runs-on: ubuntu-latest
@@ -45,14 +69,3 @@ jobs:
       - name: Clippy
         run: cargo clippy --no-default-features --features "neural-network" -- -D warnings
         continue-on-error: true
-      - uses: actions-rs/toolchain@v1
-        with:
-          toolchain: nightly
-      - uses: actions-rs/toolchain@v1
-        with:
-          toolchain: nightly-2023-04-15
-          components: rust-src, rustc-dev, llvm-tools-preview
-      - name: install krnlc
-        run: cargo +nightly-2023-04-15 install krnlc --git=https://github.com/charles-r-earp/krnl --locked -v
-      - name: krnlc
-        run: krnlc -p autograph -v --check
