@@ -44,3 +44,8 @@ jobs:
         continue-on-error: true
       - name: Clippy
         run: cargo clippy --no-default-features --features "neural-network" -- -D warnings
+        continue-on-error: true
+      - name: install krnlc
+        run: cargo +nightly-2023-04-15 install krnlc --locked -v
+      - name: krnlc
+        run: krnlc -p autograph -v --check
