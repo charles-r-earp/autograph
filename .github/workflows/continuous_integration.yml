@@ -39,6 +39,7 @@ jobs:
       spirv_tools_version: "20221024"
       spirv_tools_linux_url: "https://storage.googleapis.com/spirv-tools/artifacts/prod/graphics_shader_compiler/spirv-tools/linux-clang-release/continuous/1863/20221024-094528/install.tgz"
     steps: 
+      - uses: actions/checkout@v2
       - uses: actions-rs/toolchain@v1
         with:
           toolchain: nightly
