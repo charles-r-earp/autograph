@@ -45,6 +45,13 @@ jobs:
       - name: Clippy
         run: cargo clippy --no-default-features --features "neural-network" -- -D warnings
         continue-on-error: true
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: nightly
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: nightly-2023-04-15
+          components: rust-src, rustc-dev, llvm-tools-preview
       - name: install krnlc
         run: cargo +nightly-2023-04-15 install krnlc --locked -v
       - name: krnlc
