@@ -46,12 +46,12 @@ jobs:
         with:
           toolchain: nightly-2023-04-15
           components: rust-src, rustc-dev, llvm-tools-preview
-      name: Install spirv-tools
-      run: |
-        sudo apt install libwayland-cursor0 libxkbcommon-dev libwayland-dev
-        mkdir "${HOME}/spirv-tools"
-        curl -fL "$spirv_tools_linux_url" | tar -xz -C "${HOME}/spirv-tools"
-        echo "${HOME}/spirv-tools/install/bin" >> $GITHUB_PATH
+      - name: Install spirv-tools
+        run: |
+          sudo apt install libwayland-cursor0 libxkbcommon-dev libwayland-dev
+          mkdir "${HOME}/spirv-tools"
+          curl -fL "$spirv_tools_linux_url" | tar -xz -C "${HOME}/spirv-tools"
+          echo "${HOME}/spirv-tools/install/bin" >> $GITHUB_PATH
       - name: Install krnlc
         run: cargo +nightly-2023-04-15 install krnlc --git=https://github.com/charles-r-earp/krnl --locked -v --no-default-features --features use-installed-tools
       - name: krnlc
