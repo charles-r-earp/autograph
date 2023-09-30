@@ -1,5 +1,30 @@
 /*!
 
+Neural networks can be constructed from [`layers`](neural_network::layer). Some layers, such as [`Conv`](neural_network::layer::Conv)
+and [`Dense`](neural_network::layer::Dense), have parameters that can be trained. [`MaxPool`](neural_network::layer::MaxPool) is a functional
+layer that applies the pooling function to its input, while [`Flatten`](neural_network::layer::Flatten) reshapes the input into 2 dimensions.
+Activations like [`Relu`](neural_network::layer::Relu) are often applied after trainable layers.
+
+Layers implement [`Layer`](neural_network::layer::Layer) which allows initializing training and access to the [`parameters`](neural_network::autograd::Parameter),
+and [`Forward`](neural_network::layer::Forward) which applies a function to one or more [`variables`](neural_network::autograd::Variable).
+
+[`Parameters`](neural_network::autograd::Parameter) store the trainable weights and biases of the network. They are composed of 3 parts, the value [`tensor`](crate::tensor),
+the gradient tensor, and the [`state`](neural_network::optimizer::State) of the optimizer. Parameters can be converted to variables via
+[`.to_variable()`](neural_network::autograd::Parameter::to_variable), so that they can be used in variable functions.
+
+[`Variables`](neural_network::autograd::Variable) are the inputs, outputs, and parameters of the network. In addition to the [`tensor`](crate::tensor) value, variables may have a
+[`node`](neural_network::autograd::Node) which stores the gradient. Each node can have [edges](neural_network::autograd::builder::VariableBuilder::edge) that compute the gradient of the input
+given the output gradient.
+
+Typically the forward pass will conclude with a loss function such as [`.cross_entropy_loss()`](criterion::CrossEntropyLoss), which
+evaluates the model against the target, for example a set of correctly labeled images.
+
+During training, nodes and edges form a backward graph, connecting the node of a single variable (ie the loss) to the parameter gradients.
+[`.backward()`](neural_network::autograd::Node::backward) executes the backward pass, computing all of the gradients.
+
+The [`optimizer`](neural_network::optimizer), such as [`SGD`](neural_network::optimizer::SGD), [`updates`](neural_network::optimizer::Optimizer::update) the parameters.
+
+Example:
 ```
 # use anyhow::Result;
 # use autograph::{device::Device, scalar::ScalarType, tensor::{Tensor, ScalarArcTensor}};
@@ -91,6 +116,7 @@ impl LeNet5 {
 # let t = ScalarArcTensor::zeros(device.clone(), [1], ScalarType::U8)?;
 # let optimizer = SGD::builder().build();
 # let learning_rate = 0.01;
+model.set_training(true)?;
 let y = model.forward(x)?;
 let loss = y.cross_entropy_loss(t)?;
 loss.backward()?;

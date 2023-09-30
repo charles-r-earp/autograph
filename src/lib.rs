@@ -12,7 +12,7 @@ GPGPU kernels implemented with [**krnl**](https://github.com/charles-r-earp/krnl
    - Save / resume training progress.
 - Fully extensible, in Rust.
 */
-#![forbid(unsafe_op_in_unsafe_fn)]
+#![deny(unsafe_op_in_unsafe_fn)]
 #![warn(missing_docs)]
 
 #[cfg(feature = "derive")]

@@ -10,7 +10,6 @@ use half::{bf16, f16};
 #[cfg(feature = "device")]
 use krnl::buffer::Buffer;
 use krnl::{buffer::Slice, device::Device, scalar::Scalar};
-#[cfg(not(target_arch = "wasm32"))]
 use krnl::{device::Features, scalar::ScalarType};
 #[cfg(not(target_arch = "wasm32"))]
 use libtest_mimic::{Arguments, Trial};
@@ -247,6 +246,7 @@ mod linalg {
     use ndarray::{linalg::Dot, Array2};
     use std::fmt::{self, Display};
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn linalg_tests(device: &Device) -> Vec<Trial> {
         let mut tests = Vec::new();
         let features = if let Some(info) = device.info() {
@@ -291,7 +291,7 @@ mod linalg {
 
     #[allow(unused)]
     #[derive(Clone, Copy, Debug)]
-    enum Transpose {
+    pub enum Transpose {
         N,
         T,
     }
@@ -306,7 +306,11 @@ mod linalg {
         }
     }
 
-    fn tensor_dot<T: Scalar>(device: &Device, [m, k, n]: [usize; 3], [a_t, b_t]: [Transpose; 2]) {
+    pub fn tensor_dot<T: Scalar>(
+        device: &Device,
+        [m, k, n]: [usize; 3],
+        [a_t, b_t]: [Transpose; 2],
+    ) {
         let dim1 = match a_t {
             Transpose::N => [m, k],
             Transpose::T => [k, m],
@@ -353,6 +357,7 @@ mod linalg {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 mod ops {
     use super::*;
     use ndarray::{Array1, IntoDimension};
@@ -456,6 +461,7 @@ mod ops {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 mod reorder {
     use super::*;
     use ndarray::IntoDimension;
@@ -515,6 +521,7 @@ mod reorder {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 mod reduce {
     use super::*;
 
@@ -1082,154 +1089,9 @@ mod learn {
     }
 }
 
-/*
-fn buffer_test_lengths() -> impl ExactSizeIterator<Item = usize> {
-    [0, 1, 3, 4, 16, 67, 157].into_iter()
-}
-fn buffer_transfer_test_lengths() -> impl ExactSizeIterator<Item = usize> {
-    #[cfg(not(miri))]
-    {
-        [0, 1, 3, 4, 16, 345, 9_337_791].into_iter()
-    }
-    #[cfg(miri)]
-    {
-        [0, 1, 3, 4, 16, 345].into_iter()
-    }
-}
-
-fn buffer_from_vec(device: Device) {
-    let n = buffer_transfer_test_lengths().last().unwrap();
-    let x = (10..20).cycle().take(n).collect::<Vec<_>>();
-    for n in buffer_transfer_test_lengths() {
-        let x = &x[..n];
-        let y = Slice::from(x)
-            .to_device(device.clone())
-            .unwrap()
-            .into_vec()
-            .unwrap();
-        assert_eq!(y.len(), n);
-        if x != y.as_slice() {
-            for (x, y) in x.iter().zip(y) {
-                assert_eq!(&y, x);
-            }
-        }
-    }
-}
-
-#[cfg(feature = "device")]
-fn device_buffer_too_large(device: Device) {
-    use krnl::buffer::error::DeviceBufferTooLarge;
-    let error = unsafe {
-        Buffer::<u32>::uninit(device, (i32::MAX / 4 + 1).try_into().unwrap())
-    }.err().unwrap();
-    error.downcast_ref::<DeviceBufferTooLarge>().unwrap();
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn buffer_transfer(device: Device, device2: Device) {
-    let n = buffer_transfer_test_lengths().last().unwrap();
-    let x = (10..20).cycle().take(n).collect::<Vec<_>>();
-    for n in buffer_transfer_test_lengths() {
-        let x = &x[..n];
-        let y = Slice::from(x)
-            .to_device(device.clone())
-            .unwrap()
-            .to_device(device2.clone())
-            .unwrap()
-            .into_vec()
-            .unwrap();
-        if x != y.as_slice() {
-            for (x, y) in x.iter().zip(y) {
-                assert_eq!(&y, x);
-            }
-        }
-    }
-}
-
-fn buffer_fill<T: Scalar>(device: Device) {
-    let elem = T::one();
-    let n = buffer_test_lengths().last().unwrap();
-    let x = (10..20)
-        .cycle()
-        .map(|x| T::from_u32(x).unwrap())
-        .take(n)
-        .collect::<Vec<_>>();
-    for n in buffer_test_lengths() {
-        let x = &x[..n];
-        let mut y = Slice::from(x).to_device(device.clone()).unwrap();
-        y.fill(elem).unwrap();
-        let y: Vec<T> = y.into_vec().unwrap();
-        for y in y.into_iter() {
-            assert_eq!(y, elem);
-        }
-    }
-}
-
-fn buffer_cast<X: Scalar, Y: Scalar>(device: Device) {
-    let n = buffer_test_lengths().last().unwrap();
-    let x = (10..20)
-        .cycle()
-        .map(|x| X::from_u32(x).unwrap())
-        .take(n)
-        .collect::<Vec<_>>();
-    for n in buffer_test_lengths() {
-        let x = &x[..n];
-        let y = Slice::<X>::from(x)
-            .into_device(device.clone())
-            .unwrap()
-            .cast_into::<Y>()
-            .unwrap()
-            .into_vec()
-            .unwrap();
-        for (x, y) in x.iter().zip(y.iter()) {
-            assert_eq!(*y, x.cast::<Y>());
-        }
-    }
-}
-
-fn buffer_bitcast<X: Scalar, Y: Scalar>(device: Device) {
-    let x_host = &[X::default(); 16];
-    let x = Slice::from(x_host.as_ref()).to_device(device).unwrap();
-    for i in 0..=16 {
-        for range in [i..16, 0..i] {
-            let bytemuck_result =
-                bytemuck::try_cast_slice::<X, Y>(&x_host[range.clone()]).map(|_| ());
-            let result = x.slice(range).unwrap().bitcast::<Y>().map(|_| ());
-            #[cfg(miri)]
-            let _ = (bytemuck_result, result);
-            #[cfg(not(miri))]
-            assert_eq!(result, bytemuck_result);
-        }
-    }
-}
-
-#[test]
-fn buffer_from_vec_host() {
-    buffer_from_vec(Device::host());
-}
-
 #[cfg(target_arch = "wasm32")]
-macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
-    paste! {
-        #[test]
-        fn [<buffer_fill_ $T _host>]() {
-            buffer_fill::<$T>(Device::host());
-        }
-    }
-});
-
-macro_for!($X in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
-    macro_for!($Y in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
-        paste! {
-            #[test]
-            fn [<buffer_cast_ $X _ $Y _host>]() {
-                buffer_cast::<$X, $Y>(Device::host());
-            }
-            #[test]
-            fn [<buffer_bitcast_ $X _ $Y _host>]() {
-                buffer_bitcast::<$X, $Y>(Device::host());
-            }
-        }
-    });
-});
-*/
+#[test]
+fn tensor_dot_f32_m2_k2_n2_nn() {
+    use linalg::Transpose;
+    linalg::tensor_dot::<f32>(&Device::host(), [2, 2, 2], [Transpose::N, Transpose::N]);
+}

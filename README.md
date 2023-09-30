@@ -99,6 +99,7 @@ impl LeNet5 {
     }
 }
 
+model.set_training(true)?;
 let y = model.forward(x)?;
 let loss = CrossEntropyLoss::default().eval(y, t)?;
 loss.backward()?;

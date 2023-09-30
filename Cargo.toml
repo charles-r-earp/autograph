@@ -99,3 +99,6 @@ crunchy = { default-features = false, features = ["limit_64"] }
 name = "integration_tests"
 path = "tests/integration_tests.rs"
 harness = false
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3.33"
