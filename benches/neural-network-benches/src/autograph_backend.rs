@@ -120,7 +120,7 @@ impl LeNet5 {
             .filter([5, 5])
             .activation(Relu)
             .build()?;
-        let pool1 = MaxPool2::builder().size([2, 2]).strides([2, 2]).build();
+        let pool1 = MaxPool2::builder().filter([2, 2]).stride([2, 2]).build();
         let conv2 = Conv2::builder()
             .device(device.clone())
             .scalar_type(scalar_type)
@@ -129,7 +129,7 @@ impl LeNet5 {
             .filter([5, 5])
             .activation(Relu)
             .build()?;
-        let pool2 = MaxPool2::builder().size([2, 2]).strides([2, 2]).build();
+        let pool2 = MaxPool2::builder().filter([2, 2]).stride([2, 2]).build();
         let flatten = Flatten;
         let dense1 = Dense::builder()
             .device(device.clone())

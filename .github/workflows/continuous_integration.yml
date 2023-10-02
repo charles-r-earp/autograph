@@ -30,6 +30,12 @@ jobs:
     - name: Build
       run: cargo build --all-features --all-targets
       continue-on-error: true
+    - name: Build Examples
+      run: cargo build -p neural-network-mnist-example
+      continue-on-error: true
+    - name: Build Benches
+      run: cargo build -p neural-network-benches --benches
+      continue-on-error: true
     - name: Test 
       run: cargo test --no-default-features
   krnlc: 

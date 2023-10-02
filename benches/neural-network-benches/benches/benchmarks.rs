@@ -58,8 +58,8 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                     let name = format!("{scalar_name}_{device_name}");
                     let id = BenchmarkId::new("autograph", name);
                     g.bench_function(id, |b| {
-                        use autograph_backend::Lenet5Classifier;
-                        let mut model = Lenet5Classifier::new(device.clone(), scalar_type)
+                        use autograph_backend::LeNet5Classifier;
+                        let mut model = LeNet5Classifier::new(device.clone(), scalar_type)
                             .unwrap()
                             .with_sgd(true);
                         b.iter(|| {
@@ -90,8 +90,8 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                     let name = format!("{kind_name}_{device_name}");
                     let id = BenchmarkId::new("tch", name);
                     g.bench_function(id, |b| {
-                        use tch_backend::Lenet5Classifier;
-                        let mut model = Lenet5Classifier::new(device, kind)
+                        use tch_backend::LeNet5Classifier;
+                        let mut model = LeNet5Classifier::new(device, kind)
                             .unwrap()
                             .with_sgd(true)
                             .unwrap();
@@ -129,8 +129,8 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                     let name = format!("{scalar_name}_{device_name}");
                     let id = BenchmarkId::new("autograph", name);
                     g.bench_function(id, |b| {
-                        use autograph_backend::Lenet5Classifier;
-                        let model = Lenet5Classifier::new(device.clone(), scalar_type).unwrap();
+                        use autograph_backend::LeNet5Classifier;
+                        let model = LeNet5Classifier::new(device.clone(), scalar_type).unwrap();
                         b.iter(|| {
                             model.infer(infer_batch_size).unwrap();
                         });
@@ -160,8 +160,8 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                     let name = format!("{kind_name}_{device_name}");
                     let id = BenchmarkId::new("tch", name);
                     g.bench_function(id, |b| {
-                        use tch_backend::Lenet5Classifier;
-                        let model = Lenet5Classifier::new(device, kind).unwrap();
+                        use tch_backend::LeNet5Classifier;
+                        let model = LeNet5Classifier::new(device, kind).unwrap();
                         b.iter(|| {
                             model.infer(infer_batch_size).unwrap();
                         });
