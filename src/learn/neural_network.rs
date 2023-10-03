@@ -111,7 +111,7 @@ impl LeNet5 {
 
 # fn main() -> Result<()> {
 # let device = Device::host();
-# let mut model = LeNet5::new(device.clone(), ScalarType::F32)?;
+let mut model = LeNet5::new(device.clone(), ScalarType::F32)?;
 # let x = Variable4::from(Tensor::<f32, _>::zeros(device.clone(), [1, 1, 28, 28])?);
 # let t = ScalarArcTensor::zeros(device.clone(), [1], ScalarType::U8)?;
 # let optimizer = SGD::builder().build();

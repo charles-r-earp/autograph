@@ -99,9 +99,10 @@ impl LeNet5 {
     }
 }
 
+let mut model = LeNet5::new(device.clone(), ScalarType::F32)?;
 model.set_training(true)?;
 let y = model.forward(x)?;
-let loss = CrossEntropyLoss::default().eval(y, t)?;
+let loss = y.cross_entropy_loss(t)?;
 loss.backward()?;
 for parameter in model.parameters_mut()? {
     optimizer.update(learning_rate, parameter)?;
