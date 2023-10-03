@@ -1,286 +1,316 @@
 use autograph::{
-    dataset::mnist::Mnist,
+    anyhow::Result,
+    dataset::mnist::{Mnist, MnistKind},
     device::Device,
+    krnl::krnl_core::half::bf16,
     learn::{
+        criterion::{Accuracy, CrossEntropyLoss},
         neural_network::{
-            layer::{Layer, Forward, Conv, Relu, Dense, MaxPool},
-            NetworkTrainer,
+            autograd::{Variable, Variable2, Variable4},
+            layer::{Conv2, Dense, Flatten, Forward, Layer, MaxPool2, Relu},
+            optimizer::{Optimizer, SGD},
         },
-        Summarize, Train, Test,
     },
-    result::Result,
-    tensor::{Tensor, float::FloatTensor4, Tensor1, TensorView},
+    ndarray::{ArcArray, ArcArray1, Axis, Ix4},
+    scalar::{ScalarElem, ScalarType},
+    tensor::{CowTensor, ScalarTensor, Tensor, Tensor1, Tensor4},
 };
-use ndarray::{s, Array1, ArrayView1, ArrayView4, Axis};
-use argparse::{ArgumentParser, Store, StoreConst, StoreTrue};
-use indicatif::{ProgressStyle, ProgressBar, ProgressIterator};
-use serde::{Serialize, Deserialize};
-use std::{
-    fmt::Debug,
-    convert::TryFrom,
-    path::PathBuf,
-    fs,
-};
-use rand::seq::SliceRandom;
+use clap::Parser;
+use rand::{seq::index::sample, thread_rng};
+use std::{fmt::Debug, time::Instant};
 
-#[derive(Clone, Copy)]
-enum NetworkKind {
-    Linear,
-    CNN,
-    Lenet5,
-}
-
-#[derive(Layer, Forward, Clone, Debug, Serialize, Deserialize)]
-struct CNN {
-    #[autograph(layer)]
-    conv1: Conv,
-    #[autograph(layer)]
-    relu1: Relu,
-    #[autograph(layer)]
-    dense1: Dense,
-    #[autograph(layer)]
-    relu2: Relu,
-    #[autograph(layer)]
-    dense2: Dense,
-}
-
-impl CNN {
-    fn new() -> Result<Self> {
-        let conv1 = Conv::from_inputs_outputs_kernel(1, 6, [5, 5]);
-        let relu1 = Relu::default();
-        let dense1 = Dense::from_inputs_outputs(6 * 24 * 24, 84);
-        let relu2 = Relu::default();
-        let dense2 = Dense::from_inputs_outputs(84, 10)
-            .with_bias(true)?;
-        Ok(Self {
-            conv1,
-            relu1,
-            dense1,
-            relu2,
-            dense2,
-        })
-    }
-}
-
-#[derive(Layer, Forward, Clone, Debug, Serialize, Deserialize)]
-struct Lenet5 {
-    #[autograph(layer)]
-    conv1: Conv,
-    #[autograph(layer)]
-    relu1: Relu,
-    #[autograph(layer)]
-    pool1: MaxPool,
-    #[autograph(layer)]
-    conv2: Conv,
-    #[autograph(layer)]
-    relu2: Relu,
-    #[autograph(layer)]
-    pool2: MaxPool,
-    #[autograph(layer)]
-    dense1: Dense,
-    #[autograph(layer)]
-    relu3: Relu,
-    #[autograph(layer)]
-    dense2: Dense,
-    #[autograph(layer)]
-    relu4: Relu,
-    #[autograph(layer)]
+#[derive(Layer, Forward, Debug)]
+#[autograph(forward(Variable4, Output=Variable2))]
+struct LeNet5 {
+    #[layer]
+    conv1: Conv2<Relu>,
+    #[layer]
+    pool1: MaxPool2,
+    #[layer]
+    conv2: Conv2<Relu>,
+    #[layer]
+    pool2: MaxPool2,
+    #[layer]
+    flatten: Flatten,
+    #[layer]
+    dense1: Dense<Relu>,
+    #[layer]
+    dense2: Dense<Relu>,
+    #[layer]
     dense3: Dense,
 }
 
-impl Lenet5 {
-    fn new() -> Result<Self> {
-        let conv1 = Conv::from_inputs_outputs_kernel(1, 6, [5, 5]);
-        let relu1 = Relu::default();
-        let pool1 = MaxPool::from_kernel([2, 2])
-            .with_strides(2)?;
-        let conv2 = Conv::from_inputs_outputs_kernel(6, 16, [5, 5]);
-        let relu2 = Relu::default();
-        let pool2 = MaxPool::from_kernel([2, 2])
-            .with_strides(2)?;
-        let dense1 = Dense::from_inputs_outputs(16 * 4 * 4, 120);
-        let relu3 = Relu::default();
-        let dense2 = Dense::from_inputs_outputs(120, 84);
-        let relu4 = Relu::default();
-        let dense3 = Dense::from_inputs_outputs(84, 10)
-            .with_bias(true)?;
+impl LeNet5 {
+    fn new(device: Device, scalar_type: ScalarType) -> Result<Self> {
+        let conv1 = Conv2::builder()
+            .device(device.clone())
+            .scalar_type(scalar_type)
+            .inputs(1)
+            .outputs(6)
+            .filter([5, 5])
+            .activation(Relu)
+            .build()?;
+        let pool1 = MaxPool2::builder().filter([2, 2]).stride([2, 2]).build();
+        let conv2 = Conv2::builder()
+            .device(device.clone())
+            .scalar_type(scalar_type)
+            .inputs(6)
+            .outputs(16)
+            .filter([5, 5])
+            .activation(Relu)
+            .build()?;
+        let pool2 = MaxPool2::builder().filter([2, 2]).stride([2, 2]).build();
+        let flatten = Flatten;
+        let dense1 = Dense::builder()
+            .device(device.clone())
+            .scalar_type(scalar_type)
+            .inputs(16 * 4 * 4)
+            .outputs(128)
+            .activation(Relu)
+            .build()?;
+        let dense2 = Dense::builder()
+            .device(device.clone())
+            .scalar_type(scalar_type)
+            .inputs(128)
+            .outputs(84)
+            .activation(Relu)
+            .build()?;
+        let dense3 = Dense::builder()
+            .device(device.clone())
+            .scalar_type(scalar_type)
+            .inputs(84)
+            .outputs(10)
+            .bias(true)
+            .build()?;
         Ok(Self {
             conv1,
-            relu1,
             pool1,
             conv2,
-            relu2,
             pool2,
+            flatten,
             dense1,
-            relu3,
             dense2,
-            relu4,
             dense3,
         })
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    let mut kind = NetworkKind::Linear;
-    let mut save = false;
-    let mut epochs = 100;
-    {
-        let mut ap = ArgumentParser::new();
-        ap.set_description("Neural Network MNIST Example");
-        ap.refer(&mut kind)
-            .add_option(&["--linear"], StoreConst(NetworkKind::Linear), "A linear network.")
-            .add_option(&["--cnn"], StoreConst(NetworkKind::CNN), "A convolutional network.")
-            .add_option(&["--lenet5"], StoreConst(NetworkKind::Lenet5), "The LeNet5 network.");
-        ap.refer(&mut save)
-            .add_option(&["--save"], StoreTrue, "Load / save the trainer.");
-        ap.refer(&mut epochs)
-            .add_option(&["--epochs"], Store, "The number of epochs to train for.");
-        ap.parse_args_or_exit();
+#[derive(Parser, Debug)]
+#[command(author)]
+struct Options {
+    #[arg(long)]
+    device: Option<usize>,
+    #[arg(long)]
+    bf16: bool,
+    #[arg(short, long, default_value_t = 100)]
+    epochs: usize,
+    #[arg(long, default_value_t = 100)]
+    train_batch_size: usize,
+    #[arg(long, default_value_t = 1000)]
+    test_batch_size: usize,
+    #[arg(long, default_value_t = 0.1)]
+    learning_rate: f32,
+    #[arg(long)]
+    momentum: Option<f32>,
+}
+
+fn main() -> Result<()> {
+    let options = Options::parse();
+    println!("{options:#?}");
+    let Mnist {
+        train_images,
+        train_classes,
+        test_images,
+        test_classes,
+        ..
+    } = Mnist::builder()
+        .kind(MnistKind::Digits)
+        .download(true)
+        .verbose(true)
+        .build()?;
+    let (train_images, train_classes) =
+        (ArcArray::from(train_images), ArcArray::from(train_classes));
+    let (test_images, test_classes) = (ArcArray::from(test_images), ArcArray::from(test_classes));
+    let device = if let Some(index) = options.device {
+        Device::builder().index(index).build()?
+    } else {
+        Device::host()
+    };
+    if let Some(info) = device.info() {
+        println!("{info:#?}");
     }
+    let scalar_type = if options.bf16 {
+        ScalarType::BF16
+    } else {
+        ScalarType::F32
+    };
+    let mut model = LeNet5::new(device.clone(), scalar_type)?;
+    let optimizer = {
+        let mut builder = SGD::builder();
+        if let Some(momentum) = options.momentum {
+            builder = builder.momentum(momentum);
+        }
+        builder.build()
+    };
+    println!("model: {model:#?}");
+    println!("optimizer: {optimizer:#?}");
+    let image_scale = 1f32 / 255f32;
+    let image_scale = if options.bf16 {
+        ScalarElem::BF16(bf16::from_f32(image_scale))
+    } else {
+        ScalarElem::F32(image_scale)
+    };
+    let start = Instant::now();
+    for epoch in 1..=options.epochs {
+        let epoch_start = Instant::now();
+        let train_iter = batches(
+            train_images.clone(),
+            train_classes.clone(),
+            device.clone(),
+            options.train_batch_size,
+            true,
+        );
+        let train_stats = train(
+            &mut model,
+            image_scale,
+            &optimizer,
+            options.learning_rate,
+            train_iter,
+        )?;
+        let train_count = train_stats.count;
+        let train_correct = train_stats.correct;
+        let train_loss = train_stats.mean_loss();
+        let train_acc = train_stats.accuracy();
+        let test_iter = batches(
+            test_images.clone(),
+            test_classes.clone(),
+            device.clone(),
+            options.test_batch_size,
+            false,
+        );
+        let test_stats = test(&model, image_scale, test_iter)?;
+        let test_count = test_stats.count;
+        let test_correct = test_stats.correct;
+        let test_loss = test_stats.mean_loss();
+        let test_acc = test_stats.accuracy();
+        let epoch_elapsed = epoch_start.elapsed();
+        println!(
+            "[{epoch}] train_loss: {train_loss} train_acc: {train_acc}% {train_correct}/{train_count} test_loss: {test_loss} test_acc: {test_acc}% {test_correct}/{test_count} elapsed: {epoch_elapsed:?}"
+        );
+    }
+    println!("Finished in {:?}.", start.elapsed());
+    Ok(())
+}
 
-    // Create a device.
-    let device = Device::new()?;
-    println!("{:#?}", device);
-
-
-    fn save_path(name: &str, save: bool) -> Option<PathBuf> {
-        if save {
-            Some(format!("{}_trainer.bincode", name).into())
+fn batches(
+    images: ArcArray<u8, Ix4>,
+    classes: ArcArray1<u8>,
+    device: Device,
+    batch_size: usize,
+    shuffle: bool,
+) -> impl Iterator<Item = Result<(Tensor4<u8>, Tensor1<u8>)>> {
+    let (sender, receiver) = crossbeam_channel::bounded(0);
+    std::thread::spawn(move || {
+        let (count, depth, height, width) = images.dim();
+        if shuffle {
+            let mut index_iter = sample(&mut thread_rng(), count, count).into_iter();
+            for _ in 0..count / batch_size {
+                let mut output_images =
+                    Vec::<u8>::with_capacity(batch_size * depth * height * width);
+                let mut output_classes = Vec::<u8>::with_capacity(batch_size);
+                for index in index_iter.by_ref().take(batch_size) {
+                    output_images
+                        .extend_from_slice(images.index_axis(Axis(0), index).as_slice().unwrap());
+                    output_classes.push(classes[index]);
+                }
+                let images = Tensor::from(output_images)
+                    .into_shape([batch_size, depth, height, width])
+                    .unwrap()
+                    .into_device(device.clone());
+                let classes = Tensor::from(output_classes).into_device(device.clone());
+                let result = images.and_then(|images| Ok((images, classes?)));
+                sender.send(result).unwrap();
+            }
         } else {
-            None
+            for (images, classes) in images
+                .axis_chunks_iter(Axis(0), batch_size)
+                .zip(classes.axis_chunks_iter(Axis(0), batch_size))
+            {
+                let images = CowTensor::from(images).to_device(device.clone());
+                let classes = CowTensor::from(classes).to_device(device.clone());
+                let result = images.and_then(|images| Ok((images, classes?)));
+                sender.send(result).unwrap();
+            }
         }
-    }
+    });
+    receiver.into_iter()
+}
 
-    match kind {
-        NetworkKind::Linear => {
-            let dense = Dense::from_inputs_outputs(28 * 28, 10)
-                .with_bias(true)?;
-            train(device, dense, save_path("linear", save), epochs).await
-        }
-        NetworkKind::CNN => {
-            train(device, CNN::new()?, save_path("cnn", save), epochs).await
-        }
-        NetworkKind::Lenet5 => {
-            train(device, Lenet5::new()?, save_path("lenet5", save), epochs).await
-        }
+#[derive(Default)]
+struct Stats {
+    count: usize,
+    loss: f32,
+    correct: usize,
+}
+
+impl Stats {
+    fn mean_loss(&self) -> f32 {
+        self.loss / self.count as f32
+    }
+    fn accuracy(&self) -> f32 {
+        (self.correct * 100) as f32 / self.count as f32
     }
 }
 
-async fn train<L: Layer + Debug + Serialize + for<'de> Deserialize<'de>>(device: Device, layer: L, save_path: Option<PathBuf>, epochs: usize) -> Result<()> {
-
-    // Construct a trainer to train the network.
-    let mut trainer = match save_path.as_ref() {
-        // Load the trainer from a file.
-        Some(save_path) if save_path.exists() => bincode::deserialize(& fs::read(save_path)?)?,
-        // Use the provided layer.
-        _ => NetworkTrainer::from_network(layer.into())
-    };
-
-    // Transfer the trainer to the device. Most operations (ie compute shaders) only
-    // run on a device.
-    trainer.to_device_mut(device.clone()).await?;
-    println!("{:#?}", &trainer);
-
-    // Load the dataset.
-    println!("Loading dataset...");
-    let mnist = Mnist::builder().download(true).build()?;
-    // Use the first 60_000 images as the training set.
-    let train_images = mnist
-        .images()
-        .slice(s![..60_000, .., .., ..]);
-    let train_classes = mnist.classes().slice(s![..60_000]);
-    let train_batch_size = 100;
-    // Use the last 10_000 images as the test set.
-    let test_images = mnist
-        .images()
-        .slice(s![60_000.., .., .., ..]);
-    let test_classes = mnist.classes().slice(s![60_000..]);
-    let test_batch_size = 1000;
-
-    // Stream the data to the device, converting arrays to tensors.
-    fn batch_iter<'a>(
-        device: &'a Device,
-        images: &'a ArrayView4<u8>,
-        classes: &'a ArrayView1<u8>,
-        batch_size: usize,
-    ) -> impl ExactSizeIterator<Item = Result<(FloatTensor4, Tensor1<u8>)>> + 'a {
-        images
-            .axis_chunks_iter(Axis(0), batch_size)
-            .into_iter()
-            .zip(classes.axis_chunks_iter(Axis(0), batch_size))
-            .map(move |(x, t)| {
-                let x = smol::block_on(TensorView::try_from(x)?.into_device(device.clone()))?
-                    // normalize the bytes to f32
-                    .scale_into::<f32>(1. / 255.)?
-                    .into_float();
-                let t = smol::block_on(TensorView::try_from(t)?.into_device(device.clone()))?;
-                Ok((x, t))
-            })
-    }
-
-    // Shuffled training data iterator
-    fn shuffled_batch_iter<'a>(
-        device: &'a Device,
-        images: &'a ArrayView4<'a, u8>,
-        classes: &'a ArrayView1<'a, u8>,
-        batch_size: usize,
-    ) -> impl ExactSizeIterator<Item = Result<(FloatTensor4, Tensor1<u8>)>> + 'a {
-        let mut indices = (0 .. images.shape()[0]).into_iter().collect::<Vec<usize>>();
-        indices.shuffle(&mut rand::thread_rng());
-        (0 .. indices.len())
-            .into_iter()
-            .step_by(batch_size)
-            .map(move |index| {
-                let batch_indices = &indices[index..(index+batch_size).min(indices.len())];
-                let x = batch_indices.iter()
-                    .copied()
-                    .flat_map(|i| images.index_axis(Axis(0), i))
-                    .copied()
-                    .collect::<Array1<u8>>()
-                    .into_shape([batch_indices.len(), images.dim().1, images.dim().2, images.dim().3])?;
-                let t = batch_indices.iter()
-                    .copied()
-                    .map(|i| classes[i])
-                    .collect::<Array1<u8>>();
-                let x = smol::block_on(Tensor::from(x).into_device(device.clone()))?
-                    // normalize the bytes to f32
-                    .scale_into::<f32>(1. / 255.)?
-                    .into_float();
-                let t = smol::block_on(Tensor::from(t).into_device(device.clone()))?;
-                Ok((x, t))
-            })
-    }
-
-    // Show a progress bar
-    fn progress_iter<X>(iter: impl ExactSizeIterator<Item=X>, epoch: usize, name: &str) -> impl ExactSizeIterator<Item=X> {
-        let style = ProgressStyle::default_bar()
-            .template(&format!("[epoch: {} elapsed: {{elapsed}}] {} [{{bar}}] {{pos:>7}}/{{len:7}} [eta: {{eta}}]", epoch, name))
-            .progress_chars("=> ");
-        let bar = ProgressBar::new(iter.len() as u64)
-            .with_style(style);
-        iter.progress_with(bar)
-    }
-
-    println!("Training...");
-    // Run the training for the specified epochs
-    while trainer.summarize().epoch < epochs {
-        let epoch = trainer.summarize().epoch;
-        let train_iter = progress_iter(shuffled_batch_iter(&device, &train_images, &train_classes, train_batch_size), epoch, "training");
-        let test_iter = progress_iter(batch_iter(&device, &test_images, &test_classes, test_batch_size), epoch, "testing");
-        trainer.train_test(train_iter, test_iter)?;
-        println!("{:#?}", trainer.summarize());
-
-        // Save the trainer at each epoch.
-        if let Some(save_path) = save_path.as_ref() {
-            fs::write(save_path, bincode::serialize(&trainer)?)?;
+fn train<I: Iterator<Item = Result<(Tensor4<u8>, Tensor1<u8>)>>>(
+    model: &mut LeNet5,
+    image_scale: ScalarElem,
+    optimizer: &SGD,
+    learning_rate: f32,
+    mut iter: I,
+) -> Result<Stats> {
+    let mut stats = Stats::default();
+    while let Some((x, t)) = iter.by_ref().next().transpose()? {
+        stats.count += x.shape().first().unwrap();
+        model.set_training(true)?;
+        let x = Variable::from(ScalarTensor::from(x).scaled_cast(image_scale)?);
+        let t = ScalarTensor::from(t).into_shared()?;
+        let y = model.forward(x)?;
+        stats.correct += y.value().accuracy(t.view())?;
+        let loss = y.cross_entropy_loss(t)?;
+        stats.loss += loss
+            .value()
+            .view()
+            .cast_into_tensor::<f32>()?
+            .into_array()?
+            .into_scalar();
+        loss.backward()?;
+        for parameter in model.parameters_mut()? {
+            optimizer.update(learning_rate, parameter)?;
         }
+        model.set_training(false)?;
     }
+    Ok(stats)
+}
 
-    println!("Evaluating...");
-    let test_iter = progress_iter(batch_iter(&device, &test_images, &test_classes, test_batch_size), trainer.summarize().epoch, "evaluating");
-    let stats = trainer.test(test_iter)?;
-    println!("{:#?}", stats);
-
-    Ok(())
+fn test<I: Iterator<Item = Result<(Tensor4<u8>, Tensor1<u8>)>>>(
+    model: &LeNet5,
+    image_scale: ScalarElem,
+    mut iter: I,
+) -> Result<Stats> {
+    let mut stats = Stats::default();
+    while let Some((x, t)) = iter.by_ref().next().transpose()? {
+        stats.count += x.shape().first().unwrap();
+        let x = Variable::from(ScalarTensor::from(x).scaled_cast(image_scale)?);
+        let t = ScalarTensor::from(t).into_shared()?;
+        let y = model.forward(x)?;
+        stats.correct += y.value().accuracy(t.view())?;
+        let loss = y.cross_entropy_loss(t)?;
+        stats.loss += loss
+            .into_value()
+            .cast_into_tensor::<f32>()?
+            .into_array()?
+            .into_scalar();
+    }
+    Ok(stats)
 }

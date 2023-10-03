@@ -1,22 +1,17 @@
 [package]
-name = "neural-network-mnist"
-version = "0.1.0"
-authors = ["Charles R Earp <charles.r.earp@gmail.com>"]
-edition = "2018"
-license = "MIT/Apache-2.0"
-description = "Neural Network MNIST Example"
-readme = "README.md"
+name = "neural-network-mnist-example"
+version = "0.0.0"
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
 publish = false
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
-autograph = { path = "../../", features = ["neural_network", "mnist"] }
-ndarray = "0.15.3"
-tokio = { version = "1.9.0", features = ["full"] }
-smol = "1.2.5"
-argparse = "0.2.2"
-indicatif = "0.16.2"
-bincode = "1.3.3"
-serde = "1.0.130"
-rand = "0.8.4"
+autograph = { path = "../../", default-features = false, features = ["neural-network", "mnist"] }
+clap = { workspace = true, features = ["derive"] }
+rand = "0.8.5"
+crossbeam-channel.workspace = true
+
+[features]
+default = ["device"]
+device = ["autograph/device"]

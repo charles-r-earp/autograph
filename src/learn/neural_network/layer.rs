@@ -1,1879 +1,1227 @@
-use super::{
-    autograd::{
-        Autograd, Backward, Parameter, ParameterD, Variable, VariableD, VariableGradient,
-        VariableGradientD,
-    },
-    optimizer::Optimizer,
+use super::autograd::{
+    Parameter, Parameter1, Parameter2, ParameterViewMut, ParameterViewMut1, ParameterViewMut2,
+    ParameterViewMutD, Variable, Variable1, Variable2, Variable3, Variable4,
 };
+#[cfg(doc)]
+use super::optimizer::Optimizer;
+#[cfg(feature = "device")]
+use crate::buffer::ScalarSliceMut;
 use crate::{
-    buffer::{float::FloatBuffer, Buffer},
+    buffer::{Buffer, ScalarBuffer, ScalarData},
     device::Device,
-    linalg::{Dot, DotAcc, DotBias},
-    ops::{Col2Im, Im2Col, KernelArgs, KernelKind},
-    result::Result,
-    rust_shaders,
-    scalar::FloatType,
-    tensor::{
-        float::{
-            FloatArcTensor, FloatArcTensor2, FloatArcTensorD, FloatTensor, FloatTensor4,
-            FloatTensorD, FloatTensorView4, FloatTensorViewD, FloatTensorViewMut4,
-            FloatTensorViewMutD,
-        },
-        Tensor, TensorD,
+    krnl::krnl_core::half::bf16,
+    ops::{
+        AddAssign, Col2ImConv2, Col2ImConv2Options, Im2ColConv2, Im2ColConv2Options, MaxPool2 as _,
+        MaxPool2Backward as _, MaxPool2Options,
     },
-    util::type_eq,
+    scalar::{Scalar, ScalarType},
+    tensor::{
+        ScalarArcTensor, ScalarArcTensor4, ScalarTensor, ScalarTensorBase, Tensor, TensorView,
+        TensorViewMut,
+    },
 };
-use anyhow::bail;
-#[doc(hidden)]
-pub use async_trait::async_trait;
-#[doc(hidden)]
+use anyhow::{bail, Error, Result};
 pub use autograph_derive::*;
-use ndarray::{Dim, Dimension, IntoDimension, Ix1, Ix4, IxDyn};
-use rand::distributions::{Distribution, Uniform};
-use rspirv::spirv::Capability;
-use serde::{Deserialize, Serialize};
-use std::{
-    fmt::{self, Debug},
-    marker::PhantomData,
+#[cfg(feature = "device")]
+use dry::macro_for;
+#[cfg(feature = "device")]
+use paste::paste;
+
+#[cfg(feature = "device")]
+use krnl::macros::module;
+use ndarray::{linalg::Dot, Array, Dimension, IntoDimension, Ix1, Ix2};
+
+use rand::{
+    distributions::{Distribution, Uniform},
+    thread_rng,
 };
+use serde::{Deserialize, Serialize};
+use std::any::Any;
 
-mod sealed {
-    pub trait PoolKindBase {}
-}
-use sealed::PoolKindBase;
+/// Layer builders.
+pub mod builder {
+    use super::*;
 
-/// A trait for networks and layers.
-///
-/// [`Layer`] provides reflection and utility methods.
-///
-/// # Derive
-/// [`Layer`] should be [derived](autograph_derive).
-///
-/// # Clone
-/// Implement [`Clone`] (typically this can be derived) to make it easier to share the layer (potentially between threads).
-///
-/// # serde
-/// Implement [`Serialize`](serde::Serialize) and [`Deserialize`](serde::Deserialize) for saving and loading the layer. This can generally be [derived](<https://serde.rs/derive.html>).
-#[async_trait]
-pub trait Layer: Forward + Send + Sync + 'static {
-    /// The number of parameters.
-    ///
-    /// This is the length of [`.parameters()`](Self::parameters()).
-    fn parameters_len(&self) -> usize {
-        0
+    fn dim_ones<D: Dimension>() -> D {
+        let mut dim = D::default();
+        dim.slice_mut().iter_mut().for_each(|x| *x = 1);
+        dim
     }
-    #[doc(hidden)]
-    #[allow(unused)]
-    fn collect_parameters(&self, parameters: &mut Vec<ParameterD>) {}
-    /// Enumerates the parameters of the layer, including child layers.
-    fn parameters(&self) -> Vec<ParameterD> {
-        let mut parameters = Vec::with_capacity(self.parameters_len());
-        self.collect_parameters(&mut parameters);
-        parameters
+
+    /// Builder for creating a [`Conv`].
+    pub struct ConvBuilder<D: Dimension, A = Identity> {
+        inputs: usize,
+        outputs: usize,
+        filter: D,
+        padding: D,
+        stride: D,
+        dilation: D,
+        bias: bool,
+        scalar_type: ScalarType,
+        device: Device,
+        activation: A,
     }
-    #[doc(hidden)]
-    #[allow(unused)]
-    fn collect_parameters_mut<'a>(&'a mut self, parameters: &mut Vec<&'a mut ParameterD>) {}
-    /// Enumerates mutable references to the parameters of the layer, including child layers.
-    fn parameters_mut(&mut self) -> Vec<&mut ParameterD> {
-        let mut parameters = Vec::with_capacity(self.parameters_len());
-        self.collect_parameters_mut(&mut parameters);
-        parameters
-    }
-    /// Enumerates the immediate child layers of the layer.
-    fn layers(&self) -> Vec<&dyn Layer> {
-        Vec::new()
-    }
-    /// Enumerates mutable references to the immediate child layers of the layer.
-    fn layers_mut(&mut self) -> Vec<&mut dyn Layer> {
-        Vec::new()
-    }
-    /// Transfers parameters to `device` inplace.
-    ///
-    /// See [`Parameter::into_device()`](super::autograd::VertexBase::into_device()).
-    ///
-    /// # Note
-    /// If an error occurs, some parameters may not have been transfered.
-    async fn to_device_mut(&mut self, device: Device) -> Result<()> {
-        for parameter in self.parameters_mut() {
-            if parameter.device() != device {
-                let new = parameter.clone().into_device(device.clone()).await?;
-                *parameter = new;
+
+    impl<D: Dimension> ConvBuilder<D> {
+        pub(super) fn new() -> Self {
+            Self {
+                inputs: 0,
+                outputs: 0,
+                filter: D::default(),
+                padding: D::default(),
+                stride: dim_ones(),
+                dilation: dim_ones(),
+                bias: false,
+                scalar_type: ScalarType::F32,
+                device: Device::host(),
+                activation: Identity,
             }
         }
-        Ok(())
     }
-    /// Transfers parameters into `device`.
-    ///
-    /// See [`.to_device_mut()`](Self::to_device_mut()).
-    async fn into_device(mut self, device: Device) -> Result<Self>
-    where
-        Self: Sized,
-    {
-        self.to_device_mut(device).await?;
-        Ok(self)
-    }
-    /// Updates the layer with the optimizer.
-    ///
-    /// Call this method on the network after one or more backward passes.
-    fn update<O: Optimizer>(&mut self, optimizer: &mut O) -> Result<()>
-    where
-        Self: Sized,
-    {
-        optimizer.update(&mut self.parameters_mut())
-    }
-}
 
-/// A trait for the forward pass.
-///
-/// [`Layer`]'s implement [`Forward`], which computes the output as a function of the input.
-///
-/// # Derive
-/// [`Forward`] can be [derived](autograph_derive) for sequential layers (ie typical feed-foward networks).
-pub trait Forward {
-    /// Computes the forward pass.
-    ///
-    /// # Autograd
-    /// Operations on [`Variable`](super::autograd::Variable) are expected to apply backward ops via [`Variable::with_backward()`].
-    ///
-    /// **Errors**
-    ///
-    /// Returns an error if the operation could not be performed. Generally the implemenation should return an error instead of panicking.
-    fn forward(&self, input: VariableD) -> Result<VariableD>;
-}
-
-/// Convolutional layer.
-#[derive(Layer, Clone, Serialize, Deserialize)]
-#[autograph(crate)]
-pub struct Conv {
-    #[autograph(parameter)]
-    weight: ParameterD,
-    #[autograph(optional_parameter)]
-    bias: Option<ParameterD>,
-    strides: IxDyn,
-    padding: IxDyn,
-    dilation: IxDyn,
-}
-
-impl Conv {
-    /// Creates a new [`Conv`] for 'inputs`, `outputs`, and `kernel`.
-    ///
-    /// Defaults:
-    /// - strides: 1
-    /// - padding: 0
-    /// - dilation: 1,
-    /// - bias: None
-    ///
-    /// The weight is initialized with a uniform distribution of (-a, a) where a = sqrt(1 / (inputs * kernel.size())).
-    ///
-    /// # Note
-    /// Only 2D convolutions of 4D imputs are currently implemented.
-    ///
-    /// # Example
-    /*
-    ```
-    # use autograph::{result::Result, learn::neural_network::layer::Conv};
-    # fn main() -> Result() {
-    let conv = Conv::from_inputs_outputs_kernel(1, 64, [3, 3])
-        .with_padding(1)?
-        .with_bias(true)?;
-    # Ok(())
-    # }
-    ```
-    */
-    pub fn from_inputs_outputs_kernel<E>(inputs: usize, outputs: usize, kernel: E) -> Self
-    where
-        E: IntoDimension,
-    {
-        let kernel = kernel.into_dimension();
-        let mut kernel_dim = IxDyn::zeros(kernel.ndim() + 2);
-        let mut kernel_dim_array = kernel_dim.as_array_view_mut();
-        let kernel_dim_slice = kernel_dim_array.as_slice_mut().unwrap();
-        kernel_dim_slice[..2].copy_from_slice([outputs, inputs].as_ref());
-        kernel_dim_slice[2..].copy_from_slice(kernel.slice());
-        let a = f32::sqrt(2. / (inputs * kernel.size()) as f32);
-        let data = Uniform::new(-a, a)
-            .sample_iter(&mut rand::thread_rng())
-            .take(kernel_dim.size())
-            .collect::<Vec<_>>();
-        let buffer = FloatBuffer::from(Buffer::from(data));
-        let weight = Parameter::from(FloatArcTensor::from(buffer).into_shape(kernel_dim).unwrap());
-        let strides = vec![1; kernel.ndim()].into_dimension();
-        let padding = IxDyn::zeros(kernel.ndim());
-        let dilation = vec![1; kernel.ndim()].into_dimension();
-        Self {
-            weight,
-            bias: None,
-            strides,
-            padding,
-            dilation,
+    impl<D: Dimension, A> ConvBuilder<D, A> {
+        /// Sets the number of input channels.
+        pub fn inputs(self, inputs: usize) -> Self {
+            Self { inputs, ..self }
         }
-    }
-    /// Adds `strides`.
-    ///
-    /// If strides are 1 dimensional, they may be broadcasted to the dimensionality of the kernel.
-    ///
-    /// **Errors**
-    ///
-    /// If the strides are not 1 dimensional and a different dimensionality than the kernel.
-    pub fn with_strides<E>(mut self, strides: E) -> Result<Self>
-    where
-        E: IntoDimension,
-    {
-        let mut strides = strides.into_dimension().into_dyn();
-        let kernel = &self.weight.shape()[2..];
-        if strides.ndim() != kernel.len() {
-            if let Some(s) = Ix1::from_dimension(&strides).map(Dimension::into_pattern) {
-                strides = vec![s; kernel.len()].into_dimension();
+        /// Sets the number of output channels.
+        pub fn outputs(self, outputs: usize) -> Self {
+            Self { outputs, ..self }
+        }
+        /// Sets size of the filter.
+        pub fn filter(self, filter: impl IntoDimension<Dim = D>) -> Self {
+            Self {
+                filter: filter.into_dimension(),
+                ..self
+            }
+        }
+        /// Adds padding.
+        pub fn padding(self, padding: impl IntoDimension<Dim = D>) -> Self {
+            Self {
+                padding: padding.into_dimension(),
+                ..self
+            }
+        }
+        /// Sets the stride. Defaults to 1.
+        pub fn stride(self, stride: impl IntoDimension<Dim = D>) -> Self {
+            Self {
+                stride: stride.into_dimension(),
+                ..self
+            }
+        }
+        /// Sets the dilation. Defaults to 1.
+        pub fn dilation(self, dilation: impl IntoDimension<Dim = D>) -> Self {
+            Self {
+                dilation: dilation.into_dimension(),
+                ..self
+            }
+        }
+        /// Add a bias. Defaults to false.
+        pub fn bias(self, bias: bool) -> Self {
+            Self { bias, ..self }
+        }
+        /// Add an activation layer.
+        pub fn activation<A2>(self, activation: A2) -> ConvBuilder<D, A2> {
+            let Self {
+                inputs,
+                outputs,
+                filter,
+                padding,
+                stride,
+                dilation,
+                bias,
+                activation: _,
+                scalar_type,
+                device,
+            } = self;
+            ConvBuilder {
+                inputs,
+                outputs,
+                filter,
+                padding,
+                stride,
+                dilation,
+                bias,
+                activation,
+                scalar_type,
+                device,
+            }
+        }
+        /// Sets the scalar type. Defaults to F32.
+        ///
+        /// BF16 and F32 are implemented.
+        pub fn scalar_type(self, scalar_type: ScalarType) -> Self {
+            Self {
+                scalar_type,
+                ..self
+            }
+        }
+        /// Sets the device. Defaults to the host.
+        pub fn device(self, device: Device) -> Self {
+            Self { device, ..self }
+        }
+        /// Builds the layer.
+        ///
+        /// **Errors**
+        /// - The `scalar_type` is not BF16 or F32.
+        /// - Initializing parameters on the `device` failed.
+        pub fn build(self) -> Result<Conv<D, A>> {
+            let Self {
+                inputs,
+                outputs,
+                filter,
+                padding,
+                stride,
+                dilation,
+                bias,
+                activation,
+                scalar_type,
+                device,
+            } = self;
+            if !matches!(scalar_type, ScalarType::BF16 | ScalarType::F32) {
+                bail!("Conv {scalar_type:?} not implemented!");
+            }
+            let a = if inputs > 0 {
+                f32::sqrt(2. / (inputs * filter.size()) as f32)
             } else {
-                bail!(
-                    "Strides {:?} do not match kernel {:?}!",
-                    strides.slice(),
-                    kernel
-                );
-            }
-        }
-        self.strides = strides;
-        Ok(self)
-    }
-    /// Adds `padding`.
-    ///
-    /// If padding is 1 dimensional, they may be broadcasted to the dimensionality of the kernel.
-    ///
-    /// **Errors**
-    ///
-    /// If padding is not 1 dimensional and a different dimensionality than the kernel.
-    pub fn with_padding<E>(mut self, padding: E) -> Result<Self>
-    where
-        E: IntoDimension,
-    {
-        let mut padding = padding.into_dimension().into_dyn();
-        let kernel = &self.weight.shape()[2..];
-        if padding.ndim() != kernel.len() {
-            if let Some(p) = Ix1::from_dimension(&padding).map(Dimension::into_pattern) {
-                padding = vec![p; kernel.len()].into_dimension();
-            } else {
-                bail!(
-                    "Padding {:?} do not match kernel {:?}!",
-                    padding.slice(),
-                    kernel
-                );
-            }
-        }
-        self.padding = padding;
-        Ok(self)
-    }
-    /// Adds a bias to the layer.
-    ///
-    /// The bias is initialized with a uniform distribution of (-a, a) where a = sqrt(1 / inputs).
-    pub fn with_bias(mut self, bias: bool) -> Result<Self> {
-        if bias {
-            let inputs = self.weight.shape()[1];
-            let outputs = self.weight.shape()[0];
-            let a = f32::sqrt(2. / inputs as f32);
-            let data = Uniform::new(-a, a)
-                .sample_iter(&mut rand::thread_rng())
-                .take(outputs)
-                .collect::<Vec<_>>();
-            let device = self.weight.device();
-            let buffer = FloatBuffer::from(smol::block_on(Buffer::from(data).into_device(device))?);
-            self.bias.replace(Parameter::from(
-                FloatArcTensor::from(buffer)
-                    .into_shape([outputs].as_ref())
-                    .unwrap(),
-            ));
-        } else {
-            self.bias = None;
-        }
-        Ok(self)
-    }
-}
-
-impl Debug for Conv {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let mut builder = f.debug_struct("Conv");
-        builder.field("weight", &self.weight);
-        if let Some(bias) = self.bias.as_ref() {
-            builder.field("bias", bias);
-        }
-        if self.strides.slice().iter().any(|x| *x != 1) {
-            builder.field("strides", &self.strides.slice());
-        }
-        if self.padding.slice().iter().any(|x| *x != 0) {
-            builder.field("padding", &self.padding.slice());
-        }
-        if self.dilation.slice().iter().any(|x| *x != 1) {
-            builder.field("dilation", &self.dilation.slice());
-        }
-        builder.finish()
-    }
-}
-
-fn convolution_direct_forward(
-    input: &FloatTensorView4,
-    weight: &FloatTensorView4,
-) -> Result<FloatTensor4> {
-    assert!(input.is_standard_layout());
-    assert!(weight.is_standard_layout());
-    assert!(input.float_type() == FloatType::F32);
-    assert!(weight.float_type() == FloatType::F32);
-
-    let (bs, ic, ih, iw) = input.dim();
-    let (oc, _ic, kh, kw) = weight.dim();
-    assert_eq!(ic, _ic);
-    let oh = ih - kh + 1;
-    let ow = iw - kw + 1;
-
-    let mut output =
-        unsafe { FloatTensor::alloc(FloatType::F32, input.device(), [bs, oc, oh, ow])? };
-    assert_eq!([kh, kw], [5, 5]);
-    let entry = "kernel::conv_direct_5x5_f32";
-    let builder = rust_shaders::compute_pass(entry)?
-        .float_slice(input.as_raw_slice())?
-        .float_slice(weight.as_raw_slice())?
-        .float_slice_mut(output.as_raw_slice_mut())?
-        .push([bs as u32, ic as u32, ih as u32, iw as u32])?
-        .push([oc as u32, oh as u32, ow as u32])?;
-    let groups_h = oh / 16 + if oh % 16 != 0 { 1 } else { 0 };
-    let groups_w = ow / 16 + if ow % 16 != 0 { 1 } else { 0 };
-    let global_size = bs * oc * groups_h * groups_w * 256;
-    unsafe {
-        builder.submit([global_size as u32, 1, 1])?;
-    }
-    Ok(output)
-}
-
-fn convolution_direct_backward(
-    input_grad: &mut FloatTensorViewMut4,
-    weight: &FloatTensorView4,
-    output_grad: &FloatTensorView4,
-) -> Result<()> {
-    assert!(input_grad.is_standard_layout());
-    assert!(weight.is_standard_layout());
-    assert!(input_grad.float_type() == FloatType::F32);
-    assert!(weight.float_type() == FloatType::F32);
-    assert!(output_grad.float_type() == FloatType::F32);
-    assert!(output_grad.is_standard_layout());
-
-    let (bs, ic, ih, iw) = input_grad.dim();
-    let (oc, _ic, kh, kw) = weight.dim();
-    let (_bs, _oc, oh, ow) = output_grad.dim();
-    assert_eq!(bs, _bs);
-    assert_eq!(ic, _ic);
-    assert_eq!(oc, _oc);
-    assert_eq!([kh, kw], [5, 5]);
-    let mut input_grad_tmp = unsafe {
-        FloatTensor::alloc(
-            input_grad.float_type(),
-            input_grad.device(),
-            [bs, ic, ih, iw, kh * kw],
-        )?
-    };
-    let entry = "kernel::conv_direct_backward_5x5_f32";
-    let builder = rust_shaders::compute_pass(entry)?
-        .float_slice_mut(input_grad_tmp.as_raw_slice_mut())?
-        .float_slice(weight.as_raw_slice())?
-        .float_slice(output_grad.as_raw_slice())?
-        .push([bs as u32, ic as u32, ih as u32, iw as u32])?
-        .push([oc as u32, oh as u32, ow as u32])?;
-    unsafe {
-        builder.submit([(bs * ic) as u32, 1, 1])?;
-    }
-    let len = input_grad.len() as u32;
-    let alpha = 1f32;
-    let builder = rust_shaders::compute_pass("kernel::reduce_f32")?
-        .float_slice(input_grad_tmp.as_raw_slice())?
-        .float_slice_mut(input_grad.as_raw_slice_mut())?
-        .push([len, (kh * kw) as u32])?
-        .push(alpha)?;
-    unsafe {
-        builder.submit([len, 1, 1])?;
-    }
-    Ok(())
-}
-
-fn convolution_direct_backward_weight(
-    input: &FloatTensorView4,
-    weight_grad: &mut FloatTensorViewMut4,
-    output_grad: &FloatTensorView4,
-) -> Result<()> {
-    assert!(input.is_standard_layout());
-    assert!(weight_grad.is_standard_layout());
-    assert!(input.float_type() == FloatType::F32);
-    assert!(weight_grad.float_type() == FloatType::F32);
-    assert!(output_grad.float_type() == FloatType::F32);
-    assert!(output_grad.is_standard_layout());
-    let (bs, ic, ih, iw) = input.dim();
-    let (oc, _ic, kh, kw) = weight_grad.dim();
-    let (_bs, _oc, oh, ow) = output_grad.dim();
-    assert_eq!(bs, _bs);
-    assert_eq!(ic, _ic);
-    assert_eq!(oc, _oc);
-    assert_eq!([kh, kw], [5, 5]);
-    let mut weight_grad_tmp = unsafe {
-        FloatTensor::alloc(
-            output_grad.float_type(),
-            output_grad.device(),
-            [oc, ic, kh, kw, bs],
-        )?
-    };
-    let entry = "kernel::conv_direct_backward_weight_5x5_f32";
-    let builder = rust_shaders::compute_pass(entry)?
-        .float_slice(input.as_raw_slice())?
-        .float_slice_mut(weight_grad_tmp.as_raw_slice_mut())?
-        .float_slice(output_grad.as_raw_slice())?
-        .push([bs as u32, ic as u32, ih as u32, iw as u32])?
-        .push([oc as u32, oh as u32, ow as u32])?;
-    let b_groups = bs / 16 + if bs % 16 != 0 { 1 } else { 0 };
-    unsafe {
-        builder.submit([(b_groups * 16) as u32, oc as u32, ic as u32])?;
-    }
-    //weight_grad_tmp.sum_axis_with(ndarray::Axis(4), weight_grad)?;
-    let len = (ic * oc * kh * kw) as u32;
-    let alpha = (bs as f32).recip();
-    let builder = rust_shaders::compute_pass("kernel::reduce_f32")?
-        .float_slice(weight_grad_tmp.as_raw_slice())?
-        .float_slice_mut(weight_grad.as_raw_slice_mut())?
-        .push([len, bs as u32])?
-        .push(alpha)?;
-    unsafe {
-        builder.submit([len, 1, 1])?;
-    }
-    Ok(())
-}
-
-#[derive(Autograd)]
-#[autograph(crate)]
-struct ConvolutionDirectBackward {
-    //#[autograph(vertex)]
-    //input: VariableD,
-    input: Option<FloatArcTensorD>,
-    #[autograph(optional_gradient)]
-    input_grad: Option<VariableGradientD>,
-    #[autograph(vertex)]
-    weight: ParameterD,
-}
-
-impl Backward for ConvolutionDirectBackward {
-    fn backward(&self, output_grad: FloatTensorD) -> Result<()> {
-        let output_grad = output_grad.into_dimensionality()?;
-        if let Some(weight_grad) = self.weight.grad() {
-            let input = self
-                .input
-                .as_ref()
-                .expect("input required for weight_grad!")
-                .view()
-                .into_dimensionality()?;
-            let mut weight_grad = weight_grad.lock();
-            let mut weight_grad = weight_grad.zeroed_mut()?.into_dimensionality()?;
-            convolution_direct_backward_weight(&input, &mut weight_grad, &output_grad.view())?;
-        }
-        if let Some(input_grad) = self.input_grad.as_ref() {
-            let weight = self.weight.value().view().into_dimensionality()?;
-            let mut input_grad = input_grad.lock();
-            let mut input_grad = input_grad.zeroed_mut()?.into_dimensionality()?;
-            convolution_direct_backward(&mut input_grad, &weight, &output_grad.view())?;
-        }
-        Ok(())
-    }
-}
-
-#[derive(Autograd)]
-#[autograph(crate)]
-struct ConvolutionGemmBackward {
-    #[autograph(optional_gradient)]
-    input_grad: Option<VariableGradientD>,
-    input_im2col: Option<FloatArcTensor2>,
-    #[autograph(vertex)]
-    weight: ParameterD,
-    strides: IxDyn,
-    padding: IxDyn,
-    dilation: IxDyn,
-}
-
-impl Backward for ConvolutionGemmBackward {
-    fn backward(&self, output_grad: FloatTensorD) -> Result<()> {
-        let output_grad = output_grad.into_dimensionality()?;
-        let (bs, oc, oh, ow) = output_grad.dim();
-        let output_grad = output_grad
-            .permuted_axes([0, 2, 3, 1])
-            .into_standard_layout()?
-            .into_shape([bs * oh * ow, oc])?;
-        use std::convert::TryInto;
-        let [_, ic, kh, kw]: [usize; 4] = self.weight.shape().try_into().unwrap();
-        let kernel = [kh, kw].into_dimension();
-        let args = KernelArgs {
-            strides: Dim::from_dimension(&self.strides).unwrap(),
-            padding: Dim::from_dimension(&self.padding).unwrap(),
-            dilation: Dim::from_dimension(&self.dilation).unwrap(),
-        };
-        if let Some(weight_grad) = self.weight.grad() {
-            let input_im2col = self
-                .input_im2col
-                .as_ref()
-                .expect("im2col required for computing weight_grad!");
-            let mut weight_grad = weight_grad.lock();
-            let weight_grad = weight_grad.zeroed_mut()?.into_shape([oc, ic * kh * kw])?;
-            input_im2col.t().dot_acc(
-                1f32,
-                &output_grad.view(),
-                &mut weight_grad.reversed_axes(),
-            )?;
-        }
-        if let Some(input_grad) = self.input_grad.as_ref() {
-            let weight = self.weight.value().view().into_shape([oc, ic * kh * kw])?;
-            let ih = input_grad.shape()[2];
-            let iw = input_grad.shape()[3];
-            let shape = [ih, iw].into_dimension();
-            let grad = output_grad
-                .dot(&weight)?
-                .col2im(&shape, &kernel, KernelKind::Convolution, &args)?
-                .into_dyn();
-            input_grad.lock().add_assign(grad)?;
-        }
-        Ok(())
-    }
-}
-
-impl Forward for Conv {
-    fn forward(&self, input: VariableD) -> Result<VariableD> {
-        smol::block_on(async {
-            // TODO: convert input to float type of weight
-            let input = input
-                .into_device(self.weight.device())
-                .await?
-                .into_dimensionality::<Ix4>()?;
-            let (bs, ic, ih, iw) = input.dim();
-            let weight = self.weight.clone().into_dimensionality::<Ix4>()?;
-            let (oc, _ic, kh, kw) = weight.dim();
-            debug_assert_eq!(_ic, ic);
-            if std::env::var("conv_direct").as_deref() == Ok("1") {
-                let output =
-                    convolution_direct_forward(&input.value().view(), &weight.value().view())?;
-                let mut output = Variable::from(output.into_dyn()).with_training(input.training());
-                if input.requires_grad() || (weight.requires_grad() && input.training()) {
-                    // TODO: Fix this
-                    let input_value = if weight.requires_grad() && input.training() {
-                        Some(input.value().view().into_shared()?.into_dyn())
-                    } else {
-                        None
-                    };
-                    output = output.with_backward(ConvolutionDirectBackward {
-                        input: input_value,
-                        input_grad: input.grad().map(VariableGradient::into_dyn),
-                        weight: weight.into_dyn(),
-                    });
+                0.
+            };
+            let mut rng = thread_rng();
+            let mut weight_dim = <D::Larger as Dimension>::Larger::zeros(2 + filter.ndim());
+            weight_dim[0] = outputs;
+            weight_dim[1] = inputs;
+            weight_dim.slice_mut()[2..].copy_from_slice(filter.slice());
+            let weight_iter = Uniform::new(-a, a)
+                .sample_iter(&mut rng)
+                .take(weight_dim.size());
+            let weight = match scalar_type {
+                ScalarType::BF16 => ScalarBuffer::from(Buffer::from(
+                    weight_iter.map(bf16::from_f32).collect::<Vec<_>>(),
+                )),
+                ScalarType::F32 => {
+                    ScalarBuffer::from(Buffer::from(weight_iter.collect::<Vec<_>>()))
                 }
-                Ok(output)
-            } else {
-                let weight = weight.into_shape([oc, ic * kh * kw])?;
-                let kernel = [kh, kw].into_dimension();
-                let args = KernelArgs {
-                    strides: Dim::from_dimension(&self.strides).unwrap(),
-                    padding: Dim::from_dimension(&self.padding).unwrap(),
-                    dilation: Dim::from_dimension(&self.dilation).unwrap(),
+                _ => unreachable!(),
+            };
+            let weight = weight.into_device(device.clone())?;
+            let weight =
+                Parameter::from(ScalarTensor::from(weight).into_shape(weight_dim).unwrap());
+            let bias = if bias {
+                let bias_iter = Uniform::new(-a, a).sample_iter(rng).take(outputs);
+                let bias = match scalar_type {
+                    ScalarType::BF16 => ScalarBuffer::from(Buffer::from(
+                        bias_iter.map(bf16::from_f32).collect::<Vec<_>>(),
+                    )),
+                    ScalarType::F32 => {
+                        ScalarBuffer::from(Buffer::from(bias_iter.collect::<Vec<_>>()))
+                    }
+                    _ => unreachable!(),
                 };
-                let (oh, ow) = args.im2col_shape([ih, iw], &kernel).into_pattern();
-                let input_im2col = input
-                    .value()
-                    .im2col(&kernel, KernelKind::Convolution, &args)?
-                    .into_shared()?;
-                let output = input_im2col
-                    .dot(&weight.value().t())?
-                    .into_shape([bs, oh, ow, oc])?
-                    .permuted_axes([0, 3, 1, 2])
-                    .into_standard_layout()?
-                    .into_dyn();
-                let mut output = Variable::from(output).with_training(input.training());
-                if input.requires_grad() || (weight.requires_grad() && input.training()) {
-                    let input_im2col = if weight.requires_grad() && input.training() {
-                        Some(input_im2col)
-                    } else {
-                        None
-                    };
-                    output = output.with_backward(ConvolutionGemmBackward {
-                        input_grad: input.grad().map(VariableGradient::into_dyn),
-                        input_im2col,
-                        weight: self.weight.clone(),
-                        strides: self.strides.clone(),
-                        padding: self.padding.clone(),
-                        dilation: self.dilation.clone(),
-                    });
-                }
-                Ok(output)
-            }
-        })
-    }
-}
-
-/*
-impl Forward for Conv {
-    fn forward(&self, input: VariableD) -> Result<VariableD> {
-        smol::block_on(async {
-            // TODO: convert input to float type of weight
-            let input = input
-                .into_device(self.weight.device())
-                .await?
-                .into_dimensionality::<Ix4>()?;
-            let (bs, ic, ih, iw) = input.dim();
-            let weight = self.weight.clone().into_dimensionality::<Ix4>()?;
-            if std::env::var("conv_direct").as_deref() == Ok("1") && !input.requires_grad() {
-                let output =
-                    convolution_direct_forward(&input.value().view(), &weight.value().view())?;
-                let mut output = Variable::from(output.into_dyn()).with_training(input.training());
-                if input.requires_grad() || weight.requires_grad() {
-                    output = output.with_backward(ConvolutionDirectBackward {
-                        input: input.into_dyn(),
-                        weight: weight.into_dyn(),
-                    });
-                }
-                Ok(output)
-            } else {
-                let (oc, _ic, kh, kw) = weight.dim();
-                debug_assert_eq!(_ic, ic);
-                let weight = weight.into_shape([oc, ic * kh * kw])?;
-                let kernel = [kh, kw].into_dimension();
-                let args = KernelArgs {
-                    strides: Dim::from_dimension(&self.strides).unwrap(),
-                    padding: Dim::from_dimension(&self.padding).unwrap(),
-                    dilation: Dim::from_dimension(&self.dilation).unwrap(),
-                };
-                let (oh, ow) = args.im2col_shape([ih, iw], &kernel).into_pattern();
-                let input_im2col = input.value().im2col(&kernel, KernelKind::Convolution, &args)?.into_shared()?;
-                let output = input_im2col.dot(&weight.value().t())?
-                    .into_shape([bs, oh, ow, oc])?
-                    .permuted_axes([0, 3, 1, 2])
-                    .to_standard_layout_shared()?
-                    .into_dyn();
-                let mut output = Variable::from(output).with_training(input.training());
-                if input.requires_grad() || weight.requires_grad() {
-                    output = output.with_backward(ConvolutionGemmBackward {
-                        input: input.into_dyn(),
-                        input_im2col: Some(input_im2col),
-                        weight: self.weight.clone(),
-                        strides: self.strides.clone(),
-                        padding: self.padding.clone(),
-                        dilation: self.dilation.clone(),
-                    });
-                }
-                Ok(output)
-            }
-        })
-    }
-}
-*/
-
-/// Dense / fully connected layer.
-#[derive(Layer, Clone, Debug, Serialize, Deserialize)]
-#[autograph(crate)]
-pub struct Dense {
-    #[autograph(parameter)]
-    weight: ParameterD,
-    #[autograph(optional_parameter)]
-    bias: Option<ParameterD>,
-}
-
-impl Dense {
-    /// Creates a new [`Dense`] for `inputs` and `outputs`.
-    ///
-    /// The weight is initialized with a uniform distribution of (-a, a) where a = sqrt(1 / inputs).
-    pub fn from_inputs_outputs(inputs: usize, outputs: usize) -> Self {
-        let a = f32::sqrt(2. / inputs as f32);
-        let data = Uniform::new(-a, a)
-            .sample_iter(&mut rand::thread_rng())
-            .take(inputs * outputs)
-            .collect::<Vec<_>>();
-        let buffer = FloatBuffer::from(Buffer::from(data));
-        let weight = Parameter::from(
-            FloatArcTensor::from(buffer)
-                .into_shape([outputs, inputs].as_ref())
-                .unwrap(),
-        );
-        Self { weight, bias: None }
-    }
-    /// Adds a bias to the layer.
-    ///
-    /// The bias is initialized with a uniform distribution of (-a, a) where a = sqrt(1 / inputs).
-    pub fn with_bias(mut self, bias: bool) -> Result<Self> {
-        if bias {
-            let inputs = self.weight.shape()[1];
-            let outputs = self.weight.shape()[0];
-            let a = f32::sqrt(2. / inputs as f32);
-            let data = Uniform::new(-a, a)
-                .sample_iter(&mut rand::thread_rng())
-                .take(outputs)
-                .collect::<Vec<_>>();
-            let device = self.weight.device();
-            let buffer = FloatBuffer::from(smol::block_on(Buffer::from(data).into_device(device))?);
-            self.bias.replace(Parameter::from(
-                FloatArcTensor::from(buffer)
-                    .into_shape([outputs].as_ref())
-                    .unwrap(),
-            ));
-        } else {
-            self.bias = None;
-        }
-        Ok(self)
-    }
-}
-
-impl Forward for Dense {
-    fn forward(&self, input: VariableD) -> Result<VariableD> {
-        let input = smol::block_on(input.into_device(self.weight.device()))?.flatten()?;
-        // TODO: convert to float type of weight
-        let weight = self.weight.clone().into_dimensionality()?;
-        let bias = if let Some(bias) = self.bias.as_ref().map(Parameter::clone) {
-            Some(bias.into_dimensionality()?)
-        } else {
-            None
-        };
-        Ok(input.dot_bias(&weight.t(), bias.as_ref())?.into_dyn())
-    }
-}
-
-/// ReLU activation.
-#[derive(Default, Layer, Clone, Debug, Serialize, Deserialize)]
-#[autograph(crate)]
-pub struct Relu {}
-
-fn relu(input: &FloatTensorViewD) -> Result<FloatTensorD> {
-    let float_type = input.float_type();
-    let device = input.device();
-    if float_type == FloatType::BF16
-        && !device.has_capabilities([Capability::Int16, Capability::StorageBuffer16BitAccess])
-    {
-        bail!(
-            "bf16 relu requires capabilities Int16={} and StorageBuffer16BitAccess={}",
-            device.has_capability(Capability::Int16),
-            device.has_capability(Capability::StorageBuffer16BitAccess)
-        )
-    }
-    let dim = input.raw_dim();
-    let mut output = unsafe { FloatTensor::alloc(float_type, device, dim)? };
-    unsafe {
-        output = output.with_raw_strides(input.raw_strides());
-    }
-    let n = input.len() as u32;
-    let builder =
-        rust_shaders::compute_pass(&format!("activation::relu_{}", float_type.as_str(),))?
-            .float_slice(input.as_raw_slice())?
-            .float_slice_mut(output.as_raw_slice_mut())?
-            .push(n)?;
-    unsafe {
-        builder.submit([n, 1, 1])?;
-    }
-    Ok(output)
-}
-
-fn relu_backward(
-    input: &FloatTensorViewD,
-    input_grad: &mut FloatTensorViewMutD,
-    output_grad: &FloatTensorViewD,
-) -> Result<()> {
-    debug_assert_eq!(input.shape(), input_grad.shape());
-    debug_assert_eq!(input.shape(), output_grad.shape());
-    debug_assert_eq!(input.raw_strides(), input_grad.raw_strides());
-    debug_assert_eq!(input_grad.raw_strides(), output_grad.raw_strides());
-    let float_type = input.float_type();
-    let device = input.device();
-    if float_type == FloatType::BF16
-        && !device.has_capabilities([Capability::Int16, Capability::StorageBuffer16BitAccess])
-    {
-        bail!(
-            "bf16 relu_backward requires capabilities Int16={} and StorageBuffer16BitAccess={}",
-            device.has_capability(Capability::Int16),
-            device.has_capability(Capability::StorageBuffer16BitAccess)
-        )
-    }
-    let n = input.len() as u32;
-    let output_grad_slice = output_grad.to_slice()?;
-    let builder = rust_shaders::compute_pass(&format!(
-        "activation::relu_backward_{}",
-        float_type.as_str(),
-    ))?
-    .float_slice(input.to_slice()?.as_slice())?
-    .float_slice_mut(input_grad.as_raw_slice_mut())?
-    .float_slice(output_grad_slice.as_slice())?
-    .push(n)?;
-    unsafe { builder.submit([n, 1, 1]) }
-}
-
-#[derive(Autograd)]
-#[autograph(crate)]
-struct ReluBackward {
-    #[autograph(gradient)]
-    input_grad: VariableGradientD,
-    output: FloatArcTensorD,
-}
-
-impl Backward for ReluBackward {
-    fn backward(&self, output_grad: FloatTensorD) -> Result<()> {
-        // TODO: implace impl
-        let mut dx = self.input_grad.lock();
-        relu_backward(
-            &self.output.view(),
-            &mut dx.zeroed_mut()?,
-            &output_grad.view(),
-        )?;
-        Ok(())
-    }
-}
-
-impl Forward for Relu {
-    fn forward(&self, input: VariableD) -> Result<VariableD> {
-        // TODO: inplace impl
-        let mut output =
-            Variable::from(relu(&input.value().view())?).with_training(input.training());
-        if let Some(input_grad) = input.grad() {
-            let output_value = output.value().clone();
-            output = output.with_backward(ReluBackward {
-                input_grad,
-                output: output_value,
-            });
-        }
-        Ok(output)
-    }
-}
-
-#[doc(hidden)]
-#[derive(Clone, Copy, Eq, PartialEq, Debug)]
-pub enum PoolingKind {
-    Max,
-    Mean,
-}
-
-impl PoolingKind {
-    fn as_str(&self) -> &'static str {
-        match self {
-            Self::Max => "max",
-            Self::Mean => "mean",
-        }
-    }
-}
-
-/// Marker trait for [`PoolBase`].
-pub trait PoolKind: Send + Sync + 'static + PoolKindBase {
-    #[doc(hidden)]
-    fn kind() -> PoolingKind;
-}
-
-/// Marker for [`MaxPool`].
-#[derive(Clone)]
-pub enum PoolMax {}
-
-impl PoolKindBase for PoolMax {}
-
-impl PoolKind for PoolMax {
-    fn kind() -> PoolingKind {
-        PoolingKind::Max
-    }
-}
-
-/// Marker for [`MeanPool`].
-#[derive(Clone)]
-pub enum PoolMean {}
-
-impl PoolKindBase for PoolMean {}
-
-impl PoolKind for PoolMean {
-    fn kind() -> PoolingKind {
-        PoolingKind::Mean
-    }
-}
-
-/// Pooling layer.
-#[derive(Clone, Serialize, Deserialize)]
-pub struct PoolBase<K: PoolKind> {
-    kernel: IxDyn,
-    strides: IxDyn,
-    padding: IxDyn,
-    dilation: IxDyn,
-    _m: PhantomData<K>,
-}
-
-/// MaxPool
-///
-/// See [`PoolBase`].
-pub type MaxPool = PoolBase<PoolMax>;
-
-/// MeanPool
-///
-/// See [`PoolBase`].
-pub type MeanPool = PoolBase<PoolMean>;
-
-impl<K: PoolKind> PoolBase<K> {
-    /// Creates a new pool with `kernel`.
-    ///
-    /// Defaults:
-    /// - strides: 1
-    /// - padding: 0
-    /// - dilation: 1
-    pub fn from_kernel<E>(kernel: E) -> Self
-    where
-        E: IntoDimension,
-    {
-        let kernel = kernel.into_dimension().into_dyn();
-        let strides = vec![1; kernel.ndim()].into_dimension();
-        let padding = IxDyn::zeros(kernel.ndim());
-        let dilation = vec![1; kernel.ndim()].into_dimension();
-        Self {
-            kernel,
-            strides,
-            padding,
-            dilation,
-            _m: PhantomData::default(),
-        }
-    }
-    /// Adds `strides`.
-    ///
-    /// If strides are 1 dimensional, they may be broadcasted to the dimensionality of the kernel.
-    ///
-    /// **Errors**
-    ///
-    /// If the strides are not 1 dimensional and a different dimensionality than the kernel.
-    pub fn with_strides<E>(mut self, strides: E) -> Result<Self>
-    where
-        E: IntoDimension,
-    {
-        let mut strides = strides.into_dimension().into_dyn();
-        if strides.ndim() != self.kernel.ndim() {
-            if let Some(s) = Ix1::from_dimension(&strides).map(Dimension::into_pattern) {
-                strides = vec![s; self.kernel.ndim()].into_dimension();
-            } else {
-                bail!(
-                    "Strides {:?} do not match kernel {:?}!",
-                    strides.slice(),
-                    self.kernel.slice()
-                );
-            }
-        }
-        self.strides = strides;
-        Ok(self)
-    }
-    /// Adds `padding`.
-    ///
-    /// If padding is 1 dimensional, they may be broadcasted to the dimensionality of the kernel.
-    ///
-    /// **Errors**
-    ///
-    /// If padding is not 1 dimensional and a different dimensionality than the kernel.
-    pub fn with_padding<E>(mut self, padding: E) -> Result<Self>
-    where
-        E: IntoDimension,
-    {
-        let mut padding = padding.into_dimension().into_dyn();
-        if padding.ndim() != self.kernel.ndim() {
-            if let Some(p) = Ix1::from_dimension(&padding).map(Dimension::into_pattern) {
-                padding = vec![p; self.kernel.ndim()].into_dimension();
-            } else {
-                bail!(
-                    "Padding {:?} do not match kernel {:?}!",
-                    padding.slice(),
-                    self.kernel.slice()
-                );
-            }
-        }
-        self.padding = padding;
-        Ok(self)
-    }
-    /* // TODO Implement Forward and tests
-    /// Adds `dilation`.
-    ///
-    /// If dilation are 1 dimensional, they may be broadcasted to the dimensionality of the kernel.
-    ///
-    /// **Errors**
-    ///
-    /// If the dilation is not 1 dimensional and a different dimensionality than the kernel.
-    pub fn with_dilation<E>(mut self, dilation: E) -> Result<Self>
-    where
-        E: IntoDimension,
-    {
-        let mut dilation = dilation.into_dimension().into_dyn();
-        if dilation.ndim() != self.kernel.ndim() {
-            if let Some(d) = Ix1::from_dimension(&dilation).map(Dimension::into_pattern) {
-                dilation = vec![d; self.kernel.ndim()].into_dimension();
-            } else {
-                bail!(
-                    "Dilation {:?} does not match kernel {:?}!",
-                    dilation.slice(),
-                    self.kernel.slice()
-                );
-            }
-        }
-        self.dilation = dilation;
-        Ok(self)
-    }*/
-}
-
-impl<K: PoolKind> Debug for PoolBase<K> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let ty = if type_eq::<K, PoolMax>() {
-            "MaxPool"
-        } else if type_eq::<K, PoolMean>() {
-            "MeanPool"
-        } else {
-            unreachable!()
-        };
-        let mut builder = f.debug_struct(ty);
-        builder.field("kernel", &self.kernel.slice());
-        if self.strides.slice().iter().any(|x| *x != 1) {
-            builder.field("strides", &self.strides.slice());
-        }
-        if self.padding.slice().iter().any(|x| *x != 0) {
-            builder.field("padding", &self.padding.slice());
-        }
-        if self.dilation.slice().iter().any(|x| *x != 1) {
-            builder.field("dilation", &self.strides.slice());
-        }
-        builder.finish()
-    }
-}
-
-// derive doesn't handle generics yet.
-impl<K: PoolKind> Layer for PoolBase<K> {}
-
-fn pool_forward(
-    kind: PoolingKind,
-    indices: bool,
-    input: &FloatArcTensorD,
-    kernel: &IxDyn,
-    strides: &IxDyn,
-    padding: &IxDyn,
-    dilation: &IxDyn, // TOOD
-) -> Result<(Option<TensorD<u32>>, FloatTensorD)> {
-    debug_assert!(input.is_standard_layout());
-    debug_assert_eq!(kernel.ndim() + 2, input.ndim());
-    assert!(dilation.slice().iter().copied().all(|x| x == 1));
-    let float_type = input.float_type();
-    match kernel.ndim() {
-        2 => {
-            let bs = input.shape()[0];
-            let ic = input.shape()[1];
-            let ih = input.shape()[2];
-            let iw = input.shape()[3];
-            let oh = (ih + 2 * padding[0] - kernel[0]) / strides[0] + 1;
-            let ow = (iw + 2 * padding[1] - kernel[1]) / strides[1] + 1;
-            let mut output =
-                unsafe { FloatTensor::alloc(float_type, input.device(), [bs, ic, oh, ow])? };
-            let mut indices = if indices {
-                Some(unsafe { Tensor::alloc(input.device(), output.raw_dim())? })
+                let bias = bias.into_device(device)?;
+                Some(Parameter::from(ScalarTensor::from(bias)))
             } else {
                 None
             };
-            let bs = bs * ic;
-            let builder = rust_shaders::compute_pass(&format!(
-                "pool::{}_pool{}_2d_{}",
-                kind.as_str(),
-                indices.as_ref().map_or("", |_| "_indices"),
-                float_type.as_str()
-            ))?
-            .float_slice(input.as_raw_slice())?;
-            let builder = if let Some(indices) = indices.as_mut() {
-                builder.slice_mut(indices.as_raw_slice_mut())?
+            Ok(Conv {
+                weight,
+                padding,
+                stride,
+                dilation,
+                bias,
+                activation,
+            })
+        }
+    }
+
+    /// Builder for creating a [`Dense`].
+    pub struct DenseBuilder<A = Identity> {
+        inputs: usize,
+        outputs: usize,
+        bias: bool,
+        scalar_type: ScalarType,
+        device: Device,
+        activation: A,
+    }
+
+    impl DenseBuilder {
+        pub(super) fn new() -> Self {
+            Self {
+                inputs: 0,
+                outputs: 0,
+                bias: false,
+                scalar_type: ScalarType::F32,
+                device: Device::host(),
+                activation: Identity,
+            }
+        }
+    }
+
+    impl<A> DenseBuilder<A> {
+        /// Sets the number of input channels.
+        pub fn inputs(self, inputs: usize) -> Self {
+            Self { inputs, ..self }
+        }
+        /// Sets the number of output channels.
+        pub fn outputs(self, outputs: usize) -> Self {
+            Self { outputs, ..self }
+        }
+        /// Adds a bias. Defaults to false.
+        pub fn bias(self, bias: bool) -> Self {
+            Self { bias, ..self }
+        }
+        /// Adds and activation layer.
+        pub fn activation<A2>(self, activation: A2) -> DenseBuilder<A2> {
+            let Self {
+                inputs,
+                outputs,
+                bias,
+                activation: _,
+                scalar_type,
+                device,
+            } = self;
+            DenseBuilder {
+                inputs,
+                outputs,
+                bias,
+                activation,
+                scalar_type,
+                device,
+            }
+        }
+        /// Sets the scalar type. Defaults to F32.
+        ///
+        /// BF16 and F32 are implemented.
+        pub fn scalar_type(self, scalar_type: ScalarType) -> Self {
+            Self {
+                scalar_type,
+                ..self
+            }
+        }
+        /// Sets the device. Defaults to the host.
+        pub fn device(self, device: Device) -> Self {
+            Self { device, ..self }
+        }
+        /// Builds the layer.
+        ///
+        /// **Errors**
+        /// - The `scalar_type` is not BF16 or F32.
+        /// - Initializing parameters on the `device` failed.
+        pub fn build(self) -> Result<Dense<A>> {
+            let Self {
+                inputs,
+                outputs,
+                bias,
+                activation,
+                scalar_type,
+                device,
+            } = self;
+            if !matches!(scalar_type, ScalarType::BF16 | ScalarType::F32) {
+                bail!("Dense {scalar_type:?} not implemented!");
+            }
+            let a = if inputs > 0 {
+                f32::sqrt(2. / inputs as f32)
             } else {
-                builder
+                0.
             };
-            let builder = builder
-                .float_slice_mut(output.as_raw_slice_mut())?
-                .push(bs as u32)?
-                .push([ih as u32, iw as u32])?
-                .push([oh as u32, ow as u32])?
-                .push([kernel[0] as u32, kernel[1] as u32])?
-                .push([strides[0] as u32, strides[1] as u32])?
-                .push([padding[0] as u32, padding[1] as u32])?;
-            unsafe {
-                builder.submit([(bs * oh) as u32, ow as u32, 1])?;
-            }
-            Ok((indices.map(Tensor::into_dyn), output.into_dyn()))
-        }
-        _ => bail!("Unimplemented!"),
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn pool_backward(
-    kind: PoolingKind,
-    input_grad: &mut FloatTensorViewMutD,
-    indices: Option<&TensorD<u32>>,
-    output_grad: FloatTensorD,
-    kernel: &IxDyn,
-    strides: &IxDyn,
-    padding: &IxDyn,
-    dilation: &IxDyn,
-) -> Result<()> {
-    debug_assert_eq!(kernel.ndim() + 2, input_grad.ndim());
-
-    let atomic = kernel != strides;
-
-    let output_grad = output_grad.into_standard_layout()?;
-    match kernel.ndim() {
-        2 => {
-            let (bs, ic, ih, iw) = input_grad.view().into_dimensionality::<Ix4>()?.dim();
-            let oh = output_grad.shape()[2];
-            let ow = output_grad.shape()[3];
-            let builder = rust_shaders::compute_pass(&format!(
-                "pool::{}_pool_2d_backward{}_{}",
-                kind.as_str(),
-                if atomic { "_atomic" } else { "" },
-                input_grad.float_type().as_str()
-            ))?;
-            let builder = if let Some(indices) = indices {
-                builder.slice(indices.as_raw_slice())?
-            } else {
-                builder
+            let mut rng = thread_rng();
+            let weight_iter = Uniform::new(-a, a)
+                .sample_iter(&mut rng)
+                .take(inputs * outputs);
+            let weight = match scalar_type {
+                ScalarType::BF16 => ScalarBuffer::from(Buffer::from(
+                    weight_iter.map(bf16::from_f32).collect::<Vec<_>>(),
+                )),
+                ScalarType::F32 => {
+                    ScalarBuffer::from(Buffer::from(weight_iter.collect::<Vec<_>>()))
+                }
+                _ => unreachable!(),
             };
-            let builder = builder
-                .float_slice_mut(input_grad.as_raw_slice_mut())?
-                .float_slice(output_grad.as_raw_slice())?
-                .push((bs * ic) as u32)?
-                .push([ih as u32, iw as u32])?
-                .push([oh as u32, ow as u32])?;
-            let builder = if kind == PoolingKind::Mean {
-                builder
-                    .push([kernel[0] as u32, kernel[1] as u32])?
-                    .push([strides[0] as u32, strides[0] as u32])?
-                    .push([padding[0] as u32, padding[1] as u32])?
-                    .push([dilation[0] as u32, dilation[1] as u32])?
+            let weight = weight.into_device(device.clone())?;
+            let weight = Parameter::from(
+                ScalarTensor::from(weight)
+                    .into_shape([inputs, outputs])
+                    .unwrap(),
+            );
+            let bias = if bias {
+                let bias_iter = Uniform::new(-a, a).sample_iter(rng).take(outputs);
+                let bias = match scalar_type {
+                    ScalarType::BF16 => ScalarBuffer::from(Buffer::from(
+                        bias_iter.map(bf16::from_f32).collect::<Vec<_>>(),
+                    )),
+                    ScalarType::F32 => {
+                        ScalarBuffer::from(Buffer::from(bias_iter.collect::<Vec<_>>()))
+                    }
+                    _ => unreachable!(),
+                };
+                let bias = bias.into_device(device)?;
+                Some(Parameter::from(ScalarTensor::from(bias)))
             } else {
-                builder
+                None
             };
-            let groups_bc = bs * ic;
-            let groups_h = oh / 16 + if oh % 16 != 0 { 1 } else { 0 };
-            let groups_w = ow / 16 + if ow % 16 != 0 { 1 } else { 0 };
-            let global_size = (groups_bc * groups_h * groups_w * 256) as u32;
-            unsafe {
-                builder.submit([global_size, 1, 1])?;
+            Ok(Dense {
+                weight,
+                bias,
+                activation,
+            })
+        }
+    }
+
+    /// Builder for creating a [`MaxPool`].
+    pub struct MaxPoolBuilder<D: Dimension> {
+        filter: D,
+        stride: Option<D>,
+    }
+
+    impl<D: Dimension> MaxPoolBuilder<D> {
+        pub(super) fn new() -> Self {
+            Self {
+                filter: D::default(),
+                stride: None,
             }
         }
-        _ => bail!("Unimplemented!"),
-    }
-    Ok(())
-}
-
-#[derive(Autograd)]
-#[autograph(crate)]
-struct PoolBackward {
-    #[autograph(gradient)]
-    input_grad: VariableGradientD,
-    indices: Option<TensorD<u32>>,
-    kind: PoolingKind,
-    kernel: IxDyn,
-    strides: IxDyn,
-    padding: IxDyn,
-    dilation: IxDyn,
-}
-
-impl Backward for PoolBackward {
-    fn backward(&self, output_grad: FloatTensorD) -> Result<()> {
-        pool_backward(
-            self.kind,
-            &mut self.input_grad.lock().zeroed_mut()?,
-            self.indices.as_ref(),
-            output_grad,
-            &self.kernel,
-            &self.strides,
-            &self.padding,
-            &self.dilation,
-        )
-    }
-}
-
-impl<K: PoolKind> Forward for PoolBase<K> {
-    #[allow(unused)]
-    fn forward(&self, input: VariableD) -> Result<VariableD> {
-        let (indices, output) = pool_forward(
-            K::kind(),
-            K::kind() == PoolingKind::Max && input.requires_grad(),
-            &input.value().to_standard_layout_shared()?,
-            &self.kernel,
-            &self.strides,
-            &self.padding,
-            &self.dilation,
-        )?;
-        let mut output = Variable::from(output).with_training(input.training());
-        if let Some(input_grad) = input.grad() {
-            if !input.is_standard_layout() {
-                bail!("Must be standard layout!");
+        /// Sets the size of the pool filter.
+        pub fn filter(self, filter: impl IntoDimension<Dim = D>) -> Self {
+            Self {
+                filter: filter.into_dimension(),
+                ..self
             }
-            output = output.with_backward(PoolBackward {
-                input_grad,
-                indices,
-                kind: K::kind(),
-                kernel: self.kernel.clone(),
-                strides: self.strides.clone(),
-                padding: self.padding.clone(),
-                dilation: self.dilation.clone(),
-            });
         }
-        Ok(output)
+        /// Sets the stride. Defaults to filter.
+        pub fn stride(self, stride: impl IntoDimension<Dim = D>) -> Self {
+            Self {
+                stride: Some(stride.into_dimension()),
+                ..self
+            }
+        }
+        /// Builds the layer.
+        pub fn build(self) -> MaxPool<D> {
+            let Self { filter, stride } = self;
+            let stride = stride.unwrap_or(filter.clone());
+            MaxPool { filter, stride }
+        }
+    }
+}
+use builder::*;
+
+/// Layer.
+///
+/// Typically Layers implement [`Forward<Variable<D>>`](Forward) for the appropriate
+/// dimension `D`.
+///
+/// Layer can be [derived](autograph_derive).
+pub trait Layer {
+    /// Prepares for training or inference.
+    ///
+    /// Calls [`.set_training(training)`](Parameter::set_training) on each parameter and
+    /// [`.set_training(training)`][Layer::set_training] on each child layer as appropriate.
+    fn set_training(&mut self, training: bool) -> Result<()>;
+    /// Mutable parameter views of the parameters of the layer.
+    ///
+    /// The mutable parameter views can be provided to [`Optimizer::update()`](Optimizer::update).
+    fn parameters_mut(&mut self) -> Result<Vec<ParameterViewMutD>>;
+}
+
+/// Forward.
+///
+/// Forward can be [derived](autograph_derive).
+pub trait Forward<X> {
+    /// The type of the Output.
+    type Output;
+    /// Executes the forward pass given `input`.
+    fn forward(&self, input: X) -> Result<Self::Output>;
+}
+
+impl<T: Layer> Layer for Option<T> {
+    fn set_training(&mut self, training: bool) -> Result<()> {
+        if let Some(layer) = self.as_mut() {
+            layer.set_training(training)
+        } else {
+            Ok(())
+        }
+    }
+    fn parameters_mut(&mut self) -> Result<Vec<ParameterViewMutD>> {
+        if let Some(layer) = self.as_mut() {
+            layer.parameters_mut()
+        } else {
+            Ok(Vec::new())
+        }
     }
 }
 
-#[cfg(all(test, feature = "device_tests"))]
-mod tests {
-    use super::*;
-    use crate::{
-        ops::{Im2Col, KernelArgs},
-        scalar::{Float, Scalar},
-        tensor::{Tensor, TensorView},
-    };
-    use approx::assert_relative_eq;
-    use half::bf16;
-    use ndarray::{
-        azip, Array, Array1, Array4, ArrayD, ArrayView1, ArrayView4, ArrayViewD, ArrayViewMut1, Ix2,
-    };
-    use std::convert::TryFrom;
-
-    fn convolution_array(input: &ArrayView4<f32>, weight: &ArrayView4<f32>) -> Result<Array4<f32>> {
-        let (bs, ic, ih, iw) = input.dim();
-        let (oc, _ic, kh, kw) = weight.dim();
-        debug_assert_eq!(_ic, ic);
-        let weight = weight.view().into_shape([oc, ic * kh * kw])?;
-        let kernel = [kh, kw].into_dimension();
-        let args = KernelArgs {
-            strides: [1, 1].into_dimension(),
-            padding: [0, 0].into_dimension(),
-            dilation: [1, 1].into_dimension(),
-        };
-        let (oh, ow) = args.im2col_shape([ih, iw], &kernel).into_pattern();
-        let output = input.im2col(&kernel, KernelKind::Convolution, &args)?;
-        let output = output.dot(&weight.t());
-        let output = output
-            .into_shape([bs, oh, ow, oc])?
-            .permuted_axes([0, 3, 1, 2]);
-        Ok(output)
-    }
-
-    async fn convolution_direct<T: Float>(shape: [usize; 4], conv: &Conv) -> Result<()> {
-        let shape = shape.into_dimension();
-        dbg!(shape);
-        let x_array = (1..=shape.size())
-            .into_iter()
-            .map(|x| x as f32)
-            .collect::<Array1<f32>>()
-            .into_shape(shape)?;
-        let w_array = (1..=conv.weight.len())
-            .into_iter()
-            .map(|x| x as f32)
-            .collect::<Array1<f32>>()
-            .into_shape(conv.weight.raw_dim())?
-            .into_dimensionality()?;
-        let y_array = convolution_array(&x_array.view(), &w_array.view())?;
-        let device = Device::new()?;
-        let x = Tensor::from(x_array.map(|x| T::from(*x).unwrap()))
-            .into_device(device.clone())
-            .await?
-            .into_float();
-        let w = Tensor::from(w_array.map(|x| T::from(*x).unwrap()))
-            .into_device(device)
-            .await?
-            .into_float();
-        let y = convolution_direct_forward(&x.view(), &w.view())?
-            .cast_into::<f32>()?
-            .read()
-            .await?;
-        assert_relative_eq!(y.as_array(), y_array.view());
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn convolution_direct_f32() -> Result<()> {
-        convolution_direct::<f32>(
-            [1, 1, 8, 8],
-            &Conv::from_inputs_outputs_kernel(1, 1, [5, 5]),
-        )
-        .await?;
-        convolution_direct::<f32>(
-            [1, 3, 7, 9],
-            &Conv::from_inputs_outputs_kernel(3, 2, [5, 5]),
-        )
-        .await?;
-        convolution_direct::<f32>(
-            [1, 6, 12, 12],
-            &Conv::from_inputs_outputs_kernel(6, 16, [5, 5]),
-        )
-        .await?;
-        Ok(())
-    }
-
-    fn convolution_backward_array(
-        input_shape: Ix4,
-        weight: &ArrayView4<f32>,
-        output_grad: &ArrayView4<f32>,
-        conv: &Conv,
-    ) -> Result<Array4<f32>> {
-        let args = KernelArgs {
-            strides: Ix2::from_dimension(&conv.strides).expect("Must be 2d!"),
-            padding: Ix2::from_dimension(&conv.padding).expect("Must be 2d!"),
-            dilation: Ix2::from_dimension(&conv.dilation).expect("Must be 2d!"),
-        };
-        let (_oc, _ic, kh, kw) = weight.dim();
-        let kernel = [conv.weight.shape()[2], conv.weight.shape()[3]].into_dimension();
-        let (bs, ic, ih, iw) = input_shape.into_pattern();
-        let (_bs, oc, oh, ow) = output_grad.dim();
-        let output_grad = output_grad
-            .view()
-            .permuted_axes([0, 2, 3, 1])
-            .as_standard_layout()
-            .to_owned()
-            .into_shape([bs * oh * ow, oc])?;
-        let weight = weight.into_shape([oc, ic * kh * kw])?;
-        let input_grad = output_grad.dot(&weight).col2im(
-            &[ih, iw].into_dimension(),
-            &kernel,
-            KernelKind::Convolution,
-            &args,
-        )?;
-        Ok(input_grad)
-    }
-
-    async fn convolution_direct_backward<T: Float>(shape: [usize; 4], conv: &Conv) -> Result<()> {
-        let shape = shape.into_dimension();
-        let x_array = (1..=shape.size())
-            .into_iter()
-            .map(|x| x as f32)
-            .collect::<Array1<f32>>()
-            .into_shape(shape)?;
-        let w_array = (1..=conv.weight.len())
-            .into_iter()
-            .map(|x| x as f32)
-            .collect::<Array1<f32>>()
-            .into_shape(conv.weight.raw_dim())?
-            .into_dimensionality()?;
-        let dy_array = convolution_array(&x_array.view(), &w_array.view())?;
-        let dy_array = (1..=dy_array.len())
-            .into_iter()
-            .map(|x| x as f32)
-            .collect::<Array1<f32>>()
-            .into_shape(dy_array.raw_dim())?;
-        let dx_array = convolution_backward_array(shape, &w_array.view(), &dy_array.view(), conv)?;
-        let device = Device::new()?;
-        let w = Tensor::from(w_array.map(|x| T::from(*x).unwrap()))
-            .into_device(device.clone())
-            .await?
-            .into_float();
-        let mut dx = FloatTensor::zeros(T::float_type(), device.clone(), dx_array.raw_dim())?;
-        let dy = Tensor::from(dy_array.map(|x| T::from(*x).unwrap()))
-            .into_device(device)
-            .await?
-            .into_float();
-        super::convolution_direct_backward(&mut dx.view_mut(), &w.view(), &dy.view())?;
-        let dx = dx.cast_into::<f32>()?.read().await?;
-        assert_relative_eq!(dx.as_array(), dx_array.view());
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn convolution_direct_backward_f32() -> Result<()> {
-        convolution_direct_backward::<f32>(
-            [1, 1, 5, 5],
-            &Conv::from_inputs_outputs_kernel(1, 1, [5, 5]),
-        )
-        .await?;
-        convolution_direct_backward::<f32>(
-            [1, 1, 8, 8],
-            &Conv::from_inputs_outputs_kernel(1, 1, [5, 5]),
-        )
-        .await?;
-        convolution_direct_backward::<f32>(
-            [1, 2, 5, 5],
-            &Conv::from_inputs_outputs_kernel(2, 1, [5, 5]),
-        )
-        .await?;
-        convolution_direct_backward::<f32>(
-            [2, 1, 5, 5],
-            &Conv::from_inputs_outputs_kernel(1, 1, [5, 5]),
-        )
-        .await?;
-        Ok(())
-    }
-
-    fn convolution_backward_weight_array(
-        input: &ArrayView4<f32>,
-        output_grad: &ArrayView4<f32>,
-        conv: &Conv,
-    ) -> Result<Array4<f32>> {
-        let args = KernelArgs {
-            strides: Ix2::from_dimension(&conv.strides).expect("Must be 2d!"),
-            padding: Ix2::from_dimension(&conv.padding).expect("Must be 2d!"),
-            dilation: Ix2::from_dimension(&conv.dilation).expect("Must be 2d!"),
-        };
-        let kernel = [conv.weight.shape()[2], conv.weight.shape()[3]].into_dimension();
-        let input = input.im2col(&kernel, KernelKind::Convolution, &args)?;
-        let (bs, oc, oh, ow) = output_grad.dim();
-        let output_grad = output_grad
-            .view()
-            .permuted_axes([0, 2, 3, 1])
-            .as_standard_layout()
-            .to_owned();
-        let output_grad = output_grad.into_shape([bs * oh * ow, oc])?;
-        let weight_grad = input
-            .t()
-            .dot(&output_grad)
-            .t()
-            .as_standard_layout()
-            .to_owned()
-            .into_shape(conv.weight.raw_dim())?
-            .into_dimensionality()?
-            .map(|&x| x * (1f32 / bs as f32));
-        Ok(weight_grad)
-    }
-
-    async fn convolution_direct_backward_weight<T: Float>(
-        shape: [usize; 4],
-        conv: &Conv,
-    ) -> Result<()> {
-        let shape = shape.into_dimension();
-        let x_array = (1..=shape.size())
-            .into_iter()
-            .map(|x| x as f32)
-            .collect::<Array1<f32>>()
-            .into_shape(shape)?;
-        let w_array = Array::zeros(conv.weight.raw_dim()).into_dimensionality()?;
-        let dy_array = convolution_array(&x_array.view(), &w_array.view())?;
-        let mut dy_array = Array::zeros(dy_array.raw_dim());
-        for (i, dy) in dy_array.iter_mut().enumerate() {
-            *dy = (i + 1) as f32;
+impl<X, T: Forward<X, Output = X>> Forward<X> for Option<T> {
+    type Output = X;
+    fn forward(&self, input: X) -> Result<Self::Output> {
+        if let Some(layer) = self.as_ref() {
+            layer.forward(input)
+        } else {
+            Ok(input)
         }
-        let dw_array = convolution_backward_weight_array(&x_array.view(), &dy_array.view(), conv)?;
-        let device = Device::new()?;
-        let x = Tensor::from(x_array.map(|x| T::from(*x).unwrap()))
-            .into_device(device.clone())
-            .await?
-            .into_float();
-        let mut dw = FloatTensor::zeros(T::float_type(), device.clone(), dw_array.raw_dim())?;
-        let dy = Tensor::from(dy_array.map(|x| T::from(*x).unwrap()))
-            .into_device(device)
-            .await?
-            .into_float();
-        super::convolution_direct_backward_weight(&x.view(), &mut dw.view_mut(), &dy.view())?;
-        let dw = dw.cast_into::<f32>()?.read().await?;
-        assert_relative_eq!(dw.as_array(), dw_array.view());
+    }
+}
+
+impl<T: Layer> Layer for Vec<T> {
+    fn set_training(&mut self, training: bool) -> Result<()> {
+        for layer in self.iter_mut() {
+            layer.set_training(training)?;
+        }
         Ok(())
     }
-
-    #[tokio::test]
-    async fn convolution_direct_backward_weight_f32() -> Result<()> {
-        convolution_direct_backward_weight::<f32>(
-            [1, 1, 5, 5],
-            &Conv::from_inputs_outputs_kernel(1, 1, [5, 5]),
-        )
-        .await?;
-        convolution_direct_backward_weight::<f32>(
-            [1, 3, 7, 9],
-            &Conv::from_inputs_outputs_kernel(3, 2, [5, 5]),
-        )
-        .await?;
-        Ok(())
+    fn parameters_mut(&mut self) -> Result<Vec<ParameterViewMutD>> {
+        let mut parameters = Vec::with_capacity(self.len());
+        for layer in self.iter_mut() {
+            parameters.push(layer.parameters_mut()?);
+        }
+        Ok(parameters.into_iter().flatten().collect())
     }
+}
 
-    fn array_relu<T: Scalar>(input: &ArrayView1<T>) -> Array1<T> {
-        input.map(|x| {
-            if x.to_f32().unwrap() > 0. {
-                *x
-            } else {
-                T::zero()
-            }
+impl<X, T: Forward<X, Output = X>> Forward<X> for Vec<T> {
+    type Output = X;
+    fn forward(&self, mut input: X) -> Result<Self::Output> {
+        for layer in self.iter() {
+            input = layer.forward(input)?;
+        }
+        Ok(input)
+    }
+}
+
+/// Convolutional layer.
+///
+/// See [`Conv1`] and [`Conv2`].
+///
+/// Implemented for bf16 and f32.
+///
+/// # Example
+///```no_run
+/// # use autograph::{scalar::ScalarType, device::Device, learn::neural_network::layer::{Conv2, Relu}};
+/// # fn main() -> anyhow::Result<()> {
+/// # let device = Device::host();
+/// let conv = Conv2::builder()
+///    .inputs(1)
+///    .outputs(1)
+///    .filter([5, 5])
+///    .bias(true)
+///    .activation(Relu)
+///    .scalar_type(ScalarType::BF16)
+///    .device(device.clone())
+///    .build()?;
+/// # Ok(())
+/// # }
+///```
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(bound(
+    serialize = "D: Serialize, <D::Larger as Dimension>::Larger: Serialize, A: Serialize",
+    deserialize = "D: Deserialize<'de>, <D::Larger as Dimension>::Larger: Deserialize<'de>, A: Deserialize<'de>",
+))]
+pub struct Conv<D: Dimension, A = Identity> {
+    weight: Parameter<<D::Larger as Dimension>::Larger>,
+    padding: D,
+    stride: D,
+    dilation: D,
+    bias: Option<Parameter1>,
+    activation: A,
+}
+
+/// Convolutional layer with 1 dimension.
+///
+/// See [`Conv`].
+pub type Conv1<A = Identity> = Conv<Ix1, A>;
+/// Convolutional layer with 2 dimensions.
+///
+/// See [`Conv`].
+pub type Conv2<A = Identity> = Conv<Ix2, A>;
+
+impl<D: Dimension> Conv<D> {
+    /// Returns a builder for creating a [`Conv`].
+    pub fn builder() -> ConvBuilder<D> {
+        ConvBuilder::new()
+    }
+}
+
+impl<D: Dimension, A> Conv<D, A> {
+    /// The weight as a mutable parameter view.
+    pub fn weight_view_mut(
+        &mut self,
+    ) -> Result<ParameterViewMut<<D::Larger as Dimension>::Larger>> {
+        self.weight.make_view_mut()
+    }
+    /// The bias as a mutable parameter_view.
+    pub fn bias_view_mut(&mut self) -> Result<Option<ParameterViewMut1>> {
+        self.bias.as_mut().map(Parameter::make_view_mut).transpose()
+    }
+    /// Moves the layer into `device`.
+    pub fn into_device(self, device: Device) -> Result<Self> {
+        Ok(Self {
+            weight: self.weight.into_device(device.clone())?,
+            bias: self.bias.map(|b| b.into_device(device)).transpose()?,
+            ..self
         })
     }
-
-    async fn relu<T: Float>() -> Result<()> {
-        let x_array = (-5..5)
-            .into_iter()
-            .map(|x| T::from_f32(x as f32).unwrap())
-            .collect::<Array1<_>>();
-        let y_array = array_relu(&x_array.view());
-        let device = Device::new()?;
-        let x = TensorView::try_from(x_array.view())?
-            .into_device(device)
-            .await?;
-        let y_guard = super::relu(&x.into_float().view().into_dyn())?
-            .into_dimensionality()?
-            .cast_into::<T>()?
-            .read()
-            .await?;
-        assert_eq!(y_guard.as_array(), y_array.view());
-        Ok(())
-    }
-
-    #[cfg(feature = "device_tests_16")]
-    #[tokio::test]
-    async fn relu_bf16() -> Result<()> {
-        relu::<bf16>().await
-    }
-
-    #[tokio::test]
-    async fn relu_f32() -> Result<()> {
-        relu::<f32>().await
-    }
-
-    fn array_relu_backward<T: Scalar>(
-        input: &ArrayView1<T>,
-        input_grad: &mut ArrayViewMut1<T>,
-        output_grad: &ArrayView1<T>,
-    ) {
-        azip!((x in input, dx in input_grad, dy in output_grad) {
-            if x.to_f32().unwrap() > 0. {
-                *dx = T::from_f32(dx.to_f32().unwrap() + dy.to_f32().unwrap()).unwrap();
-            }
-        });
-    }
-
-    async fn relu_backward<T: Float>() -> Result<()> {
-        let x_array = (-5..5)
-            .into_iter()
-            .map(|x| T::from_f32(x as f32).unwrap())
-            .collect::<Array1<_>>();
-        let dx_array_in = (-2..8)
-            .into_iter()
-            .map(|x| T::from_f32(x as f32).unwrap())
-            .collect::<Array1<_>>();
-        let dy_array = (-3..7)
-            .into_iter()
-            .map(|x| T::from_f32(x as f32).unwrap())
-            .collect::<Array1<_>>();
-        let mut dx_array_out = dx_array_in.clone();
-        array_relu_backward(
-            &x_array.view(),
-            &mut dx_array_out.view_mut(),
-            &dy_array.view(),
-        );
-        let device = Device::new()?;
-        let x = TensorView::try_from(x_array.view())?
-            .into_device(device.clone())
-            .await?;
-        let mut dx = TensorView::try_from(dx_array_in.view())?
-            .into_device(device.clone())
-            .await?;
-        let dy = TensorView::try_from(dy_array.view())?
-            .into_device(device)
-            .await?;
-        super::relu_backward(
-            &x.view().into_dyn().into_float(),
-            &mut dx.view_mut().into_dyn().into_float(),
-            &dy.view().into_dyn().into_float(),
-        )?;
-        let dx_guard = dx.read().await?;
-        assert_eq!(dx_guard.as_array(), dx_array_out.view());
-        Ok(())
-    }
-
-    #[cfg(feature = "device_tests_16")]
-    #[tokio::test]
-    async fn relu_backward_bf16() -> Result<()> {
-        relu_backward::<bf16>().await
-    }
-
-    #[tokio::test]
-    async fn relu_backward_f32() -> Result<()> {
-        relu_backward::<f32>().await
-    }
-
-    fn array_pool(
-        kind: PoolingKind,
-        x: ArrayViewD<f32>,
-        kernel: &IxDyn,
-        strides: &IxDyn,
-        padding: &IxDyn,
-        dilation: &IxDyn, // TODO
-    ) -> ArrayD<f32> {
-        assert!(dilation.slice().iter().copied().all(|x| x == 1));
-        let x = x.into_dimensionality::<Ix4>().unwrap();
-        let (bs, ic, ih, iw) = x.dim();
-        let oh = (ih + 2 * padding[0] - kernel[0]) / strides[0] + 1;
-        let ow = (iw + 2 * padding[1] - kernel[1]) / strides[1] + 1;
-        let mut y = Array::<f32, _>::zeros([bs, ic, oh, ow]);
-        for (x, mut y) in x.outer_iter().zip(y.outer_iter_mut()) {
-            for (x, mut y) in x.outer_iter().zip(y.outer_iter_mut()) {
-                for ((yi, yj), y) in y.indexed_iter_mut() {
-                    let mut acc = match kind {
-                        PoolingKind::Max => f32::NEG_INFINITY,
-                        PoolingKind::Mean => 0.,
-                    };
-                    for ki in 0..kernel[0] {
-                        if let Some(xi) = (yi * strides[0] + ki).checked_sub(padding[0]) {
-                            for kj in 0..kernel[1] {
-                                if let Some(xj) = (yj * strides[1] + kj).checked_sub(padding[1]) {
-                                    if let Some(&val) = x.get((xi, xj)) {
-                                        match kind {
-                                            PoolingKind::Max => {
-                                                acc = f32::max(val, acc);
-                                            }
-                                            PoolingKind::Mean => {
-                                                acc += val / kernel.size() as f32;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    *y = acc;
-                }
-            }
+    /// Moves the layer to `device` in place.
+    pub fn to_device_mut(&mut self, device: Device) -> Result<()> {
+        self.weight.to_device_mut(device.clone())?;
+        if let Some(bias) = self.bias.as_mut() {
+            bias.to_device_mut(device)?;
         }
-        y.into_dyn()
-    }
-
-    async fn pool<T: Float, K: PoolKind>(shape: &[usize], pool: &PoolBase<K>) -> Result<()> {
-        let dim = shape.into_dimension();
-        let x_vec = (1..=dim.size())
-            .into_iter()
-            .map(|x| x as f32)
-            .collect::<Vec<_>>();
-        let x_array = Array::from(x_vec).into_shape(shape)?;
-        let y_array = array_pool(
-            K::kind(),
-            x_array.view(),
-            &pool.kernel,
-            &pool.strides,
-            &pool.padding,
-            &pool.dilation,
-        )
-        .map(|y| T::from_f32(*y).unwrap());
-        let device = Device::new()?;
-        let x = Tensor::from(x_array.map(|x| T::from_f32(*x).unwrap()))
-            .into_device(device)
-            .await?
-            .into_float()
-            .into_shared()?;
-        let y = pool_forward(
-            K::kind(),
-            false,
-            &x,
-            &pool.kernel,
-            &pool.strides,
-            &pool.padding,
-            &pool.dilation,
-        )?
-        .1
-        .cast_into::<T>()?
-        .read()
-        .await?;
-        assert_eq!(y.as_array(), y_array.view());
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn mean_pool_2d_f32() -> Result<()> {
-        pool::<f32, _>(
-            &[1, 1, 4, 4],
-            &MeanPool::from_kernel([2, 2]).with_strides(2)?,
-        )
-        .await?;
-        pool::<f32, _>(
-            &[1, 1, 2, 20],
-            &MeanPool::from_kernel([1, 2]).with_strides(1)?,
-        )
-        .await?;
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn max_pool_2d_f32() -> Result<()> {
-        pool::<f32, _>(
-            &[1, 1, 4, 4],
-            &MaxPool::from_kernel([2, 2]).with_strides(2)?,
-        )
-        .await?;
-        pool::<f32, _>(
-            &[1, 1, 2, 20],
-            &MaxPool::from_kernel([1, 2]).with_strides(1)?,
-        )
-        .await?;
-        Ok(())
-    }
-
-    fn array_pool_backward(
-        kind: PoolingKind,
-        x: ArrayViewD<f32>,
-        dy: ArrayViewD<f32>,
-        kernel: &IxDyn,
-        strides: &IxDyn,
-        padding: &IxDyn,
-        dilation: &IxDyn, // TODO
-    ) -> ArrayD<f32> {
-        assert!(dilation.slice().iter().copied().all(|x| x == 1));
-        let x = x.view().into_dimensionality::<Ix4>().unwrap();
-        let dy = dy.into_dimensionality::<Ix4>().unwrap();
-        let mut dx = Array::<f32, _>::zeros(x.raw_dim());
-        for ((x, mut dx), dy) in x.outer_iter().zip(dx.outer_iter_mut()).zip(dy.outer_iter()) {
-            for ((x, mut dx), dy) in x.outer_iter().zip(dx.outer_iter_mut()).zip(dy.outer_iter()) {
-                for ((yi, yj), dy) in dy.indexed_iter() {
-                    let mut idx = (0, 0);
-                    let mut acc = f32::NEG_INFINITY;
-                    for ki in 0..kernel[0] {
-                        if let Some(xi) = (yi * strides[0] + ki).checked_sub(padding[0]) {
-                            for kj in 0..kernel[1] {
-                                if let Some(xj) = (yj * strides[1] + kj).checked_sub(padding[1]) {
-                                    if let Some(&val) = x.get((xi, xj)) {
-                                        match kind {
-                                            PoolingKind::Max => {
-                                                if val > acc {
-                                                    idx = (xi, xj);
-                                                    acc = val;
-                                                }
-                                            }
-                                            PoolingKind::Mean => {
-                                                dx[(xi, xj)] += *dy;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    if kind == PoolingKind::Max {
-                        dx[idx] = *dy;
-                    }
-                }
-            }
-        }
-        dx.into_dyn()
-    }
-
-    async fn pool_backward<T: Float, K: PoolKind>(
-        shape: &[usize],
-        pool: &PoolBase<K>,
-    ) -> Result<()> {
-        let dim = shape.into_dimension();
-        let x_vec = (1..=dim.size())
-            .into_iter()
-            .map(|x| x as f32)
-            .collect::<Vec<_>>();
-        let x_array = Array::from(x_vec).into_shape(shape)?;
-        let y_array = array_pool(
-            K::kind(),
-            x_array.view(),
-            &pool.kernel,
-            &pool.strides,
-            &pool.padding,
-            &pool.dilation,
-        );
-        let dy_vec = (1..=y_array.len())
-            .into_iter()
-            .map(|x| x as f32)
-            .collect::<Vec<_>>();
-        let dy_array = Array::from(dy_vec).into_shape(y_array.shape())?;
-        let dx_array = array_pool_backward(
-            K::kind(),
-            x_array.view(),
-            dy_array.view(),
-            &pool.kernel,
-            &pool.strides,
-            &pool.padding,
-            &pool.dilation,
-        )
-        .map(|y| T::from_f32(*y).unwrap());
-        let device = Device::new()?;
-        let x = Tensor::from(x_array.map(|x| T::from_f32(*x).unwrap()))
-            .into_device(device.clone())
-            .await?
-            .into_float()
-            .into_shared()?;
-        let ix = if type_eq::<K, PoolMax>() {
-            pool_forward(
-                K::kind(),
-                true,
-                &x,
-                &pool.kernel,
-                &pool.strides,
-                &pool.padding,
-                &pool.dilation,
-            )?
-            .0
-        } else {
-            None
-        };
-        let dy = Tensor::from(dy_array.map(|y| T::from_f32(*y).unwrap()))
-            .into_device(device.clone())
-            .await?
-            .into_float();
-        let mut dx = FloatTensor::zeros(T::float_type(), device, x.shape())?;
-        super::pool_backward(
-            K::kind(),
-            &mut dx.view_mut(),
-            ix.as_ref(),
-            dy,
-            &pool.kernel,
-            &pool.strides,
-            &pool.padding,
-            &pool.dilation,
-        )?;
-        let dx = dx.cast_into::<T>()?.read().await?;
-        assert_eq!(dx.as_array(), dx_array.view());
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn max_pool_2d_backward_f32() -> Result<()> {
-        pool_backward::<f32, _>(
-            &[1, 1, 4, 4],
-            &MaxPool::from_kernel([2, 2]).with_strides(2)?,
-        )
-        .await?;
-        pool_backward::<f32, _>(
-            &[2, 1, 4, 4],
-            &MaxPool::from_kernel([2, 2]).with_strides(2)?,
-        )
-        .await?;
-        pool_backward::<f32, _>(
-            &[2, 4, 9, 9],
-            &MaxPool::from_kernel([3, 3]).with_strides(3)?,
-        )
-        .await?;
-        Ok(())
-    }
-
-    #[cfg_attr(not(any(target_os = "ios", target_os = "macos")), ignore)]
-    #[tokio::test]
-    async fn max_pool_2d_backward_atomic_f32() -> Result<()> {
-        pool_backward::<f32, _>(
-            &[1, 1, 4, 4],
-            &MaxPool::from_kernel([2, 2]).with_strides(1)?,
-        )
-        .await?;
-        pool_backward::<f32, _>(
-            &[1, 1, 2, 20],
-            &MaxPool::from_kernel([1, 2]).with_strides(1)?,
-        )
-        .await?;
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn mean_pool_2d_backward_f32() -> Result<()> {
-        pool_backward::<f32, _>(
-            &[1, 1, 4, 4],
-            &MaxPool::from_kernel([2, 2]).with_strides(2)?,
-        )
-        .await?;
-        pool_backward::<f32, _>(
-            &[2, 1, 4, 4],
-            &MaxPool::from_kernel([2, 2]).with_strides(2)?,
-        )
-        .await?;
-        pool_backward::<f32, _>(
-            &[2, 4, 9, 9],
-            &MaxPool::from_kernel([3, 3]).with_strides(3)?,
-        )
-        .await?;
-        Ok(())
-    }
-
-    #[cfg_attr(not(any(target_os = "ios", target_os = "macos")), ignore)]
-    #[tokio::test]
-    async fn mean_pool_2d_backward_atomic_f32() -> Result<()> {
-        pool_backward::<f32, _>(
-            &[1, 1, 4, 4],
-            &MeanPool::from_kernel([2, 2]).with_strides(1)?,
-        )
-        .await?;
-        pool_backward::<f32, _>(
-            &[1, 1, 2, 20],
-            &MeanPool::from_kernel([1, 2]).with_strides(1)?,
-        )
-        .await?;
         Ok(())
     }
 }
+
+impl<D: Dimension, A> Layer for Conv<D, A> {
+    fn set_training(&mut self, training: bool) -> Result<()> {
+        self.weight.set_training(training);
+        if let Some(bias) = self.bias.as_mut() {
+            bias.set_training(training);
+        }
+        Ok(())
+    }
+    fn parameters_mut(&mut self) -> Result<Vec<ParameterViewMutD>> {
+        let mut parameters = Vec::new();
+        parameters.push(self.weight.make_view_mut()?.into_dyn());
+        if let Some(bias) = self.bias.as_mut() {
+            parameters.push(bias.make_view_mut()?.into_dyn());
+        }
+        Ok(parameters)
+    }
+}
+
+struct ConvOptions<D: Dimension> {
+    padding: D,
+    stride: D,
+    dilation: D,
+}
+
+fn conv2(
+    input: Variable4,
+    weight: Variable4,
+    options: ConvOptions<Ix2>,
+    bias: Option<Variable1>,
+) -> Result<Variable4> {
+    let (batch_size, inputs, ih, iw) = input.dim();
+    let (outputs, inputs2, fh, fw) = weight.dim();
+    debug_assert_eq!(inputs, inputs2);
+    let (ph, pw) = options.padding.into_pattern();
+    let (sh, sw) = options.stride.into_pattern();
+    let (dh, dw) = options.dilation.into_pattern();
+    let options = Im2ColConv2Options {
+        filter: [fh, fw],
+        padding: [ph, pw],
+        stride: [sh, sw],
+        dilation: [dh, dw],
+    };
+    let [oh, ow] = options.output_shape([ih, iw]);
+    let im2col_matrix = input.value().im2col_conv2(&options)?;
+    let weight_matrix = weight
+        .value()
+        .clone()
+        .into_shape([outputs, inputs * fh * fw])
+        .unwrap();
+    let output_matrix = im2col_matrix.dot(&weight_matrix.t())?;
+    let mut builder = Variable::builder();
+    if let Some(node) = input.node() {
+        builder.edge(node, move |output_grad| {
+            let options = Col2ImConv2Options {
+                shape: [oh, ow],
+                filter: [fh, fw],
+                ..Col2ImConv2Options::default()
+            };
+            output_grad
+                .dot(&weight_matrix)?
+                .col2im_conv2(&options)
+                .map(Into::into)
+        });
+    }
+    if let Some(node) = weight.node() {
+        builder.edge(node, move |output_grad| {
+            let weight_grad = output_grad
+                .t()
+                .dot(&im2col_matrix)?
+                .into_shape([outputs, inputs, fh, fw])
+                .unwrap();
+            Ok(weight_grad.into())
+        });
+    }
+    let output_matrix = builder.build(output_matrix.into());
+    let mut builder = Variable::builder();
+    if let Some(node) = output_matrix.node() {
+        builder.edge(node, move |output_grad| {
+            Ok(output_grad
+                .permuted_axes([0, 2, 3, 1])
+                .into_owned()?
+                .into_shape([batch_size * oh * ow, outputs])
+                .unwrap()
+                .into())
+        });
+    }
+    let output = output_matrix
+        .value()
+        .view()
+        .into_shape([batch_size, oh, ow, outputs])
+        .unwrap()
+        .permuted_axes([0, 3, 1, 2])
+        .to_owned()?;
+    let mut output = builder.build(output.into());
+    if let Some(bias) = bias {
+        output.add_assign(&bias)?;
+    }
+    Ok(output)
+}
+
+impl<A: Forward<Variable3, Output = Variable3>> Forward<Variable3> for Conv1<A> {
+    type Output = Variable3;
+    fn forward(&self, input: Variable3) -> Result<Variable3> {
+        let (n, ic, ih) = input.dim();
+        let input = input.into_shape([n, ic, ih, 1]).map_err(Error::msg)?;
+        let (outputs, inputs, fh) = self.weight.dim();
+        let weight = self
+            .weight
+            .to_variable()
+            .into_shape([outputs, inputs, fh, 1])
+            .map_err(Error::msg)?;
+        let ph = self.padding.into_pattern();
+        let sh = self.stride.into_pattern();
+        let dh = self.dilation.into_pattern();
+        let options = ConvOptions {
+            padding: [ph, 1].into_dimension(),
+            stride: [sh, 1].into_dimension(),
+            dilation: [dh, 1].into_dimension(),
+        };
+        let bias = self.bias.as_ref().map(Parameter::to_variable);
+        let output = conv2(input, weight, options, bias)?;
+        let (n2, oc, oh, ow) = output.dim();
+        debug_assert_eq!(n, n2);
+        debug_assert_eq!(ow, 1);
+        let output = output.into_shape([n, oc, oh]).map_err(Error::msg)?;
+        self.activation.forward(output)
+    }
+}
+
+impl<A: Forward<Variable4, Output = Variable4>> Forward<Variable4> for Conv2<A> {
+    type Output = Variable4;
+    fn forward(&self, input: Variable4) -> Result<Variable4> {
+        let weight = self.weight.to_variable();
+        let options = ConvOptions {
+            padding: self.padding,
+            stride: self.stride,
+            dilation: self.dilation,
+        };
+        let bias = self.bias.as_ref().map(Parameter::to_variable);
+        let output = conv2(input, weight, options, bias)?;
+        self.activation.forward(output)
+    }
+}
+
+/// A fully connected linear layer.
+///
+/// Implemented for bf16 and f32.
+///
+/// # Example
+///```no_run
+/// # use autograph::{scalar::ScalarType, device::Device, learn::neural_network::layer::{Dense, Relu}};
+/// # fn main() -> anyhow::Result<()> {
+/// # let device = Device::host();
+/// let dense = Dense::builder()
+///    .inputs(1)
+///    .outputs(1)
+///    .bias(true)
+///    .activation(Relu)
+///    .scalar_type(ScalarType::BF16)
+///    .device(device.clone())
+///    .build()?;
+/// # Ok(())
+/// # }
+///```
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Dense<A = Identity> {
+    weight: Parameter2,
+    bias: Option<Parameter1>,
+    activation: A,
+}
+
+impl Dense {
+    /// Returns a builder for creating a [`Dense`].
+    pub fn builder() -> DenseBuilder {
+        DenseBuilder::new()
+    }
+}
+
+impl<A> Dense<A> {
+    /// The weight as a mutable parameter view.
+    pub fn weight_view_mut(&mut self) -> Result<ParameterViewMut2> {
+        self.weight.make_view_mut()
+    }
+    /// The bias as a mutable parameter view.
+    pub fn bias_view_mut(&mut self) -> Result<Option<ParameterViewMut1>> {
+        self.bias.as_mut().map(Parameter::make_view_mut).transpose()
+    }
+    /// Moves the layer into `device`.
+    pub fn into_device(self, device: Device) -> Result<Self> {
+        Ok(Self {
+            weight: self.weight.into_device(device.clone())?,
+            bias: self.bias.map(|b| b.into_device(device)).transpose()?,
+            ..self
+        })
+    }
+    /// Transferes the layer to `device` in place.
+    pub fn to_device_mut(&mut self, device: Device) -> Result<()> {
+        self.weight.to_device_mut(device.clone())?;
+        if let Some(bias) = self.bias.as_mut() {
+            bias.to_device_mut(device)?;
+        }
+        Ok(())
+    }
+}
+
+impl<A> Layer for Dense<A> {
+    fn set_training(&mut self, training: bool) -> Result<()> {
+        self.weight.set_training(training);
+        if let Some(bias) = self.bias.as_mut() {
+            bias.set_training(training);
+        }
+        Ok(())
+    }
+    fn parameters_mut(&mut self) -> Result<Vec<ParameterViewMutD>> {
+        let mut parameters = Vec::new();
+        parameters.push(self.weight.make_view_mut()?.into_dyn());
+        if let Some(bias) = self.bias.as_mut() {
+            parameters.push(bias.make_view_mut()?.into_dyn());
+        }
+        Ok(parameters)
+    }
+}
+
+impl<A: Forward<Variable2, Output = Variable2> + Any> Forward<Variable2> for Dense<A> {
+    type Output = Variable2;
+    fn forward(&self, input: Variable2) -> Result<Self::Output> {
+        let mut output = input.dot(&self.weight.to_variable())?;
+        if let Some(bias) = self.bias.as_ref() {
+            output.add_assign(&bias.to_variable())?;
+        }
+        self.activation.forward(output)
+    }
+}
+
+/// MaxPool.
+///
+/// See [`MaxPool1`] and [`MaxPool2`].
+/// Implemented for bf16 and f32.
+#[derive(Layer, Debug, Serialize, Deserialize)]
+#[autograph(crate=crate)]
+pub struct MaxPool<D: Dimension> {
+    filter: D,
+    stride: D,
+}
+
+/// MaxPool with 1 dimension.
+///
+/// See [`MaxPool`].
+pub type MaxPool1 = MaxPool<Ix1>;
+/// MaxPool with 2 dimensions.
+///
+/// See [`MaxPool`].
+pub type MaxPool2 = MaxPool<Ix2>;
+
+impl<D: Dimension> MaxPool<D> {
+    /// Returns a builder for creating a [`MaxPool`].
+    pub fn builder() -> MaxPoolBuilder<D> {
+        MaxPoolBuilder::new()
+    }
+}
+
+impl Forward<Variable3> for MaxPool1 {
+    type Output = Variable3;
+    fn forward(&self, input: Variable3) -> Result<Self::Output> {
+        let (n, c, ih) = input.dim();
+        let input = input.into_shape([n, c, ih, 1]).map_err(Error::msg)?;
+        let fh = self.filter.into_pattern();
+        let sh = self.stride.into_pattern();
+        let output = MaxPool2 {
+            filter: [fh, 1].into_dimension(),
+            stride: [sh, 1].into_dimension(),
+        }
+        .forward(input)?;
+        let (n2, c2, oh, ow) = output.dim();
+        debug_assert_eq!(n, n2);
+        debug_assert_eq!(c, c2);
+        debug_assert_eq!(ow, 1);
+        output.into_shape([n, c, oh]).map_err(Error::msg)
+    }
+}
+
+impl Forward<Variable4> for MaxPool2 {
+    type Output = Variable4;
+    fn forward(&self, input: Variable4) -> Result<Self::Output> {
+        let (fh, fw) = self.filter.into_pattern();
+        let (sh, sw) = self.stride.into_pattern();
+        let options = MaxPool2Options {
+            size: [fh, fw],
+            strides: [sh, sw],
+        };
+        let mut builder = Variable::builder();
+        if let Some(node) = input.node() {
+            let mut input = input.value().clone();
+            let options = options.clone();
+            builder.edge(node, move |output_grad| {
+                input
+                    .make_view_mut()?
+                    .max_pool2_backward(output_grad, options)?;
+                Ok(input)
+            });
+        }
+        let output = input.value().max_pool2(options)?;
+        Ok(builder.build(output.into()))
+    }
+}
+
+// for testing
+#[doc(hidden)]
+impl MaxPool2 {
+    pub fn backward(
+        &self,
+        mut input: ScalarArcTensor4,
+        output_grad: ScalarArcTensor4,
+    ) -> Result<ScalarArcTensor4> {
+        let (fh, fw) = self.filter.into_pattern();
+        let (sh, sw) = self.stride.into_pattern();
+        let options = MaxPool2Options {
+            size: [fh, fw],
+            strides: [sh, sw],
+        };
+        input
+            .make_view_mut()?
+            .max_pool2_backward(output_grad, options)?;
+        Ok(input)
+    }
+}
+
+/// Flatten.
+///
+/// See [`Variable::flatten()`](Variable::flatten).
+#[derive(Default, Clone, Copy, Layer, Debug, Serialize, Deserialize)]
+#[autograph(crate=crate)]
+pub struct Flatten;
+
+impl<D: Dimension + 'static> Forward<Variable<D>> for Flatten {
+    type Output = Variable2;
+    fn forward(&self, input: Variable<D>) -> Result<Variable2> {
+        input.flatten().map_err(Error::msg)
+    }
+}
+
+/// Identity.
+#[derive(Layer, Default, Clone, Copy, Debug, Serialize, Deserialize)]
+#[autograph(crate=crate)]
+pub struct Identity;
+
+impl<X> Forward<X> for Identity {
+    type Output = X;
+    fn forward(&self, input: X) -> Result<Self::Output> {
+        Ok(input)
+    }
+}
+
+/// ReLU.
+///
+/// Implemented for bf16 and f32.
+#[derive(Layer, Default, Clone, Copy, Debug, Serialize, Deserialize)]
+#[autograph(crate=crate)]
+pub struct Relu;
+
+impl<D: Dimension + 'static> Forward<Variable<D>> for Relu {
+    type Output = Variable<D>;
+    fn forward(&self, input: Variable<D>) -> Result<Self::Output> {
+        let mut builder = Variable::builder();
+        if let Some(node) = input.node() {
+            let input = input.value().clone();
+            builder.edge(node, move |output_grad| {
+                scalar_relu_backward(input, output_grad)
+            });
+        }
+        Ok(builder.build(scalar_relu(input.into_value())?))
+    }
+}
+
+// for testing
+#[doc(hidden)]
+impl Relu {
+    pub fn backward<D: Dimension>(
+        &self,
+        output: ScalarArcTensor<D>,
+        output_grad: ScalarArcTensor<D>,
+    ) -> Result<ScalarArcTensor<D>> {
+        scalar_relu_backward(output, output_grad)
+    }
+}
+
+fn scalar_relu<S: ScalarData, D: Dimension>(
+    mut input: ScalarTensorBase<S, D>,
+) -> Result<ScalarArcTensor<D>> {
+    let scalar_type = input.scalar_type();
+    if input.is_standard_layout() {
+        if let Some(input_mut) = input.get_view_mut() {
+            match scalar_type {
+                ScalarType::BF16 => {
+                    relu_mut::<bf16, D>(input_mut.try_into().unwrap())?;
+                }
+                ScalarType::F32 => {
+                    relu_mut::<f32, D>(input_mut.try_into().unwrap())?;
+                }
+                _ => bail!("relu {scalar_type:?} unimplemented!"),
+            }
+            return input.into_shared();
+        }
+    }
+    match scalar_type {
+        ScalarType::BF16 => Ok(relu::<bf16, D>(input.view().try_into().unwrap())?
+            .into_shared()?
+            .into()),
+        ScalarType::F32 => Ok(relu::<f32, D>(input.view().try_into().unwrap())?
+            .into_shared()?
+            .into()),
+        _ => bail!("Relu {scalar_type:?} unimplemented!()"),
+    }
+}
+
+fn relu_mut<T: Scalar, D: Dimension>(mut input: TensorViewMut<T, D>) -> Result<()> {
+    if let Some(mut x) = input.as_array_mut() {
+        for x in x.iter_mut() {
+            *x = relu_impl(*x);
+        }
+        return Ok(());
+    }
+    #[cfg(not(feature = "device"))]
+    {
+        unreachable!()
+    }
+    #[cfg(feature = "device")]
+    {
+        let device = input.device();
+        let mut x = input.as_slice_mut().unwrap();
+        macro_for!($T in [bf16, f32] {
+            if let Ok(x) = x.as_scalar_slice_mut().try_into() {
+                let kernel = paste! {
+                    kernels::[<relu_mut_ $T>]::builder()?
+                    .build(device)?
+                };
+                kernel
+                    .dispatch(x)?;
+                return Ok(());
+            }
+        });
+        bail!("relu_mut {:?} unimplemented!", T::scalar_type())
+    }
+}
+
+fn relu<T: Scalar, D: Dimension>(input: TensorView<T, D>) -> Result<Tensor<T, D>> {
+    let scalar_type = T::scalar_type();
+    if !matches!(scalar_type, ScalarType::BF16 | ScalarType::F32) {
+        bail!("Relu {scalar_type:?} unimplemented!");
+    }
+    if let Some(x) = input.as_array() {
+        let y = x.map(|x| relu_impl(*x));
+        return Ok(y.into());
+    }
+    #[cfg(not(feature = "device"))]
+    {
+        unreachable!()
+    }
+    #[cfg(feature = "device")]
+    {
+        macro_for!($T in [bf16, f32] {
+            if scalar_type == $T::scalar_type() {
+                let mut output = unsafe { Tensor::<$T, D>::uninit(input.device(), input.raw_dim())? };
+                let x = input.as_slice().unwrap();
+                let mut y = output.as_slice_mut().unwrap();
+                let kernel = paste!{ kernels::[<relu_ $T>]::builder()?.build(input.device())? };
+                kernel.dispatch(
+                    x.as_scalar_slice().try_into().unwrap(),
+                    y.as_scalar_slice_mut().try_into().unwrap(),
+                )?;
+                return Ok(output.cast_into().unwrap());
+            }
+        });
+        unreachable!()
+    }
+}
+
+fn scalar_relu_backward<D: Dimension>(
+    output: ScalarArcTensor<D>,
+    mut output_grad: ScalarArcTensor<D>,
+) -> Result<ScalarArcTensor<D>> {
+    let scalar_type = output.scalar_type();
+    if let Some(output_grad_mut) = output_grad.get_view_mut() {
+        match scalar_type {
+            ScalarType::BF16 => {
+                relu_backward_mut::<bf16, D>(
+                    output.view().try_into().unwrap(),
+                    output_grad_mut.try_into().unwrap(),
+                )?;
+            }
+            ScalarType::F32 => {
+                relu_backward_mut::<f32, D>(
+                    output.view().try_into().unwrap(),
+                    output_grad_mut.try_into().unwrap(),
+                )?;
+            }
+            _ => unreachable!(),
+        }
+        Ok(output_grad)
+    } else {
+        match scalar_type {
+            ScalarType::BF16 => Ok(relu_backward::<bf16, D>(
+                output.view().try_into().unwrap(),
+                output_grad.view().try_into().unwrap(),
+            )?
+            .into_shared()?
+            .into()),
+            ScalarType::F32 => Ok(relu_backward::<f32, D>(
+                output.view().try_into().unwrap(),
+                output_grad.view().try_into().unwrap(),
+            )?
+            .into_shared()?
+            .into()),
+            _ => unreachable!(),
+        }
+    }
+}
+
+fn relu_backward_mut<T: Scalar, D: Dimension>(
+    input: TensorView<T, D>,
+    mut output_grad: TensorViewMut<T, D>,
+) -> Result<()> {
+    if let Some((x, mut dy)) = input.as_array().zip(output_grad.as_array_mut()) {
+        dy.zip_mut_with(&x, |dy, x| {
+            *dy = relu_backward_impl(*x, *dy);
+        });
+        return Ok(());
+    }
+    #[cfg(not(feature = "device"))]
+    {
+        unreachable!()
+    }
+    #[cfg(feature = "device")]
+    {
+        let x = input.as_slice().unwrap();
+        let mut dy = output_grad.as_slice_mut().unwrap();
+        macro_for!($T in [bf16, f32] {
+            if let Some((x, dy)) = x
+                .as_scalar_slice()
+                .try_into()
+                .ok()
+                .zip(dy.as_scalar_slice_mut().try_into().ok())
+            {
+                let kernel = paste! {
+                    kernels::[<relu_backward_mut_ $T>]::builder()?
+                    .build(input.device())?
+                };
+                kernel.dispatch(x, dy)?;
+                return Ok(());
+            }
+        });
+        bail!(
+            "relu_backward_mut {:?} unimplemented!()",
+            input.scalar_type()
+        );
+    }
+}
+
+fn relu_backward<T: Scalar, D: Dimension>(
+    input: TensorView<T, D>,
+    output_grad: TensorView<T, D>,
+) -> Result<Tensor<T, D>> {
+    if let Some((x, dy)) = input.as_array().zip(output_grad.as_array()) {
+        let dx: Vec<T> = x
+            .iter()
+            .copied()
+            .zip(dy.iter().copied())
+            .map(|(x, dy)| relu_backward_impl(x, dy))
+            .collect();
+        return Ok(Array::from(dx).into_shape(input.raw_dim()).unwrap().into());
+    }
+    #[cfg(not(feature = "device"))]
+    {
+        unreachable!()
+    }
+    #[cfg(feature = "device")]
+    {
+        let x = input.as_slice().unwrap();
+        let dy = output_grad.as_slice().unwrap();
+        macro_for!($T in [bf16, f32] {
+            if let Some((x, dy)) = x
+                .as_scalar_slice()
+                .try_into()
+                .ok()
+                .zip(dy.as_scalar_slice().try_into().ok())
+            {
+                let mut input_grad = unsafe { Tensor::uninit(input.device(), input.raw_dim())? };
+                let dx = ScalarSliceMut::from(input_grad.as_slice_mut().unwrap())
+                    .try_into()
+                    .unwrap();
+                let kernel = paste! {
+                    kernels::[<relu_backward_ $T>]::builder()?
+                        .build(input.device())?
+                };
+                kernel.dispatch(x, dy, dx)?;
+                return Ok(input_grad);
+            }
+        });
+        bail!("relu_backward {:?} unimplemented!()", input.scalar_type());
+    }
+}
+
+#[cfg_attr(feature = "device", module)]
+mod kernels {
+    #[cfg(any(feature = "device", target_arch = "spirv"))]
+    use dry::macro_for;
+    #[cfg(not(target_arch = "spirv"))]
+    use krnl::krnl_core;
+    #[cfg(target_arch = "spirv")]
+    use krnl_core::half::bf16;
+    #[cfg(any(feature = "device", target_arch = "spirv"))]
+    use krnl_core::macros::kernel;
+    use krnl_core::scalar::Scalar;
+    #[cfg(any(feature = "device", target_arch = "spirv"))]
+    use paste::paste;
+
+    pub fn relu_impl<T: Scalar>(x: T) -> T {
+        if x >= T::zero() {
+            x
+        } else {
+            T::zero()
+        }
+    }
+
+    pub fn relu_backward_impl<T: Scalar>(x: T, dy: T) -> T {
+        if x >= T::zero() {
+            dy
+        } else {
+            T::zero()
+        }
+    }
+
+    #[cfg(any(feature = "device", target_arch = "spirv"))]
+    macro_for!($T in [bf16, f32] {
+        paste! {
+            #[kernel]
+            pub fn [<relu_mut_ $T>](#[item] x: &mut $T) {
+                *x = relu_impl(*x);
+            }
+
+            #[kernel]
+            pub fn [<relu_ $T>](#[item] x: $T, #[item] y: &mut $T) {
+                *y = relu_impl(x);
+            }
+
+            #[kernel]
+            pub fn [<relu_backward_mut_ $T>](#[item] x: $T, #[item] dy: &mut $T) {
+                *dy = relu_backward_impl(x, *dy);
+            }
+
+            #[kernel]
+            pub fn [<relu_backward_ $T>](#[item] x: $T, #[item] dy: $T, #[item] dx: &mut $T) {
+                *dx = relu_backward_impl(x, dy);
+            }
+        }
+    });
+}
+use kernels::{relu_backward_impl, relu_impl};

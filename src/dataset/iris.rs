@@ -1,5 +1,5 @@
 //!
-//! From the [UCI Machine Learning Repository](<http://archive.ics.uci.edu/ml/machine-learning-databases/iris/>):
+//! From the [UCI Machine Learning Repository](<http://archive.ics.uci.edu/dataset/53/iris>):
 
 /*!
 1. Title: Iris Plants Database
