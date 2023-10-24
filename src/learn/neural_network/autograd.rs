@@ -608,6 +608,8 @@ pub type Parameter4 = Parameter<Ix4>;
 pub type Parameter5 = Parameter<Ix5>;
 /// Parameter with 6 dimensions
 pub type Parameter6 = Parameter<Ix6>;
+/// Parameter with dynamic dimensions
+pub type ParameterD = Parameter<IxDyn>;
 
 /// Mutable parameter view.
 ///

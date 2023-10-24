@@ -11,6 +11,8 @@ autograph = { path = "../../", default-features = false, features = ["neural-net
 clap = { workspace = true, features = ["derive"] }
 rand = "0.8.5"
 crossbeam-channel.workspace = true
+derive_more = { workspace = true, features = ["display"] }
+num-format.workspace = true
 
 [features]
 default = ["device"]

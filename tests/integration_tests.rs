@@ -394,8 +394,8 @@ mod ops {
                 && (!features.contains(&features_for_scalar(x_ty)) ||
                     !features.contains(&features_for_scalar(y_ty)));
                 tests.push(device_test(device, &format!("one_hot_{}_{}", x_ty.name(), y_ty.name()), |device| {
-                    for n in [7, 64, 300] {
-                        for classes in [5, 10, 100] {
+                    for n in [1, 7, 64, 300] {
+                        for classes in [1, 5, 10, 100] {
                             one_hot::<$X, $Y>(device, &[n], classes);
                         }
                     }

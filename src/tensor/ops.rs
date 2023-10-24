@@ -560,7 +560,7 @@ impl<T: Scalar + Unsigned, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
                 macro_for!($Y in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
                     if T2::scalar_type() == $Y::scalar_type() {
                         let mut output = unsafe {
-                            Tensor::uninit(self.device(), dim)?
+                            Tensor::<$Y, _>::uninit(self.device(), dim)?
                         };
                         let kernel = paste! {
                             kernels::[<one_hot_ $X _ $Y>]::builder()?.build(input.device())?
@@ -1226,14 +1226,18 @@ mod kernels {
                     #[item] y: &mut $Y,
                 ) {
                     type Y = $Y;
-                    use krnl_core::num_traits::{FromPrimitive, ToPrimitive};
+                    use krnl_core::num_traits::{Zero, One, ToPrimitive};
 
                     let idx = kernel.item_id as usize;
                     let classes = kernel.items as usize / x.len();
                     let x_idx = idx / classes;
                     let y_class = idx % classes;
                     let class = x[x_idx].to_usize().unwrap();
-                    *y = Y::from_u32((y_class == class) as u32).unwrap();
+                    *y = if y_class == class {
+                        Y::one()
+                    } else {
+                        Y::zero()
+                    };
                 }
             }
         });

@@ -11,32 +11,25 @@ use autograph::{
             optimizer::{Optimizer, SGD},
         },
     },
-    ndarray::{ArcArray, ArcArray1, Axis, Ix4},
+    ndarray::{ArcArray, ArcArray1, Axis, Dimension, Ix4},
     scalar::{ScalarElem, ScalarType},
     tensor::{CowTensor, ScalarTensor, Tensor, Tensor1, Tensor4},
 };
-use clap::Parser;
+use clap::{Parser, ValueEnum};
+use num_format::{Locale, ToFormattedString};
 use rand::{seq::index::sample, thread_rng};
 use std::{fmt::Debug, time::Instant};
 
 #[derive(Layer, Forward, Debug)]
 #[autograph(forward(Variable4, Output=Variable2))]
 struct LeNet5 {
-    #[layer]
     conv1: Conv2<Relu>,
-    #[layer]
     pool1: MaxPool2,
-    #[layer]
     conv2: Conv2<Relu>,
-    #[layer]
     pool2: MaxPool2,
-    #[layer]
     flatten: Flatten,
-    #[layer]
     dense1: Dense<Relu>,
-    #[layer]
     dense2: Dense<Relu>,
-    #[layer]
     dense3: Dense,
 }
 
@@ -95,13 +88,30 @@ impl LeNet5 {
     }
 }
 
+#[derive(Clone, Copy, derive_more::Display, Debug, ValueEnum)]
+enum ScalarKind {
+    #[display(fmt = "bf16")]
+    BF16,
+    #[display(fmt = "f32")]
+    F32,
+}
+
+impl From<ScalarKind> for ScalarType {
+    fn from(kind: ScalarKind) -> Self {
+        match kind {
+            ScalarKind::BF16 => ScalarType::BF16,
+            ScalarKind::F32 => ScalarType::F32,
+        }
+    }
+}
+
 #[derive(Parser, Debug)]
 #[command(author)]
 struct Options {
     #[arg(long)]
     device: Option<usize>,
-    #[arg(long)]
-    bf16: bool,
+    #[arg(long, default_value_t = ScalarKind::F32)]
+    scalar_type: ScalarKind,
     #[arg(short, long, default_value_t = 100)]
     epochs: usize,
     #[arg(long, default_value_t = 100)]
@@ -139,11 +149,7 @@ fn main() -> Result<()> {
     if let Some(info) = device.info() {
         println!("{info:#?}");
     }
-    let scalar_type = if options.bf16 {
-        ScalarType::BF16
-    } else {
-        ScalarType::F32
-    };
+    let scalar_type = ScalarType::from(options.scalar_type);
     let mut model = LeNet5::new(device.clone(), scalar_type)?;
     let optimizer = {
         let mut builder = SGD::builder();
@@ -153,12 +159,20 @@ fn main() -> Result<()> {
         builder.build()
     };
     println!("model: {model:#?}");
+    let parameter_count = model
+        .parameters()
+        .iter()
+        .map(|x| x.raw_dim().size())
+        .sum::<usize>();
+    println!(
+        "{} parameters",
+        parameter_count.to_formatted_string(&Locale::en)
+    );
     println!("optimizer: {optimizer:#?}");
     let image_scale = 1f32 / 255f32;
-    let image_scale = if options.bf16 {
-        ScalarElem::BF16(bf16::from_f32(image_scale))
-    } else {
-        ScalarElem::F32(image_scale)
+    let image_scale = match options.scalar_type {
+        ScalarKind::BF16 => ScalarElem::BF16(bf16::from_f32(image_scale)),
+        ScalarKind::F32 => ScalarElem::F32(image_scale),
     };
     let start = Instant::now();
     for epoch in 1..=options.epochs {
@@ -280,7 +294,7 @@ fn train<I: Iterator<Item = Result<(Tensor4<u8>, Tensor1<u8>)>>>(
         let loss = y.cross_entropy_loss(t)?;
         stats.loss += loss
             .value()
-            .view()
+            .clone()
             .cast_into_tensor::<f32>()?
             .into_array()?
             .into_scalar();

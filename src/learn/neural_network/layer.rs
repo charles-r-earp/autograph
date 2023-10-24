@@ -1,6 +1,6 @@
 use super::autograd::{
-    Parameter, Parameter1, Parameter2, ParameterViewMut, ParameterViewMut1, ParameterViewMut2,
-    ParameterViewMutD, Variable, Variable1, Variable2, Variable3, Variable4,
+    Parameter, Parameter1, Parameter2, ParameterD, ParameterViewMut, ParameterViewMut1,
+    ParameterViewMut2, ParameterViewMutD, Variable, Variable1, Variable2, Variable3, Variable4,
 };
 #[cfg(doc)]
 use super::optimizer::Optimizer;
@@ -36,6 +36,7 @@ use rand::{
     thread_rng,
 };
 use serde::{Deserialize, Serialize};
+use smallvec::SmallVec;
 use std::any::Any;
 
 /// Layer builders.
@@ -403,22 +404,60 @@ pub mod builder {
 }
 use builder::*;
 
+/// ParameterVec
+///
+/// See [`Layer::parameters()`](Layer::parameters).
+pub type ParameterVec = SmallVec<[ParameterD; 2]>;
+/// ParameterMutVec
+///
+/// See [`Layer::parameters_mut()`](Layer::parameters_mut).
+pub type ParameterMutVec<'a> = SmallVec<[ParameterViewMutD<'a>; 2]>;
+
 /// Layer.
 ///
 /// Typically Layers implement [`Forward<Variable<D>>`](Forward) for the appropriate
 /// dimension `D`.
 ///
-/// Layer can be [derived](autograph_derive).
+/// Layers with parameters or those that store the `device` or `scalar_type` should implement the
+/// relevant methods. Functional layers and activations may only need the default implementation.
+///
+/// Layer can be [derived](autograph_derive) for structs and enums where each field or variant
+/// is a layer.
 pub trait Layer {
     /// Prepares for training or inference.
     ///
     /// Calls [`.set_training(training)`](Parameter::set_training) on each parameter and
     /// [`.set_training(training)`][Layer::set_training] on each child layer as appropriate.
-    fn set_training(&mut self, training: bool) -> Result<()>;
+    fn set_training(&mut self, #[allow(unused_variables)] training: bool) -> Result<()> {
+        Ok(())
+    }
+    /// Parameters of the layer.
+    fn parameters(&self) -> ParameterVec {
+        ParameterVec::new()
+    }
     /// Mutable parameter views of the parameters of the layer.
     ///
     /// The mutable parameter views can be provided to [`Optimizer::update()`](Optimizer::update).
-    fn parameters_mut(&mut self) -> Result<Vec<ParameterViewMutD>>;
+    ///
+    /// See [`Parameter::make_view_mut()`](Parameter::make_view_mut).
+    fn parameters_mut(&mut self) -> Result<ParameterMutVec> {
+        Ok(ParameterMutVec::new())
+    }
+    /// Casts the layer to `scalar_type` in place.
+    fn cast_mut(&mut self, #[allow(unused_variables)] scalar_type: ScalarType) -> Result<()> {
+        Ok(())
+    }
+    /// Transfers the layer to `device` in place.
+    fn to_device_mut(&mut self, #[allow(unused_variables)] device: Device) -> Result<()> {
+        Ok(())
+    }
+    /// Moves the layer into `device`.
+    fn into_device(self, #[allow(unused_variables)] device: Device) -> Result<Self>
+    where
+        Self: Sized,
+    {
+        Ok(self)
+    }
 }
 
 /// Forward.
@@ -439,12 +478,33 @@ impl<T: Layer> Layer for Option<T> {
             Ok(())
         }
     }
-    fn parameters_mut(&mut self) -> Result<Vec<ParameterViewMutD>> {
+    fn parameters(&self) -> ParameterVec {
+        self.as_ref()
+            .map(|layer| layer.parameters())
+            .unwrap_or_default()
+    }
+    fn parameters_mut(&mut self) -> Result<ParameterMutVec> {
+        self.as_mut()
+            .map(|layer| layer.parameters_mut())
+            .unwrap_or(Ok(ParameterMutVec::new()))
+    }
+    fn cast_mut(&mut self, scalar_type: ScalarType) -> Result<()> {
         if let Some(layer) = self.as_mut() {
-            layer.parameters_mut()
-        } else {
-            Ok(Vec::new())
+            layer.cast_mut(scalar_type)?;
         }
+        Ok(())
+    }
+    fn to_device_mut(&mut self, #[allow(unused_variables)] device: Device) -> Result<()> {
+        if let Some(layer) = self.as_mut() {
+            layer.to_device_mut(device)?;
+        }
+        Ok(())
+    }
+    fn into_device(self, device: Device) -> Result<Self>
+    where
+        Self: Sized,
+    {
+        self.map(|layer| layer.into_device(device)).transpose()
     }
 }
 
@@ -461,17 +521,39 @@ impl<X, T: Forward<X, Output = X>> Forward<X> for Option<T> {
 
 impl<T: Layer> Layer for Vec<T> {
     fn set_training(&mut self, training: bool) -> Result<()> {
-        for layer in self.iter_mut() {
-            layer.set_training(training)?;
-        }
-        Ok(())
+        self.iter_mut()
+            .try_for_each(|layer| layer.set_training(training))
     }
-    fn parameters_mut(&mut self) -> Result<Vec<ParameterViewMutD>> {
-        let mut parameters = Vec::with_capacity(self.len());
-        for layer in self.iter_mut() {
-            parameters.push(layer.parameters_mut()?);
+    fn parameters(&self) -> ParameterVec {
+        self.iter().flat_map(Layer::parameters).collect()
+    }
+    fn parameters_mut(&mut self) -> Result<ParameterMutVec> {
+        if self.is_empty() {
+            Ok(ParameterMutVec::new())
+        } else if self.len() == 1 {
+            self.first_mut().unwrap().parameters_mut()
+        } else {
+            let mut parameter_vecs = SmallVec::<[ParameterMutVec; 8]>::with_capacity(self.len());
+            for layer in self.iter_mut() {
+                parameter_vecs.push(layer.parameters_mut()?);
+            }
+            Ok(parameter_vecs.into_iter().flatten().collect())
         }
-        Ok(parameters.into_iter().flatten().collect())
+    }
+    fn cast_mut(&mut self, scalar_type: ScalarType) -> Result<()> {
+        self.iter_mut()
+            .try_for_each(|layer| layer.cast_mut(scalar_type))
+    }
+    fn to_device_mut(&mut self, device: Device) -> Result<()> {
+        self.iter_mut()
+            .try_for_each(|layer| layer.to_device_mut(device.clone()))
+    }
+    fn into_device(mut self, device: Device) -> Result<Self>
+    where
+        Self: Sized,
+    {
+        self.to_device_mut(device)?;
+        Ok(self)
     }
 }
 
@@ -549,22 +631,6 @@ impl<D: Dimension, A> Conv<D, A> {
     pub fn bias_view_mut(&mut self) -> Result<Option<ParameterViewMut1>> {
         self.bias.as_mut().map(Parameter::make_view_mut).transpose()
     }
-    /// Moves the layer into `device`.
-    pub fn into_device(self, device: Device) -> Result<Self> {
-        Ok(Self {
-            weight: self.weight.into_device(device.clone())?,
-            bias: self.bias.map(|b| b.into_device(device)).transpose()?,
-            ..self
-        })
-    }
-    /// Moves the layer to `device` in place.
-    pub fn to_device_mut(&mut self, device: Device) -> Result<()> {
-        self.weight.to_device_mut(device.clone())?;
-        if let Some(bias) = self.bias.as_mut() {
-            bias.to_device_mut(device)?;
-        }
-        Ok(())
-    }
 }
 
 impl<D: Dimension, A> Layer for Conv<D, A> {
@@ -575,13 +641,38 @@ impl<D: Dimension, A> Layer for Conv<D, A> {
         }
         Ok(())
     }
-    fn parameters_mut(&mut self) -> Result<Vec<ParameterViewMutD>> {
-        let mut parameters = Vec::new();
+    fn parameters(&self) -> ParameterVec {
+        let mut parameters = ParameterVec::new();
+        parameters.push(self.weight.clone().into_dyn());
+        if let Some(bias) = self.bias.as_ref() {
+            parameters.push(bias.clone().into_dyn());
+        }
+        parameters
+    }
+    fn parameters_mut(&mut self) -> Result<ParameterMutVec> {
+        let mut parameters = ParameterMutVec::new();
         parameters.push(self.weight.make_view_mut()?.into_dyn());
         if let Some(bias) = self.bias.as_mut() {
             parameters.push(bias.make_view_mut()?.into_dyn());
         }
         Ok(parameters)
+    }
+    fn to_device_mut(&mut self, device: Device) -> Result<()> {
+        self.weight.to_device_mut(device.clone())?;
+        if let Some(bias) = self.bias.as_mut() {
+            bias.to_device_mut(device)?;
+        }
+        Ok(())
+    }
+    fn into_device(self, device: Device) -> Result<Self>
+    where
+        Self: Sized,
+    {
+        Ok(Self {
+            weight: self.weight.into_device(device.clone())?,
+            bias: self.bias.map(|b| b.into_device(device)).transpose()?,
+            ..self
+        })
     }
 }
 
@@ -754,22 +845,6 @@ impl<A> Dense<A> {
     pub fn bias_view_mut(&mut self) -> Result<Option<ParameterViewMut1>> {
         self.bias.as_mut().map(Parameter::make_view_mut).transpose()
     }
-    /// Moves the layer into `device`.
-    pub fn into_device(self, device: Device) -> Result<Self> {
-        Ok(Self {
-            weight: self.weight.into_device(device.clone())?,
-            bias: self.bias.map(|b| b.into_device(device)).transpose()?,
-            ..self
-        })
-    }
-    /// Transferes the layer to `device` in place.
-    pub fn to_device_mut(&mut self, device: Device) -> Result<()> {
-        self.weight.to_device_mut(device.clone())?;
-        if let Some(bias) = self.bias.as_mut() {
-            bias.to_device_mut(device)?;
-        }
-        Ok(())
-    }
 }
 
 impl<A> Layer for Dense<A> {
@@ -780,13 +855,38 @@ impl<A> Layer for Dense<A> {
         }
         Ok(())
     }
-    fn parameters_mut(&mut self) -> Result<Vec<ParameterViewMutD>> {
-        let mut parameters = Vec::new();
+    fn parameters(&self) -> ParameterVec {
+        let mut parameters = ParameterVec::new();
+        parameters.push(self.weight.clone().into_dyn());
+        if let Some(bias) = self.bias.as_ref() {
+            parameters.push(bias.clone().into_dyn());
+        }
+        parameters
+    }
+    fn parameters_mut(&mut self) -> Result<ParameterMutVec> {
+        let mut parameters = ParameterMutVec::new();
         parameters.push(self.weight.make_view_mut()?.into_dyn());
         if let Some(bias) = self.bias.as_mut() {
             parameters.push(bias.make_view_mut()?.into_dyn());
         }
         Ok(parameters)
+    }
+    fn to_device_mut(&mut self, device: Device) -> Result<()> {
+        self.weight.to_device_mut(device.clone())?;
+        if let Some(bias) = self.bias.as_mut() {
+            bias.to_device_mut(device)?;
+        }
+        Ok(())
+    }
+    fn into_device(self, device: Device) -> Result<Self>
+    where
+        Self: Sized,
+    {
+        Ok(Self {
+            weight: self.weight.into_device(device.clone())?,
+            bias: self.bias.map(|b| b.into_device(device)).transpose()?,
+            ..self
+        })
     }
 }
 
@@ -805,8 +905,7 @@ impl<A: Forward<Variable2, Output = Variable2> + Any> Forward<Variable2> for Den
 ///
 /// See [`MaxPool1`] and [`MaxPool2`].
 /// Implemented for bf16 and f32.
-#[derive(Layer, Debug, Serialize, Deserialize)]
-#[autograph(crate=crate)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct MaxPool<D: Dimension> {
     filter: D,
     stride: D,
@@ -827,6 +926,8 @@ impl<D: Dimension> MaxPool<D> {
         MaxPoolBuilder::new()
     }
 }
+
+impl<D: Dimension> Layer for MaxPool<D> {}
 
 impl Forward<Variable3> for MaxPool1 {
     type Output = Variable3;
@@ -897,9 +998,10 @@ impl MaxPool2 {
 /// Flatten.
 ///
 /// See [`Variable::flatten()`](Variable::flatten).
-#[derive(Default, Clone, Copy, Layer, Debug, Serialize, Deserialize)]
-#[autograph(crate=crate)]
+#[derive(Default, Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct Flatten;
+
+impl Layer for Flatten {}
 
 impl<D: Dimension + 'static> Forward<Variable<D>> for Flatten {
     type Output = Variable2;
@@ -909,9 +1011,10 @@ impl<D: Dimension + 'static> Forward<Variable<D>> for Flatten {
 }
 
 /// Identity.
-#[derive(Layer, Default, Clone, Copy, Debug, Serialize, Deserialize)]
-#[autograph(crate=crate)]
+#[derive(Default, Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct Identity;
+
+impl Layer for Identity {}
 
 impl<X> Forward<X> for Identity {
     type Output = X;
@@ -923,9 +1026,10 @@ impl<X> Forward<X> for Identity {
 /// ReLU.
 ///
 /// Implemented for bf16 and f32.
-#[derive(Layer, Default, Clone, Copy, Debug, Serialize, Deserialize)]
-#[autograph(crate=crate)]
+#[derive(Default, Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct Relu;
+
+impl Layer for Relu {}
 
 impl<D: Dimension + 'static> Forward<Variable<D>> for Relu {
     type Output = Variable<D>;
