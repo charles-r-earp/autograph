@@ -484,9 +484,21 @@ mod reorder {
                         into_standard_layout::<$T, _>(device, [3, 3], [1, 0]);
                         into_standard_layout::<$T, _>(device, [21, 30], [1, 0]);
                     }),
+                    device_test(device, &format!("into_standard_layout3_{ty}"), |device| {
+                        into_standard_layout::<$T, _>(device, [1, 2, 3], [0, 2, 1]);
+                        into_standard_layout::<$T, _>(device, [2, 21, 3], [1, 2, 0]);
+                    }),
                     device_test(device, &format!("into_standard_layout4_{ty}"), |device| {
                         into_standard_layout::<$T, _>(device, [1, 2, 3, 3], [0, 2, 3, 1]);
                         into_standard_layout::<$T, _>(device, [2, 21, 3, 30], [0, 3, 1, 2]);
+                    }),
+                    device_test(device, &format!("into_standard_layout5_{ty}"), |device| {
+                        into_standard_layout::<$T, _>(device, [1, 2, 3, 3, 3], [0, 2, 3, 4, 1]);
+                        into_standard_layout::<$T, _>(device, [2, 17, 3, 10, 3], [0, 3, 1, 2, 4]);
+                    }),
+                    device_test(device, &format!("into_standard_layout6_{ty}"), |device| {
+                        into_standard_layout::<$T, _>(device, [1, 2, 3, 3, 1, 3], [0, 2, 3, 4, 5, 1]);
+                        into_standard_layout::<$T, _>(device, [2, 17, 3, 10, 2, 3], [0, 3, 1, 2, 5, 4]);
                     }),
                 ].into_iter().map(|trial| trial.with_ignored_flag(ignore)));
         });

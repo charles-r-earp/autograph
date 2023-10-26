@@ -492,8 +492,115 @@ fn scalar_assign(
                 }
             });
         }
+        if ndim == 5 || ndim == 6 {
+            let [d0, d1, d2, d3, d4, d5] = match y.shape() {
+                [d0, d1, d2, d3, d4, d5] => [
+                    d0.to_u32().unwrap(),
+                    d1.to_u32().unwrap(),
+                    d2.to_u32().unwrap(),
+                    d3.to_u32().unwrap(),
+                    d4.to_u32().unwrap(),
+                    d5.to_u32().unwrap(),
+                ],
+                [d1, d2, d3, d4, d5] => [
+                    1,
+                    d1.to_u32().unwrap(),
+                    d2.to_u32().unwrap(),
+                    d3.to_u32().unwrap(),
+                    d4.to_u32().unwrap(),
+                    d5.to_u32().unwrap(),
+                ],
+                _ => unreachable!(),
+            };
+            let [sx0, sx1, sx2, sx3, sx4, sx5] = match x.strides() {
+                [sx0, sx1, sx2, sx3, sx4, sx5] => [
+                    sx0.to_i32().unwrap(),
+                    sx1.to_i32().unwrap(),
+                    sx2.to_i32().unwrap(),
+                    sx3.to_i32().unwrap(),
+                    sx4.to_i32().unwrap(),
+                    sx5.to_i32().unwrap(),
+                ],
+                [sx1, sx2, sx3, sx4, sx5] => [
+                    (d1 * d2 * d3 * d4 * d5) as i32,
+                    sx1.to_i32().unwrap(),
+                    sx2.to_i32().unwrap(),
+                    sx3.to_i32().unwrap(),
+                    sx4.to_i32().unwrap(),
+                    sx5.to_i32().unwrap(),
+                ],
+                _ => unreachable!(),
+            };
+            let [sy0, sy1, sy2, sy3, sy4, sy5] = match y.strides() {
+                [sy0, sy1, sy2, sy3, sy4, sy5] => [
+                    sy0.to_i32().unwrap(),
+                    sy1.to_i32().unwrap(),
+                    sy2.to_i32().unwrap(),
+                    sy3.to_i32().unwrap(),
+                    sy4.to_i32().unwrap(),
+                    sy5.to_i32().unwrap(),
+                ],
+                [sy1, sy2, sy3, sy4, sy5] => [
+                    (d1 * d2 * d3 * d4 * d5) as i32,
+                    sy1.to_i32().unwrap(),
+                    sy2.to_i32().unwrap(),
+                    sy3.to_i32().unwrap(),
+                    sy4.to_i32().unwrap(),
+                    sy5.to_i32().unwrap(),
+                ],
+                _ => unreachable!(),
+            };
+            let (x, offset_x) = x.as_raw_scalar_slice_offset();
+            let offset_x = offset_x.to_u32().unwrap();
+            let (mut y, offset_y) = y.as_raw_scalar_slice_offset_mut();
+            let offset_y = offset_y.to_u32().unwrap();
+            macro_for!($X in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+                if let Ok(x) = Slice::<$X>::try_from(x.clone()) {
+                    macro_for!($Y in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+                        if let Ok(y) = SliceMut::<$Y>::try_from(y.as_scalar_slice_mut()) {
+                            let builder = paste! {
+                                kernels::[<assign6_ $X _ $Y>]::builder()?
+                            };
+                            let kernel = builder
+                                .specialize(op.as_u32())
+                                .build(device)?
+                                .with_global_threads(d0 * d1 * d2 * d3 * d4 * d5);
+                            unsafe {
+                                kernel.dispatch(
+                                    d0,
+                                    d1,
+                                    d2,
+                                    d3,
+                                    d4,
+                                    d5,
+                                    alpha.cast(),
+                                    x,
+                                    sx0,
+                                    sx1,
+                                    sx2,
+                                    sx3,
+                                    sx4,
+                                    sx5,
+                                    offset_x,
+                                    y,
+                                    sy0,
+                                    sy1,
+                                    sy2,
+                                    sy3,
+                                    sy4,
+                                    sy5,
+                                    offset_y,
+                                )?;
+                            }
+                            return Ok(());
+                        }
+                    });
+                }
+            });
+        }
         Err(format_err!(
-            "assign<{}, {}> not implemented!",
+            "assign{}<{}, {}> not implemented!",
+            ndim,
             x.scalar_type().name(),
             y.scalar_type().name()
         ))
@@ -1050,23 +1157,10 @@ impl<S1: ScalarDataMut, S2: ScalarData> MaxPool2Backward<ScalarTensorBase<S2, Ix
 }
 
 #[cfg_attr(feature = "device", module)]
-mod kernels {
-    #[cfg(any(target_arch = "spirv", feature = "device"))]
-    use dry::macro_for;
+mod binary_op {
     #[cfg(not(target_arch = "spirv"))]
     use krnl::krnl_core;
-    #[cfg(target_arch = "spirv")]
-    #[allow(unused_imports)]
-    use krnl_core::buffer::UnsafeIndex;
-    #[cfg(any(target_arch = "spirv", feature = "device"))]
-    use krnl_core::macros::kernel;
-    #[allow(unused_imports)]
-    use krnl_core::{
-        half::{bf16, f16},
-        scalar::Scalar,
-    };
-    #[cfg(any(target_arch = "spirv", feature = "device"))]
-    use paste::paste;
+    use krnl_core::scalar::Scalar;
 
     #[cfg_attr(not(target_arch = "spirv"), derive(derive_more::IsVariant))]
     #[repr(u32)]
@@ -1112,8 +1206,28 @@ mod kernels {
             }
         }
     }
+}
+use binary_op::BinaryOp;
 
-    #[cfg(any(target_arch = "spirv", feature = "device"))]
+#[cfg(feature = "device")]
+#[module]
+mod kernels {
+    #[cfg(target_arch = "spirv")]
+    use crate::tensor__ops__binary_op::BinaryOp;
+    use dry::macro_for;
+    #[cfg(not(target_arch = "spirv"))]
+    use krnl::krnl_core;
+    #[cfg(target_arch = "spirv")]
+    #[allow(unused_imports)]
+    use krnl_core::buffer::UnsafeIndex;
+    use krnl_core::macros::kernel;
+    #[allow(unused_imports)]
+    use krnl_core::{
+        half::{bf16, f16},
+        scalar::Scalar,
+    };
+    use paste::paste;
+
     macro_for!($X in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
         macro_for!($Y in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
             paste! {
@@ -1128,14 +1242,7 @@ mod kernels {
                     let op = BinaryOp::try_from(OP).ok().unwrap();
                     *y = op.eval(alpha * x.cast::<$Y>(), *y);
                 }
-            }
-        });
-    });
 
-    #[cfg(any(target_arch = "spirv", feature = "device"))]
-    macro_for!($X in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
-        macro_for!($Y in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
-            paste! {
                 #[kernel]
                 pub fn [<assign2_ $X _ $Y>]<const OP: u32>(
                     rows: u32,
@@ -1164,14 +1271,7 @@ mod kernels {
                         }
                     }
                 }
-            }
-        });
-    });
 
-    #[cfg(any(target_arch = "spirv", feature = "device"))]
-    macro_for!($X in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
-        macro_for!($Y in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
-            paste! {
                 #[kernel]
                 pub unsafe fn [<assign4_ $X _ $Y>]<const OP: u32>(
                     d0: u32,
@@ -1212,11 +1312,61 @@ mod kernels {
                         *y.unsafe_index_mut(y_idx) = op.eval(alpha * x[x_idx].cast::<$Y>(), *y.unsafe_index(y_idx));
                     }
                 }
+
+                #[kernel]
+                pub unsafe fn [<assign6_ $X _ $Y>]<const OP: u32>(
+                    d0: u32,
+                    d1: u32,
+                    d2: u32,
+                    d3: u32,
+                    d4: u32,
+                    d5: u32,
+                    alpha: $Y,
+                    #[global]
+                    x: Slice<$X>,
+                    sx0: i32,
+                    sx1: i32,
+                    sx2: i32,
+                    sx3: i32,
+                    sx4: i32,
+                    sx5: i32,
+                    offset_x: u32,
+                    #[global]
+                    y: UnsafeSlice<$Y>,
+                    sy0: i32,
+                    sy1: i32,
+                    sy2: i32,
+                    sy3: i32,
+                    sy4: i32,
+                    sy5: i32,
+                    offset_y: u32,
+                ) {
+                    let op = BinaryOp::try_from(OP).ok().unwrap();
+                    let idx = kernel.global_id;
+                    if idx >= d0 * d1 * d2 * d3 * d4 * d5 {
+                        return;
+                    }
+                    let i0 = idx / (d1 * d2 * d3 * d4 * d5);
+                    let r0 = idx % (d1 * d2 * d3 * d4 * d5);
+                    let i1 = r0 / (d2 * d3 * d4 * d5);
+                    let r1 = r0 % (d2 * d3 * d4 * d5);
+                    let i2 = r1 / (d3 * d4 * d5);
+                    let r2 = r1 % (d3 * d4 * d5);
+                    let i3 = r2 / (d4 * d5);
+                    let r3 = r2 % (d4 * d5);
+                    let i4 = r3 / d5;
+                    let i5 = r3 % d5;
+                    let [i0, i1, i2, i3, i4, i5] = [i0 as i32, i1 as i32, i2 as i32, i3 as i32, i4 as i32, i5 as i32];
+                    let x_idx = (sx0 * i0 + sx1 * i1 + sx2 * i2 + sx3 * i3 + sx4 * i4 + sx5 * i5 + offset_x as i32) as usize;
+                    let y_idx = (sy0 * i0 + sy1 * i1 + sy2 * i2 + sy3 * i3 + sy4 * i4 + sy5 * i5 + offset_y as i32) as usize;
+                    unsafe {
+                        *y.unsafe_index_mut(y_idx) = op.eval(alpha * x[x_idx].cast::<$Y>(), *y.unsafe_index(y_idx));
+                    }
+                }
             }
         });
     });
 
-    #[cfg(any(target_arch = "spirv", feature = "device"))]
     macro_for!($X in [u8, u16, u32, u64] {
         macro_for!($Y in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
             paste! {
@@ -1243,7 +1393,6 @@ mod kernels {
         });
     });
 }
-use kernels::BinaryOp;
 
 #[cfg(feature = "device")]
 #[module]
@@ -1507,22 +1656,3 @@ mod neural_network_kernels {
         }
     });
 }
-/*
-#[cfg(test)]
-#[test]
-fn max_pool2_backward() {
-    use crate::ops::MaxPool2Backward;
-    let device = Device::builder().index(1).build().unwrap();
-
-    let x = Tensor::from(Buffer::from(vec![1f32, 5., 3., 4.])).into_shape([1, 1, 2, 2]).unwrap();
-    let dy = Tensor::from(Buffer::from(vec![1f32])).into_shape([1, 1, 1, 1]).unwrap();
-    let mut dx_host = x.to_owned().unwrap();
-    dx_host.max_pool2_backward(dy.view(), MaxPool2Options { size: [2, 2], strides: [2, 2] }).unwrap();
-    let dy_device = dy.to_device(device.clone()).unwrap();
-    let mut dx_device = x.to_device(device.clone()).unwrap();
-    dx_device.max_pool2_backward(dy_device.view(), MaxPool2Options { size: [2, 2], strides: [2, 2] }).unwrap();
-    let dx_host = dx_host.into_array().unwrap();
-    let dx_device = dx_device.into_array().unwrap();
-    assert_eq!(dx_host, dx_device);
-}
-*/
