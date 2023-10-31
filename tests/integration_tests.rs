@@ -554,10 +554,35 @@ mod reduce {
                         sum::<$T, _>(device, n);
                     }
                 }).with_ignored_flag(ignore),
-                device_test(device, &format!("sum_axis_{ty_name}"), |device| {
+                device_test(device, &format!("sum_axis1_{ty_name}"), |device| {
+                    for n in [4, 11, 33, 517, 1021] {
+                        sum_axis::<$T, _>(device, [n], Axis(0));
+                    }
+                }).with_ignored_flag(ignore),
+                device_test(device, &format!("sum_axis2_{ty_name}"), |device| {
                     for n in [4, 11, 33, 517, 1021] {
                         for axis in [0, 1] {
-                            sum_axis::<$T, _>(device, [n / 2, n], Axis(axis));
+                            let mut shape = [3; 2];
+                            shape[axis] = n;
+                            sum_axis::<$T, _>(device, shape, Axis(axis));
+                        }
+                    }
+                }).with_ignored_flag(ignore),
+                device_test(device, &format!("sum_axis3_{ty_name}"), |device| {
+                    for n in [4, 11, 33, 517, 1021] {
+                        for axis in [0, 1, 2] {
+                            let mut shape = [3; 3];
+                            shape[axis] = n;
+                            sum_axis::<$T, _>(device, shape, Axis(axis));
+                        }
+                    }
+                }).with_ignored_flag(ignore),
+                device_test(device, &format!("sum_axis4_{ty_name}"), |device| {
+                    for n in [4, 11, 33, 517, 1021] {
+                        for axis in [0, 1, 2, 3] {
+                            let mut shape = [3; 4];
+                            shape[axis] = n;
+                            sum_axis::<$T, _>(device, shape, Axis(axis));
                         }
                     }
                 }).with_ignored_flag(ignore),
@@ -596,7 +621,7 @@ mod reduce {
         E::Dim: RemoveAxis,
     {
         let shape = shape.into_dimension();
-        let x_array = (1..10)
+        let x_array = (1..16)
             .cycle()
             .take(shape.size())
             .map(|x| T::from_usize(x).unwrap())
