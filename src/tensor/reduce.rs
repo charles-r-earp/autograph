@@ -1,4 +1,5 @@
 use super::*;
+use half::f16;
 #[cfg(feature = "device")]
 use krnl::macros::module;
 
@@ -118,7 +119,7 @@ fn sum(x: ScalarTensorViewD, beta: ScalarElem, mut y: ScalarTensorViewMutD) -> R
     let x = x.as_scalar_slice().unwrap();
     let y = y.as_scalar_slice_mut().unwrap();
 
-    macro_for!($T in [bf16, u32, i32, f32, u64, i64, f64] {
+    macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
         if x.scalar_type() == $T::scalar_type() {
             let x = Slice::try_from(x).unwrap();
             let y = SliceMut::try_from(y).unwrap();
@@ -178,7 +179,7 @@ fn sum_axis(
         let (y, offset_y) = y.as_raw_scalar_slice_offset_mut();
         let offset_y = offset_y.to_u32().unwrap();
 
-        macro_for!($T in [bf16, u32, i32, f32, u64, i64, f64] {
+        macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
             if x.scalar_type() == $T::scalar_type() {
                 let x = Slice::try_from(x).unwrap();
                 let y = SliceMut::try_from(y).unwrap();
@@ -204,7 +205,7 @@ fn sum_axis(
             }
         });
     }
-    if ndim <= 4 {
+    if ndim == 3 || ndim == 4 {
         let axis = if ndim == 3 { axis + 1 } else { axis };
         let [d0, d1, d2, d3] = match x.shape() {
             [d0, d1, d2, d3] => [
@@ -250,7 +251,7 @@ fn sum_axis(
         let (y, offset_y) = y.as_raw_scalar_slice_offset_mut();
         let offset_y = offset_y.to_u32().unwrap();
 
-        macro_for!($T in [bf16, u32, i32, f32, u64, i64, f64] {
+        macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
             if x.scalar_type() == $T::scalar_type() {
                 let x = Slice::try_from(x).unwrap();
                 let y = SliceMut::try_from(y).unwrap();
@@ -282,6 +283,106 @@ fn sum_axis(
             }
         });
     }
+    if ndim == 5 || ndim == 6 {
+        let axis = if ndim == 5 { axis + 1 } else { axis };
+        let [d0, d1, d2, d3, d4, d5] = match x.shape() {
+            [d0, d1, d2, d3, d4, d5] => [
+                d0.to_u32().unwrap(),
+                d1.to_u32().unwrap(),
+                d2.to_u32().unwrap(),
+                d3.to_u32().unwrap(),
+                d4.to_u32().unwrap(),
+                d5.to_u32().unwrap(),
+            ],
+            [d1, d2, d3, d4, d5] => [
+                1,
+                d1.to_u32().unwrap(),
+                d2.to_u32().unwrap(),
+                d3.to_u32().unwrap(),
+                d4.to_u32().unwrap(),
+                d5.to_u32().unwrap(),
+            ],
+            _ => unreachable!(),
+        };
+        let [sx0, sx1, sx2, sx3, sx4, sx5] = match x.strides() {
+            [sx0, sx1, sx2, sx3, sx4, sx5] => [
+                sx0.to_i32().unwrap(),
+                sx1.to_i32().unwrap(),
+                sx2.to_i32().unwrap(),
+                sx3.to_i32().unwrap(),
+                sx4.to_i32().unwrap(),
+                sx5.to_i32().unwrap(),
+            ],
+            [sx1, sx2, sx3, sx4, sx5] => [
+                1,
+                sx1.to_i32().unwrap(),
+                sx2.to_i32().unwrap(),
+                sx3.to_i32().unwrap(),
+                sx4.to_i32().unwrap(),
+                sx5.to_i32().unwrap(),
+            ],
+            _ => unreachable!(),
+        };
+        let [sy0, sy1, sy2, sy3, sy4] = match y.strides() {
+            [sy0, sy1, sy2, sy3, sy4] => [
+                sy0.to_i32().unwrap(),
+                sy1.to_i32().unwrap(),
+                sy2.to_i32().unwrap(),
+                sy3.to_i32().unwrap(),
+                sy4.to_i32().unwrap(),
+            ],
+            [sy1, sy2, sy3, sy4] => [
+                1,
+                sy1.to_i32().unwrap(),
+                sy2.to_i32().unwrap(),
+                sy3.to_i32().unwrap(),
+                sy4.to_i32().unwrap(),
+            ],
+            _ => unreachable!(),
+        };
+        let (x, offset_x) = x.as_raw_scalar_slice_offset();
+        let offset_x = offset_x.to_u32().unwrap();
+        let (y, offset_y) = y.as_raw_scalar_slice_offset_mut();
+        let offset_y = offset_y.to_u32().unwrap();
+
+        macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+            if x.scalar_type() == $T::scalar_type() {
+                let x = Slice::try_from(x).unwrap();
+                let y = SliceMut::try_from(y).unwrap();
+                let kernel = paste! {
+                    kernels::[<sum_axis6_ $T>]::builder()?
+                        .with_threads(threads)
+                        .specialize(axis)
+                        .build(device)?
+                };
+                kernel.with_groups(groups).dispatch(
+                    d0,
+                    d1,
+                    d2,
+                    d3,
+                    d4,
+                    d5,
+                    x,
+                    sx0,
+                    sx1,
+                    sx2,
+                    sx3,
+                    sx4,
+                    sx5,
+                    offset_x,
+                    beta.cast(),
+                    y,
+                    sy0,
+                    sy1,
+                    sy2,
+                    sy3,
+                    sy4,
+                    offset_y,
+                )?;
+                return Ok(());
+            }
+        });
+    }
     bail!(
         "sum_axis{ndim}<{}>(axis={axis}) unimplemented!",
         x.scalar_type().name()
@@ -291,11 +392,17 @@ fn sum_axis(
 #[cfg(feature = "device")]
 #[module]
 mod kernels {
+    #[cfg(target_arch = "spirv")]
+    use crunchy::unroll;
     #[cfg(not(target_arch = "spirv"))]
     use krnl::krnl_core;
     use krnl_core::macros::kernel;
     #[cfg(target_arch = "spirv")]
-    use krnl_core::{buffer::UnsafeIndex, half::bf16, scalar::Scalar};
+    use krnl_core::{
+        buffer::UnsafeIndex,
+        half::{bf16, f16},
+        scalar::Scalar,
+    };
     use paste::paste;
 
     #[cfg(target_arch = "spirv")]
@@ -417,6 +524,38 @@ mod kernels {
     }
 
     impl_subgroup_add!(u32, i32, f32, u64, i64, f64);
+
+    #[cfg(target_arch = "spirv")]
+    fn remove_from_array4<T: Copy + Default>(x: [T; 4], index: usize) -> [T; 3] {
+        assert!(index < x.len());
+        let mut y = <[T; 3]>::default();
+        let mut u = 0;
+        unroll! { for i in 0 .. 4 {
+            if i != index {
+                y[u] = x[i];
+                #[allow(unused_assignments)] {
+                    u += 1;
+                }
+            }
+        }}
+        y
+    }
+
+    #[cfg(target_arch = "spirv")]
+    fn remove_from_array6<T: Copy + Default>(x: [T; 6], index: usize) -> [T; 5] {
+        assert!(index < x.len());
+        let mut y = <[T; 5]>::default();
+        let mut u = 0;
+        unroll! { for i in 0 .. 6 {
+            if i != index {
+                y[u] = x[i];
+                #[allow(unused_assignments)] {
+                    u += 1;
+                }
+            }
+        }}
+        y
+    }
 
     macro_rules! impl_sum {
         ($t:ty => $a:ty) => {
@@ -542,28 +681,16 @@ mod kernels {
                     let axis = AXIS as usize;
                     let n = [d0, d1, d2, d3][axis] as usize;
                     let stride_axis = [sx0, sx1, sx2, sx3][axis];
-                    let [gd0, gd1, gd2] = match axis {
-                        0 => [d1, d2, d3],
-                        1 => [d0, d2, d3],
-                        2 => [d0, d1, d3],
-                        3 => [d0, d1, d2],
-                        _ => unreachable!(),
-                    };
-                    let [sg0, sg1, sg2] = match axis {
-                        0 => [sx1, sx2, sx3],
-                        1 => [sx0, sx2, sx3],
-                        2 => [sx0, sx1, sx3],
-                        3 => [sx0, sx1, sx2],
-                        _ => unreachable!(),
-                    };
+                    let [gd0, gd1, gd2] = remove_from_array4([d0, d1, d2, d3], axis);
+                    let [sg0, sg1, sg2] = remove_from_array4([sx0, sx1, sx2, sx3], axis);
                     let [i0, i1, i2] = {
                         let i0 = group_id / (gd1 * gd2);
                         let r0 = group_id % (gd1 * gd2);
                         let i1 = r0 / gd2;
                         let i2 = r0 % gd2;
-                        [i0, i1, i2]
+                        [i0 as i32, i1 as i32, i2 as i32]
                     };
-                    let mut x_start = i0 as i32 * sg0 + i1 as i32 * sg1 + i2 as i32 * sg2 + offset_x as i32;
+                    let mut x_start = i0 * sg0 + i1 * sg1 + i2 * sg2 + offset_x as i32;
                     let subgroup_threads = (kernel.threads / kernel.subgroups) as usize;
                     let mut y_thread = A::default();
                     let mut idx = 0;
@@ -577,7 +704,83 @@ mod kernels {
                     unsafe {
                         y_thread = y_thread.subgroup_add();
                     };
-                    let y_idx = (i0 as i32 * sy0 + i1 as i32 * sy1 as i32 + i2 as i32 * sy2 + offset_y as i32) as usize;
+                    let y_idx = (i0 * sy0 + i1 * sy1 + i2 * sy2 + offset_y as i32) as usize;
+                    if thread_id == 0 {
+                        if beta != A::default() {
+                            unsafe {
+                                y_thread += beta * y.unsafe_index(y_idx).cast::<A>();
+                            }
+                        }
+                        unsafe {
+                            *y.unsafe_index_mut(y_idx) = y_thread.cast::<T>();
+                        }
+                    }
+                }
+
+                #[kernel]
+                pub fn [<sum_axis6_ $t>]<const AXIS: u32>(
+                    d0: u32,
+                    d1: u32,
+                    d2: u32,
+                    d3: u32,
+                    d4: u32,
+                    d5: u32,
+                    #[global] x: Slice<$t>,
+                    sx0: i32,
+                    sx1: i32,
+                    sx2: i32,
+                    sx3: i32,
+                    sx4: i32,
+                    sx5: i32,
+                    offset_x: u32,
+                    beta: $a,
+                    #[global] y: UnsafeSlice<$t>,
+                    sy0: i32,
+                    sy1: i32,
+                    sy2: i32,
+                    sy3: i32,
+                    sy4: i32,
+                    offset_y: u32,
+                ) {
+                    type T = $t;
+                    type A = $a;
+                    let group_id = kernel.group_id;
+                    let thread_id = kernel.thread_id as usize;
+                    let subgroup_id = kernel.subgroup_id as usize;
+                    if subgroup_id > 0 {
+                        return;
+                    }
+                    let axis = AXIS as usize;
+                    let n = [d0, d1, d2, d3, d4, d5][axis] as usize;
+                    let stride_axis = [sx0, sx1, sx2, sx3, sx4, sx5][axis];
+                    let [gd0, gd1, gd2, gd3, gd4] = remove_from_array6([d0, d1, d2, d3, d4, d5], axis);
+                    let [sg0, sg1, sg2, sg3, sg4] = remove_from_array6([sx0, sx1, sx2, sx3, sx4, sx5], axis);
+                    let [i0, i1, i2, i3, i4] = {
+                        let i0 = group_id / (gd1 * gd2 * gd3 * gd4);
+                        let r0 = group_id % (gd1 * gd2 * gd3 * gd4);
+                        let i1 = r0 / (gd2 * gd3 * gd4);
+                        let r1 = r0 % (gd2 * gd3 * gd4);
+                        let i2 = r1 / (gd3 * gd4);
+                        let r2 = r1 % (gd3 * gd4);
+                        let i3 = r2 / gd4;
+                        let i4 = r2 % gd4;
+                        [i0 as i32, i1 as i32, i2 as i32, i3 as i32, i4 as i32]
+                    };
+                    let mut x_start = i0 * sg0 + i1 * sg1 + i2 * sg2 + i3 * sg3 + i4 * sg4 + offset_x as i32;
+                    let subgroup_threads = (kernel.threads / kernel.subgroups) as usize;
+                    let mut y_thread = A::default();
+                    let mut idx = 0;
+                    while idx < n {
+                        let x_idx = idx + thread_id;
+                        if x_idx < n {
+                            y_thread += x[(x_start + x_idx as i32 * stride_axis) as usize].cast::<A>();
+                        }
+                        idx += subgroup_threads;
+                    }
+                    unsafe {
+                        y_thread = y_thread.subgroup_add();
+                    };
+                    let y_idx = (i0 * sy0 + i1 * sy1 + i2 * sy2 + i3 * sy3 + i4 * sy4 + offset_y as i32) as usize;
                     if thread_id == 0 {
                         if beta != A::default() {
                             unsafe {
@@ -603,6 +806,8 @@ mod kernels {
         }
     }
 
-    impl_sum!(bf16 => f32);
+    impl_sum!(u8, u16 => u32);
+    impl_sum!(i8, i16 => i32);
+    impl_sum!(f16, bf16 => f32);
     impl_sum!(u32, i32, f32, u64, i64, f64);
 }

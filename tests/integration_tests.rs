@@ -536,6 +536,7 @@ mod reorder {
 #[cfg(not(target_arch = "wasm32"))]
 mod reduce {
     use super::*;
+    use std::mem::size_of;
 
     pub fn reduce_tests(device: &Device) -> Vec<Trial> {
         let mut tests = Vec::new();
@@ -543,25 +544,36 @@ mod reduce {
             .info()
             .map(|info| info.features())
             .unwrap_or(Features::empty());
-        macro_for!($T in [/*u8, i8, u16, i16, f16,*/ bf16, u32, i32, f32, u64, i64, f64] {
+        macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
             let scalar_type = $T::scalar_type();
             let ignore = device.is_device() &&
                 !features.contains(&features_for_scalar(scalar_type));
             let ty_name = scalar_type.name();
+            let size = size_of::<$T>();
+            let ns: &[usize] = if size == 1 {
+                &[4, 11]
+            } else if size == 2 {
+                &[4, 11, 33, 517]
+            } else {
+                &[4, 11, 33, 517, 1021]
+            };
             tests.extend([
                 device_test(device, &format!("sum_{ty_name}"), |device| {
-                    for n in [4, 11, 33, 517, 1021] {
+                    for n in ns.iter().copied() {
                         sum::<$T, _>(device, n);
+                    }
+                    for ndim in 0 ..= 6 {
+                        sum::<$T, _>(device, vec![2; ndim]);
                     }
                 }).with_ignored_flag(ignore),
                 device_test(device, &format!("sum_axis1_{ty_name}"), |device| {
-                    for n in [4, 11, 33, 517, 1021] {
+                    for n in ns.iter().copied() {
                         sum_axis::<$T, _>(device, [n], Axis(0));
                     }
                 }).with_ignored_flag(ignore),
                 device_test(device, &format!("sum_axis2_{ty_name}"), |device| {
-                    for n in [4, 11, 33, 517, 1021] {
-                        for axis in [0, 1] {
+                    for n in ns.iter().copied() {
+                        for axis in 0..2 {
                             let mut shape = [3; 2];
                             shape[axis] = n;
                             sum_axis::<$T, _>(device, shape, Axis(axis));
@@ -569,8 +581,8 @@ mod reduce {
                     }
                 }).with_ignored_flag(ignore),
                 device_test(device, &format!("sum_axis3_{ty_name}"), |device| {
-                    for n in [4, 11, 33, 517, 1021] {
-                        for axis in [0, 1, 2] {
+                    for n in ns.iter().copied() {
+                        for axis in 0 .. 3  {
                             let mut shape = [3; 3];
                             shape[axis] = n;
                             sum_axis::<$T, _>(device, shape, Axis(axis));
@@ -578,9 +590,27 @@ mod reduce {
                     }
                 }).with_ignored_flag(ignore),
                 device_test(device, &format!("sum_axis4_{ty_name}"), |device| {
-                    for n in [4, 11, 33, 517, 1021] {
-                        for axis in [0, 1, 2, 3] {
+                    for n in ns.iter().copied() {
+                        for axis in 0 .. 4 {
                             let mut shape = [3; 4];
+                            shape[axis] = n;
+                            sum_axis::<$T, _>(device, shape, Axis(axis));
+                        }
+                    }
+                }).with_ignored_flag(ignore),
+                device_test(device, &format!("sum_axis5_{ty_name}"), |device| {
+                    for n in ns.iter().copied() {
+                        for axis in 0 .. 5 {
+                            let mut shape = [3; 5];
+                            shape[axis] = n;
+                            sum_axis::<$T, _>(device, shape, Axis(axis));
+                        }
+                    }
+                }).with_ignored_flag(ignore),
+                device_test(device, &format!("sum_axis6_{ty_name}"), |device| {
+                    for n in ns.iter().copied() {
+                        for axis in 0 .. 6 {
+                            let mut shape = [3; 6];
                             shape[axis] = n;
                             sum_axis::<$T, _>(device, shape, Axis(axis));
                         }
@@ -596,7 +626,11 @@ mod reduce {
         let x_array = (1..10)
             .cycle()
             .take(shape.size())
-            .map(|x| T::from_usize(x).unwrap())
+            .map(|x| {
+                let size = size_of::<T>();
+                let x = if size == 1 { (x == 1) as usize } else { x };
+                T::from_usize(x).unwrap()
+            })
             .collect::<Array1<_>>()
             .into_shape(shape.clone())
             .unwrap();
@@ -624,7 +658,11 @@ mod reduce {
         let x_array = (1..16)
             .cycle()
             .take(shape.size())
-            .map(|x| T::from_usize(x).unwrap())
+            .map(|x| {
+                let size = size_of::<T>();
+                let x = if size == 1 { (x == 1) as usize } else { x };
+                T::from_usize(x).unwrap()
+            })
             .collect::<Array1<_>>()
             .into_shape(shape.clone())
             .unwrap();
