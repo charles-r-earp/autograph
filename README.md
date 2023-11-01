@@ -1,6 +1,6 @@
 [![LicenseBadge]][License]
 [![DocsBadge]][Docs]
-[![Build Status](https://github.com/charles-r-earp/autograph/actions/workflows/continuous_integration.yml/badge.svg)](https://github.com/charles-r-earp/autograph/actions/workflows/continuous_integration.yml)
+[![build](https://github.com/charles-r-earp/autograph/actions/workflows/ci.yml/badge.svg)](https://github.com/charles-r-earp/autograph/actions/workflows/ci.yml)
 
 [License]: https://github.com/charles-r-earp/autograph/blob/main/LICENSE-APACHE
 [LicenseBadge]: https://img.shields.io/badge/license-MIT/Apache_2.0-blue.svg
