@@ -38,6 +38,8 @@ let c = c.into_array()?;
 */
 
 #[cfg(doc)]
+use crate::buffer::ArcBuffer;
+#[cfg(doc)]
 use crate::device::error::DeviceLost;
 use crate::{
     buffer::{
@@ -261,7 +263,7 @@ fn collapse_axis<D: Dimension>(dims: &mut D, strides: &D, Axis(axis): Axis, inde
 /// Dynamically typed multi-dimensional matrix.
 ///
 /// Use [`TryInto`] to convert into a [`TensorBase`].
-/// Use [`From`] to convert from a ['TensorBase'].
+/// Use [`From`] to convert from a [`TensorBase`].
 #[derive(Clone)]
 pub struct ScalarTensorBase<S: ScalarData, D: Dimension> {
     dim: D,
@@ -383,6 +385,7 @@ impl<S: ScalarDataOwned, D: Dimension> ScalarTensorBase<S, D> {
     /// The tensor is not initialized.
     ///
     /// **Errors**
+    ///
     /// See [`ScalarBuffer::uninit()`].
     pub unsafe fn uninit<Sh>(device: Device, shape: Sh, scalar_type: ScalarType) -> Result<Self>
     where
@@ -417,6 +420,7 @@ impl<S: ScalarDataOwned, D: Dimension> ScalarTensorBase<S, D> {
     /// Creates a tensor on `device` with `shape` filled with 0's.
     ///
     /// **Errors**
+    ///
     /// See [`ScalarBuffer::zeros()`].
     pub fn zeros<Sh>(device: Device, shape: Sh, scalar_type: ScalarType) -> Result<Self>
     where
@@ -427,6 +431,7 @@ impl<S: ScalarDataOwned, D: Dimension> ScalarTensorBase<S, D> {
     /// Creates a tensor on `device` with `shape` filled with 1's.
     ///
     /// **Errors**
+    ///
     /// See [`ScalarBuffer::ones()`].
     pub fn ones<Sh>(device: Device, shape: Sh, scalar_type: ScalarType) -> Result<Self>
     where
@@ -478,7 +483,7 @@ impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
     /// Typically this is used to downcast from [`IxDyn`](type@ndarray::IxDyn) to a static dimensionality. For conversions to [`IxDyn`](type@ndarray::IxDyn), use [`.into_dyn()`](TensorBase::into_dyn()).
     ///
     /// **Errors**
-    /// The number of axes of `D2` must be the same as `D`.
+    /// - The number of axes of `D2` must be the same as `D`.
     pub fn into_dimensionality<D2>(self) -> Result<ScalarTensorBase<S, D2>, ShapeError>
     where
         D2: Dimension,
@@ -503,7 +508,7 @@ impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
     /// Returns the tensor with dim `shape`.
     ///
     /// **Errors**
-    /// The tensor must be contiguous, with default strides.
+    /// - The tensor must be contiguous, with default strides.
     pub fn into_shape<E>(self, shape: E) -> Result<ScalarTensorBase<S, E::Dim>, ShapeError>
     where
         E: IntoDimension,
@@ -617,8 +622,7 @@ impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
     /// This operation merely reorders the dimensions / strides and does not copy the data. Combine with [`.into_standard_layout()`](TensorBase::into_standard_layout()) to execute the operation, returning a tensor in standard layout.
     ///
     /// **Errors**
-    ///
-    /// Each axis 0 .. ndim must be used exactly once.
+    /// - Each axis 0 .. ndim must be used exactly once.
     pub fn permuted_axes<A>(self, axes: A) -> Self
     where
         A: IntoDimension<Dim = D>,
@@ -692,7 +696,8 @@ impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
     /// Borrows the tensor as a [`ScalarSlice`] if standard layout.
     pub fn as_scalar_slice(&self) -> Option<ScalarSlice> {
         if self.is_standard_layout() {
-            Some(self.buffer.as_scalar_slice())
+            let (slice, _offset) = self.as_raw_scalar_slice_offset();
+            Some(slice)
         } else {
             None
         }
@@ -700,15 +705,8 @@ impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
     /// Borrows the tensor as a [`ScalarSlice`] if contiguous.
     pub fn as_scalar_slice_memory_order(&self) -> Option<ScalarSlice> {
         if self.is_contiguous() {
-            if self.offset > 0 {
-                Some(
-                    self.buffer
-                        .slice(self.offset..self.offset + self.len())
-                        .unwrap(),
-                )
-            } else {
-                Some(self.buffer.as_scalar_slice())
-            }
+            let (slice, _offset) = self.as_raw_scalar_slice_offset();
+            Some(slice)
         } else {
             None
         }
@@ -718,16 +716,9 @@ impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
     where
         S: ScalarDataMut,
     {
-        if self.is_contiguous() {
-            if self.offset > 0 {
-                Some(
-                    self.buffer
-                        .slice_mut(self.offset..self.offset + self.len())
-                        .unwrap(),
-                )
-            } else {
-                Some(self.buffer.as_scalar_slice_mut())
-            }
+        if self.is_standard_layout() {
+            let (slice, _offset) = self.as_raw_scalar_slice_offset_mut();
+            Some(slice)
         } else {
             None
         }
@@ -738,21 +729,38 @@ impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
         S: ScalarDataMut,
     {
         if self.is_contiguous() {
-            Some(self.buffer.as_scalar_slice_mut())
+            let (slice, _offset) = self.as_raw_scalar_slice_offset_mut();
+            Some(slice)
         } else {
             None
         }
     }
     /// Borrows the tensor as a slice and offset.
     pub fn as_raw_scalar_slice_offset(&self) -> (ScalarSlice, usize) {
-        (self.buffer.as_scalar_slice(), self.offset)
+        if self.strides().iter().any(|x| *x < 0) {
+            (self.buffer.as_scalar_slice(), self.offset)
+        } else {
+            let slice = self
+                .buffer
+                .slice(self.offset..self.offset + self.len())
+                .unwrap();
+            (slice, 0)
+        }
     }
     /// Mutably borrows the tensor as a mutable slice and offset.
     pub fn as_raw_scalar_slice_offset_mut(&mut self) -> (ScalarSliceMut, usize)
     where
         S: ScalarDataMut,
     {
-        (self.buffer.as_scalar_slice_mut(), self.offset)
+        if self.strides().iter().any(|x| *x < 0) {
+            (self.buffer.as_scalar_slice_mut(), self.offset)
+        } else {
+            let slice = self
+                .buffer
+                .slice_mut(self.offset..self.offset + self.len())
+                .unwrap();
+            (slice, 0)
+        }
     }
     /// Transfers the tensor into the `device`.
     ///
@@ -857,15 +865,16 @@ impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
     }
     /// Converts into an [`ScalarArcTensor`].
     pub fn into_shared(self) -> Result<ScalarArcTensor<D>> {
-        if !self.is_contiguous() {
-            todo!()
+        if self.offset == 0 && self.is_contiguous() {
+            Ok(ScalarTensorBase {
+                dim: self.dim,
+                strides: self.strides,
+                buffer: self.buffer.into_shared()?,
+                offset: 0,
+            })
+        } else {
+            self.as_standard_layout()?.into_shared()
         }
-        Ok(ScalarTensorBase {
-            dim: self.dim,
-            strides: self.strides,
-            buffer: self.buffer.into_shared()?,
-            offset: 0,
-        })
     }
     /// Converts to an [`ScalarArcTensor`].
     pub fn to_shared(&self) -> Result<ScalarArcTensor<D>> {
@@ -1076,7 +1085,7 @@ impl<S: ScalarData, D: Dimension> Debug for ScalarTensorBase<S, D> {
 impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
     /// Casts the tensor into a new tensor.
     ///
-    /// See [`BufferBase::cast_into()`](crate::buffer::BufferBase::cast_into()).
+    /// See [`BufferBase::cast_into()`].
     pub fn cast_into(self, scalar_type: ScalarType) -> Result<ScalarTensor<D>> {
         if !self.is_contiguous() {
             todo!()
@@ -1090,17 +1099,18 @@ impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
     }
     /// Casts the tensor to a new tensor.
     ///
-    /// See [`BufferBase::cast()`](crate::buffer::BufferBase::cast()).
+    /// See [`BufferBase::cast()`].
     pub fn cast(&self, scalar_type: ScalarType) -> Result<ScalarTensor<D>> {
-        if !self.is_contiguous() {
-            todo!();
+        if self.is_contiguous() {
+            Ok(ScalarTensorBase {
+                dim: self.dim.clone(),
+                strides: self.strides.clone(),
+                buffer: self.buffer.cast(scalar_type)?,
+                offset: 0,
+            })
+        } else {
+            self.scaled_cast(ScalarElem::zero(scalar_type))
         }
-        Ok(ScalarTensorBase {
-            dim: self.dim.clone(),
-            strides: self.strides.clone(),
-            buffer: self.buffer.cast(scalar_type)?,
-            offset: 0,
-        })
     }
     /// Casts the tensor into a new tensor.
     ///
@@ -1218,109 +1228,109 @@ pub struct TensorBase<S: Data, D: Dimension> {
     offset: usize,
 }
 
-/// Owned Tensor
+/// Owned Tensor.
 ///
 /// See [`TensorBase`].
 pub type Tensor<T, D> = TensorBase<BufferRepr<T>, D>;
-/// Tensor with 1 element
+/// Tensor with 1 element.
 pub type Tensor0<T> = Tensor<T, Ix0>;
-/// Tensor with 1 dimension
+/// Tensor with 1 dimension.
 pub type Tensor1<T> = Tensor<T, Ix1>;
-/// Tensor with 2 dimensions
+/// Tensor with 2 dimensions.
 pub type Tensor2<T> = Tensor<T, Ix2>;
-/// Tensor with 3 dimensions
+/// Tensor with 3 dimensions.
 pub type Tensor3<T> = Tensor<T, Ix3>;
-/// Tensor with 4 dimensions
+/// Tensor with 4 dimensions.
 pub type Tensor4<T> = Tensor<T, Ix4>;
-/// Tensor with 5 dimensions
+/// Tensor with 5 dimensions.
 pub type Tensor5<T> = Tensor<T, Ix5>;
-/// Tensor with 6 dimensions
+/// Tensor with 6 dimensions.
 pub type Tensor6<T> = Tensor<T, Ix6>;
-/// Tensor with dynamic dimensions
+/// Tensor with dynamic dimensions.
 pub type TensorD<T> = Tensor<T, IxDyn>;
 
-/// Shared Tensor
+/// Shared Tensor.
 ///
 /// See [`TensorBase`].
 pub type ArcTensor<T, D> = TensorBase<ArcBufferRepr<T>, D>;
-/// ArcTensor with 1 element
+/// ArcTensor with 1 element.
 pub type ArcTensor0<T> = ArcTensor<T, Ix0>;
-/// ArcTensor with 1 dimension
+/// ArcTensor with 1 dimension.
 pub type ArcTensor1<T> = ArcTensor<T, Ix1>;
-/// ArcTensor with 2 dimensions
+/// ArcTensor with 2 dimensions.
 pub type ArcTensor2<T> = ArcTensor<T, Ix2>;
-/// ArcTensor with 3 dimensions
+/// ArcTensor with 3 dimensions.
 pub type ArcTensor3<T> = ArcTensor<T, Ix3>;
-/// ArcTensor with 4 dimensions
+/// ArcTensor with 4 dimensions.
 pub type ArcTensor4<T> = ArcTensor<T, Ix4>;
-/// ArcTensor with 5 dimensions
+/// ArcTensor with 5 dimensions.
 pub type ArcTensor5<T> = ArcTensor<T, Ix5>;
-/// ArcTensor with 6 dimensions
+/// ArcTensor with 6 dimensions.
 pub type ArcTensor6<T> = ArcTensor<T, Ix6>;
-/// ArcTensor with dynamic dimensions
+/// ArcTensor with dynamic dimensions.
 pub type ArcTensorD<T> = ArcTensor<T, IxDyn>;
 
-/// Borrowed Tensor
+/// Borrowed Tensor.
 ///
 /// See [`TensorBase`].
 pub type TensorView<'a, T, D> = TensorBase<SliceRepr<'a, T>, D>;
-/// TensorView with 1 element
+/// TensorView with 1 element.
 pub type TensorView0<'a, T> = TensorView<'a, T, Ix0>;
-/// TensorView with 1 dimension
+/// TensorView with 1 dimension.
 pub type TensorView1<'a, T> = TensorView<'a, T, Ix1>;
-/// TensorView with 2 dimensions
+/// TensorView with 2 dimensions.
 pub type TensorView2<'a, T> = TensorView<'a, T, Ix2>;
-/// TensorView with 3 dimensions
+/// TensorView with 3 dimensions.
 pub type TensorView3<'a, T> = TensorView<'a, T, Ix3>;
-/// TensorView with 4 dimensions
+/// TensorView with 4 dimensions.
 pub type TensorView4<'a, T> = TensorView<'a, T, Ix4>;
-/// TensorView with 5 dimensions
+/// TensorView with 5 dimensions.
 pub type TensorView5<'a, T> = TensorView<'a, T, Ix5>;
-/// TensorView with 6 dimensions
+/// TensorView with 6 dimensions.
 pub type TensorView6<'a, T> = TensorView<'a, T, Ix6>;
-/// TensorView with dynamic dimensions
+/// TensorView with dynamic dimensions.
 pub type TensorViewD<'a, T> = TensorView<'a, T, IxDyn>;
 
 /// Mutably borrowed Tensor
 ///
 /// See [`TensorBase`].
 pub type TensorViewMut<'a, T, D> = TensorBase<SliceMutRepr<'a, T>, D>;
-/// TensorViewMut with 1 element
+/// TensorViewMut with 1 element.
 pub type TensorViewMut0<'a, T> = TensorViewMut<'a, T, Ix0>;
-/// TensorViewMut with 1 dimension
+/// TensorViewMut with 1 dimension.
 pub type TensorViewMut1<'a, T> = TensorViewMut<'a, T, Ix1>;
-/// TensorViewMut with 2 dimensions
+/// TensorViewMut with 2 dimensions.
 pub type TensorViewMut2<'a, T> = TensorViewMut<'a, T, Ix2>;
-/// TensorViewMut with 3 dimensions
+/// TensorViewMut with 3 dimensions.
 pub type TensorViewMut3<'a, T> = TensorViewMut<'a, T, Ix3>;
-/// TensorViewMut with 4 dimensions
+/// TensorViewMut with 4 dimensions.
 pub type TensorViewMut4<'a, T> = TensorViewMut<'a, T, Ix4>;
-/// TensorViewMut with 5 dimensions
+/// TensorViewMut with 5 dimensions.
 pub type TensorViewMut5<'a, T> = TensorViewMut<'a, T, Ix5>;
-/// TensorViewMut with 6 dimensions
+/// TensorViewMut with 6 dimensions.
 pub type TensorViewMut6<'a, T> = TensorViewMut<'a, T, Ix6>;
-/// TensorViewMut with dynamic dimensions
+/// TensorViewMut with dynamic dimensions.
 pub type TensorViewMutD<'a, T> = TensorViewMut<'a, T, IxDyn>;
 
 /// Tensor that is either borrowed or owned.
 ///
 /// See [`TensorBase`].
 pub type CowTensor<'a, T, D> = TensorBase<CowBufferRepr<'a, T>, D>;
-/// CowTensor with 1 element
+/// CowTensor with 1 element.
 pub type CowTensor0<'a, T> = CowTensor<'a, T, Ix0>;
-/// CowTensor with 1 dimension
+/// CowTensor with 1 dimension.
 pub type CowTensor1<'a, T> = CowTensor<'a, T, Ix1>;
-/// CowTensor with 2 dimensions
+/// CowTensor with 2 dimensions.
 pub type CowTensor2<'a, T> = CowTensor<'a, T, Ix2>;
-/// CowTensor with 3 dimensions
+/// CowTensor with 3 dimensions.
 pub type CowTensor3<'a, T> = CowTensor<'a, T, Ix3>;
-/// CowTensor with 4 dimensions
+/// CowTensor with 4 dimensions.
 pub type CowTensor4<'a, T> = CowTensor<'a, T, Ix4>;
-/// CowTensor with 5 dimensions
+/// CowTensor with 5 dimensions.
 pub type CowTensor5<'a, T> = CowTensor<'a, T, Ix5>;
-/// CowTensor with 6 dimensions
+/// CowTensor with 6 dimensions.
 pub type CowTensor6<'a, T> = CowTensor<'a, T, Ix6>;
-/// CowTensor with dynamic dimensions
+/// CowTensor with dynamic dimensions.
 pub type CowTensorD<'a, T> = CowTensor<'a, T, IxDyn>;
 
 impl<T: Scalar, S: DataOwned<Elem = T>, D: Dimension> TensorBase<S, D> {
@@ -1331,21 +1341,14 @@ impl<T: Scalar, S: DataOwned<Elem = T>, D: Dimension> TensorBase<S, D> {
     /// The tensor is not initialized.
     ///
     /// **Errors**
+    ///
     /// See [`Buffer::uninit()`].
     pub unsafe fn uninit<Sh>(device: Device, shape: Sh) -> Result<Self>
     where
         Sh: ShapeBuilder<Dim = D>,
     {
         let (dim, strides) = dim_strides_from_shape(shape.into_shape());
-        /*let buffer = if device.is_host() || dim.ndim() == 1 {
-            unsafe { BufferBase::uninit(device, dim.size())? }
-        } else {
-            unsafe {
-                BufferBase::zeros(device, dim.size())?
-            }
-        };*/
         let buffer = unsafe { BufferBase::uninit(device, dim.size())? };
-        //buffer.device().wait()?;
         Ok(Self {
             dim,
             strides,
@@ -1356,6 +1359,7 @@ impl<T: Scalar, S: DataOwned<Elem = T>, D: Dimension> TensorBase<S, D> {
     /// Creates a tensor on `device` with `shape` filled with `elem`.
     ///
     /// **Errors**
+    ///
     /// See [`Buffer::from_elem()`].
     pub fn from_elem<Sh>(device: Device, shape: Sh, elem: T) -> Result<Self>
     where
@@ -1434,7 +1438,7 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     /// Typically this is used to downcast from [`IxDyn`](type@ndarray::IxDyn) to a static dimensionality. For conversions to [`IxDyn`](type@ndarray::IxDyn), use [`.into_dyn()`](TensorBase::into_dyn()).
     ///
     /// **Errors**
-    /// The number of axes of `D2` must be the same as `D`.
+    /// - The number of axes of `D2` must be the same as `D`.
     pub fn into_dimensionality<D2>(self) -> Result<TensorBase<S, D2>, ShapeError>
     where
         D2: Dimension,
@@ -1459,13 +1463,13 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     /// Returns the tensor with dim `shape`.
     ///
     /// **Errors**
-    /// The tensor must be contiguous, with default strides.
+    /// - The tensor must be contiguous, with default strides.
     pub fn into_shape<E>(self, shape: E) -> Result<TensorBase<S, E::Dim>, ShapeError>
     where
         E: IntoDimension,
     {
         let (dim, strides) = into_shape(&self.dim, &self.strides, shape)?;
-        assert_eq!(self.offset, 0);
+        debug_assert_eq!(self.offset, 0);
         Ok(TensorBase {
             dim,
             strides,
@@ -1478,7 +1482,8 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     /// The output has shape [d0, d1 * d2 .. * dn].
     ///
     /// **Errors**
-    /// See [`TensorBase::into_shape`].
+    ///
+    /// See [`TensorBase::into_shape()`].
     pub fn flatten(self) -> Result<TensorBase<S, Ix2>, ShapeError> {
         let dim = flatten(self.shape());
         self.into_shape(dim)
@@ -1537,7 +1542,7 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     ///
     /// Copies the data into a new tensor if necessary.
     ///
-    /// See [`TensorBase::to_owned`].
+    /// See [`TensorBase::to_owned()`].
     pub fn make_view_mut(&mut self) -> Result<TensorViewMut<T, D>>
     where
         S: DataOwned,
@@ -1612,6 +1617,7 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     ///
     /// **Panics**
     /// - `axis` or `index` is out of bounds.
+    ///
     /// See <https://docs.rs/ndarray/0.15.6/ndarray/struct.ArrayBase.html#method.index_axis>
     pub fn index_axis(&self, axis: Axis, index: usize) -> TensorView<T, D::Smaller>
     where
@@ -1623,6 +1629,7 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     ///
     /// **Panics**
     /// - `axis` or `index` is out of bounds.
+    ///
     /// See <https://docs.rs/ndarray/0.15.6/ndarray/struct.ArrayBase.html#method.index_axis_mut>
     pub fn index_axis_mut(&mut self, axis: Axis, index: usize) -> TensorViewMut<T, D::Smaller>
     where
@@ -1659,13 +1666,15 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
         let offset =
             collapse_axis(&mut self.dim, &self.strides, axis, index) + self.offset as isize;
         debug_assert!(offset >= 0);
-        self.offset = offset as usize;
-        debug_assert!(self.offset < self.buffer.len());
+        let offset = offset as usize;
+        debug_assert!(offset < self.buffer.len());
+        self.offset = offset;
     }
     /// Borrows the tensor as a [`Slice`] if standard layout.
     pub fn as_slice(&self) -> Option<Slice<T>> {
         if self.is_standard_layout() {
-            Some(self.buffer.as_slice())
+            let (slice, _offset) = self.as_raw_slice_offset();
+            Some(slice)
         } else {
             None
         }
@@ -1673,15 +1682,8 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     /// Borrows the tensor as a [`Slice`] if contiguous.
     pub fn as_slice_memory_order(&self) -> Option<Slice<T>> {
         if self.is_contiguous() {
-            if self.offset > 0 {
-                Some(
-                    self.buffer
-                        .slice(self.offset..self.offset + self.len())
-                        .unwrap(),
-                )
-            } else {
-                Some(self.buffer.as_slice())
-            }
+            let (slice, _offset) = self.as_raw_slice_offset();
+            Some(slice)
         } else {
             None
         }
@@ -1692,7 +1694,8 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
         S: DataMut,
     {
         if self.is_standard_layout() {
-            Some(self.buffer.as_slice_mut())
+            let (slice, _offset) = self.as_raw_slice_offset_mut();
+            Some(slice)
         } else {
             None
         }
@@ -1703,33 +1706,42 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
         S: DataMut,
     {
         if self.is_contiguous() {
-            if self.offset > 0 {
-                Some(
-                    self.buffer
-                        .slice_mut(self.offset..self.offset + self.len())
-                        .unwrap(),
-                )
-            } else {
-                Some(self.buffer.as_slice_mut())
-            }
+            let (slice, _offset) = self.as_raw_slice_offset_mut();
+            Some(slice)
         } else {
             None
         }
     }
     /// Borrows the tensor as a slice and offset.
     pub fn as_raw_slice_offset(&self) -> (Slice<T>, usize) {
-        (self.buffer.as_slice(), self.offset)
+        if self.strides().iter().any(|x| *x < 0) {
+            (self.buffer.as_slice(), self.offset)
+        } else {
+            let slice = self
+                .buffer
+                .slice(self.offset..self.offset + self.len())
+                .unwrap();
+            (slice, 0)
+        }
     }
     /// Mutably borrows the tensor as a mutable slice and offset.
     pub fn as_raw_slice_offset_mut(&mut self) -> (SliceMut<T>, usize)
     where
         S: DataMut,
     {
-        (self.buffer.as_slice_mut(), self.offset)
+        if self.strides().iter().any(|x| *x < 0) {
+            (self.buffer.as_slice_mut(), self.offset)
+        } else {
+            let slice = self
+                .buffer
+                .slice_mut(self.offset..self.offset + self.len())
+                .unwrap();
+            (slice, 0)
+        }
     }
     /// Transfers the tensor to the `device`.
     ///
-    /// See [`Tensor::into_device`].
+    /// See [`Tensor::into_device()`].
     pub fn to_device(&self, device: Device) -> Result<Tensor<T, D>> {
         if self.device() == device {
             self.to_owned()
@@ -1739,7 +1751,7 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     }
     /// Transfers the tensor to the `device`.
     ///
-    /// See [`Tensor::to_device`].
+    /// See [`Tensor::to_device()`].
     pub fn to_device_shared(&self, device: Device) -> Result<ArcTensor<T, D>> {
         if self.device() == device {
             self.to_shared()
@@ -1749,7 +1761,7 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     }
     /// Transfers the tensor to the `device` in place.
     ///
-    /// See [`crate::buffer::BufferBase::to_device_mut`].
+    /// See [`Buffer::to_device_mut()`].
     pub fn to_device_mut(&mut self, device: Device) -> Result<()>
     where
         S: DataOwned,
@@ -1774,7 +1786,7 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     }
     /// Transfers the tensor into the `device`.
     ///
-    /// See [`Buffer::into_device()`](crate::buffer::BufferBase::into_device()).
+    /// See [`Buffer::into_device()`].
     pub fn into_device(self, device: Device) -> Result<Tensor<T, D>> {
         if device == self.device() {
             self.into_owned()
@@ -1792,7 +1804,7 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     }
     /// Transfers the tensor into the `device`.
     ///
-    /// See [`ArcBuffer::into_device_shared()`](crate::buffer::BufferBase::into_device_shared()).
+    /// See [`ArcBuffer::into_device_shared()`].
     pub fn into_device_shared(self, device: Device) -> Result<ArcTensor<T, D>> {
         if device == self.device() {
             self.into_shared()
@@ -1826,57 +1838,68 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     pub fn to_owned(&self) -> Result<Tensor<T, D>> {
         self.view().into_owned()
     }
-    /// Converts into an [`ArcTensor`].
+    /// Converts into an [`ArcTensor`], copying if necessary.
     pub fn into_shared(self) -> Result<ArcTensor<T, D>> {
-        if !self.is_contiguous() {
-            todo!()
+        if self.is_contiguous() {
+            Ok(TensorBase {
+                dim: self.dim,
+                strides: self.strides,
+                buffer: self.buffer.into_shared()?,
+                offset: self.offset,
+            })
+        } else {
+            self.as_standard_layout()?.into_shared()
         }
-        Ok(TensorBase {
-            dim: self.dim,
-            strides: self.strides,
-            buffer: self.buffer.into_shared()?,
-            offset: 0,
-        })
     }
     /// Converts to an [`ArcTensor`].
     ///
-    /// For [`ArcTensor`] clones the [`Arc`](std::sync::Arc), otherwise copies the data into a new [`ArcTensor`].
+    /// Converts to an [`ArcTensor`], copying if necessary.
     pub fn to_shared(&self) -> Result<ArcTensor<T, D>> {
-        if !self.is_contiguous() {
-            todo!()
+        if self.is_contiguous() {
+            Ok(TensorBase {
+                dim: self.dim.clone(),
+                strides: self.strides.clone(),
+                buffer: self.buffer.to_shared()?,
+                offset: self.offset,
+            })
+        } else {
+            self.to_owned()?.into_shared()
         }
-        Ok(TensorBase {
-            dim: self.dim.clone(),
-            strides: self.strides.clone(),
-            buffer: self.buffer.to_shared()?,
-            offset: 0,
-        })
     }
     /// Fills the tensor with `elem`.
     ///
     /// **Errors**
+    /// - Device tensors must be contiguous.
     ///
-    /// See [`BufferBase::fill()`](crate::buffer::BufferBase::fill()).
+    /// See [`BufferBase::fill()`].
     pub fn fill(&mut self, elem: T) -> Result<()>
     where
         S: DataMut,
     {
         if self.is_contiguous() {
             self.buffer.as_slice_mut().fill(elem)
+        } else if let Some(mut array) = self.as_array_mut() {
+            array.fill(elem);
+            Ok(())
         } else {
-            todo!()
+            bail!("TensorBase::fill tensor is not contiguous!")
         }
     }
     /// Moves the tensor into an [`Array`].
     ///
     /// **Errors**
+    /// - Device tensors must be contiguous.
+    ///
     /// See [`Buffer::into_vec()`].
     pub fn into_array(self) -> Result<Array<T, D>> {
-        if !self.is_contiguous() {
-            todo!()
+        if self.is_contiguous() {
+            let vec = self.buffer.into_vec()?;
+            Ok(Array::from_shape_vec(self.dim.strides(self.strides), vec).unwrap())
+        } else if let Some(array) = self.as_array() {
+            Ok(array.into_owned())
+        } else {
+            bail!("TensorBase::into_array tensor is not contiguous!")
         }
-        let vec = self.buffer.into_vec()?;
-        Ok(Array::from_shape_vec(self.dim.strides(self.strides), vec).unwrap())
     }
     /// Borrows the tensor as an array view if on the host.
     pub fn as_array(&self) -> Option<ArrayView<T, D>> {

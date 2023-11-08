@@ -24,6 +24,7 @@ impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
     /// If in standard layout, borrows the tensor. Otherwise, copies into a new standard layout tensor.
     ///
     /// **Errors**
+    ///
     /// See [`.into_standard_layout()`](TensorBase::into_standard_layout()).
     pub fn as_standard_layout(&self) -> Result<ScalarCowTensor<D>> {
         if self.is_standard_layout() {
@@ -37,13 +38,8 @@ impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
     /// If in standard layout, converts into an owned [`Tensor`]. Otherwise, copies the data into a new standard layout tensor.
     ///
     /// **Errors**
-    /// - Supports 2 dimensional inputs.
-    /// - [`DeviceLost`]
-    /// - The kernel could not be dispatched.
-    /// - See [`.into_owned()`](TensorBase::into_owned()).
     ///
-    /// **Panics**
-    /// Only u32, i32, and f32 are currently implemented.
+    /// See [`.into_standard_layout()`](TensorBase::into_standard_layout()).
     pub fn into_standard_layout(self) -> Result<ScalarTensor<D>> {
         if self.is_standard_layout() {
             self.into_owned()
@@ -57,6 +53,10 @@ impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
     /// Converts to an [`ArcTensor`] in standard layout.
     ///
     /// If in standard layout, converts to an [`ArcTensor`] (or clones the [`ArcTensor`]), otherwise copies the data into a new [`ArcTensor`].
+    ///
+    /// **Errors**
+    ///
+    /// See [`.into_standard_layout()`](TensorBase::into_standard_layout()).
     pub fn to_standard_layout_shared(&self) -> Result<ScalarArcTensor<D>> {
         if self.is_standard_layout() {
             self.to_shared()
@@ -147,6 +147,7 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     /// If in standard layout, borrows the tensor. Otherwise, copies into a new standard layout tensor.
     ///
     /// **Errors**
+    ///
     /// See [`.into_standard_layout()`](TensorBase::into_standard_layout()).
     pub fn as_standard_layout(&self) -> Result<CowTensor<T, D>> {
         if self.is_standard_layout() {
@@ -160,13 +161,10 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     /// If in standard layout, converts into an owned [`Tensor`]. Otherwise, copies the data into a new standard layout tensor.
     ///
     /// **Errors**
-    /// - Supports 2 dimensional inputs.
+    /// - On device, supports up to 6 dimensional inputs.
     /// - [`DeviceLost`]
     /// - The kernel could not be dispatched.
     /// - See [`.into_owned()`](TensorBase::into_owned()).
-    ///
-    /// **Panics**
-    /// Only u32, i32, and f32 are currently implemented.
     pub fn into_standard_layout(self) -> Result<Tensor<T, D>> {
         if self.is_standard_layout() {
             self.into_owned()

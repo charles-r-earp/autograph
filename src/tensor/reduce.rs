@@ -1,4 +1,5 @@
 use super::*;
+#[cfg(feature = "device")]
 use half::f16;
 #[cfg(feature = "device")]
 use krnl::macros::module;
