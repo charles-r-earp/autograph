@@ -4,17 +4,11 @@ use super::autograd::{
 };
 #[cfg(doc)]
 use super::optimizer::Optimizer;
-#[cfg(feature = "device")]
-use crate::buffer::ScalarSliceMut;
 use crate::{
-    buffer::{Buffer, ScalarBuffer, ScalarData},
-    device::Device,
-    krnl::krnl_core::half::bf16,
     ops::{
         AddAssign, Col2ImConv2, Col2ImConv2Options, Im2ColConv2, Im2ColConv2Options, MaxPool2 as _,
         MaxPool2Backward as _, MaxPool2Options,
     },
-    scalar::{Scalar, ScalarType},
     tensor::{
         ScalarArcTensor, ScalarArcTensor4, ScalarTensor, ScalarTensorBase, Tensor, TensorView,
         TensorViewMut,
@@ -24,6 +18,14 @@ use anyhow::{bail, Error, Result};
 pub use autograph_derive::*;
 #[cfg(feature = "device")]
 use dry::macro_for;
+use half::bf16;
+#[cfg(feature = "device")]
+use krnl::buffer::ScalarSliceMut;
+use krnl::{
+    buffer::{Buffer, ScalarBuffer, ScalarData},
+    device::Device,
+    scalar::{Scalar, ScalarType},
+};
 #[cfg(feature = "device")]
 use paste::paste;
 
@@ -575,7 +577,7 @@ impl<X, T: Forward<X, Output = X>> Forward<X> for Vec<T> {
 ///
 /// # Example
 ///```no_run
-/// # use autograph::{scalar::ScalarType, device::Device, learn::neural_network::layer::{Conv2, Relu}};
+/// # use autograph::{krnl::{scalar::ScalarType, device::Device}, learn::neural_network::layer::{Conv2, Relu}};
 /// # fn main() -> anyhow::Result<()> {
 /// # let device = Device::host();
 /// let conv = Conv2::builder()
@@ -808,7 +810,7 @@ impl<A: Forward<Variable4, Output = Variable4>> Forward<Variable4> for Conv2<A> 
 ///
 /// # Example
 ///```no_run
-/// # use autograph::{scalar::ScalarType, device::Device, learn::neural_network::layer::{Dense, Relu}};
+/// # use autograph::{krnl::{scalar::ScalarType, device::Device}, learn::neural_network::layer::{Dense, Relu}};
 /// # fn main() -> anyhow::Result<()> {
 /// # let device = Device::host();
 /// let dense = Dense::builder()

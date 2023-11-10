@@ -1,19 +1,21 @@
 #[cfg(doc)]
 use super::autograd::Parameter;
 use super::autograd::ParameterViewMutD;
+use crate::tensor::{
+    ScalarTensor, ScalarTensorD, ScalarTensorViewMutD, TensorViewD, TensorViewMutD,
+};
 #[cfg(feature = "device")]
 use crate::tensor::{ScalarTensorView, ScalarTensorViewMut};
-use crate::{
-    device::Device,
-    scalar::{Scalar, ScalarElem, ScalarType},
-    tensor::{ScalarTensor, ScalarTensorD, ScalarTensorViewMutD, TensorViewD, TensorViewMutD},
-};
 use anyhow::{bail, Result};
 #[cfg(feature = "device")]
 use dry::macro_for;
 use half::bf16;
 #[cfg(feature = "device")]
 use krnl::macros::module;
+use krnl::{
+    device::Device,
+    scalar::{Scalar, ScalarElem, ScalarType},
+};
 use ndarray::Zip;
 #[cfg(feature = "device")]
 use paste::paste;

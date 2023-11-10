@@ -1,7 +1,7 @@
 use anyhow::Result;
 use autograph::{
-    device::Device,
     half::bf16,
+    krnl::{device::Device, scalar::ScalarType},
     learn::{
         criterion::CrossEntropyLoss,
         neural_network::{
@@ -10,7 +10,6 @@ use autograph::{
             optimizer::{Optimizer, SGD},
         },
     },
-    scalar::ScalarType,
     tensor::ScalarArcTensor,
 };
 

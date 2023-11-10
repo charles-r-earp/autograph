@@ -299,13 +299,13 @@ fn layer_impl(input: TokenStream2) -> Result<TokenStream2> {
             fn parameters_mut(&mut self) -> #autograph::anyhow::Result<#autograph::learn::neural_network::layer::ParameterMutVec> {
                 #parameters_mut
             }
-            fn cast_mut(&mut self, scalar_type: #autograph::scalar::ScalarType) -> #autograph::anyhow::Result<()> {
+            fn cast_mut(&mut self, scalar_type: #autograph::krnl::scalar::ScalarType) -> #autograph::anyhow::Result<()> {
                 #cast_mut
             }
-            fn to_device_mut(&mut self, device: #autograph::device::Device) -> #autograph::anyhow::Result<()> {
+            fn to_device_mut(&mut self, device: #autograph::krnl::device::Device) -> #autograph::anyhow::Result<()> {
                 #to_device_mut
             }
-            fn into_device(self, device: #autograph::device::Device) -> #autograph::anyhow::Result<Self>
+            fn into_device(self, device: #autograph::krnl::device::Device) -> #autograph::anyhow::Result<Self>
             where Self: Sized {
                 #into_device
             }

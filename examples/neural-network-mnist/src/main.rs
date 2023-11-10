@@ -1,8 +1,11 @@
 use autograph::{
     anyhow::Result,
     dataset::mnist::{Mnist, MnistKind},
-    device::Device,
-    krnl::krnl_core::half::bf16,
+    krnl::{
+        device::Device,
+        krnl_core::half::bf16,
+        scalar::{ScalarElem, ScalarType},
+    },
     learn::{
         criterion::{Accuracy, CrossEntropyLoss},
         neural_network::{
@@ -12,7 +15,6 @@ use autograph::{
         },
     },
     ndarray::{ArcArray, ArcArray1, Axis, Dimension, Ix4},
-    scalar::{ScalarElem, ScalarType},
     tensor::{CowTensor, ScalarTensor, Tensor, Tensor1, Tensor4},
 };
 use clap::{Parser, ValueEnum};

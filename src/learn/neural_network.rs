@@ -27,30 +27,23 @@ The [`optimizer`](neural_network::optimizer), such as [`SGD`](neural_network::op
 Example:
 ```
 # use anyhow::Result;
-# use autograph::{device::Device, scalar::ScalarType, tensor::{Tensor, ScalarArcTensor}};
-# use autograph::learn::neural_network;
-# use neural_network::autograd::{Variable2, Variable4};
-# use neural_network::layer::{Layer, Forward, Conv2, Dense, MaxPool2, Flatten, Relu};
-# use neural_network::optimizer::{Optimizer, SGD};
+# use autograph::{krnl::{device::Device, scalar::ScalarType}, tensor::{Tensor, ScalarArcTensor}};
+# use autograph::learn::neural_network::{
+#   autograd::{Variable2, Variable4},
+#   layer::{Layer, Forward, Conv2, Dense, MaxPool2, Flatten, Relu},
+#   optimizer::{Optimizer, SGD},
+# };
 # use autograph::learn::criterion::CrossEntropyLoss;
 #[derive(Layer, Forward, Debug)]
 #[autograph(forward(Variable4, Output=Variable2))]
 struct LeNet5 {
-    #[layer]
     conv1: Conv2<Relu>,
-    #[layer]
     pool1: MaxPool2,
-    #[layer]
     conv2: Conv2<Relu>,
-    #[layer]
     pool2: MaxPool2,
-    #[layer]
     flatten: Flatten,
-    #[layer]
     dense1: Dense<Relu>,
-    #[layer]
     dense2: Dense<Relu>,
-    #[layer]
     dense3: Dense,
 }
 

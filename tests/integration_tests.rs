@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use autograph::{
-    scalar::ScalarElem,
+    krnl::scalar::ScalarElem,
     tensor::{ScalarTensorViewD, Tensor, TensorView},
 };
 use dry::macro_for;

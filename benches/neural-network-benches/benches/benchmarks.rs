@@ -1,4 +1,4 @@
-use autograph::{device::Device, scalar::ScalarType};
+use autograph::krnl::{device::Device, scalar::ScalarType};
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use neural_network_benches::autograph_backend;
 #[cfg(feature = "tch")]

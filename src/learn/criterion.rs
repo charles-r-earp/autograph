@@ -1,18 +1,17 @@
+use crate::tensor::{ScalarTensorBase, ScalarTensorView, TensorBase, TensorView1, TensorView2};
 #[cfg(feature = "device")]
-use crate::{
-    buffer::Slice,
-    tensor::{ScalarTensorView1, ScalarTensorView2, Tensor},
-};
-use crate::{
-    buffer::{Data, ScalarData},
-    scalar::Scalar,
-    tensor::{ScalarTensorBase, ScalarTensorView, TensorBase, TensorView1, TensorView2},
-};
+use crate::tensor::{ScalarTensorView1, ScalarTensorView2, Tensor};
 use anyhow::{bail, Result};
 use dry::macro_for;
 use half::bf16;
 #[cfg(feature = "device")]
+use krnl::buffer::Slice;
+#[cfg(feature = "device")]
 use krnl::macros::module;
+use krnl::{
+    buffer::{Data, ScalarData},
+    scalar::Scalar,
+};
 use ndarray::{ArrayView1, ArrayView2, Ix1, Ix2};
 #[cfg(feature = "device")]
 use num_traits::ToPrimitive;

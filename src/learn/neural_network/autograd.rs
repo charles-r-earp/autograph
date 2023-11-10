@@ -4,23 +4,25 @@ use super::{
 };
 #[cfg(feature = "device")]
 use crate::tensor::ScalarTensorView;
+#[cfg(doc)]
+use crate::{learn::neural_network::optimizer::Optimizer, tensor::TensorBase};
 use crate::{
-    buffer::{ScalarArcBufferRepr, ScalarData, ScalarDataMut, ScalarDataOwned, ScalarSliceMutRepr},
-    device::Device,
     ops::AddAssign,
-    scalar::{Scalar, ScalarType},
     tensor::{
         ArcTensor, ScalarArcTensor, ScalarArcTensorD, ScalarTensor, ScalarTensorBase,
         ScalarTensorViewMut, Tensor, TensorView,
     },
 };
-#[cfg(doc)]
-use crate::{learn::neural_network::optimizer::Optimizer, tensor::TensorBase};
 use anyhow::{bail, Error, Result};
 #[cfg(feature = "device")]
 use dry::macro_for;
 use dry::macro_wrap;
 use half::{bf16, f16};
+use krnl::{
+    buffer::{ScalarArcBufferRepr, ScalarData, ScalarDataMut, ScalarDataOwned, ScalarSliceMutRepr},
+    device::Device,
+    scalar::{Scalar, ScalarType},
+};
 #[cfg(feature = "device")]
 use ndarray::Axis;
 use ndarray::{
@@ -594,42 +596,42 @@ pub struct ParameterBase<S: ScalarData, D: Dimension> {
 ///
 /// See [`ParameterBase`].
 pub type Parameter<D> = ParameterBase<ScalarArcBufferRepr, D>;
-/// Parameter with 1 element
+/// Parameter with 1 element.
 pub type Parameter0 = Parameter<Ix0>;
-/// Parameter with 1 dimension
+/// Parameter with 1 dimension.
 pub type Parameter1 = Parameter<Ix1>;
-/// Parameter with 2 dimensions
+/// Parameter with 2 dimensions.
 pub type Parameter2 = Parameter<Ix2>;
-/// Parameter with 3 dimensions
+/// Parameter with 3 dimensions.
 pub type Parameter3 = Parameter<Ix3>;
-/// Parameter with 4 dimensions
+/// Parameter with 4 dimensions.
 pub type Parameter4 = Parameter<Ix4>;
-/// Parameter with 5 dimensions
+/// Parameter with 5 dimensions.
 pub type Parameter5 = Parameter<Ix5>;
-/// Parameter with 6 dimensions
+/// Parameter with 6 dimensions.
 pub type Parameter6 = Parameter<Ix6>;
-/// Parameter with dynamic dimensions
+/// Parameter with dynamic dimensions.
 pub type ParameterD = Parameter<IxDyn>;
 
 /// Mutable parameter view.
 ///
 /// See [`ParameterBase`].
 pub type ParameterViewMut<'a, D> = ParameterBase<ScalarSliceMutRepr<'a>, D>;
-/// Mutable parameter view with 1 element
+/// Mutable parameter view with 1 element.
 pub type ParameterViewMut0<'a> = ParameterViewMut<'a, Ix0>;
-/// Mutable parameter view with 1 dimension
+/// Mutable parameter view with 1 dimension.
 pub type ParameterViewMut1<'a> = ParameterViewMut<'a, Ix1>;
-/// Mutable parameter view with 2 dimensions
+/// Mutable parameter view with 2 dimensions.
 pub type ParameterViewMut2<'a> = ParameterViewMut<'a, Ix2>;
-/// Mutable parameter view with 3 dimensions
+/// Mutable parameter view with 3 dimensions.
 pub type ParameterViewMut3<'a> = ParameterViewMut<'a, Ix3>;
-/// Mutable parameter view with 4 dimensions
+/// Mutable parameter view with 4 dimensions.
 pub type ParameterViewMut4<'a> = ParameterViewMut<'a, Ix4>;
-/// Mutable parameter view with 5 dimensions
+/// Mutable parameter view with 5 dimensions.
 pub type ParameterViewMut5<'a> = ParameterViewMut<'a, Ix5>;
-/// Mutable parameter view with 6 dimensions
+/// Mutable parameter view with 6 dimensions.
 pub type ParameterViewMut6<'a> = ParameterViewMut<'a, Ix6>;
-/// Mutable parameter view with dynamic dimensions
+/// Mutable parameter view with dynamic dimensions.
 pub type ParameterViewMutD<'a> = ParameterViewMut<'a, IxDyn>;
 
 impl<S: ScalarData, D: Dimension> ParameterBase<S, D> {

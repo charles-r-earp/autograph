@@ -2,9 +2,7 @@ use super::autograd::{Variable0, Variable2};
 #[cfg(feature = "device")]
 use crate::tensor::{ScalarTensor, ScalarTensorView, Tensor};
 use crate::{
-    device::Device,
     learn::criterion::CrossEntropyLoss,
-    scalar::{Scalar, ScalarElem, ScalarType},
     tensor::{ScalarArcTensor, ScalarArcTensor1, Tensor2, TensorView1, TensorView2},
 };
 use anyhow::{bail, Result};
@@ -12,6 +10,10 @@ use dry::macro_for;
 use half::bf16;
 #[cfg(feature = "device")]
 use krnl::macros::module;
+use krnl::{
+    device::Device,
+    scalar::{Scalar, ScalarElem, ScalarType},
+};
 use ndarray::Array2;
 #[cfg(feature = "device")]
 use num_traits::ToPrimitive;

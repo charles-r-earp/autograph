@@ -20,13 +20,12 @@ GPGPU kernels implemented with [**krnl**](https://github.com/charles-r-earp/krnl
 #[macro_use]
 extern crate autograph_derive;
 
-/// krnl
-pub extern crate krnl;
-pub use krnl::{buffer, device, scalar};
 /// anyhow
 pub extern crate anyhow;
 /// half
 pub extern crate half;
+/// krnl
+pub extern crate krnl;
 /// ndarray
 pub extern crate ndarray;
 /// num-traits

@@ -26,21 +26,13 @@ GPGPU kernels implemented with [**krnl**](https://github.com/charles-r-earp/krnl
 #[derive(Layer, Forward, Debug)]
 #[autograph(forward(Variable4, Output=Variable2))]
 struct LeNet5 {
-    #[layer]
     conv1: Conv2<Relu>,
-    #[layer]
     pool1: MaxPool2,
-    #[layer]
     conv2: Conv2<Relu>,
-    #[layer]
     pool2: MaxPool2,
-    #[layer]
     flatten: Flatten,
-    #[layer]
     dense1: Dense<Relu>,
-    #[layer]
     dense2: Dense<Relu>,
-    #[layer]
     dense3: Dense,
 }
 

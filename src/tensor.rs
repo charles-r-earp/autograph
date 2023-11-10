@@ -19,7 +19,7 @@ let a = arr2(&[
     [1f32, 2.],
     [3., 4.],
 ]);
-// This will fail if the view has negative strides.
+// This will fail if the view is not contiguous.
 let a = TensorView::try_from(a.view()).unwrap()
     .to_device(device.clone())?;
 // Create a tensor from a vec, same as above.
@@ -36,12 +36,13 @@ let c = c.into_array()?;
 # }
 ```
 */
-
 #[cfg(doc)]
-use crate::buffer::ArcBuffer;
-#[cfg(doc)]
-use crate::device::error::DeviceLost;
-use crate::{
+use krnl::{buffer::ArcBuffer, device::error::DeviceLost};
+use anyhow::{anyhow, bail, Result};
+use dry::macro_for;
+#[cfg(feature = "device")]
+use krnl::krnl_core::half::bf16;
+use krnl::{
     buffer::{
         ArcBufferRepr, Buffer, BufferBase, BufferRepr, CowBuffer, CowBufferRepr, Data, DataMut,
         DataOwned, ScalarArcBufferRepr, ScalarBuffer, ScalarBufferBase, ScalarBufferRepr,
@@ -52,10 +53,6 @@ use crate::{
     device::Device,
     scalar::{Scalar, ScalarElem, ScalarType},
 };
-use anyhow::{anyhow, bail, Result};
-use dry::macro_for;
-#[cfg(feature = "device")]
-use krnl::krnl_core::half::bf16;
 use ndarray::{
     Array, ArrayBase, ArrayView, ArrayViewMut, Axis, Dimension, IntoDimension, Ix0, Ix1, Ix2, Ix3,
     Ix4, Ix5, Ix6, IxDyn, RawArrayView, RemoveAxis, ShapeBuilder, ShapeError, StrideShape,
