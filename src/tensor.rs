@@ -260,6 +260,25 @@ fn collapse_axis<D: Dimension>(dims: &mut D, strides: &D, Axis(axis): Axis, inde
     index as isize * strides[axis] as isize
 }
 
+fn tensor_buffer_len(offset: usize, shape: &[usize], strides: &[isize]) -> Option<usize> {
+    if shape.iter().any(|x| *x == 0) {
+        Some(0)
+    } else if strides.iter().any(|x| *x < 0) {
+        None
+    } else {
+        let len = (shape
+            .iter()
+            .zip(strides)
+            .map(|(d, s)| (*d as isize - 1) * *s)
+            .sum::<isize>()
+            + offset as isize
+            + 1)
+        .try_into()
+        .unwrap();
+        Some(len)
+    }
+}
+
 /// Dynamically typed multi-dimensional matrix.
 ///
 /// Use [`TryInto`] to convert into a [`TensorBase`].
@@ -737,14 +756,12 @@ impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
     }
     /// Borrows the tensor as a slice and offset.
     pub fn as_raw_scalar_slice_offset(&self) -> (ScalarSlice, usize) {
-        if self.strides().iter().any(|x| *x < 0) {
-            (self.buffer.as_scalar_slice(), self.offset)
-        } else {
-            let slice = self
-                .buffer
-                .slice(self.offset..self.offset + self.len())
-                .unwrap();
+        let strides: &[isize] = Self::strides(self);
+        if let Some(len) = tensor_buffer_len(self.offset, self.shape(), strides) {
+            let slice = self.buffer.slice(self.offset..self.offset + len).unwrap();
             (slice, 0)
+        } else {
+            (self.buffer.as_scalar_slice(), self.offset)
         }
     }
     /// Mutably borrows the tensor as a mutable slice and offset.
@@ -752,14 +769,15 @@ impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
     where
         S: ScalarDataMut,
     {
-        if self.strides().iter().any(|x| *x < 0) {
-            (self.buffer.as_scalar_slice_mut(), self.offset)
-        } else {
+        let strides: &[isize] = Self::strides(self);
+        if let Some(len) = tensor_buffer_len(self.offset, self.shape(), strides) {
             let slice = self
                 .buffer
-                .slice_mut(self.offset..self.offset + self.len())
+                .slice_mut(self.offset..self.offset + len)
                 .unwrap();
             (slice, 0)
+        } else {
+            (self.buffer.as_scalar_slice_mut(), self.offset)
         }
     }
     /// Transfers the tensor into the `device`.
@@ -1714,14 +1732,12 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     }
     /// Borrows the tensor as a slice and offset.
     pub fn as_raw_slice_offset(&self) -> (Slice<T>, usize) {
-        if self.strides().iter().any(|x| *x < 0) {
-            (self.buffer.as_slice(), self.offset)
-        } else {
-            let slice = self
-                .buffer
-                .slice(self.offset..self.offset + self.len())
-                .unwrap();
+        let strides: &[isize] = Self::strides(self);
+        if let Some(len) = tensor_buffer_len(self.offset, self.shape(), strides) {
+            let slice = self.buffer.slice(self.offset..self.offset + len).unwrap();
             (slice, 0)
+        } else {
+            (self.buffer.as_slice(), self.offset)
         }
     }
     /// Mutably borrows the tensor as a mutable slice and offset.
@@ -1729,14 +1745,15 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     where
         S: DataMut,
     {
-        if self.strides().iter().any(|x| *x < 0) {
-            (self.buffer.as_slice_mut(), self.offset)
-        } else {
+        let strides: &[isize] = Self::strides(self);
+        if let Some(len) = tensor_buffer_len(self.offset, self.shape(), strides) {
             let slice = self
                 .buffer
-                .slice_mut(self.offset..self.offset + self.len())
+                .slice_mut(self.offset..self.offset + len)
                 .unwrap();
             (slice, 0)
+        } else {
+            (self.buffer.as_slice_mut(), self.offset)
         }
     }
     /// Transfers the tensor to the `device`.
