@@ -36,12 +36,12 @@ let c = c.into_array()?;
 # }
 ```
 */
-#[cfg(doc)]
-use krnl::{buffer::ArcBuffer, device::error::DeviceLost};
 use anyhow::{anyhow, bail, Result};
 use dry::macro_for;
 #[cfg(feature = "device")]
 use krnl::krnl_core::half::bf16;
+#[cfg(doc)]
+use krnl::{buffer::ArcBuffer, device::error::DeviceLost};
 use krnl::{
     buffer::{
         ArcBufferRepr, Buffer, BufferBase, BufferRepr, CowBuffer, CowBufferRepr, Data, DataMut,
@@ -1129,7 +1129,7 @@ impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
     }
     /// Casts the tensor into a new tensor.
     ///
-    /// See [`BufferBase::cast()`](crate::buffer::BufferBase::cast()).
+    /// See [`BufferBase::cast()`].
     pub fn cast_into_tensor<T: Scalar>(self) -> Result<Tensor<T, D>> {
         Ok(self.cast_into(T::scalar_type())?.try_into().unwrap())
     }
@@ -2128,7 +2128,7 @@ impl<S: Data, D: Dimension> Debug for TensorBase<S, D> {
 impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     /// Casts the tensor into a new tensor.
     ///
-    /// See [`BufferBase::cast_into()`](crate::buffer::BufferBase::cast_into()).
+    /// See [`BufferBase::cast_into()`].
     pub fn cast_into<Y: Scalar>(self) -> Result<Tensor<Y, D>> {
         if !self.is_contiguous() {
             todo!()
@@ -2142,7 +2142,7 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     }
     /// Casts the tensor to a new tensor.
     ///
-    /// See [`BufferBase::cast()`](crate::buffer::BufferBase::cast()).
+    /// See [`BufferBase::cast()`].
     pub fn cast<Y: Scalar>(&self) -> Result<Tensor<Y, D>> {
         if !self.is_contiguous() {
             todo!();
