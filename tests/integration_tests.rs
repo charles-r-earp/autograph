@@ -922,6 +922,15 @@ mod learn {
                     }).with_ignored_flag(ignore),
                 ]);
             });
+            tests.extend([device_test(device, "broadcast", move |device| {
+                broadcast(device, [2], [4, 2]);
+                broadcast(device, [2], [4, 3, 2]);
+                broadcast(device, [2], [5, 4, 3, 2]);
+                broadcast(device, [2], [6, 5, 4, 3, 2]);
+                broadcast(device, [2], [7, 6, 5, 4, 3, 2]);
+                broadcast(device, [3, 2], [5, 4, 3, 2]);
+                broadcast(device, [4, 1, 1, 3], [4, 2, 1, 3]);
+            })]);
             tests
         }
 
@@ -1159,6 +1168,27 @@ mod learn {
                     dx_host.into_array().unwrap(),
                     dx_device.into_array().unwrap()
                 );
+            }
+        }
+
+        fn broadcast<D1: IntoDimension + 'static, D2: IntoDimension + 'static>(
+            device: &Device,
+            input_dim: D1,
+            output_dim: D2,
+        ) {
+            use autograph::tensor::ScalarArcTensor;
+
+            let input_dim = input_dim.into_dimension();
+            let output_dim = output_dim.into_dimension();
+            let x = ScalarArcTensor::zeros(device.clone(), input_dim, ScalarType::F32).unwrap();
+            let y = x.broadcast_shared(output_dim.clone());
+            let x_var = Variable::builder().node().build(x.clone());
+            let y_var = x_var.broadcast(output_dim);
+            assert_eq!(y.is_some(), y_var.is_some());
+            if let Some((y, y_var)) = y.zip(y_var) {
+                assert_eq!(y.shape(), y_var.shape());
+                assert_eq!(y.strides(), y_var.value().strides());
+                y_var.node().unwrap().backward().unwrap();
             }
         }
     }

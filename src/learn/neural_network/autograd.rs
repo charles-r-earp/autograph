@@ -2,20 +2,16 @@ use super::{
     layer::Forward,
     optimizer::{State as OptimizerState, Value as OptimizerValue},
 };
-#[cfg(feature = "device")]
-use crate::tensor::ScalarTensorView;
 #[cfg(doc)]
 use crate::{learn::neural_network::optimizer::Optimizer, tensor::TensorBase};
 use crate::{
     ops::AddAssign,
     tensor::{
-        ArcTensor, ScalarArcTensor, ScalarArcTensorD, ScalarTensor, ScalarTensorBase,
+        ArcTensor, CowTensor, ScalarArcTensor, ScalarArcTensorD, ScalarTensor, ScalarTensorBase,
         ScalarTensorViewMut, Tensor, TensorView,
     },
 };
 use anyhow::{bail, Error, Result};
-#[cfg(feature = "device")]
-use dry::macro_for;
 use dry::macro_wrap;
 use half::{bf16, f16};
 use krnl::{
@@ -23,10 +19,8 @@ use krnl::{
     device::Device,
     scalar::{Scalar, ScalarType},
 };
-#[cfg(feature = "device")]
-use ndarray::Axis;
 use ndarray::{
-    linalg::Dot, Array, Dimension, IntoDimension, Ix0, Ix1, Ix2, Ix3, Ix4, Ix5, Ix6, IxDyn,
+    linalg::Dot, Axis, Dimension, IntoDimension, Ix0, Ix1, Ix2, Ix3, Ix4, Ix5, Ix6, IxDyn,
     ShapeError,
 };
 use parking_lot::{Mutex, RwLock};
@@ -429,6 +423,14 @@ impl<D: Dimension + 'static> Variable<D> {
     where
         E: IntoDimension,
     {
+        if self.node.is_none() {
+            return self.value.broadcast_shared(dim).map(Variable::from);
+        }
+        let dim = dim.into_dimension();
+        if self.shape() == dim.slice() {
+            return Some(self.clone().into_dimensionality().unwrap());
+        }
+        let output = self.value.broadcast_shared(dim)?;
         let mut builder = Variable::builder();
         if let Some(node) = self.node() {
             let input_dim = self.raw_dim();
@@ -441,48 +443,65 @@ impl<D: Dimension + 'static> Variable<D> {
                 }})
             })
         }
-        Some(builder.build(self.value.broadcast_shared(dim)?))
+        Some(builder.build(output))
     }
 }
 
 fn broadcast_backward<T: Scalar, D1: Dimension, D2: Dimension>(
-    output_grad: TensorView<T, D1>,
-    input_dim: D2,
+    input: TensorView<T, D1>,
+    output_dim: D2,
 ) -> Result<Tensor<T, D2>> {
-    if let Some(output_grad) = output_grad.as_array() {
-        let mut output_grad_iter = output_grad.iter().copied();
-        let mut input_grad: Vec<T> = output_grad_iter.by_ref().take(input_dim.size()).collect();
-        let mut output_grad_iter = output_grad_iter.peekable();
-        while output_grad_iter.peek().is_some() {
-            for (dy, dx) in output_grad_iter.by_ref().zip(input_grad.iter_mut()) {
-                *dx += dy;
-            }
+    // idea
+    // strip leading 1's from output_dim
+    // pack leading dims of input into batch dim
+    // sum along batch dim if necessary
+    // sum along each interior dimension if necessary
+    //
+    // reshape into output dim
+
+    let output_dim_stripped = {
+        let strip_dims = output_dim.slice().iter().take_while(|x| **x == 1).count();
+        let mut output_dim_stripped = IxDyn::zeros(output_dim.ndim() - strip_dims);
+        output_dim_stripped
+            .slice_mut()
+            .copy_from_slice(&output_dim.slice()[strip_dims..]);
+        output_dim_stripped
+    };
+    let batch_dims = input
+        .ndim()
+        .checked_sub(output_dim_stripped.ndim())
+        .unwrap_or(0);
+    let input_dim_packed = if batch_dims > 0 {
+        let batch_size = input.shape()[0..batch_dims].iter().product();
+        let non_batch_dims = &input.shape()[batch_dims..];
+        let mut input_dim_packed = IxDyn::zeros(1 + non_batch_dims.len());
+        input_dim_packed[0] = batch_size;
+        input_dim_packed.slice_mut()[1..].copy_from_slice(non_batch_dims);
+        input_dim_packed
+    } else {
+        input.shape().into_dimension()
+    };
+    let mut output = CowTensor::from(input.into_shape(input_dim_packed.clone()).unwrap());
+    let output_batch_dim = if batch_dims > 0 { Some(1) } else { None };
+    for (axis, (x, y)) in std::iter::zip(
+        input_dim_packed.slice().iter().copied(),
+        output_batch_dim
+            .into_iter()
+            .chain(output_dim_stripped.slice().iter().copied()),
+    )
+    .enumerate()
+    {
+        if x != y {
+            let mut tmp_dim = output.raw_dim();
+            tmp_dim[axis] = 1;
+            output = output
+                .sum_axis(Axis(axis))?
+                .into_shape(tmp_dim)
+                .unwrap()
+                .into();
         }
-        return Ok(Tensor::from(
-            Array::from(input_grad).into_shape(input_dim).unwrap(),
-        ));
     }
-    #[cfg(not(feature = "device"))]
-    {
-        unreachable!()
-    }
-    #[cfg(feature = "device")]
-    {
-        macro_for!($T in [bf16, f32] {
-            if let Ok(dy) = ScalarTensorView::from(output_grad.view())
-                .try_into_tensor_view::<$T>() {
-                let dx = dy
-                    .into_dyn()
-                    .sum_axis(Axis(0))?
-                    .into_shape(input_dim)
-                    .unwrap()
-                    .cast_into()
-                    .unwrap();
-                return Ok(dx);
-            }
-        });
-        bail!("broadcast_backward {:?} unimplemented!()", T::scalar_type())
-    }
+    Ok(output.into_owned()?.into_shape(output_dim).unwrap())
 }
 
 impl<T: Scalar, D: Dimension> From<Tensor<T, D>> for Variable<D> {
