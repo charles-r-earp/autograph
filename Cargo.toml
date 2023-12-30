@@ -64,13 +64,16 @@ half = { version = "=2.1.0", features = ["num-traits", "bytemuck", "serde"] }
 http = { version = "0.2.4", optional = true }
 paste = "1.0.7"
 dry = "0.1.1"
-crunchy = { version = "0.2.2", optional = true }
+crunchy = { version = "0.2.2" }
 crossbeam-channel = { workspace = true, optional = true }
 parking_lot = { workspace = true, optional = true }
 rayon.workspace = true
 once_cell = { version = "1.17.1", optional = true, features = ["std"] }
 num-traits = "0.2.15"
 smallvec = { version = "1.11.1", optional = true }
+matrixmultiply_mt = { version = "0.2.1", optional = true }
+matrixmultiply = { version = "0.3.8", optional = true }
+wide = "0.7.13"
 
 [dev-dependencies]
 approx = "0.4.0"
@@ -82,7 +85,7 @@ libtest-mimic = "0.6.0"
 
 [features]
 default = ["device"]
-device = ["krnl/device", "dep:crunchy", "dep:once_cell"]
+device = ["krnl/device", "dep:once_cell"]
 dataset = ["dep:rand"]
 iris = []
 mnist = ["dataset", "dep:dirs", "dep:flate2", "dep:downloader", "dep:byteorder", "dep:http"]

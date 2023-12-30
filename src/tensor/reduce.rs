@@ -3,12 +3,25 @@ use super::*;
 use half::f16;
 #[cfg(feature = "device")]
 use krnl::macros::module;
+#[cfg(feature = "rayon")]
+use rayon::iter::{IntoParallelIterator, IntoParallelRefMutIterator, ParallelIterator};
 
 impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     /// Sums the tensor.
     pub fn sum(&self) -> Result<T> {
         if let Some(input) = self.as_array() {
-            Ok(input.sum())
+            #[cfg(feature = "rayon")]
+            {
+                Ok(input
+                    .into_par_iter()
+                    .with_min_len(32)
+                    .copied()
+                    .reduce(T::default, |a, b| a + b))
+            }
+            #[cfg(not(feature = "rayon"))]
+            {
+                Ok(input.sum())
+            }
         } else {
             let mut output = unsafe { Tensor::uninit(self.device(), ())? };
             self.sum_with(T::default(), &mut output)?;
@@ -47,8 +60,19 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
 impl<T: Scalar, S: Data<Elem = T>, D: RemoveAxis> TensorBase<S, D> {
     /// Sums the tensor along `axis`.
     pub fn sum_axis(&self, axis: Axis) -> Result<Tensor<T, D::Smaller>> {
-        if let Some(input) = self.as_array() {
-            return Ok(input.sum_axis(axis).into());
+        /*if let Some(input) = self.as_array() {
+            #[cfg(feature = "rayon")]
+            {
+                Ok(input
+                    .axis_iter()
+                    .into_par_iter()
+                    .copied()
+                    .reduce(T::default, |a, b| a + b))
+            }
+            #[cfg(not(feature = "rayon"))]
+            {
+                return Ok(input.sum_axis(axis).into());
+            }
         }
         #[cfg(not(feature = "device"))]
         {
@@ -56,11 +80,12 @@ impl<T: Scalar, S: Data<Elem = T>, D: RemoveAxis> TensorBase<S, D> {
         }
         #[cfg(feature = "device")]
         {
-            let mut output =
-                unsafe { Tensor::uninit(self.device(), self.raw_dim().remove_axis(axis))? };
-            self.sum_axis_with(axis, T::default(), &mut output)?;
-            Ok(output)
-        }
+            */
+        let mut output =
+            unsafe { Tensor::uninit(self.device(), self.raw_dim().remove_axis(axis))? };
+        self.sum_axis_with(axis, T::default(), &mut output)?;
+        Ok(output)
+        //}
     }
     /// Sums the tensor along `axis` with `output`.
     pub fn sum_axis_with<S2: DataMut<Elem = T>>(
@@ -69,16 +94,36 @@ impl<T: Scalar, S: Data<Elem = T>, D: RemoveAxis> TensorBase<S, D> {
         beta: T,
         output: &mut TensorBase<S2, D::Smaller>,
     ) -> Result<()> {
+        if beta == T::default() && self.device().is_host() {
+            output.fill(T::default())?;
+        }
         if let Some((x, mut y)) = self.as_array().zip(output.as_array_mut()) {
-            if beta == T::default() {
-                y.fill(T::default());
-            } else {
-                for y in y.iter_mut() {
-                    *y *= beta;
+            if beta != T::default() {
+                #[cfg(feature = "rayon")]
+                {
+                    y.view_mut()
+                        .into_par_iter()
+                        .with_min_len(32)
+                        .for_each(|y| *y *= beta);
+                }
+                #[cfg(not(feature = "rayon"))]
+                {
+                    for y in y.iter_mut() {
+                        *y *= beta;
+                    }
                 }
             }
-            for x in x.axis_iter(axis) {
-                y.zip_mut_with(&x, |y, x| *y += *x);
+            #[cfg(feature = "rayon")]
+            {
+                for x in x.axis_iter(axis) {
+                    y.zip_mut_with(&x, |y, x| *y += *x);
+                }
+            }
+            #[cfg(not(feature = "rayon"))]
+            {
+                for x in x.axis_iter(axis) {
+                    y.zip_mut_with(&x, |y, x| *y += *x);
+                }
             }
             return Ok(());
         }

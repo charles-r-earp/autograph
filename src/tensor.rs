@@ -55,7 +55,7 @@ use krnl::{
 };
 use ndarray::{
     Array, ArrayBase, ArrayView, ArrayViewMut, Axis, Dimension, IntoDimension, Ix0, Ix1, Ix2, Ix3,
-    Ix4, Ix5, Ix6, IxDyn, RawArrayView, RemoveAxis, ShapeBuilder, ShapeError, StrideShape,
+    Ix4, Ix5, Ix6, IxDyn, RawArrayView, RemoveAxis, ShapeError, StrideShape,
 };
 #[cfg(feature = "device")]
 use num_traits::ToPrimitive;
@@ -68,6 +68,7 @@ use std::{
 
 mod linalg;
 mod ops;
+pub(crate) mod parallel;
 mod reduce;
 
 fn strides_from_array<S, D>(array: &ArrayBase<S, D>) -> D
@@ -105,16 +106,19 @@ where
     D1: Dimension,
     E: IntoDimension,
 {
+    use ndarray::ErrorKind;
+
     let shape = shape.into_dimension();
-    let zero_strides = strides.slice().iter().any(|s| *s == 0);
-    if shape.size() == dim.size() && (zero_strides || strides == &dim.default_strides()) {
+    if size_of_shape_checked(&shape)? != dim.size() {
+        Err(ShapeError::from_kind(ErrorKind::IncompatibleShape))
+    } else if is_standard_layout(dim, strides) {
         let strides = shape.default_strides();
         Ok((shape, strides))
-    } else if dim.ndim() > 1 && (zero_strides || strides == &dim.fortran_strides()) {
+    } else if is_fortran_layout(dim, strides) {
         let strides = shape.fortran_strides();
         Ok((shape, strides))
     } else {
-        Err(ShapeError::from_kind(ndarray::ErrorKind::IncompatibleShape))
+        Err(ShapeError::from_kind(ErrorKind::IncompatibleLayout))
     }
 }
 
@@ -126,13 +130,53 @@ pub(crate) fn flatten(shape: &[usize]) -> [usize; 2] {
 }
 
 fn is_contiguous<D: Dimension>(dim: &D, strides: &D) -> bool {
-    let zero_strides = strides.slice().iter().any(|s| *s == 0);
-    zero_strides || strides == &dim.default_strides() || strides == &dim.fortran_strides()
+    is_standard_layout(dim, strides) || is_fortran_layout(dim, strides)
 }
 
 fn is_standard_layout<D: Dimension>(dim: &D, strides: &D) -> bool {
-    let zero_strides = strides.slice().iter().any(|s| *s == 0);
-    zero_strides || strides == &dim.default_strides()
+    debug_assert_eq!(dim.ndim(), strides.ndim());
+    for d in dim.slice().iter().copied() {
+        if d == 0 {
+            return true;
+        }
+    }
+    let mut acc = 1isize;
+    let strides: &[isize] = bytemuck::cast_slice(strides.slice());
+    for (d, s) in dim
+        .slice()
+        .iter()
+        .copied()
+        .zip(strides.iter().copied())
+        .rev()
+    {
+        if !(d == 1 || s == acc) {
+            return false;
+        }
+        acc *= d as isize;
+    }
+    true
+}
+
+fn is_fortran_layout<D: Dimension>(dim: &D, strides: &D) -> bool {
+    debug_assert_eq!(dim.ndim(), strides.ndim());
+    for d in dim.slice().iter().copied() {
+        if d == 0 {
+            return true;
+        }
+    }
+    let mut acc = 1;
+    for (d, s) in dim
+        .slice()
+        .iter()
+        .copied()
+        .zip(strides.slice().iter().copied())
+    {
+        if !(d == 1 || s == acc) {
+            return false;
+        }
+        acc *= d;
+    }
+    true
 }
 
 // adapted from https://docs.rs/ndarray/0.15.3/ndarray/struct.ArrayBase.html#method.permuted_axes
@@ -405,7 +449,7 @@ impl<S: ScalarDataOwned, D: Dimension> ScalarTensorBase<S, D> {
     /// See [`ScalarBuffer::uninit()`].
     pub unsafe fn uninit<Sh>(device: Device, shape: Sh, scalar_type: ScalarType) -> Result<Self>
     where
-        Sh: ShapeBuilder<Dim = D>,
+        Sh: ndarray::ShapeBuilder<Dim = D>,
     {
         let (dim, strides) = dim_strides_from_shape(shape.into_shape());
         let buffer = unsafe { ScalarBufferBase::uninit(device, dim.size(), scalar_type)? };
@@ -422,7 +466,7 @@ impl<S: ScalarDataOwned, D: Dimension> ScalarTensorBase<S, D> {
     /// See [`ScalarBuffer::from_elem()`].
     pub fn from_elem<Sh>(device: Device, shape: Sh, elem: ScalarElem) -> Result<Self>
     where
-        Sh: ShapeBuilder<Dim = D>,
+        Sh: ndarray::ShapeBuilder<Dim = D>,
     {
         let (dim, strides) = dim_strides_from_shape(shape.into_shape());
         let buffer = ScalarBufferBase::from_elem(device, dim.size(), elem)?;
@@ -440,7 +484,7 @@ impl<S: ScalarDataOwned, D: Dimension> ScalarTensorBase<S, D> {
     /// See [`ScalarBuffer::zeros()`].
     pub fn zeros<Sh>(device: Device, shape: Sh, scalar_type: ScalarType) -> Result<Self>
     where
-        Sh: ShapeBuilder<Dim = D>,
+        Sh: ndarray::ShapeBuilder<Dim = D>,
     {
         Self::from_elem(device, shape, ScalarElem::zero(scalar_type))
     }
@@ -451,7 +495,7 @@ impl<S: ScalarDataOwned, D: Dimension> ScalarTensorBase<S, D> {
     /// See [`ScalarBuffer::ones()`].
     pub fn ones<Sh>(device: Device, shape: Sh, scalar_type: ScalarType) -> Result<Self>
     where
-        Sh: ShapeBuilder<Dim = D>,
+        Sh: ndarray::ShapeBuilder<Dim = D>,
     {
         Self::from_elem(device, shape, ScalarElem::one(scalar_type))
     }
@@ -529,6 +573,7 @@ impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
     where
         E: IntoDimension,
     {
+        let shape = shape.into_dimension();
         let (dim, strides) = into_shape(&self.dim, &self.strides, shape)?;
         assert_eq!(self.offset, 0);
         Ok(ScalarTensorBase {
@@ -1360,7 +1405,7 @@ impl<T: Scalar, S: DataOwned<Elem = T>, D: Dimension> TensorBase<S, D> {
     /// See [`Buffer::uninit()`].
     pub unsafe fn uninit<Sh>(device: Device, shape: Sh) -> Result<Self>
     where
-        Sh: ShapeBuilder<Dim = D>,
+        Sh: ndarray::ShapeBuilder<Dim = D>,
     {
         let (dim, strides) = dim_strides_from_shape(shape.into_shape());
         let buffer = unsafe { BufferBase::uninit(device, dim.size())? };
@@ -1378,7 +1423,7 @@ impl<T: Scalar, S: DataOwned<Elem = T>, D: Dimension> TensorBase<S, D> {
     /// See [`Buffer::from_elem()`].
     pub fn from_elem<Sh>(device: Device, shape: Sh, elem: T) -> Result<Self>
     where
-        Sh: ShapeBuilder<Dim = D>,
+        Sh: ndarray::ShapeBuilder<Dim = D>,
     {
         let (dim, strides) = dim_strides_from_shape(shape.into_shape());
         let buffer = BufferBase::from_elem(device, dim.size(), elem)?;
@@ -1395,7 +1440,7 @@ impl<T: Scalar, S: DataOwned<Elem = T>, D: Dimension> TensorBase<S, D> {
     /// See [`Buffer::zeros()`].
     pub fn zeros<Sh>(device: Device, shape: Sh) -> Result<Self>
     where
-        Sh: ShapeBuilder<Dim = D>,
+        Sh: ndarray::ShapeBuilder<Dim = D>,
     {
         Self::from_elem(device, shape, T::default())
     }
@@ -1405,7 +1450,7 @@ impl<T: Scalar, S: DataOwned<Elem = T>, D: Dimension> TensorBase<S, D> {
     /// See [`Buffer::ones()`].
     pub fn ones<Sh>(device: Device, shape: Sh) -> Result<Self>
     where
-        Sh: ShapeBuilder<Dim = D>,
+        Sh: ndarray::ShapeBuilder<Dim = D>,
     {
         Self::from_elem(device, shape, T::one())
     }
@@ -1483,6 +1528,7 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     where
         E: IntoDimension,
     {
+        let shape = shape.into_dimension();
         let (dim, strides) = into_shape(&self.dim, &self.strides, shape)?;
         debug_assert_eq!(self.offset, 0);
         Ok(TensorBase {
@@ -1907,6 +1953,8 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     /// See [`Buffer::into_vec()`].
     pub fn into_array(self) -> Result<Array<T, D>> {
         if self.is_contiguous() {
+            use ndarray::ShapeBuilder;
+
             let vec = self.buffer.into_vec()?;
             Ok(Array::from_shape_vec(self.dim.strides(self.strides), vec).unwrap())
         } else if let Some(array) = self.as_array() {
@@ -1917,6 +1965,8 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     }
     /// Borrows the tensor as an array view if on the host.
     pub fn as_array(&self) -> Option<ArrayView<T, D>> {
+        use ndarray::ShapeBuilder;
+
         self.buffer.as_host_slice().map(|host_slice| unsafe {
             ArrayView::from_shape_ptr(
                 self.dim.clone().strides(self.strides.clone()),
@@ -1929,6 +1979,8 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     where
         S: DataMut,
     {
+        use ndarray::ShapeBuilder;
+
         if let Some(host_slice) = self.buffer.as_host_slice_mut() {
             let host_slice = unsafe {
                 std::slice::from_raw_parts_mut(host_slice.as_mut_ptr(), host_slice.len())

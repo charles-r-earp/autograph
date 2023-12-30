@@ -19,7 +19,7 @@ pub struct LeNet5Classifier {
 impl LeNet5Classifier {
     pub fn new(device: Device, kind: Kind) -> Result<Self> {
         let mut var_store = VarStore::new(device);
-        let model = Lenet5::new(&var_store);
+        let model = LeNet5::new(&var_store);
         var_store.set_kind(kind);
         Ok(Self {
             device,

@@ -468,17 +468,8 @@ fn gemm(
                     c_tmp.as_slice_mut().unwrap(),
                     offset_c,
                 )?;
-                /*if false {
-                    unsafe {
-                        kernels::reduce_k_f32::builder()?
-                            .specialize(64)?
-                            .build(device.clone())?
-                            .with_groups(m * n)
-                            .dispatch(c_tmp.as_slice().unwrap(), c)?;
-                    }
-                }*/
-                c_tmp.sum_axis_with(Axis(1), beta, &mut TensorViewMut::from(c))?;
             }
+            c_tmp.sum_axis_with(Axis(1), beta, &mut TensorViewMut::from(c))?;
         } else {
             unsafe {
                 gemm_kernel.dispatch(
@@ -529,50 +520,43 @@ impl<T: Scalar, S1: Data<Elem = T>, S2: Data<Elem = T>> Dot<TensorBase<S2, Ix2>>
     type Output = Result<Tensor2<T>>;
     fn dot(&self, rhs: &TensorBase<S2, Ix2>) -> Self::Output {
         if let Some((lhs_array, rhs_array)) = self.as_array().zip(rhs.as_array()) {
-            /*
-             // TODO: bf16 is very slow because it falls back to naive alg, min is handle more shapes here
-            if matches!(T::scalar_type(), ScalarType::BF16)
-                && lhs_array.is_standard_layout()
-                && rhs_array.is_standard_layout()
-            {
-                use half::{slice::HalfFloatSliceExt, vec::HalfFloatVecExt};
-                let lhs_vec = if let Some(slice) = self.as_slice_memory_order() {
-                    let slice = slice.as_host_slice().unwrap();
-                    let slice: &[bf16] = bytemuck::cast_slice(slice);
-                    slice.to_f32_vec()
-                } else {
-                    todo!()
-                };
-                let lhs = Tensor {
-                    dim: self.dim.clone(),
-                    strides: self.strides.clone(),
-                    buffer: Buffer::from(lhs_vec),
-                    offset: 0,
-                };
-                let rhs_vec = if let Some(slice) = rhs.as_slice_memory_order() {
-                    let slice = slice.as_host_slice().unwrap();
-                    let slice: &[bf16] = bytemuck::cast_slice(slice);
-                    slice.to_f32_vec()
-                } else {
-                    todo!()
-                };
-                let rhs = Tensor {
-                    dim: rhs.dim.clone(),
-                    strides: rhs.strides.clone(),
-                    buffer: Buffer::from(rhs_vec),
-                    offset: 0,
-                };
-                let output = lhs.as_array().unwrap().dot(&rhs.as_array().unwrap());
-                let output_vec = Vec::<bf16>::from_f32_slice(output.as_slice().unwrap());
-                return Ok(Tensor::from(
-                    Array::from(output_vec)
-                        .into_shape(output.raw_dim())
-                        .unwrap(),
+            let (m, k) = lhs_array.dim();
+            let n = rhs_array.dim().1;
+            let output = if 100 * m * n < k {
+                use rayon::prelude::*;
+
+                let threads = rayon::current_num_threads();
+                let k_split = k / threads + (k % threads != 0) as usize;
+                let k_chunks = k / k_split + (k % k_split != 0) as usize;
+                let mut tmp = unsafe { Array::<T, _>::uninitialized([m, n, k_chunks]) };
+                (
+                    lhs_array.axis_chunks_iter(Axis(1), k_split),
+                    rhs_array.axis_chunks_iter(Axis(0), k_split),
+                    tmp.axis_iter_mut(Axis(2)),
                 )
-                .cast_into()
-                .unwrap());
-            }*/
-            return Ok(lhs_array.dot(&rhs_array).into());
+                    .into_par_iter()
+                    .for_each(|(a, b, mut c)| {
+                        ndarray::linalg::general_mat_mul(T::one(), &a, &b, T::zero(), &mut c);
+                    });
+                let output: Vec<_> = tmp
+                    .as_slice()
+                    .unwrap()
+                    .par_chunks(k_chunks)
+                    .map(|x| x.iter().copied().reduce(|a, b| a + b).unwrap())
+                    .collect();
+                Array::from(output).into_shape([m, n]).unwrap()
+            } else {
+                let mut output_array = unsafe { Array::<T, _>::uninitialized([m, n]) };
+                ndarray::linalg::general_mat_mul(
+                    T::one(),
+                    &lhs_array,
+                    &rhs_array,
+                    T::zero(),
+                    &mut output_array.view_mut(),
+                );
+                output_array
+            };
+            return Ok(output.into());
         }
         #[cfg(not(feature = "device"))]
         {
@@ -637,106 +621,3 @@ impl<S1: ScalarData, S2: ScalarData> Dot<ScalarTensorBase<S2, Ix2>> for ScalarTe
         }
     }
 }
-
-/*
-#[cfg(feature = "device")]
-#[test]
-fn gemm_bench() {
-    use std::{
-        env::var,
-        fmt::Display,
-        str::FromStr,
-        time::{Duration, Instant},
-    };
-
-    let device_index = var("KRNL_DEVICE")
-        .map(|s| usize::from_str(&s).unwrap())
-        .unwrap_or_default();
-
-    let device = Device::builder().index(device_index).build().unwrap();
-
-    #[derive(Clone, Copy, derive_more::IsVariant)]
-    enum Transpose {
-        N,
-        T,
-    }
-    use Transpose::*;
-
-    impl Display for Transpose {
-        fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-            if self.is_t() {
-                write!(f, "T")
-            } else {
-                write!(f, "")
-            }
-        }
-    }
-    let mut total_duration = Duration::default();
-    for (i, ([m, k, n], [at, bt])) in [
-        /*  ([128, 128, 128], [N, N]),
-        ([8, 8, 8], [N, N]),
-        ([57600, 25, 6], [N, N]),
-        ([6400, 150, 16], [N, T]),
-        ([100, 256, 128], [N, N]),
-        ([100, 128, 84], [N, N]),
-        ([100, 84, 10], [N, N]),
-        ([100, 10, 84], [N, T]),
-        ([84, 100, 10], [T, N]),
-        ([100, 84, 128], [N, T]),
-        ([100, 128, 256], [N, T]),
-        ([100, 128, 256], [T, N]),
-        ([6400, 16, 150], [N, N]), */
-        ([16, 6400, 150], [T, N]),
-        ([6, 57600, 25], [T, N]),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        let a_shape = if at.is_n() { [m, k] } else { [k, m] };
-        let b_shape = if bt.is_n() { [k, n] } else { [n, k] };
-        let a = Tensor::<f32, _>::zeros(device.clone(), a_shape).unwrap();
-        let a: CowTensor<f32, _> = if at.is_t() {
-            a.t().into()
-        } else {
-            a.view().into()
-        };
-        let b = Tensor::<f32, _>::zeros(device.clone(), b_shape).unwrap();
-        let b: CowTensor<f32, _> = if bt.is_t() {
-            b.t().into()
-        } else {
-            b.view().into()
-        };
-        let mut c = Tensor::<f32, _>::zeros(device.clone(), [m, n]).unwrap();
-        let iters = 100;
-        for _ in 0..iters {
-            gemm(
-                1f32.into(),
-                a.view().into(),
-                b.view().into(),
-                0f32.into(),
-                c.view_mut().into(),
-            )
-            .unwrap();
-            device.wait().unwrap();
-        }
-        let mut duration = Duration::default();
-        for _ in 0..iters {
-            let start = Instant::now();
-            gemm(
-                1f32.into(),
-                a.view().into(),
-                b.view().into(),
-                0f32.into(),
-                c.view_mut().into(),
-            )
-            .unwrap();
-            device.wait().unwrap();
-            duration += start.elapsed() / iters;
-        }
-        let gflops = (2 * m * k * n) as f64 / (duration.as_secs_f64() * 1_000_000_000f64);
-        println!("{i}: {a_shape:?}{at} x {b_shape:?}{bt} {duration:?} @ {gflops:.2} GFLOPS");
-        total_duration += duration;
-    }
-    println!("{total_duration:?}");
-}
-*/
