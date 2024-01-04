@@ -1211,7 +1211,7 @@ use binary_op::BinaryOp;
 #[module]
 mod kernels {
     #[cfg(target_arch = "spirv")]
-    use crate::tensor__ops__binary_op::BinaryOp;
+    use crate::tensor::ops::binary_op::BinaryOp;
     use dry::macro_for;
     #[cfg(not(target_arch = "spirv"))]
     use krnl::krnl_core;
