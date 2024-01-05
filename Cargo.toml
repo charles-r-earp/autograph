@@ -47,7 +47,7 @@ autobenches = false
 
 [dependencies]
 autograph_derive = { path = "autograph_derive", optional = true }
-krnl = { version = "0.0.3", default-features = false }
+krnl = { git = "https://github.com/charles-r-earp/krnl", default-features = false }
 anyhow.workspace = true
 ndarray = { workspace = true, features = ["serde", "rayon", "matrixmultiply-threading"] }
 rand = { version = "0.8.4", optional = true }
