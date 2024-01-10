@@ -107,6 +107,7 @@ mod kernels {
                     let mut b_thread = <[A; 2]>::default();
                     let mut c_thread = <[[A; 2]; 2]>::default();
 
+                    /*
                     let compute =
                         |a_thread: &mut [A; 2], b_thread: &mut [A; 2], c_thread: &mut [[A; 2]; 2]| {
                             unroll! { for tile_k in 0 .. 8 {
@@ -128,7 +129,7 @@ mod kernels {
                                     }}
                                 }}
                             }}
-                        };
+                        };*/
 
                     {
                         let tile_m = thread_m_a;
@@ -194,7 +195,28 @@ mod kernels {
                                 };
                             }}
                         }
-                        compute(&mut a_thread, &mut b_thread, &mut c_thread);
+                        {
+                            // compute
+                            unroll! { for tile_k in 0 .. 8 {
+                                unroll! { for i in 0 .. 2 {
+                                    let tile_m = i * threads_m + thread_m;
+                                    unsafe {
+                                        a_thread[i] = *a_group.unsafe_index(tile_m * (unroll + 1) + tile_k);
+                                    }
+                                }}
+                                unroll! { for j in 0 .. 2 {
+                                    let tile_n = j * threads_n + thread_n;
+                                    unsafe {
+                                        b_thread[j] = *b_group.unsafe_index(tile_k * (n_group + 1) + tile_n);
+                                    }
+                                }}
+                                unroll! { for i in 0 .. 2 {
+                                    unroll! { for j in 0 .. 2 {
+                                        c_thread[i][j] += a_thread[i] * b_thread[j];
+                                    }}
+                                }}
+                            }}
+                        }
                         unsafe {
                             group_barrier();
                         }
@@ -221,7 +243,28 @@ mod kernels {
                         }
                         global_k += global_unroll;
                     }
-                    compute(&mut a_thread, &mut b_thread, &mut c_thread);
+                    {
+                        // compute
+                        unroll! { for tile_k in 0 .. 8 {
+                            unroll! { for i in 0 .. 2 {
+                                let tile_m = i * threads_m + thread_m;
+                                unsafe {
+                                    a_thread[i] = *a_group.unsafe_index(tile_m * (unroll + 1) + tile_k);
+                                }
+                            }}
+                            unroll! { for j in 0 .. 2 {
+                                let tile_n = j * threads_n + thread_n;
+                                unsafe {
+                                    b_thread[j] = *b_group.unsafe_index(tile_k * (n_group + 1) + tile_n);
+                                }
+                            }}
+                            unroll! { for i in 0 .. 2 {
+                                unroll! { for j in 0 .. 2 {
+                                    c_thread[i][j] += a_thread[i] * b_thread[j];
+                                }}
+                            }}
+                        }}
+                    }
 
                     unroll! { for i in 0 .. 2 {
                         let global_m = global_m + i * threads_m + thread_m;
