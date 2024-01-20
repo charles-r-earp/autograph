@@ -79,9 +79,9 @@ impl<S1: ScalarData, S2: ScalarData> Accuracy<ScalarTensorBase<S2, Ix1>>
         let device = self.device();
         if device.is_host() && target.device().is_host() {
             macro_for!($T1 in [bf16, f32] {
-                if self.scalar_type() == $T1::scalar_type() {
+                if self.scalar_type() == $T1::SCALAR_TYPE {
                     macro_for!($T2 in [u8, u16, u32] {
-                        if target.scalar_type() == $T2::scalar_type() {
+                        if target.scalar_type() == $T2::SCALAR_TYPE {
                             let input = self.view().try_into_tensor_view::<$T1>().unwrap();
                             let target = target.view().try_into_tensor_view::<$T2>().unwrap();
                             return input.accuracy(target);
@@ -104,7 +104,7 @@ impl<S1: ScalarData, S2: ScalarData> Accuracy<ScalarTensorBase<S2, Ix1>>
             let (batch_size, classes) = self.dim();
             macro_for!($T1 in [bf16, f32] {
                 macro_for!($T2 in [u8, u16, u32] {
-                    if self.scalar_type() == $T1::scalar_type() && target.scalar_type() == $T2::scalar_type() {
+                    if self.scalar_type() == $T1::SCALAR_TYPE && target.scalar_type() == $T2::SCALAR_TYPE {
                         let input = Slice::<$T1>::try_from(self.as_scalar_slice().unwrap()).unwrap();
                         let target = Slice::<$T2>::try_from(target.as_scalar_slice().unwrap()).unwrap();
                         let mut output = unsafe { Tensor::<u32, _>::uninit(input.device(), batch_size)? };

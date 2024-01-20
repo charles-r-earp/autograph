@@ -1114,12 +1114,12 @@ fn relu_mut<T: Scalar, D: Dimension>(mut input: TensorViewMut<T, D>) -> Result<(
                 return Ok(());
             }
         });
-        bail!("relu_mut {:?} unimplemented!", T::scalar_type())
+        bail!("relu_mut {:?} unimplemented!", T::SCALAR_TYPE)
     }
 }
 
 fn relu<T: Scalar, D: Dimension>(input: TensorView<T, D>) -> Result<Tensor<T, D>> {
-    let scalar_type = T::scalar_type();
+    let scalar_type = T::SCALAR_TYPE;
     if !matches!(scalar_type, ScalarType::BF16 | ScalarType::F32) {
         bail!("Relu {scalar_type:?} unimplemented!");
     }
@@ -1134,7 +1134,7 @@ fn relu<T: Scalar, D: Dimension>(input: TensorView<T, D>) -> Result<Tensor<T, D>
     #[cfg(feature = "device")]
     {
         macro_for!($T in [bf16, f32] {
-            if scalar_type == $T::scalar_type() {
+            if scalar_type == $T::SCALAR_TYPE {
                 let mut output = unsafe { Tensor::<$T, D>::uninit(input.device(), input.raw_dim())? };
                 let x = input.as_slice().unwrap();
                 let mut y = output.as_slice_mut().unwrap();

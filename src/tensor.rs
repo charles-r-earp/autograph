@@ -1131,7 +1131,7 @@ impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
     ///
     /// See [`BufferBase::cast()`].
     pub fn cast_into_tensor<T: Scalar>(self) -> Result<Tensor<T, D>> {
-        Ok(self.cast_into(T::scalar_type())?.try_into().unwrap())
+        Ok(self.cast_into(T::SCALAR_TYPE)?.try_into().unwrap())
     }
 }
 
@@ -1418,7 +1418,7 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     }
     /// The scalar type of the tensor.
     pub fn scalar_type(&self) -> ScalarType {
-        T::scalar_type()
+        T::SCALAR_TYPE
     }
     /// The dimensions of the tensor in pattern form.
     pub fn dim(&self) -> D::Pattern {

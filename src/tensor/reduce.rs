@@ -121,7 +121,7 @@ fn sum(x: ScalarTensorViewD, beta: ScalarElem, mut y: ScalarTensorViewMutD) -> R
     let y = y.as_scalar_slice_mut().unwrap();
 
     macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
-        if x.scalar_type() == $T::scalar_type() {
+        if x.scalar_type() == $T::SCALAR_TYPE {
             let x = Slice::try_from(x).unwrap();
             let y = SliceMut::try_from(y).unwrap();
             let kernel = paste! {
@@ -181,7 +181,7 @@ fn sum_axis(
         let offset_y = offset_y.to_u32().unwrap();
 
         macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
-            if x.scalar_type() == $T::scalar_type() {
+            if x.scalar_type() == $T::SCALAR_TYPE {
                 let x = Slice::try_from(x).unwrap();
                 let y = SliceMut::try_from(y).unwrap();
                 let kernel = paste! {
@@ -253,7 +253,7 @@ fn sum_axis(
         let offset_y = offset_y.to_u32().unwrap();
 
         macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
-            if x.scalar_type() == $T::scalar_type() {
+            if x.scalar_type() == $T::SCALAR_TYPE {
                 let x = Slice::try_from(x).unwrap();
                 let y = SliceMut::try_from(y).unwrap();
                 let kernel = paste! {
@@ -347,7 +347,7 @@ fn sum_axis(
         let offset_y = offset_y.to_u32().unwrap();
 
         macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
-            if x.scalar_type() == $T::scalar_type() {
+            if x.scalar_type() == $T::SCALAR_TYPE {
                 let x = Slice::try_from(x).unwrap();
                 let y = SliceMut::try_from(y).unwrap();
                 let kernel = paste! {

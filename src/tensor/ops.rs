@@ -616,7 +616,7 @@ impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
     ) -> Result<ScalarTensor<D::Larger>> {
         macro_for!($X in [u8, u16, u32, u64] {
             macro_for!($Y in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
-                if self.scalar_type() == $X::scalar_type() && scalar_type == $Y::scalar_type() {
+                if self.scalar_type() == $X::SCALAR_TYPE && scalar_type == $Y::SCALAR_TYPE {
                     let input = self.view().try_into_tensor_view::<$X>().unwrap();
                     let output = input.to_one_hot::<$Y>(classes)?;
                     return Ok(output.into());
@@ -660,10 +660,10 @@ impl<T: Scalar + Unsigned, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
         let input = self.as_standard_layout()?;
         #[cfg(feature = "device")]
         macro_for!($X in [u8, u16, u32, u64] {
-            if T::scalar_type() == $X::scalar_type() {
+            if T::SCALAR_TYPE == $X::SCALAR_TYPE {
                 let input = ScalarTensorView::from(input.view()).try_into_tensor_view::<$X>().unwrap();
                 macro_for!($Y in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
-                    if T2::scalar_type() == $Y::scalar_type() {
+                    if T2::SCALAR_TYPE == $Y::SCALAR_TYPE {
                         let mut output = unsafe {
                             Tensor::<$Y, _>::uninit(self.device(), dim)?
                         };
@@ -679,7 +679,7 @@ impl<T: Scalar + Unsigned, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
         bail!(
             "to_one_hot {:?} {:?} unimplemented!",
             self.scalar_type(),
-            T2::scalar_type()
+            T2::SCALAR_TYPE
         );
     }
 }

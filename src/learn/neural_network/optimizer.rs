@@ -410,7 +410,7 @@ fn sgd_update_with_momentum<T: Scalar>(
     #[cfg(feature = "device")]
     {
         macro_for!($T in [bf16, f32] {
-            if value.scalar_type() == $T::scalar_type() {
+            if value.scalar_type() == $T::SCALAR_TYPE {
                 let mut value = ScalarTensorViewMut::from(value)
                     .try_into_tensor_view_mut::<$T>()
                     .unwrap();

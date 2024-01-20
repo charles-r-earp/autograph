@@ -46,7 +46,7 @@ impl CrossEntropyLoss<ScalarArcTensor1> for Variable2 {
             builder.edge(node, move |output_grad| {
                 macro_for!($X in [bf16, f32] {
                     macro_for!($T in [u8, u16, u32] {
-                        if input.scalar_type() == $X::scalar_type() && target.scalar_type() == $T::scalar_type() {
+                        if input.scalar_type() == $X::SCALAR_TYPE && target.scalar_type() == $T::SCALAR_TYPE {
                             let input = input.try_into_arc_tensor::<$X>().unwrap();
                             let target = target.try_into_arc_tensor::<$T>().unwrap();
                             let dy = output_grad
@@ -109,7 +109,7 @@ pub fn cross_entropy_loss_backward<T1: Scalar + Float, T2: Scalar + Unsigned>(
         let (batch_size, classes) = x.dim();
         macro_for!($X in [bf16, f32] {
             macro_for!($T in [u8, u16, u32] {
-                if x.scalar_type() == $X::scalar_type() && t.scalar_type() == $T::scalar_type() {
+                if x.scalar_type() == $X::SCALAR_TYPE && t.scalar_type() == $T::SCALAR_TYPE {
                     let x = ScalarTensorView::from(x)
                         .try_into_tensor_view::<$X>()
                         .unwrap();
