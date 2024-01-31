@@ -2,8 +2,8 @@ use super::autograd::{
     Parameter, Parameter1, Parameter2, ParameterD, ParameterViewMut, ParameterViewMut1,
     ParameterViewMut2, ParameterViewMutD, Variable, Variable1, Variable2, Variable3, Variable4,
 };
-//#[cfg(doc)]
-//use super::optimizer::Optimizer;
+#[cfg(doc)]
+use super::optimizer::Optimizer;
 use crate::{
     ops::{
         AddAssign, Col2ImConv2, Col2ImConv2Options, Im2ColConv2, Im2ColConv2Options, MaxPool2 as _,
