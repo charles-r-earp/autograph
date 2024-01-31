@@ -107,10 +107,10 @@ fn sum(x: ScalarTensorViewD, beta: ScalarElem, mut y: ScalarTensorViewMutD) -> R
         todo!();
     }
     let device = y.device();
-    let info = device.info().unwrap();
+    // let info = device.info().unwrap();
 
     let groups: u32 = y.len() as u32;
-    let threads = info.subgroup_threads();
+    let threads = 32; // info.subgroup_threads();
 
     let x = if x.is_contiguous() {
         x.into()
@@ -152,10 +152,10 @@ fn sum_axis(
         todo!();
     }
     let device = y.device();
-    let info = device.info().unwrap();
+    // let info = device.info().unwrap();
 
     let groups = y.len().to_u32().unwrap();
-    let threads = info.subgroup_threads();
+    let threads = 32; // info.subgroup_threads();
     let axis = axis.0.to_u32().unwrap();
 
     let ndim = x.ndim();
