@@ -703,6 +703,7 @@ mod learn {
     mod criterion {
         use super::*;
         use autograph::learn::criterion::Accuracy;
+        use autograph::learn::neural_network::layer::ConvOptions;
         use num_traits::{Float, Unsigned};
 
         pub fn criterion_tests(device: &Device) -> Vec<Trial> {
@@ -819,12 +820,27 @@ mod learn {
         use autograph::{
             learn::neural_network::{
                 autograd::Variable,
-                layer::{Forward, MaxPool2, Relu},
+                layer::{Conv2Options, Forward, MaxPool2, Relu},
             },
             ops::{Col2ImConv2, Col2ImConv2Options, Im2ColConv2, Im2ColConv2Options},
             tensor::Tensor1,
         };
+        use ndarray::{Array1, Array4, ArrayView1, ArrayView4};
         use num_traits::{Float, Unsigned};
+        use std::sync::Arc;
+
+        fn conv2_string(filter: [usize; 2], options: &Conv2Options) -> String {
+            let [fh, fw] = filter;
+            let Conv2Options {
+                padding,
+                stride,
+                dilation,
+            } = options;
+            let (ph, pw) = padding.into_pattern();
+            let (sh, sw) = stride.into_pattern();
+            let (dh, dw) = dilation.into_pattern();
+            format!("fh{fh}_fw{fw}_ph{ph}_pw{pw}_sh{sh}_sw{sw}_dh{dh}_dw{dw}")
+        }
 
         pub fn neural_network_tests(device: &Device) -> Vec<Trial> {
             let mut tests = Vec::new();
@@ -851,36 +867,159 @@ mod learn {
                     }).with_ignored_flag(ignore));
                 });
             });
-            macro_for!($T in [bf16, f32] {
-                let ignore = device.is_device()
-                && !features.contains(&features_for_scalar($T::scalar_type()));
-                let input_shapes = [
-                    [1, 1, 5, 5],
-                    [1, 1, 12, 12],
-                    [2, 3, 5, 5],
-                    [1, 1, 24, 24],
-                ];
-                tests.extend([
-                    device_test(device, &format!("im2col_conv2_{}", $T::scalar_type().name()), move |device| {
-                        let options = Im2ColConv2Options {
-                            filter: [5, 5],
-                            .. Default::default()
-                        };
-                        for input_shape in input_shapes {
-                            im2col_conv2::<$T>(device, input_shape, &options);
+            {
+                let batch_size_list = [2, 3, 13];
+                //let inputs_list = [9]; //[1, 2, 3, 13];
+                //let outputs_list = [1]; //[1, 2, 3, 13];
+                let filter_list = [[1, 1], [3, 3], [5, 5], [7, 7], [1, 3], [3, 5], [1, 7]];
+                let padding_list = [[0, 1], [1, 1]];
+                let stride_list = [[1, 2], [2, 2]];
+                let dilation_list = stride_list;
+                let output_size_list = [1, 2, 3, 5];
+                let filter_conv2_options_list = filter_list
+                    .iter()
+                    .copied()
+                    .flat_map(move |filter| {
+                        std::iter::once(Conv2Options::default())
+                            .chain(padding_list.into_iter().map(move |padding| Conv2Options {
+                                padding: padding.into_dimension(),
+                                ..Conv2Options::default()
+                            }))
+                            .chain(stride_list.into_iter().map(move |stride| Conv2Options {
+                                stride: stride.into_dimension(),
+                                ..Conv2Options::default()
+                            }))
+                            .chain(dilation_list.into_iter().map(move |dilation| Conv2Options {
+                                dilation: dilation.into_dimension(),
+                                ..Conv2Options::default()
+                            }))
+                            .map(move |options| (filter, options))
+                    })
+                    .collect::<Vec<_>>();
+                let batch_size_inputs_outputs_list = Arc::new(
+                    std::iter::once((1, 1, 1))
+                        .chain(
+                            batch_size_list
+                                .into_iter()
+                                .flat_map(move |x| [(x, 1, 1), (1, x, 1), (1, 1, x)]),
+                        )
+                        .collect::<Vec<_>>(),
+                );
+                let output_shapes = output_size_list
+                    .into_iter()
+                    .flat_map(move |oh| output_size_list.into_iter().map(move |ow| (oh, ow)))
+                    .collect::<Vec<_>>();
+                macro_for!($T in [bf16, f32] {
+                    let ignore = device.is_device()
+                    && !features.contains(&features_for_scalar($T::scalar_type()));
+                    let scalar_name = $T::scalar_type().name();
+                    for (filter, options) in filter_conv2_options_list.iter() {
+                        let filter = *filter;
+                        let [fh, fw] = filter;
+                        let Conv2Options {
+                            padding,
+                            stride,
+                            dilation,
+                        } = options.clone();
+                        let (ph, pw) = padding.into_pattern();
+                        let (sh, sw) = stride.into_pattern();
+                        let (dh, dw) = dilation.into_pattern();
+                        let conv2_name = conv2_string(filter, &options);
+                        let input_shapes = Arc::new(output_shapes.iter().copied().filter_map(move |output_shape| {
+                            Some(options.input_shape(output_shape.into_dimension(), &filter.into_dimension())?.into_pattern())
+                        }).collect::<Vec<_>>());
+                        tests.extend([
+                            {
+                                let batch_size_inputs_outputs_list = batch_size_inputs_outputs_list.clone();
+                                let input_shapes = input_shapes.clone();
+                                device_test(device, &format!("im2col_conv2_{scalar_name}_{conv2_name}"), move |device| {
+                                    let im2col_options = Im2ColConv2Options {
+                                        filter,
+                                        padding: [ph, pw],
+                                        stride: [sh, sw],
+                                        dilation: [dh, dw],
+                                    };
+                                    for (batch_size, inputs, outputs) in batch_size_inputs_outputs_list.iter().copied() {
+                                        for (ih, iw) in input_shapes.iter().copied() {
+                                            im2col_conv2::<$T>(device, [batch_size, inputs, ih, iw], &im2col_options);
+                                        }
+                                    }
+                                }).with_ignored_flag(ignore)
+                            },
+                            {
+                                let batch_size_inputs_outputs_list = batch_size_inputs_outputs_list.clone();
+                                let input_shapes = input_shapes.clone();
+                                device_test(device, &format!("col2im_conv2_{scalar_name}_{conv2_name}"), move |device| {
+                                    let im2col_options = Im2ColConv2Options {
+                                        filter,
+                                        padding: [ph, pw],
+                                        stride: [sh, sw],
+                                        dilation: [dh, dw],
+                                    };
+                                    for (batch_size, inputs, outputs) in batch_size_inputs_outputs_list.iter().copied() {
+                                        for (ih, iw) in input_shapes.iter().copied() {
+                                            col2im_conv2::<$T>(device, [batch_size, inputs, ih, iw], &im2col_options);
+
+                                        }
+                                    }
+                                }).with_ignored_flag(ignore)
+                            },
+                            {
+                                let batch_size_inputs_outputs_list = batch_size_inputs_outputs_list.clone();
+                                let input_shapes = input_shapes.clone();
+                                let options = options.clone();
+                                device_test(device, &format!("conv2_im2col_{scalar_name}_{conv2_name}"), move |device| {
+                                    for (batch_size, inputs, outputs) in batch_size_inputs_outputs_list.iter().copied() {
+                                        for (ih, iw) in input_shapes.iter().copied() {
+                                            conv2::<$T>(device, [batch_size, inputs, ih, iw], outputs, filter, &options, ConvAlg::Im2Col);
+                                        }
+                                    }
+                                }).with_ignored_flag(ignore)
+                            },
+                        ]);
+                        if $T::scalar_type() == ScalarType::F32 && device.is_host() && options.is_default() {
+                            tests.extend([
+                                {
+                                    let batch_size_inputs_outputs_list = batch_size_inputs_outputs_list.clone();
+                                    let input_shapes = input_shapes.clone();
+                                    let options = options.clone();
+                                    device_test(device, &format!("conv2_direct_{scalar_name}_{conv2_name}"), move |device| {
+                                        for (batch_size, inputs, outputs) in batch_size_inputs_outputs_list.iter().copied() {
+                                            for (ih, iw) in input_shapes.iter().copied() {
+                                                conv2::<$T>(device, [batch_size, inputs, ih, iw], outputs, filter, &options, ConvAlg::Direct);
+                                            }
+                                        }
+                                    })
+                                },
+                                {
+                                    let batch_size_inputs_outputs_list = batch_size_inputs_outputs_list.clone();
+                                    let input_shapes = input_shapes.clone();
+                                    let options = options.clone();
+                                    device_test(device, &format!("conv2_direct_backward_input_{scalar_name}_{conv2_name}"), move |device| {
+                                        for (batch_size, inputs, outputs) in batch_size_inputs_outputs_list.iter().copied() {
+                                            for (ih, iw) in input_shapes.iter().copied() {
+                                                conv2_backward_input::<$T>(device, [batch_size, inputs, ih, iw], outputs, filter, &options, ConvAlg::Direct);
+                                            }
+                                        }
+                                    })
+                                },
+                                {
+                                    let batch_size_inputs_outputs_list = batch_size_inputs_outputs_list.clone();
+                                    let input_shapes = input_shapes.clone();
+                                    let options = options.clone();
+                                    device_test(device, &format!("conv2_direct_backward_weight_{scalar_name}_{conv2_name}"), move |device| {
+                                        for (batch_size, inputs, outputs) in batch_size_inputs_outputs_list.iter().copied() {
+                                            for (ih, iw) in input_shapes.iter().copied() {
+                                                conv2_backward_weight::<$T>(device, [batch_size, inputs, ih, iw], outputs, filter, &options, ConvAlg::Direct);
+                                            }
+                                        }
+                                    })
+                                },
+                            ]);
                         }
-                    }).with_ignored_flag(ignore),
-                    device_test(device, &format!("col2im_conv2_{}", $T::scalar_type().name()), move |device| {
-                        let options = Im2ColConv2Options {
-                            filter: [5, 5],
-                            .. Default::default()
-                        };
-                        for input_shape in input_shapes {
-                            col2im_conv2::<$T>(device, input_shape, &options);
-                        }
-                    }).with_ignored_flag(ignore),
-                ]);
-            });
+                    }
+                });
+            }
             macro_for!($T in [bf16, f32] {
                 let ignore = device.is_device()
                 && !features.contains(&features_for_scalar($T::scalar_type()));
@@ -970,14 +1109,395 @@ mod learn {
             check_approx_eq(dx_host.view().into(), dx_device.view().into(), None);
         }
 
+        fn conv2_direct_naive<T: Scalar>(
+            x: ArrayView4<T>,
+            w: ArrayView4<T>,
+            options: &Conv2Options,
+        ) -> Array4<T> {
+            let (bs, ic, ih, iw) = x.dim();
+            let (oc, _ic, fh, fw) = w.dim();
+            let (oh, ow) = options
+                .output_shape([ih, iw].into_dimension(), &[fh, fw].into_dimension())
+                .unwrap()
+                .into_pattern();
+            let Conv2Options {
+                padding,
+                dilation,
+                stride,
+            } = options;
+            let (ph, pw) = padding.into_pattern();
+            let (sh, sw) = stride.into_pattern();
+            let (dh, dw) = dilation.into_pattern();
+            let mut y = Array::zeros([bs, oc, oh, ow]);
+            for bid in 0..bs {
+                for cidy in 0..oc {
+                    for cidx in 0..ic {
+                        for hidy in 0..oh {
+                            for widy in 0..ow {
+                                for fi in 0..fh {
+                                    let hidx =
+                                        -(ph as isize) + (sh * hidy) as isize + (dh * fi) as isize;
+                                    if (0..ih as isize).contains(&hidx) {
+                                        for fj in 0..fw {
+                                            let widx = -(pw as isize)
+                                                + (sw * widy) as isize
+                                                + (dw * fj) as isize;
+                                            if (0..iw as isize).contains(&widx) {
+                                                y[(bid, cidy, hidy, widy)] += x
+                                                    [(bid, cidx, hidx as usize, widx as usize)]
+                                                    * w[(cidy, cidx, fi, fj)];
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            y
+        }
+
+        #[derive(Debug, Copy, Clone)]
+        enum ConvAlg {
+            Im2Col,
+            Direct,
+        }
+
+        fn conv2<T: Scalar>(
+            device: &Device,
+            x_shape: [usize; 4],
+            outputs: usize,
+            filter: [usize; 2],
+            options: &Conv2Options,
+            alg: ConvAlg,
+        ) {
+            let [bs, inputs, ih, iw] = x_shape;
+            let [fh, fw] = filter;
+            let w_shape = [outputs, inputs, fh, fw];
+            let x_shape = x_shape.into_dimension();
+            let w_shape = w_shape.into_dimension();
+            let x_host = Array::from_vec(
+                (1..=10)
+                    .cycle()
+                    .map(|x| T::from_usize(x).unwrap())
+                    .take(x_shape.size())
+                    .collect(),
+            )
+            .into_shape(x_shape)
+            .unwrap();
+            let w_host = Array::from_vec(
+                (1..=10)
+                    .cycle()
+                    .map(|x| T::from_usize(x).unwrap())
+                    .take(w_shape.size())
+                    .collect(),
+            )
+            .into_shape(w_shape)
+            .unwrap();
+            let x_device = TensorView::try_from(x_host.view())
+                .unwrap()
+                .to_device(device.clone())
+                .unwrap();
+            let w_device = TensorView::try_from(w_host.view())
+                .unwrap()
+                .to_device(device.clone())
+                .unwrap();
+            let y_host = Tensor::from(conv2_direct_naive(x_host.view(), w_host.view(), options));
+            let y_device = match alg {
+                ConvAlg::Im2Col => autograph::learn::neural_network::layer::conv2_im2col_forward(
+                    x_device.view().into(),
+                    w_device.view().into(),
+                    options,
+                )
+                .unwrap(),
+                ConvAlg::Direct => autograph::learn::neural_network::layer::conv2_direct_forward(
+                    x_device.view().into(),
+                    w_device.view().into(),
+                    options,
+                )
+                .unwrap(),
+            };
+            let y_device = y_device
+                .try_into_tensor::<T>()
+                .unwrap()
+                .into_device(Device::host())
+                .unwrap();
+            let epsilon = if T::scalar_type() == ScalarType::BF16 {
+                Some(ScalarElem::F32((fh * fw) as f32))
+            } else {
+                None
+            };
+            check_approx_eq(
+                y_host.view().into_dyn().into(),
+                y_device.view().into_dyn().into(),
+                epsilon,
+            );
+        }
+
+        fn conv2_direct_backward_input_naive<T: Scalar>(
+            w: ArrayView4<T>,
+            dy: ArrayView4<T>,
+            options: &Conv2Options,
+        ) -> Array4<T> {
+            let (oc, ic, fh, fw) = w.dim();
+            let (bs, _oc, oh, ow) = dy.dim();
+            assert_eq!(oc, _oc);
+            let (ih, iw) = options
+                .input_shape([oh, ow].into_dimension(), &[fh, fw].into_dimension())
+                .unwrap()
+                .into_pattern();
+            let Conv2Options {
+                padding,
+                dilation,
+                stride,
+            } = options;
+            let (ph, pw) = padding.into_pattern();
+            let (sh, sw) = stride.into_pattern();
+            let (dh, dw) = dilation.into_pattern();
+            let mut dx = Array::zeros([bs, ic, ih, iw]);
+            for bid in 0..bs {
+                for cidx in 0..ic {
+                    for cidy in 0..oc {
+                        for hidy in 0..oh {
+                            for widy in 0..ow {
+                                for fi in 0..fh {
+                                    let hidx =
+                                        -(ph as isize) + (sh * hidy) as isize + (dh * fi) as isize;
+                                    if (0..ih as isize).contains(&hidx) {
+                                        for fj in 0..fw {
+                                            let widx = -(pw as isize)
+                                                + (sw * widy) as isize
+                                                + (dw * fj) as isize;
+                                            if (0..iw as isize).contains(&widx) {
+                                                dx[(bid, cidx, hidx as usize, widx as usize)] += w
+                                                    [(cidy, cidx, fi, fj)]
+                                                    * dy[(bid, cidy, hidy, widy)];
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            dx
+        }
+
+        fn conv2_backward_input<T: Scalar>(
+            device: &Device,
+            x_shape: [usize; 4],
+            outputs: usize,
+            filter: [usize; 2],
+            options: &Conv2Options,
+            alg: ConvAlg,
+        ) {
+            let [bs, inputs, ih, iw] = x_shape;
+            let [fh, fw] = filter;
+            let w_shape = [outputs, inputs, fh, fw];
+            let x_shape = x_shape.into_dimension();
+            let w_shape = w_shape.into_dimension();
+            let (oh, ow) = options
+                .output_shape([ih, iw].into_dimension(), &filter.into_dimension())
+                .unwrap()
+                .into_pattern();
+            let y_shape = [bs, outputs, oh, ow].into_dimension();
+            let w_host = Array::from_vec(
+                (1..=10)
+                    .cycle()
+                    .map(|x| T::from_usize(x).unwrap())
+                    .take(w_shape.size())
+                    .collect(),
+            )
+            .into_shape(w_shape)
+            .unwrap();
+            let dy_host = Array::from_vec(
+                (1..=10)
+                    .cycle()
+                    .map(|x| T::from_usize(x).unwrap())
+                    .take(y_shape.size())
+                    .collect(),
+            )
+            .into_shape(y_shape)
+            .unwrap();
+            let w_device = TensorView::try_from(w_host.view())
+                .unwrap()
+                .to_device(device.clone())
+                .unwrap();
+            let dy_device = TensorView::try_from(dy_host.view())
+                .unwrap()
+                .to_device(device.clone())
+                .unwrap();
+            let dx_host = Tensor::from(conv2_direct_backward_input_naive(
+                w_host.view(),
+                dy_host.view(),
+                options,
+            ));
+            let dx_device = match alg {
+                ConvAlg::Im2Col => todo!(),
+                ConvAlg::Direct => {
+                    autograph::learn::neural_network::layer::conv2_direct_backward_input(
+                        w_device.view().into(),
+                        dy_device.view().into(),
+                        options,
+                    )
+                    .unwrap()
+                }
+            };
+            let dx_device = dx_device
+                .try_into_tensor::<T>()
+                .unwrap()
+                .into_device(Device::host())
+                .unwrap();
+            let epsilon = if T::scalar_type() == ScalarType::BF16 {
+                Some(ScalarElem::F32((fh * fw) as f32))
+            } else {
+                None
+            };
+            check_approx_eq(
+                dx_host.view().into_dyn().into(),
+                dx_device.view().into_dyn().into(),
+                epsilon,
+            );
+        }
+
+        fn conv2_direct_backward_weight_naive<T: Scalar>(
+            x: ArrayView4<T>,
+            dy: ArrayView4<T>,
+            filter: [usize; 2],
+            options: &Conv2Options,
+        ) -> Array4<T> {
+            let (bs, ic, ih, iw) = x.dim();
+            let (_bs, oc, oh, ow) = dy.dim();
+            assert_eq!(bs, _bs);
+            let [fh, fw] = filter;
+            let Conv2Options {
+                padding,
+                dilation,
+                stride,
+            } = options;
+            let (ph, pw) = padding.into_pattern();
+            let (sh, sw) = stride.into_pattern();
+            let (dh, dw) = dilation.into_pattern();
+            let mut w_grad = Array::zeros([oc, ic, fh, fw]);
+            for bid in 0..bs {
+                for cidx in 0..ic {
+                    for cidy in 0..oc {
+                        for hidy in 0..oh {
+                            for widy in 0..ow {
+                                for fi in 0..fh {
+                                    let hidx =
+                                        -(ph as isize) + (sh * hidy) as isize + (fi * dh) as isize;
+                                    if (0..ih as isize).contains(&hidx) {
+                                        for fj in 0..fw {
+                                            let widx = -(pw as isize)
+                                                + (sw * widy) as isize
+                                                + (fj * dw) as isize;
+                                            if (0..iw as isize).contains(&widx) {
+                                                w_grad[(cidy, cidx, fi, fj)] += x
+                                                    [(bid, cidx, hidx as usize, widx as usize)]
+                                                    * dy[(bid, cidy, hidy, widy)];
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            w_grad
+        }
+
+        fn conv2_backward_weight<T: Scalar>(
+            device: &Device,
+            x_shape: [usize; 4],
+            outputs: usize,
+            filter: [usize; 2],
+            options: &Conv2Options,
+            alg: ConvAlg,
+        ) {
+            dbg!(x_shape);
+            let [bs, inputs, ih, iw] = x_shape;
+            let [fh, fw] = filter;
+            let w_shape = [outputs, inputs, fh, fw];
+            let x_shape = x_shape.into_dimension();
+            let w_shape = w_shape.into_dimension();
+            let (oh, ow) = options
+                .output_shape([ih, iw].into_dimension(), &filter.into_dimension())
+                .unwrap()
+                .into_pattern();
+            let y_shape = [bs, outputs, oh, ow].into_dimension();
+            let x_host = Array::from_vec(
+                (1..=10)
+                    .cycle()
+                    .map(|x| T::from_usize(x).unwrap())
+                    .take(x_shape.size())
+                    .collect(),
+            )
+            .into_shape(x_shape)
+            .unwrap();
+            let dy_host = Array::from_vec(
+                (1..=10)
+                    .cycle()
+                    .map(|x| T::from_usize(x).unwrap())
+                    .take(y_shape.size())
+                    .collect(),
+            )
+            .into_shape(y_shape)
+            .unwrap();
+            let x_device = TensorView::try_from(x_host.view())
+                .unwrap()
+                .to_device(device.clone())
+                .unwrap();
+            let dy_device = TensorView::try_from(dy_host.view())
+                .unwrap()
+                .to_device(device.clone())
+                .unwrap();
+            let dw_host = Tensor::from(conv2_direct_backward_weight_naive(
+                x_host.view(),
+                dy_host.view(),
+                filter,
+                options,
+            ));
+            let dw_device = match alg {
+                ConvAlg::Im2Col => todo!(),
+                ConvAlg::Direct => {
+                    autograph::learn::neural_network::layer::conv2_direct_backward_weight(
+                        x_device.view().into(),
+                        dy_device.view().into(),
+                        filter,
+                        options,
+                    )
+                    .unwrap()
+                }
+            };
+            let dw_device = dw_device
+                .try_into_tensor::<T>()
+                .unwrap()
+                .into_device(Device::host())
+                .unwrap();
+            let epsilon = if T::scalar_type() == ScalarType::BF16 {
+                Some(ScalarElem::F32(inputs as f32))
+            } else {
+                None
+            };
+            check_approx_eq(
+                dw_host.view().into_dyn().into(),
+                dw_device.view().into_dyn().into(),
+                epsilon,
+            );
+        }
+
         fn im2col_conv2<T: Scalar>(
             device: &Device,
-            input_shape: [usize; 4],
+            x_shape: [usize; 4],
             options: &Im2ColConv2Options,
         ) {
-            let len = input_shape.iter().product();
+            let len = x_shape.iter().product();
             let x_vec: Vec<T> = (1..=len).map(|x| T::from_usize(x).unwrap()).collect();
-            let x_array = Array::from(x_vec).into_shape(input_shape).unwrap();
+            let x_array = Array::from(x_vec).into_shape(x_shape).unwrap();
             let x_host = Tensor::from(x_array);
             let x_device = x_host.to_device(device.clone()).unwrap();
             let y_host = x_host.im2col_conv2(options).unwrap();

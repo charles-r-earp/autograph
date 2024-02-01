@@ -14,7 +14,7 @@ use autograph::{
             optimizer::{Optimizer, SGD},
         },
     },
-    ndarray::{ArcArray, ArcArray1, Axis, Dimension, Ix4},
+    ndarray::{self, ArcArray, ArcArray1, Axis, Dimension, Ix4},
     tensor::{CowTensor, ScalarTensor, Tensor, Tensor1, Tensor4},
 };
 use clap::{Parser, ValueEnum};
@@ -179,12 +179,11 @@ fn main() -> Result<()> {
     let start = Instant::now();
     for epoch in 1..=options.epochs {
         let epoch_start = Instant::now();
-        let train_iter = batches(
+        let train_iter = shuffled_batches(
             train_images.clone(),
             train_classes.clone(),
             device.clone(),
             options.train_batch_size,
-            true,
         );
         let train_stats = train(
             &mut model,
@@ -202,7 +201,6 @@ fn main() -> Result<()> {
             test_classes.clone(),
             device.clone(),
             options.test_batch_size,
-            false,
         );
         let test_stats = test(&model, image_scale, test_iter)?;
         let test_count = test_stats.count;
@@ -223,43 +221,47 @@ fn batches(
     classes: ArcArray1<u8>,
     device: Device,
     batch_size: usize,
-    shuffle: bool,
 ) -> impl Iterator<Item = Result<(Tensor4<u8>, Tensor1<u8>)>> {
-    let (sender, receiver) = crossbeam_channel::bounded(0);
-    std::thread::spawn(move || {
-        let (count, depth, height, width) = images.dim();
-        if shuffle {
-            let mut index_iter = sample(&mut thread_rng(), count, count).into_iter();
-            for _ in 0..count / batch_size {
-                let mut output_images =
-                    Vec::<u8>::with_capacity(batch_size * depth * height * width);
-                let mut output_classes = Vec::<u8>::with_capacity(batch_size);
-                for index in index_iter.by_ref().take(batch_size) {
-                    output_images
-                        .extend_from_slice(images.index_axis(Axis(0), index).as_slice().unwrap());
-                    output_classes.push(classes[index]);
-                }
-                let images = Tensor::from(output_images)
-                    .into_shape([batch_size, depth, height, width])
-                    .unwrap()
-                    .into_device(device.clone());
-                let classes = Tensor::from(output_classes).into_device(device.clone());
-                let result = images.and_then(|images| Ok((images, classes?)));
-                sender.send(result).unwrap();
-            }
-        } else {
-            for (images, classes) in images
-                .axis_chunks_iter(Axis(0), batch_size)
-                .zip(classes.axis_chunks_iter(Axis(0), batch_size))
-            {
-                let images = CowTensor::from(images).to_device(device.clone());
-                let classes = CowTensor::from(classes).to_device(device.clone());
-                let result = images.and_then(|images| Ok((images, classes?)));
-                sender.send(result).unwrap();
-            }
+    let (count, _inputs, _height, _width) = images.dim();
+    (0..count).step_by(batch_size).map(move |index| {
+        let end = (index + batch_size).min(count);
+        let images = images.slice_axis(
+            Axis(0),
+            ndarray::Slice::new(index as isize, Some(end as isize), 1),
+        );
+        let classes = classes.slice_axis(
+            Axis(0),
+            ndarray::Slice::new(index as isize, Some(end as isize), 1),
+        );
+        let images = CowTensor::from(images).to_device(device.clone());
+        let classes = CowTensor::from(classes).to_device(device.clone());
+        images.and_then(|images| Ok((images, classes?)))
+    })
+}
+
+fn shuffled_batches(
+    images: ArcArray<u8, Ix4>,
+    classes: ArcArray1<u8>,
+    device: Device,
+    batch_size: usize,
+) -> impl Iterator<Item = Result<(Tensor4<u8>, Tensor1<u8>)>> {
+    let (count, inputs, height, width) = images.dim();
+    let mut index_iter = sample(&mut thread_rng(), count, count).into_iter();
+    (0..count).step_by(batch_size).map(move |index| {
+        let batch_size = (index..count).take(batch_size).len();
+        let mut output_images = Vec::<u8>::with_capacity(batch_size * inputs * height * width);
+        let mut output_classes = Vec::<u8>::with_capacity(batch_size);
+        for index in index_iter.by_ref().take(batch_size) {
+            output_images.extend_from_slice(images.index_axis(Axis(0), index).as_slice().unwrap());
+            output_classes.push(classes[index]);
         }
-    });
-    receiver.into_iter()
+        let images = Tensor::from(output_images)
+            .into_shape([batch_size, inputs, height, width])
+            .unwrap()
+            .into_device(device.clone());
+        let classes = Tensor::from(output_classes).into_device(device.clone());
+        images.and_then(|images| Ok((images, classes?)))
+    })
 }
 
 #[derive(Default)]

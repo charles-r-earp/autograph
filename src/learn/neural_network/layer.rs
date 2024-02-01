@@ -10,8 +10,8 @@ use crate::{
         MaxPool2Backward as _, MaxPool2Options,
     },
     tensor::{
-        ScalarArcTensor, ScalarArcTensor4, ScalarTensor, ScalarTensorBase, Tensor, TensorView,
-        TensorViewMut,
+        ScalarArcTensor, ScalarArcTensor4, ScalarTensor, ScalarTensor4, ScalarTensorBase,
+        ScalarTensorView4, Tensor, TensorView, TensorViewMut,
     },
 };
 use anyhow::{bail, Error, Result};
@@ -28,10 +28,11 @@ use krnl::{
 };
 #[cfg(feature = "device")]
 use paste::paste;
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
 #[cfg(feature = "device")]
 use krnl::macros::module;
-use ndarray::{linalg::Dot, Array, Dimension, IntoDimension, Ix1, Ix2};
+use ndarray::{linalg::Dot, Dimension, IntoDimension, Ix1, Ix2};
 
 use rand::{
     distributions::{Distribution, Uniform},
@@ -40,6 +41,8 @@ use rand::{
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 use std::any::Any;
+
+mod conv_direct;
 
 /// Layer builders.
 pub mod builder {
@@ -678,17 +681,131 @@ impl<D: Dimension, A> Layer for Conv<D, A> {
     }
 }
 
-struct ConvOptions<D: Dimension> {
-    padding: D,
-    stride: D,
-    dilation: D,
+#[doc(hidden)]
+#[derive(Clone, Debug)]
+pub struct ConvOptions<D: Dimension> {
+    pub padding: D,
+    pub stride: D,
+    pub dilation: D,
 }
 
-fn conv2(
+impl<D: Dimension> ConvOptions<D> {
+    #[inline]
+    pub fn is_default(&self) -> bool {
+        self.padding.slice().iter().all(|x| *x == 0)
+            && self.stride.slice().iter().all(|x| *x == 1)
+            && self.dilation.slice().iter().all(|x| *x == 1)
+    }
+    #[inline]
+    pub fn input_shape(&self, output_shape: D, filter: &D) -> Option<D> {
+        let Self {
+            padding,
+            stride,
+            dilation,
+        } = self;
+        let mut shape = output_shape;
+        for ((a, f), (p, (s, d))) in shape
+            .slice_mut()
+            .iter_mut()
+            .zip(filter.slice().iter().copied())
+            .zip(
+                padding.slice().iter().copied().zip(
+                    stride
+                        .slice()
+                        .iter()
+                        .copied()
+                        .zip(dilation.slice().iter().copied()),
+                ),
+            )
+        {
+            *a = (d as isize * (f as isize - 1) + 1 + s as isize * (*a as isize - 1)
+                - 2 * p as isize)
+                .try_into()
+                .ok()?;
+            if *a == 0 {
+                return None;
+            }
+        }
+        Some(shape)
+    }
+    #[inline]
+    pub fn output_shape(&self, input_shape: D, filter: &D) -> Option<D> {
+        let Self {
+            padding,
+            stride,
+            dilation,
+        } = self;
+        let mut shape = input_shape;
+        for ((a, f), (p, (s, d))) in shape
+            .slice_mut()
+            .iter_mut()
+            .zip(filter.slice().iter().copied())
+            .zip(
+                padding.slice().iter().copied().zip(
+                    stride
+                        .slice()
+                        .iter()
+                        .copied()
+                        .zip(dilation.slice().iter().copied()),
+                ),
+            )
+        {
+            *a = ((*a as isize + 2 * p as isize - d as isize * (f as isize - 1) - 1) / s as isize
+                + 1)
+            .try_into()
+            .ok()?;
+            if *a == 0 {
+                return None;
+            }
+        }
+        Some(shape)
+    }
+}
+
+impl<D: Dimension> Default for ConvOptions<D> {
+    fn default() -> Self {
+        let zeros = D::zeros(D::NDIM.unwrap_or_default());
+        let mut ones = zeros.clone();
+        ones.slice_mut().iter_mut().for_each(|x| *x = 1);
+        Self {
+            padding: zeros,
+            stride: ones.clone(),
+            dilation: ones,
+        }
+    }
+}
+
+#[doc(hidden)]
+pub type Conv2Options = ConvOptions<Ix2>;
+
+fn conv2<A>(
     input: Variable4,
     weight: Variable4,
-    options: ConvOptions<Ix2>,
+    options: &ConvOptions<Ix2>,
     bias: Option<Variable1>,
+    activation: &A,
+) -> Result<Variable4>
+where
+    A: Forward<Variable4, Output = Variable4>,
+{
+    let mut output = if input.device().is_host()
+        && options.is_default()
+        && input.scalar_type() == ScalarType::F32
+    {
+        conv_direct::conv2_direct(input, weight, options)?
+    } else {
+        conv2_im2col(input, weight, options)?
+    };
+    if let Some(bias) = bias.as_ref() {
+        output.add_assign(bias)?;
+    }
+    output.forward(activation)
+}
+
+fn conv2_im2col(
+    input: Variable4,
+    weight: Variable4,
+    options: &ConvOptions<Ix2>,
 ) -> Result<Variable4> {
     let (batch_size, inputs, ih, iw) = input.dim();
     let (outputs, inputs2, fh, fw) = weight.dim();
@@ -726,40 +843,633 @@ fn conv2(
     }
     if let Some(node) = weight.node() {
         builder.edge(node, move |output_grad| {
-            let weight_grad = output_grad
+            Ok(output_grad
                 .t()
                 .dot(&im2col_matrix)?
                 .into_shape([outputs, inputs, fh, fw])
-                .unwrap();
-            Ok(weight_grad.into())
-        });
-    }
-    let output_matrix = builder.build(output_matrix.into());
-    let mut builder = Variable::builder();
-    if let Some(node) = output_matrix.node() {
-        builder.edge(node, move |output_grad| {
-            Ok(output_grad
-                .permuted_axes([0, 2, 3, 1])
-                .into_owned()?
-                .into_shape([batch_size * oh * ow, outputs])
                 .unwrap()
                 .into())
         });
     }
-    let output = output_matrix
-        .value()
-        .view()
+    let output_matrix = builder.build(output_matrix.into());
+    output_matrix
         .into_shape([batch_size, oh, ow, outputs])
         .unwrap()
         .permuted_axes([0, 3, 1, 2])
-        .to_owned()?;
-    let mut output = builder.build(output.into());
-    if let Some(bias) = bias {
-        output.add_assign(&bias)?;
-    }
-    Ok(output)
+        .to_standard_layout()
 }
 
+#[doc(hidden)]
+pub fn conv2_im2col_forward(
+    input: ScalarTensorView4,
+    weight: ScalarTensorView4,
+    options: &ConvOptions<Ix2>,
+) -> Result<ScalarTensor4> {
+    let (batch_size, inputs, ih, iw) = input.dim();
+    let (outputs, inputs2, fh, fw) = weight.dim();
+    debug_assert_eq!(inputs, inputs2);
+    let (ph, pw) = options.padding.into_pattern();
+    let (sh, sw) = options.stride.into_pattern();
+    let (dh, dw) = options.dilation.into_pattern();
+    let options = Im2ColConv2Options {
+        filter: [fh, fw],
+        padding: [ph, pw],
+        stride: [sh, sw],
+        dilation: [dh, dw],
+    };
+    let [oh, ow] = options.output_shape([ih, iw]);
+    let im2col_matrix = input.im2col_conv2(&options)?;
+    let weight_matrix = weight.into_shape([outputs, inputs * fh * fw]).unwrap();
+    let output_matrix = im2col_matrix.dot(&weight_matrix.t())?;
+    let y = output_matrix
+        .into_shape([batch_size, oh, ow, outputs])
+        .unwrap();
+    y.permuted_axes([0, 3, 1, 2]).into_standard_layout()
+}
+
+/*
+fn conv2_direct(input: Variable4, weight: Variable4, options: &Conv2Options) -> Result<Variable4>,
+{
+    //use once_cell::sync::OnceCell;
+
+    let (batch_size, inputs, ih, iw) = input.dim();
+    let (outputs, inputs, fh, fw) = weight.dim();
+
+    let bias_value = bias.as_ref().map(|bias| bias.value().view());
+    if bias_value.is_some() {
+        todo!();
+    }
+
+    let mut builder = Variable::builder();
+
+    /*if input.node().is_some() && std::env::var("BACKWARD_INPUT").is_err() {
+        use std::sync::Arc;
+        let output_grad_cell = Arc::new(OnceCell::new());
+        if let Some(node) = input.node() {
+            let output_grad_cell = output_grad_cell.clone();
+            let weight_matrix = weight
+                .value()
+                .clone()
+                .into_shape([outputs, inputs * fh * fw])
+                .unwrap();
+            builder.edge(node, move |output_grad| {
+                let (batch_size, outputs, oh, ow) = output_grad.dim();
+                let options = Col2ImConv2Options {
+                    shape: [oh, ow],
+                    filter: [fh, fw],
+                    ..Col2ImConv2Options::default()
+                };
+                let output_grad = output_grad_cell.get_or_try_init(|| -> Result<_> {
+                    Ok(output_grad
+                        .permuted_axes([0, 2, 3, 1])
+                        .to_owned()?
+                        .into_shape([batch_size * oh * ow, outputs])
+                        .unwrap())
+                })?;
+                output_grad
+                    .dot(&weight_matrix)?
+                    .col2im_conv2(&options)
+                    .map(Into::into)
+            });
+        }
+        if let Some(node) = weight.node() {
+            let input = input.value().clone();
+            let (ph, pw) = options.padding.into_pattern();
+            let (sh, sw) = options.stride.into_pattern();
+            let (dh, dw) = options.dilation.into_pattern();
+            let options = Im2ColConv2Options {
+                filter: [fh, fw],
+                padding: [ph, pw],
+                stride: [sh, sw],
+                dilation: [dh, dw],
+            };
+            let output_grad_cell = output_grad_cell.clone();
+            builder.edge(node, move |output_grad| {
+                let (batch_size, outputs, oh, ow) = output_grad.dim();
+                let im2col_matrix = input.im2col_conv2(&options)?;
+                let output_grad = output_grad_cell.get_or_try_init(|| -> Result<_> {
+                    Ok(output_grad
+                        .permuted_axes([0, 2, 3, 1])
+                        .to_owned()?
+                        .into_shape([batch_size * oh * ow, outputs])
+                        .unwrap())
+                })?;
+                Ok(output_grad
+                    .t()
+                    .dot(&im2col_matrix)?
+                    .into_shape([outputs, inputs, fh, fw])
+                    .unwrap()
+                    .into())
+            });
+        }
+    } else {*/
+    if let Some(node) = input.node() {
+        let weight = weight.value().clone();
+        let options = options.clone();
+        builder.edge(node, move |output_grad| {
+            conv2_direct_backward_input(weight.view(), output_grad.view(), &options).map(Into::into)
+        });
+    }
+    if let Some(bias) = bias.as_ref() {
+        if let Some(node) = bias.node() {
+            todo!();
+        }
+    }
+    if let Some(node) = weight.node() {
+        let input = input.value().clone();
+        let options = options.clone();
+        builder.edge(node, move |output_grad| {
+            conv2_direct_backward_weight(input.view(), output_grad.view(), [fh, fw], &options)
+                .map(Into::into)
+        });
+    }
+    let output = conv2_direct_forward(
+        input.value().view(),
+        weight.value().view(),
+        bias_value,
+        options,
+    )?;
+    builder.build(output.into()).forward(activation)
+}*/
+
+#[doc(hidden)]
+pub fn conv2_direct_forward(
+    input: ScalarTensorView4,
+    weight: ScalarTensorView4,
+    options: &Conv2Options,
+) -> Result<ScalarTensor4> {
+    conv_direct::conv2_direct_forward(input, weight, options)
+    /*macro_for!($T in [bf16, f32] {
+        if $T::scalar_type() == input.scalar_type() {
+            let input = input.try_into_tensor_view::<$T>().unwrap();
+            let weight = weight.try_into_tensor_view::<$T>().unwrap();
+            let bias = if let Some(bias) = bias {
+                Some(bias.try_into_tensor_view::<$T>().unwrap())
+            } else {
+                None
+            };
+            if let Some((input, weight)) = input.as_array().zip(weight.as_array()) {
+                let bias = if let Some(bias) = bias.as_ref() {
+                    Some(bias.as_array().unwrap())
+                } else {
+                    None
+                };
+                return Ok(Tensor::from(conv2_direct_host(input, weight, bias, options)).into());
+            }
+            todo!();
+        }
+    });
+    todo!();*/
+}
+
+/*
+fn conv2_direct_host<T: Scalar>(
+    x: ArrayView4<T>,
+    w: ArrayView4<T>,
+    b: Option<ArrayView1<T>>,
+    options: &ConvOptions<Ix2>,
+) -> Array4<T> {
+    let start = Instant::now();
+    let (bs, ic, ih, iw) = x.dim();
+    let (oc, _ic, fh, fw) = w.dim();
+    debug_assert_eq!(ic, _ic);
+    let Conv2Options {
+        padding,
+        stride,
+        dilation,
+    } = options;
+    let (ph, pw) = padding.into_pattern();
+    let (sh, sw) = stride.into_pattern();
+    let (dh, dw) = dilation.into_pattern();
+    let (oh, ow) = options
+        .output_shape([ih, iw].into_dimension(), &[fh, fw].into_dimension())
+        .unwrap()
+        .into_pattern();
+    //let default_padding = [ph, pw] == [0, 0];
+    //let default_stride_dilation = [sh, sw] == [1, 1] && [dh, dw] == [1, 1];
+    let mut y = Array4::<T>::zeros([bs, oc, oh, ow]);
+    let sync_y = SyncRawArrayViewMut::try_from(y.view_mut()).unwrap();
+    let threads = rayon::current_num_threads();
+    let threads_oc = oc.min(threads);
+    let h_blocks = (0..oh).step_by(8).len();
+    let w_blocks = (0..ow).step_by(8).len();
+    let threads_bhw = (threads / threads_oc).min(bs * h_blocks * w_blocks);
+    /*dbg!(
+        [bs, ic, oh, ow],
+        h_blocks,
+        w_blocks,
+        oc,
+        threads_oc,
+        threads_bhw
+    );*/
+    let [thy, twy] = [8, 8];
+    let [thx, twx] = [
+        dh * (fh - 1) + (thy - 1) * sh + 1,
+        dw * (fw - 1) + (twy - 1) * sw + 1,
+    ];
+    crate::tensor::parallel::broadcast(Some(threads_bhw * threads_oc), |thread_id, threads| {
+        let thread_bhwid = thread_id / threads_oc;
+        let thread_cidy = thread_id % threads_oc;
+        let mut y = sync_y.clone();
+        let mut x_tile = Array::<f32, _>::zeros([thx, twx]);
+        let mut w_tile = Array::<f32, _>::zeros([fh, fw]);
+        for bhwid in (thread_bhwid..bs * h_blocks * w_blocks).step_by(threads_bhw) {
+            let bid = bhwid / (h_blocks * w_blocks);
+            let hwid = bhwid % (h_blocks * w_blocks);
+            let h_block_id = hwid / w_blocks;
+            let w_block_id = hwid % w_blocks;
+            let hidy = h_block_id * thy;
+            let widy = w_block_id * twy;
+            for cidy in (thread_cidy..oc).step_by(threads_oc) {
+                let mut y_tile = [f32x8::default(); 8];
+                for cidx in 0..ic {
+                    for tix in 0..thx {
+                        let hidx = hidy + tix;
+                        for tjx in 0..twx {
+                            let widx = widy + tjx;
+                            let x = if hidx < ih && widx < iw {
+                                unsafe { x.uget([bid, cidx, hidx, widx]).cast() }
+                            } else {
+                                0f32
+                            };
+                            unsafe {
+                                *x_tile.uget_mut([tix, tjx]) = x;
+                            }
+                        }
+                    }
+                    for fi in 0..fh {
+                        for fj in 0..fw {
+                            unsafe {
+                                *w_tile.uget_mut([fi, fj]) = w.uget([cidy, cidx, fi, fj]).cast();
+                            }
+                        }
+                    }
+                    for fi in 0..fh {
+                        for fj in 0..fw {
+                            let w = unsafe { *w_tile.uget([fi, fj]) };
+                            let w_vec = f32x8::splat(w);
+                            unroll! { for tiy in 0 .. 8 {
+                                let tix = tiy + fi;
+                                let mut x_vec = f32x8::default();
+                                unroll! { for tjy in 0 .. 8 {
+                                    let tjx = tjy + fj;
+                                    unsafe {
+                                        x_vec.as_array_mut()[tjy] = *x_tile.uget([tix, tjx]);
+                                    }
+                                }}
+                                y_tile[tiy] = x_vec.mul_add(w_vec, y_tile[tiy]);
+                            }}
+                        }
+                    }
+                }
+                unroll! { for tiy in 0 .. 8 {
+                    let hidy = hidy + tiy;
+                    unroll! { for tjy in 0 .. 8 {
+                        let widy = widy + tjy;
+                        if hidy < oh && widy < ow {
+                            unsafe {
+                                *y.uget_mut([bid, cidy, hidy, widy]) = y_tile[tiy].as_array_mut()[tjy].cast();
+                            }
+                        }
+                    }}
+                }}
+            }
+        }
+    });
+    println!("conv2_direct {:?}: {:?}", x.shape(), start.elapsed());
+    y
+}*/
+
+#[doc(hidden)]
+pub fn conv2_direct_backward_input(
+    weight: ScalarTensorView4,
+    output_grad: ScalarTensorView4,
+    options: &ConvOptions<Ix2>,
+) -> Result<ScalarTensor4> {
+    conv_direct::conv2_direct_backward_input(weight, output_grad, options)
+}
+
+/*
+fn conv2_direct_backward_input_host<T: Scalar>(
+    w: ArrayView4<T>,
+    dy: ArrayView4<T>,
+    options: &ConvOptions<Ix2>,
+) -> Array4<T> {
+    let start = Instant::now();
+    let (oc, ic, fh, fw) = w.dim();
+    let (bs, oc, oh, ow) = dy.dim();
+    let (ih, iw) = options
+        .input_shape([oh, ow].into_dimension(), &[fh, fw].into_dimension())
+        .unwrap()
+        .into_pattern();
+    let Conv2Options {
+        padding,
+        dilation,
+        stride,
+    } = options;
+    let (ph, pw) = padding.into_pattern();
+    let (sh, sw) = stride.into_pattern();
+    let (dh, dw) = dilation.into_pattern();
+    let default_padding = [ph, pw] == [0, 0];
+    let mut dx = Array::zeros([bs, ic, ih, iw]);
+    let sync_dx = SyncRawArrayViewMut::try_from(dx.view_mut()).unwrap();
+    crate::tensor::parallel::broadcast(Some(bs), |thread_id, threads| {
+        let mut dx = sync_dx.clone();
+        let [thy, twy] = [8, 8];
+        let [thx, twx] = [
+            dh * (fh - 1) + (thy - 1) * sh + 1,
+            dw * (fw - 1) + (twy - 1) * sw + 1,
+        ];
+        let mut dx_tile = Array::<f32, _>::zeros([thx, twx]);
+        let mut w_tile = Array::<f32, _>::zeros([fh, fw]);
+        //let mut dx_vec = [f32x8::default(); 8];
+        let mut dy_tile = [f32x8::default(); 8];
+        for bid in (thread_id..bs).step_by(threads) {
+            for cidx in 0..ic {
+                for hidy in (0..oh).step_by(thy) {
+                    for widy in (0..ow).step_by(twy) {
+                        //dx_tile.iter_mut().for_each(|dx| *dx = 0f32);
+                        for cidy in 0..oc {
+                            for i in 0..fh {
+                                for j in 0..fw {
+                                    unsafe {
+                                        *w_tile.uget_mut([i, j]) =
+                                            w.uget([cidy, cidx, i, j]).cast();
+                                    }
+                                }
+                            }
+                            for (tiy, hidy) in (hidy..).take(thy).enumerate() {
+                                for (tjy, widy) in (widy..).take(twy).enumerate() {
+                                    let dy = if hidy < oh && widy < ow {
+                                        unsafe { dy.uget([bid, cidy, hidy, widy]).cast() }
+                                    } else {
+                                        0f32
+                                    };
+                                    unsafe {
+                                        dy_tile[tiy].as_array_mut()[tjy] = dy;
+                                    }
+                                }
+                            }
+                            for fi in 0..fh {
+                                for fj in 0..fw {
+                                    let w = unsafe { *w_tile.uget([fi, fj]) };
+                                    //let w = f32x8::splat(w);
+                                    /*unroll! { for tiy in 0..8 {
+                                        let tix = tiy * sh + fi * dh;
+                                        unroll! { for tjy in 0..8 {
+                                            let tjx = tjy * sw + fj * dw;
+                                            unsafe {
+                                                dx_vec[tiy].as_array_mut()[tjy] = *dx_tile.uget([tix, tjx]);
+                                            }
+                                        }}
+                                    }}*/
+                                    /*unroll! { for tiy in 0 .. 8 {
+                                        dx_vec[tiy] = w.mul_add(dy_tile[tiy], dx_vec[tiy]);
+                                        //dx_vec[tiy] += w * dy_tile[tiy];
+                                    }}*/
+                                    /*unroll! { for tiy in 0 .. 8 {
+                                        let tix = tiy * sh + fi * dh;
+                                        unroll! { for tjy in 0..8 {
+                                            let tjx = tjy * sw + fj * dw;
+                                            unsafe {
+                                                // *dx_tile.uget_mut([tix, tjx]) = dx_vec[tiy].as_array_ref()[tjy];
+                                                // *dx_tile.as_slice_mut().unwrap_unchecked().get_unchecked_mut(tix * twx + tjx) = w;
+                                            }
+                                        }}
+                                    }}*/
+                                    unroll! { for tiy in 0 .. 8 {
+                                        let tix = tiy + fi;
+                                        /*unroll! { for tjy in 0..8 {
+                                            let tjx = tjy + fj;
+                                            unsafe {
+                                                // *dx_tile.uget_mut([tix, tjx]) = dx_vec[tiy].as_array_ref()[tjy];
+                                                *dx_tile.as_slice_mut().unwrap_unchecked().get_unchecked_mut(tix * twx + tjx) = w;
+                                            }
+                                        }}*/
+                                        unsafe {
+                                            dx_tile.as_slice_mut().unwrap_unchecked().get_unchecked_mut(tix * twx..tix * twx + 8).copy_from_slice(&[w; 8]);
+                                        }
+                                    }}
+                                }
+                            }
+                        }
+                        /* if default_padding */
+                        {
+                            for (tix, hidx) in (hidy..ih).take(thx).enumerate() {
+                                for (tjx, widx) in (widy..iw).take(twx).enumerate() {
+                                    unsafe {
+                                        *dx.uget_mut([bid, cidx, hidx, widx]) +=
+                                            dx_tile.uget([tix, tjx]).cast();
+                                    }
+                                }
+                            }
+                        } /* else
+                          {
+                              for (tix, hidx) in (hidy as isize - ph as isize..ih as isize)
+                                  .take(thx)
+                                  .enumerate()
+                              {
+                                  if let Ok(hidx) = usize::try_from(hidx) {
+                                      for (tjx, widx) in (widy as isize - pw as isize..iw as isize)
+                                          .take(twx)
+                                          .enumerate()
+                                      {
+                                          if let Ok(widx) = usize::try_from(widx) {
+                                              unsafe {
+                                                  *dx.uget_mut([bid, cidx, hidx, widx]) +=
+                                                      dx_tile.uget([tix, tjx]).cast();
+                                              }
+                                          }
+                                      }
+                                  }
+                              }
+                          } */
+                    }
+                }
+            }
+        }
+    });
+    /*println!(
+        "conv_backward_input {:?}: {:?}",
+        dx.shape(),
+        start.elapsed()
+    );*/
+    dx
+}*/
+
+#[doc(hidden)]
+pub fn conv2_direct_backward_weight(
+    input: ScalarTensorView4,
+    output_grad: ScalarTensorView4,
+    filter: [usize; 2],
+    options: &ConvOptions<Ix2>,
+) -> Result<ScalarTensor4> {
+    conv_direct::conv2_direct_backward_weight(input, output_grad, filter, options)
+}
+
+/*
+fn conv2_direct_backward_weight_host<T: Scalar>(
+    x: ArrayView4<T>,
+    dy: ArrayView4<T>,
+    filter: [usize; 2],
+    options: &ConvOptions<Ix2>,
+) -> Array4<T> {
+    let start = Instant::now();
+    let (bs, ic, ih, iw) = x.dim();
+    let (_bs, oc, oh, ow) = dy.dim();
+    let [fh, fw] = filter;
+    let Conv2Options {
+        padding,
+        dilation,
+        stride,
+    } = options;
+    let (ph, pw) = padding.into_pattern();
+    let (sh, sw) = stride.into_pattern();
+    let (dh, dw) = dilation.into_pattern();
+    let default_padding = [ph, pw] == [0, 0];
+    let threads = rayon::current_num_threads();
+    //let threads_oc = threads.min(oc);
+    //let threads_oc = (threads / threads_bs).min(oc);
+    return Array::zeros([oc, ic, fh, fw]);
+    /*
+    let mut w_grad = unsafe { Array::uninitialized([threads_bs, oc, ic, fh, fw]) };
+    let sync_w_grad = SyncRawArrayViewMut::try_from(w_grad.view_mut()).unwrap();
+    crate::tensor::parallel::broadcast(Some(threads_bs * threads_oc), |thread_id| {
+        let thread_bid = thread_id / threads_oc;
+        let thread_cidy = thread_id % threads_oc;
+        let mut w_grad = sync_w_grad.clone();
+        for bid in (thread_bid..bs).step_by(threads_bs) {
+            for cidx in (0..ic).step_by(8) {
+                for hidy in 0..oh {
+                    for widy in (0..ow).step_by(8) {
+                        for fi in 0 .. fh {
+                            let hidx = -(ph as isize) + (sh * hidy) as isize + (fi * dh) as isize;
+                            if (0..ih as isize).contains(&hidx) {
+                                let hidx = hidx as usize;
+                                for fj in 0 .. fw {
+                                    for cidx in (cidx..ic).take(8) {
+                                        for widy in (widy..ow).take(8) {
+                                            let widx = -(pw as isize)
+                                                + (sw * widy) as isize
+                                                + (fj * dw) as isize;
+                                            if (0..iw as isize).contains(&widx) {
+                                                let widx = widx as usize;
+                                                for cidy in (thread_cidy..oc).step_by(threads_oc) {
+                                                    unsafe {
+                                                        *y.uget_mut([bid, cidy, hidy, widy]) += *x.uget([bid, cidx, widx, hidx])
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            if default_padding {
+                                for (tix, hidx) in (hidy..ih).take(thx).enumerate() {
+                                    for (tjx, widx) in (widy..iw).take(twx).enumerate() {
+                                        unsafe {
+                                            *x_tile.uget_mut([tix, tjx]) =
+                                                x.uget([bid, cidx, hidx, widx]).cast();
+                                        }
+                                    }
+                                }
+                            } else {
+                                x_tile.iter_mut().for_each(|x| *x = 0f32);
+                                for (tix, hidx) in (hidy as isize - ph as isize..ih as isize)
+                                    .take(thx)
+                                    .enumerate()
+                                {
+                                    if let Ok(hidx) = usize::try_from(hidx) {
+                                        for (tjx, widx) in (widy as isize - pw as isize..iw as isize)
+                                            .take(twx)
+                                            .enumerate()
+                                        {
+                                            if let Ok(widx) = usize::try_from(widx) {
+                                                unsafe {
+                                                    *x_tile.uget_mut([tix, tjx]) =
+                                                        x.uget([bid, cidx, hidx, widx]).cast();
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            for cidy in (thread_cidy..oc).step_by(threads_oc) {
+                                dw_tile.iter_mut().for_each(|dw| *dw = 0f32);
+                                for (tiy, hidy) in (hidy..).take(thy).enumerate() {
+                                    for (tjy, widy) in (widy..).take(twy).enumerate() {
+                                        let dy = if hidy < oh && widy < ow {
+                                            unsafe { dy.uget([bid, cidy, hidy, widy]).cast() }
+                                        } else {
+                                            0f32
+                                        };
+                                        dy_tile[tiy].as_array_mut()[tjy] = dy;
+                                    }
+                                }
+                                for fi in 0..fh {
+                                    for fj in 0..fw {
+                                        let mut dw_vec = f32x8::default();
+                                        unroll! { for tiy in 0..8 {
+                                            let tix = tiy * sh + fi * dh;
+                                            let mut x_vec = f32x8::default();
+                                            unroll! { for tjy in 0..8 {
+                                                let tjx = tjy * sw + fj * dw;
+                                                x_vec.as_array_mut()[tjy] = unsafe {
+                                                    *x_tile
+                                                        .uget([tix, tjx])
+                                                };
+                                            }}
+                                            dw_vec = x_vec.mul_add(dy_tile[tiy], dw_vec);
+                                        }}
+                                        unsafe {
+                                            *dw_tile.uget_mut([fi, fj]) += dw_vec.reduce_add();
+                                        }
+                                    }
+                                }
+                                for fi in 0..fh {
+                                    for fj in 0..fw {
+                                        if [bid, hidy, widy] == [thread_bid, 0, 0] {
+                                            unsafe {
+                                                *w_grad.uget_mut([thread_bid, cidy, cidx, fi, fj]) =
+                                                    dw_tile.uget([fi, fj]).cast();
+                                            }
+                                        } else {
+                                            unsafe {
+                                                *w_grad.uget_mut([thread_bid, cidy, cidx, fi, fj]) +=
+                                                    dw_tile.uget([fi, fj]).cast();
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    });
+    let w_grad = if threads_bs == 1 {
+        w_grad.into_shape([oc, ic, fh, fw]).unwrap()
+    } else {
+        let w_grad = w_grad
+            .into_shape([threads_bs, oc * ic * fh * fw])
+            .unwrap()
+            .axis_iter(Axis(1))
+            .into_par_iter()
+            .map(|x| x.sum())
+            .collect();
+        Array::from_shape_vec([oc, ic, fh, fw], w_grad).unwrap()
+    };
+    /*println!(
+        "conv_backward_weight {:?}: {:?}",
+        x.shape(),
+        start.elapsed()
+    );*/
+    w_grad*/
+}*/
+
+/*
 impl<A: Forward<Variable3, Output = Variable3>> Forward<Variable3> for Conv1<A> {
     type Output = Variable3;
     fn forward(&self, input: Variable3) -> Result<Variable3> {
@@ -780,14 +1490,19 @@ impl<A: Forward<Variable3, Output = Variable3>> Forward<Variable3> for Conv1<A> 
             dilation: [dh, 1].into_dimension(),
         };
         let bias = self.bias.as_ref().map(Parameter::to_variable);
-        let output = conv2(input, weight, options, bias)?;
+        let relu = if std::any::TypeId::of::<A>() == std::any::TypeId::of::<Relu>() {
+            Some(Relu)
+        } else {
+            None
+        };
+        let output = conv2(input, weight, options, bias, &relu)?;
         let (n2, oc, oh, ow) = output.dim();
         debug_assert_eq!(n, n2);
         debug_assert_eq!(ow, 1);
         let output = output.into_shape([n, oc, oh]).map_err(Error::msg)?;
         self.activation.forward(output)
     }
-}
+}*/
 
 impl<A: Forward<Variable4, Output = Variable4>> Forward<Variable4> for Conv2<A> {
     type Output = Variable4;
@@ -799,8 +1514,7 @@ impl<A: Forward<Variable4, Output = Variable4>> Forward<Variable4> for Conv2<A> 
             dilation: self.dilation,
         };
         let bias = self.bias.as_ref().map(Parameter::to_variable);
-        let output = conv2(input, weight, options, bias)?;
-        self.activation.forward(output)
+        conv2(input, weight, &options, bias, &self.activation)
     }
 }
 
@@ -899,7 +1613,8 @@ impl<A: Forward<Variable2, Output = Variable2> + Any> Forward<Variable2> for Den
         if let Some(bias) = self.bias.as_ref() {
             output.add_assign(&bias.to_variable())?;
         }
-        self.activation.forward(output)
+        let output = self.activation.forward(output);
+        output
     }
 }
 
@@ -1039,11 +1754,12 @@ impl<D: Dimension + 'static> Forward<Variable<D>> for Relu {
         let mut builder = Variable::builder();
         if let Some(node) = input.node() {
             let input = input.value().clone();
-            builder.edge(node, move |output_grad| {
+            builder.edge(&node, move |output_grad| {
                 scalar_relu_backward(input, output_grad)
             });
         }
-        Ok(builder.build(scalar_relu(input.into_value())?))
+        let output = scalar_relu(input.into_value())?;
+        Ok(builder.build(output))
     }
 }
 
@@ -1076,6 +1792,8 @@ fn scalar_relu<S: ScalarData, D: Dimension>(
             }
             return input.into_shared();
         }
+    } else if input.device().is_device() {
+        return scalar_relu(input.to_standard_layout_shared()?);
     }
     match scalar_type {
         ScalarType::BF16 => Ok(relu::<bf16, D>(input.view().try_into().unwrap())?
@@ -1084,14 +1802,20 @@ fn scalar_relu<S: ScalarData, D: Dimension>(
         ScalarType::F32 => Ok(relu::<f32, D>(input.view().try_into().unwrap())?
             .into_shared()?
             .into()),
-        _ => bail!("Relu {scalar_type:?} unimplemented!()"),
+        _ => bail!("relu {scalar_type:?} unimplemented!"),
     }
 }
 
-fn relu_mut<T: Scalar, D: Dimension>(mut input: TensorViewMut<T, D>) -> Result<()> {
+const RELU_PAR_LEN: usize = 40_000;
+
+fn relu_mut<T: Scalar + num_traits::Float, D: Dimension>(
+    mut input: TensorViewMut<T, D>,
+) -> Result<()> {
     if let Some(mut x) = input.as_array_mut() {
-        for x in x.iter_mut() {
-            *x = relu_impl(*x);
+        if x.len() >= RELU_PAR_LEN {
+            x.into_par_iter().for_each(|x| *x = relu_impl(*x));
+        } else {
+            x.iter_mut().for_each(|x| *x = relu_impl(*x));
         }
         return Ok(());
     }
@@ -1114,17 +1838,21 @@ fn relu_mut<T: Scalar, D: Dimension>(mut input: TensorViewMut<T, D>) -> Result<(
                 return Ok(());
             }
         });
-        bail!("relu_mut {:?} unimplemented!", T::SCALAR_TYPE)
+        bail!("relu_mut {:?} unimplemented!", T::scalar_type())
     }
 }
 
 fn relu<T: Scalar, D: Dimension>(input: TensorView<T, D>) -> Result<Tensor<T, D>> {
-    let scalar_type = T::SCALAR_TYPE;
+    let scalar_type = T::scalar_type();
     if !matches!(scalar_type, ScalarType::BF16 | ScalarType::F32) {
         bail!("Relu {scalar_type:?} unimplemented!");
     }
     if let Some(x) = input.as_array() {
-        let y = x.map(|x| relu_impl(*x));
+        let y = if x.len() > RELU_PAR_LEN {
+            ndarray::Zip::from(&x).par_map_collect(|x| relu_impl(*x))
+        } else {
+            x.map(|x| relu_impl(*x))
+        };
         return Ok(y.into());
     }
     #[cfg(not(feature = "device"))]
@@ -1134,7 +1862,7 @@ fn relu<T: Scalar, D: Dimension>(input: TensorView<T, D>) -> Result<Tensor<T, D>
     #[cfg(feature = "device")]
     {
         macro_for!($T in [bf16, f32] {
-            if scalar_type == $T::SCALAR_TYPE {
+            if scalar_type == $T::scalar_type() {
                 let mut output = unsafe { Tensor::<$T, D>::uninit(input.device(), input.raw_dim())? };
                 let x = input.as_slice().unwrap();
                 let mut y = output.as_slice_mut().unwrap();
@@ -1155,39 +1883,40 @@ fn scalar_relu_backward<D: Dimension>(
     mut output_grad: ScalarArcTensor<D>,
 ) -> Result<ScalarArcTensor<D>> {
     let scalar_type = output.scalar_type();
-    if let Some(output_grad_mut) = output_grad.get_view_mut() {
-        match scalar_type {
-            ScalarType::BF16 => {
-                relu_backward_mut::<bf16, D>(
-                    output.view().try_into().unwrap(),
-                    output_grad_mut.try_into().unwrap(),
-                )?;
+    if output.device().is_host() || output.is_standard_layout() {
+        if let Some(output_grad_mut) = output_grad.get_view_mut() {
+            match scalar_type {
+                ScalarType::BF16 => {
+                    relu_backward_mut::<bf16, D>(
+                        output.view().try_into().unwrap(),
+                        output_grad_mut.try_into().unwrap(),
+                    )?;
+                }
+                ScalarType::F32 => {
+                    relu_backward_mut::<f32, D>(
+                        output.view().try_into().unwrap(),
+                        output_grad_mut.try_into().unwrap(),
+                    )?;
+                }
+                _ => unreachable!(),
             }
-            ScalarType::F32 => {
-                relu_backward_mut::<f32, D>(
-                    output.view().try_into().unwrap(),
-                    output_grad_mut.try_into().unwrap(),
-                )?;
-            }
-            _ => unreachable!(),
+            return Ok(output_grad);
         }
-        Ok(output_grad)
-    } else {
-        match scalar_type {
-            ScalarType::BF16 => Ok(relu_backward::<bf16, D>(
-                output.view().try_into().unwrap(),
-                output_grad.view().try_into().unwrap(),
-            )?
-            .into_shared()?
-            .into()),
-            ScalarType::F32 => Ok(relu_backward::<f32, D>(
-                output.view().try_into().unwrap(),
-                output_grad.view().try_into().unwrap(),
-            )?
-            .into_shared()?
-            .into()),
-            _ => unreachable!(),
-        }
+    }
+    match scalar_type {
+        ScalarType::BF16 => Ok(relu_backward::<bf16, D>(
+            output.view().try_into().unwrap(),
+            output_grad.view().try_into().unwrap(),
+        )?
+        .into_shared()?
+        .into()),
+        ScalarType::F32 => Ok(relu_backward::<f32, D>(
+            output.view().try_into().unwrap(),
+            output_grad.view().try_into().unwrap(),
+        )?
+        .into_shared()?
+        .into()),
+        _ => unreachable!(),
     }
 }
 
@@ -1196,9 +1925,15 @@ fn relu_backward_mut<T: Scalar, D: Dimension>(
     mut output_grad: TensorViewMut<T, D>,
 ) -> Result<()> {
     if let Some((x, mut dy)) = input.as_array().zip(output_grad.as_array_mut()) {
-        dy.zip_mut_with(&x, |dy, x| {
-            *dy = relu_backward_impl(*x, *dy);
-        });
+        if x.len() >= RELU_PAR_LEN {
+            ndarray::Zip::from(&x)
+                .and(&mut dy)
+                .par_for_each(|x, dy| *dy = relu_backward_impl(*x, *dy));
+        } else {
+            dy.zip_mut_with(&x, |dy, x| {
+                *dy = relu_backward_impl(*x, *dy);
+            });
+        }
         return Ok(());
     }
     #[cfg(not(feature = "device"))]
@@ -1236,13 +1971,16 @@ fn relu_backward<T: Scalar, D: Dimension>(
     output_grad: TensorView<T, D>,
 ) -> Result<Tensor<T, D>> {
     if let Some((x, dy)) = input.as_array().zip(output_grad.as_array()) {
-        let dx: Vec<T> = x
-            .iter()
-            .copied()
-            .zip(dy.iter().copied())
-            .map(|(x, dy)| relu_backward_impl(x, dy))
-            .collect();
-        return Ok(Array::from(dx).into_shape(input.raw_dim()).unwrap().into());
+        let y = if x.len() >= RELU_PAR_LEN {
+            ndarray::Zip::from(&x)
+                .and(&dy)
+                .par_map_collect(|x, dy| relu_backward_impl(*x, *dy))
+        } else {
+            ndarray::Zip::from(&x)
+                .and(&dy)
+                .map_collect(|x, dy| relu_backward_impl(*x, *dy))
+        };
+        return Ok(y.into());
     }
     #[cfg(not(feature = "device"))]
     {
@@ -1250,7 +1988,9 @@ fn relu_backward<T: Scalar, D: Dimension>(
     }
     #[cfg(feature = "device")]
     {
+        let input = input.as_standard_layout()?;
         let x = input.as_slice().unwrap();
+        let output_grad = output_grad.as_standard_layout()?;
         let dy = output_grad.as_slice().unwrap();
         macro_for!($T in [bf16, f32] {
             if let Some((x, dy)) = x

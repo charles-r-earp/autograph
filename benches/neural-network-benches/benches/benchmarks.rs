@@ -7,7 +7,7 @@ use num_format::{Locale, ToFormattedString};
 use std::str::FromStr;
 
 pub fn criterion_benchmark(c: &mut Criterion) {
-    let device_index = {
+    let device_index = if cfg!(feature = "device") {
         let krnl_device = std::env::var("KRNL_DEVICE");
         println!("KRNL_DEVICE = {krnl_device:?}");
         let device_index = if let Ok(krnl_device) = krnl_device.as_ref() {
@@ -17,6 +17,8 @@ pub fn criterion_benchmark(c: &mut Criterion) {
         };
         println!("testing device {device_index}");
         device_index
+    } else {
+        0
     };
 
     #[cfg_attr(not(feature = "cuda"), allow(unused))]

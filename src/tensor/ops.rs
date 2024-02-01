@@ -81,6 +81,23 @@ impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
         S2: ScalarData,
         D2: Dimension,
     {
+        /*{
+            let mut y = self.view_mut().try_into_tensor_view_mut::<f32>().unwrap();
+            let alpha: f32 = alpha.try_into().unwrap();
+            let x = rhs.view().try_into_tensor_view::<f32>().unwrap();
+            if let Some((x, mut y)) = x.as_array().zip(y.as_array_mut()) {
+                //y.zip_mut_with(&x, |y, x| *y += alpha * *x);
+                if let Some((x, mut y)) = x.as_slice().zip(y.as_slice_mut()) {
+                    let start = std::time::Instant::now();
+                    x.iter()
+                        .copied()
+                        .zip(y.iter_mut())
+                        .for_each(|(x, y)| *y += alpha * x);
+                    println!("ScaledAdd {:?}: {:?}", rhs.shape(), start.elapsed());
+                    return Ok(());
+                }
+            }
+        }*/
         scalar_assign(
             BinaryOp::Add,
             alpha,
@@ -210,11 +227,11 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     /// - The operation could not be executed on the device.
     pub fn scaled_cast<T2: Scalar>(&self, alpha: T2) -> Result<Tensor<T2, D>> {
         let mut output = unsafe { Tensor::<T2, D>::uninit(self.device(), self.raw_dim())? };
-        scalar_assign(
+        assign(
             BinaryOp::Identity,
-            alpha.into(),
-            self.view().into_dyn().into(),
-            output.view_mut().into_dyn().into(),
+            alpha,
+            self.view().into_dyn(),
+            output.view_mut().into_dyn(),
         )?;
         Ok(output)
     }
@@ -262,19 +279,60 @@ fn assign<X: Scalar, Y: Scalar>(
     x: TensorViewD<X>,
     mut y: TensorViewMutD<Y>,
 ) -> Result<()> {
+    #[cfg(feature = "device")]
+    {
+        if matches!(op, BinaryOp::Identity)
+            && x.device() != y.device()
+            && alpha == Y::zero()
+            && x.strides() == y.strides()
+            && X::scalar_type() == Y::scalar_type()
+        {
+            if let Some((x, mut y)) = x.as_slice_memory_order().zip(y.as_slice_memory_order_mut()) {
+                return y.copy_from_slice(&x.as_scalar_slice().try_into().unwrap());
+            }
+        }
+    }
+
     let (x, mut y) = if let Some((x, y)) = x.as_array().zip(y.as_array_mut()) {
         (x, y)
     } else {
         return scalar_assign(op, alpha.into(), x.into(), y.into());
     };
-    let x = if let Some(x) = x.broadcast(y.shape()) {
+    let x = if let Some(x) = x.broadcast(y.raw_dim()) {
         x
     } else {
         bail!("Broadcast not possible! {x:?} -> {y:?}");
     };
-    y.zip_mut_with(&x, |y, x| {
-        *y = op.eval(alpha * x.cast(), y.cast()).cast();
-    });
+
+    use ndarray::Zip;
+    use rayon::iter::{
+        IndexedParallelIterator, IntoParallelIterator, IntoParallelRefIterator,
+        IntoParallelRefMutIterator, ParallelIterator,
+    };
+
+    let parallel = y.len() >= 40_000;
+    let eval = |(x, y): (&X, &mut Y)| *y = op.eval(alpha * x.cast(), *y);
+    if x.strides() == y.strides()
+        && x.as_slice_memory_order().is_some()
+        && y.as_slice_memory_order_mut().is_some()
+    {
+        {
+            let x = x.as_slice_memory_order().unwrap();
+            let y = y.as_slice_memory_order_mut().unwrap();
+            if parallel {
+                x.par_iter().zip(y.par_iter_mut()).for_each(eval);
+            } else {
+                x.iter().zip(y.iter_mut()).for_each(eval);
+            }
+        }
+    } else {
+        let zip = Zip::from(&x).and(&mut y);
+        if parallel {
+            zip.into_par_iter().for_each(eval);
+        } else {
+            zip.for_each(|a, b| eval((a, b)));
+        }
+    }
     Ok(())
 }
 
@@ -284,11 +342,6 @@ fn scalar_assign(
     x: ScalarTensorViewD,
     mut y: ScalarTensorViewMutD,
 ) -> Result<()> {
-    if op.is_identity() && x.scalar_type() == y.scalar_type() {
-        if let Some((x, mut y)) = x.as_scalar_slice().zip(y.as_scalar_slice_mut()) {
-            return y.copy_from_scalar_slice(&x);
-        }
-    }
     if alpha.scalar_type() != y.scalar_type() {
         bail!(
             "alpha scalar_type {:?} != {:?}",
@@ -296,18 +349,27 @@ fn scalar_assign(
             y.scalar_type()
         );
     }
-    let x = if let Some(x) = x.broadcast(y.shape()) {
-        x
-    } else {
-        bail!("Broadcast not possible! {x:?} -> {y:?}");
-    };
+    if op.is_identity()
+        && alpha == ScalarElem::zero(y.scalar_type())
+        && x.scalar_type() == y.scalar_type()
+        && x.strides() == y.strides()
+    {
+        if let Some((x, mut y)) = x
+            .as_scalar_slice_memory_order()
+            .zip(y.as_scalar_slice_memory_order_mut())
+        {
+            return y.copy_from_scalar_slice(&x);
+        }
+    }
     let device = y.device();
     if device.is_host() && x.device().is_host() {
         macro_for!($X in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
-            if let Ok(x) = TensorViewD::<$X>::try_from(x.clone()) {
+            if $X::scalar_type() == x.scalar_type() {
                 macro_for!($Y in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
-                    if let Ok(y) = TensorViewMutD::<$Y>::try_from(y.view_mut()) {
+                    if $Y::scalar_type() == y.scalar_type() {
                         let alpha = $Y::try_from(alpha).unwrap();
+                        let x = x.try_into_tensor_view::<$X>().unwrap();
+                        let y = y.try_into_tensor_view_mut::<$Y>().unwrap();
                         return assign(op, alpha, x, y);
                     }
                 });
@@ -325,27 +387,37 @@ fn scalar_assign(
     }
     #[cfg(feature = "device")]
     {
-        if let Some((x, mut y)) = x.as_scalar_slice().zip(y.as_scalar_slice_mut()) {
-            macro_for!($X in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
-                if let Ok(x) = Slice::<$X>::try_from(x.clone()) {
-                    macro_for!($Y in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
-                        if let Ok(y) = SliceMut::<$Y>::try_from(y.as_scalar_slice_mut()) {
-                            let builder = paste! {
-                                kernels::[<assign_ $X _ $Y>]::builder()?
-                            };
-                            builder
-                            .specialize(op.as_u32())
-                            .build(device)?
-                            .dispatch(
-                                alpha.cast(),
-                                x,
-                                y,
-                            )?;
-                            return Ok(());
-                        }
-                    });
-                }
-            });
+        let x = if let Some(x) = x.broadcast(y.raw_dim()) {
+            x
+        } else {
+            bail!("Broadcast not possible! {x:?} -> {y:?}");
+        };
+        if x.strides() == y.strides() {
+            if let Some((x, mut y)) = x
+                .as_scalar_slice_memory_order()
+                .zip(y.as_scalar_slice_memory_order_mut())
+            {
+                macro_for!($X in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+                    if let Ok(x) = Slice::<$X>::try_from(x.clone()) {
+                        macro_for!($Y in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+                            if let Ok(y) = SliceMut::<$Y>::try_from(y.as_scalar_slice_mut()) {
+                                let builder = paste! {
+                                    kernels::[<assign_ $X _ $Y>]::builder()?
+                                };
+                                builder
+                                .specialize(op.as_u32())
+                                .build(device)?
+                                .dispatch(
+                                    alpha.cast(),
+                                    x,
+                                    y,
+                                )?;
+                                return Ok(());
+                            }
+                        });
+                    }
+                });
+            }
         }
         let ndim = y.ndim();
         if ndim <= 2 {
@@ -688,7 +760,7 @@ impl<T: Scalar + Unsigned, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
 impl<T: Scalar, S: ArrayData<Elem = T>> Im2ColConv2 for ArrayBase<S, Ix4> {
     type Output = Array2<T>;
     fn im2col_conv2(&self, options: &Im2ColConv2Options) -> Result<Self::Output> {
-        let input = self.as_standard_layout();
+        let input = self.view(); //self.as_standard_layout();
         let (bs, c, ih, iw) = input.dim();
         let [oh, ow] = options.output_shape([ih, iw]);
         let Im2ColConv2Options {
@@ -697,25 +769,279 @@ impl<T: Scalar, S: ArrayData<Elem = T>> Im2ColConv2 for ArrayBase<S, Ix4> {
             stride: [sh, sw],
             dilation: [dh, dw],
         } = options.clone();
-        let mut output = Array::uninit([bs, oh, ow, c, fh * fw]);
-        for (input, mut output) in input.outer_iter().zip(output.outer_iter_mut()) {
-            for (input, mut output) in input.outer_iter().zip(output.axis_iter_mut(Axis(2))) {
-                for (hid, mut output) in output.outer_iter_mut().enumerate() {
-                    for (wid, mut output) in output.outer_iter_mut().enumerate() {
-                        for fi in 0..fh {
-                            for fj in 0..fw {
-                                let hidx = -(ph as isize) + (fi * dh + sh * hid) as isize;
-                                let widx = -(pw as isize) + (fj * dw + sw * wid) as isize;
-                                let fidx = fi * fw + fj;
-                                if hidx >= 0
-                                    && hidx < ih as isize
-                                    && widx >= 0
-                                    && widx < iw as isize
-                                {
-                                    unsafe {
-                                        output
-                                            .uget_mut(fidx)
-                                            .write(*input.uget((hidx as usize, widx as usize)));
+        let is_default_padding_stride_dilation =
+            options.padding == [0, 0] && options.stride == [1, 1] && options.dilation == [1, 1];
+        let mut output = unsafe { Array::<T, _>::uninit([bs, oh, ow, c, fh, fw]).assume_init() };
+        {
+            use crate::tensor::parallel::array_par_outer_iter_mut_for_each;
+
+            if is_default_padding_stride_dilation {
+                array_par_outer_iter_mut_for_each(output.view_mut(), |bid, mut output| {
+                    let input = input.index_axis(Axis(0), bid);
+                    for hid in 0..oh {
+                        for wid in 0..ow {
+                            for cid in 0..c {
+                                for fi in 0..fh {
+                                    let hidx = fi + hid;
+                                    for fj in 0..fw {
+                                        let widx = fj + wid;
+                                        unsafe {
+                                            *output.uget_mut([hid, wid, cid, fi, fj]) =
+                                                *input.uget([cid, hidx, widx]);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+            } else {
+                array_par_outer_iter_mut_for_each(output.view_mut(), |bid, mut output| {
+                    let input = input.index_axis(Axis(0), bid);
+                    for hid in 0..oh {
+                        for wid in 0..ow {
+                            for cid in 0..c {
+                                for fi in 0..fh {
+                                    for fj in 0..fw {
+                                        let hidx = -(ph as isize) + (fi * dh + sh * hid) as isize;
+                                        let widx = -(pw as isize) + (fj * dw + sw * wid) as isize;
+                                        let x = if hidx >= 0
+                                            && hidx < ih as isize
+                                            && widx >= 0
+                                            && widx < iw as isize
+                                        {
+                                            unsafe {
+                                                *input.uget([cid, hidx as usize, widx as usize])
+                                            }
+                                        } else {
+                                            T::default()
+                                        };
+                                        unsafe {
+                                            *output.uget_mut([hid, wid, cid, fi, fj]) = x;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+            /*
+            if is_default_padding_stride_dilation {
+                if std::env::var("PAR").is_ok() {
+                    if std::env::var("UNROLL").is_ok() {
+                        use crunchy::unroll;
+
+                        array_par_outer_iter_mut_for_each(output.view_mut(), |bid, mut output| {
+                            let input = input.index_axis(Axis(0), bid);
+                            for hid in 0..oh {
+                                for wid in 0..ow {
+                                    for cid in 0..c {
+                                        unroll! { for fi in 0..5 {
+                                            let hidx = fi + hid;
+                                            unroll! { for fj in 0..5 {
+                                                let widx = fj + wid;
+                                                unsafe {
+                                                    *output.uget_mut([hid, wid, cid, fi, fj]) =
+                                                        *input.uget([cid, hidx, widx]);
+                                                }
+                                            }}
+                                        }}
+                                    }
+                                }
+                            }
+                        });
+                    } else {
+                        array_par_outer_iter_mut_for_each(output.view_mut(), |bid, mut output| {
+                            let input = input.index_axis(Axis(0), bid);
+                            for hid in 0..oh {
+                                for wid in 0..ow {
+                                    for cid in 0..c {
+                                        for fi in 0..fh {
+                                            let hidx = fi + hid;
+                                            for fj in 0..fw {
+                                                let widx = fj + wid;
+                                                unsafe {
+                                                    *output.uget_mut([hid, wid, cid, fi, fj]) =
+                                                        *input.uget([cid, hidx, widx]);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        });
+                    }
+                } else {
+                    use rayon::prelude::*;
+
+                    let threads = rayon::current_num_threads();
+                    let chunk_size = bs / threads + (bs % threads != 0) as usize;
+
+                    output
+                        .axis_chunks_iter_mut(ndarray::Axis(0), chunk_size)
+                        .into_par_iter()
+                        .enumerate()
+                        .for_each(|(chunk_id, mut output)| {
+                            let bid_base = chunk_id * chunk_size;
+                            for bid_slice in 0..output.dim().0 {
+                                let bid = bid_slice + bid_base;
+                                for hid in 0..oh {
+                                    for wid in 0..ow {
+                                        for cid in 0..c {
+                                            for fi in 0..fh {
+                                                for fj in 0..fw {
+                                                    let hidx = fi + hid;
+                                                    let widx = fj + wid;
+                                                    unsafe {
+                                                        *output.uget_mut([
+                                                            bid_slice, hid, wid, cid, fi, fj,
+                                                        ]) = *input.uget([bid, cid, hidx, widx]);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        });
+                }
+            } else {
+                todo!()
+            }
+            */
+            /*
+            use rayon::prelude::*;
+
+
+            let threads = rayon::current_num_threads();
+            let chunk_size = bs / threads + (bs % threads != 0) as usize;
+
+            if is_default_padding_stride_dilation {
+                output
+                    .axis_chunks_iter_mut(ndarray::Axis(0), chunk_size)
+                    .into_par_iter()
+                    .enumerate()
+                    .for_each(|(chunk_id, mut output)| {
+                        let bid_base = chunk_id * chunk_size;
+                        for bid_slice in 0..output.dim().0 {
+                            let bid = bid_slice + bid_base;
+                            for hid in 0..oh {
+                                for wid in 0..ow {
+                                    for cid in 0..c {
+                                        for fi in 0..fh {
+                                            for fj in 0..fw {
+                                                let hidx = fi + hid;
+                                                let widx = fj + wid;
+                                                unsafe {
+                                                    *output.uget_mut([
+                                                        bid_slice, hid, wid, cid, fi, fj,
+                                                    ]) = *input.uget([bid, cid, hidx, widx]);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    });
+            } else {
+                output
+                    .axis_chunks_iter_mut(ndarray::Axis(0), chunk_size)
+                    .into_par_iter()
+                    .enumerate()
+                    .for_each(|(chunk_id, mut output)| {
+                        let bid_base = chunk_id * chunk_size;
+                        for bid_slice in 0..output.dim().0 {
+                            let bid = bid_slice + bid_base;
+                            for hid in 0..oh {
+                                for wid in 0..ow {
+                                    for cid in 0..c {
+                                        for fi in 0..fh {
+                                            for fj in 0..fw {
+                                                let hidx =
+                                                    -(ph as isize) + (fi * dh + sh * hid) as isize;
+                                                let widx =
+                                                    -(pw as isize) + (fj * dw + sw * wid) as isize;
+                                                let x = if hidx >= 0
+                                                    && hidx < ih as isize
+                                                    && widx >= 0
+                                                    && widx < iw as isize
+                                                {
+                                                    unsafe {
+                                                        *input.uget([
+                                                            bid,
+                                                            cid,
+                                                            hidx as usize,
+                                                            widx as usize,
+                                                        ])
+                                                    }
+                                                } else {
+                                                    T::default()
+                                                };
+                                                unsafe {
+                                                    *output.uget_mut([
+                                                        bid_slice, hid, wid, cid, fi, fj,
+                                                    ]) = x;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    });
+            }*/
+        }
+        /*#[cfg(not(feature = "rayon"))]
+        {
+            if is_default_padding_stride_dilation {
+                for bid in 0..bs {
+                    for hid in 0..oh {
+                        for wid in 0..ow {
+                            for cid in 0..c {
+                                for fi in 0..fh {
+                                    for fj in 0..fw {
+                                        let hidx = fi + hid;
+                                        let widx = fj + wid;
+                                        unsafe {
+                                            *output.uget_mut([bid, hid, wid, cid, fi, fj]) =
+                                                *input.uget([bid, cid, hidx, widx]);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                for bid in 0..bs {
+                    for hid in 0..oh {
+                        for wid in 0..ow {
+                            for cid in 0..c {
+                                for fi in 0..fh {
+                                    for fj in 0..fw {
+                                        let hidx = -(ph as isize) + (fi * dh + sh * hid) as isize;
+                                        let widx = -(pw as isize) + (fj * dw + sw * wid) as isize;
+                                        let x = if hidx >= 0
+                                            && hidx < ih as isize
+                                            && widx >= 0
+                                            && widx < iw as isize
+                                        {
+                                            unsafe {
+                                                *input.uget([
+                                                    bid,
+                                                    cid,
+                                                    hidx as usize,
+                                                    widx as usize,
+                                                ])
+                                            }
+                                        } else {
+                                            T::default()
+                                        };
+                                        unsafe {
+                                            *output.uget_mut([bid, hid, wid, cid, fi, fj]) = x;
+                                        }
                                     }
                                 }
                             }
@@ -723,8 +1049,8 @@ impl<T: Scalar, S: ArrayData<Elem = T>> Im2ColConv2 for ArrayBase<S, Ix4> {
                     }
                 }
             }
-        }
-        let output = unsafe { output.assume_init() };
+        }*/
+        //println!("im2col {:?}: {:?}", input.shape(), start.elapsed());
         Ok(output.into_shape([bs * oh * ow, c * fh * fw]).unwrap())
     }
 }
@@ -808,7 +1134,11 @@ impl<S: ScalarData> Im2ColConv2 for ScalarTensorBase<S, Ix4> {
 impl<T: Scalar, S: ArrayData<Elem = T>> Col2ImConv2 for ArrayBase<S, Ix2> {
     type Output = Array4<T>;
     fn col2im_conv2(&self, options: &Col2ImConv2Options) -> Result<Self::Output> {
-        let input = self.as_standard_layout();
+        use crate::tensor::parallel::array_par_outer_iter_mut_for_each;
+        //use std::time::Instant;
+
+        //let start = Instant::now();
+        let input = self.view(); // self.as_standard_layout();
         let (rows, cols) = input.dim();
         let [oh, ow] = options.output_shape();
         let Col2ImConv2Options {
@@ -818,28 +1148,119 @@ impl<T: Scalar, S: ArrayData<Elem = T>> Col2ImConv2 for ArrayBase<S, Ix2> {
             stride: [sh, sw],
             dilation: [dh, dw],
         } = options.clone();
+        let is_default_padding_stride_dilation =
+            options.padding == [0, 0] && options.stride == [1, 1] && options.dilation == [1, 1];
         let bs = rows / (ih * iw);
         let c = cols / (fh * fw);
-        let input = input.into_shape([bs, ih, iw, c, fh * fw]).unwrap();
+        let input = input.into_shape([bs, ih, iw, c, fh, fw]).unwrap();
         let mut output = Array::zeros([bs, c, oh, ow]);
-        for (input, mut output) in input.outer_iter().zip(output.outer_iter_mut()) {
-            for (input, mut output) in input.axis_iter(Axis(2)).zip(output.outer_iter_mut()) {
-                for (hid, input) in input.outer_iter().enumerate() {
-                    for (wid, input) in input.outer_iter().enumerate() {
-                        for fi in 0..fh {
-                            for fj in 0..fw {
-                                let hidx = -(ph as isize) + (fi * dh + sh * hid) as isize;
-                                let widx = -(pw as isize) + (fj * dw + sw * wid) as isize;
-                                let fidx = fi * fw + fj;
-                                if hidx >= 0
-                                    && hidx < oh as isize
-                                    && widx >= 0
-                                    && widx < ow as isize
-                                {
-                                    // TODO: accumulate in f32 to reduce error
-                                    unsafe {
-                                        *output.uget_mut((hidx as usize, widx as usize)) +=
-                                            *input.uget(fidx);
+
+        {
+            //use rayon::prelude::*;
+
+            //let threads = rayon::current_num_threads();
+            //let chunk_size = bs / threads + (bs % threads != 0) as usize;
+
+            if is_default_padding_stride_dilation {
+                array_par_outer_iter_mut_for_each(output.view_mut(), |bid, mut output| {
+                    let input = input.index_axis(Axis(0), bid);
+                    for cid in 0..c {
+                        for hid in 0..ih {
+                            for wid in 0..iw {
+                                for fi in 0..fh {
+                                    for fj in 0..fw {
+                                        let hidy = fi + hid;
+                                        let widy = fj + wid;
+                                        unsafe {
+                                            *output.uget_mut([cid, hidy, widy]) +=
+                                                *input.uget([hid, wid, cid, fi, fj]);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+            } else {
+                array_par_outer_iter_mut_for_each(output.view_mut(), |bid, mut output| {
+                    let input = input.index_axis(Axis(0), bid);
+                    for cid in 0..c {
+                        for hid in 0..ih {
+                            for wid in 0..iw {
+                                for fi in 0..fh {
+                                    for fj in 0..fw {
+                                        let hidy = -(ph as isize) + (fi * dh + sh * hid) as isize;
+                                        let widy = -(pw as isize) + (fj * dw + sw * wid) as isize;
+                                        if hidy >= 0
+                                            && hidy < oh as isize
+                                            && widy >= 0
+                                            && widy < ow as isize
+                                        {
+                                            unsafe {
+                                                *output.uget_mut([
+                                                    cid,
+                                                    hidy as usize,
+                                                    widy as usize,
+                                                ]) += *input.uget([hid, wid, cid, fi, fj]);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+        }
+        /*
+        #[cfg(not(feature = "rayon"))]
+        {
+            if is_default_padding_stride_dilation {
+                for bid in 0..bs {
+                    for cid in 0..c {
+                        for hid in 0..ih {
+                            for wid in 0..iw {
+                                for fi in 0..fh {
+                                    for fj in 0..fw {
+                                        let hidy = fi + hid;
+                                        let widy = fj + wid;
+                                        unsafe {
+                                            *output.uget_mut([
+                                                bid,
+                                                cid,
+                                                hidy as usize,
+                                                widy as usize,
+                                            ]) += *input.uget([bid, hid, wid, cid, fi, fj]);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                for bid in 0..bs {
+                    for cid in 0..c {
+                        for hid in 0..ih {
+                            for wid in 0..iw {
+                                for fi in 0..fh {
+                                    for fj in 0..fw {
+                                        let hidy = -(ph as isize) + (fi * dh + sh * hid) as isize;
+                                        let widy = -(pw as isize) + (fj * dw + sw * wid) as isize;
+                                        if hidy >= 0
+                                            && hidy < oh as isize
+                                            && widy >= 0
+                                            && widy < ow as isize
+                                        {
+                                            unsafe {
+                                                *output.uget_mut([
+                                                    bid,
+                                                    cid,
+                                                    hidy as usize,
+                                                    widy as usize,
+                                                ]) += *input.uget([bid, hid, wid, cid, fi, fj]);
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -847,7 +1268,8 @@ impl<T: Scalar, S: ArrayData<Elem = T>> Col2ImConv2 for ArrayBase<S, Ix2> {
                     }
                 }
             }
-        }
+        }*/
+        //println!("col2im {:?}: {:?}", output.shape(), start.elapsed());
         Ok(output)
     }
 }
@@ -970,24 +1392,43 @@ impl<T: Scalar, S: ArrayData<Elem = T>> MaxPool2 for ArrayBase<S, Ix4> {
             size: [h, w],
             strides: [sh, sw],
         } = options;
-        let mut output = Array::uninit([bs, c, oh, ow]);
-        for (x, mut y) in self.outer_iter().zip(output.outer_iter_mut()) {
-            for (x, mut y) in x.outer_iter().zip(y.outer_iter_mut()) {
-                for ((row, col), y) in y.indexed_iter_mut() {
-                    let mut m = T::default();
-                    for i in 0..h {
-                        for j in 0..w {
-                            let x = x[(row * sh + i, col * sw + j)];
-                            if (i == 0 && j == 0) || x > m {
-                                m = x;
+        let input = self.view();
+        let mut output = unsafe { Array::uninit([bs, c, oh, ow]).assume_init() };
+
+        use rayon::prelude::*;
+
+        let threads = rayon::current_num_threads();
+        let chunk_size = bs / threads + (bs % threads != 0) as usize;
+
+        output
+            .axis_chunks_iter_mut(ndarray::Axis(0), chunk_size)
+            .into_par_iter()
+            .enumerate()
+            .for_each(|(chunk_id, mut output)| {
+                for bid_slice in 0..output.dim().0 {
+                    let bid = chunk_id * chunk_size + bid_slice;
+                    for cid in 0..c {
+                        for hid in 0..oh {
+                            for wid in 0..ow {
+                                let mut m = T::default();
+                                for fi in 0..h {
+                                    for fj in 0..w {
+                                        let hidx = fi + sh * hid;
+                                        let widx = fj + sw * wid;
+                                        let x = unsafe { *input.uget([bid, cid, hidx, widx]) };
+                                        if (fi == 0 && fj == 0) || x > m {
+                                            m = x;
+                                        }
+                                    }
+                                }
+                                unsafe {
+                                    *output.uget_mut([bid_slice, cid, hid, wid]) = m;
+                                }
                             }
                         }
                     }
-                    y.write(m);
                 }
-            }
-        }
-        let output = unsafe { output.assume_init() };
+            });
         Ok(output)
     }
 }
@@ -1020,7 +1461,8 @@ impl<S: ScalarData> MaxPool2 for ScalarTensorBase<S, Ix4> {
                             return Ok(Tensor::from(input.max_pool2(options)?).into());
                         }
                         #[cfg(feature = "device")] {
-                            let (bs, c, ih, iw) = self.dim();
+                            let input = input.as_standard_layout()?;
+                            let (bs, c, ih, iw) = input.dim();
                             let [oh, ow] = options.output_shape([ih, iw]);
                             let MaxPool2Options {
                                 size: [h, w],
@@ -1053,35 +1495,62 @@ impl<T: Scalar, S1: ArrayDataMut<Elem = T>, S2: ArrayData<Elem = T>>
         output_grad: ArrayBase<S2, Ix4>,
         options: MaxPool2Options,
     ) -> Result<()> {
+        //use std::time::Instant;
+
+        //let start = Instant::now();
         let MaxPool2Options {
             size: [h, w],
             strides: [sh, sw],
         } = options;
-        for (mut dx, dy) in self.outer_iter_mut().zip(output_grad.outer_iter()) {
-            for (mut dx, dy) in dx.outer_iter_mut().zip(dy.outer_iter()) {
-                for ((row, col), dy) in dy.indexed_iter() {
-                    let mut m = T::default();
-                    let mut mi = 0;
-                    let mut mj = 0;
-                    for i in 0..h {
-                        for j in 0..w {
-                            let dx = unsafe { dx.uget_mut((row * sh + i, col * sw + j)) };
-                            // let dx = dx.get_mut((row * sh + i, col * sw + j)).unwrap();
-                            if (i == 0 && j == 0) || *dx > m {
-                                m = *dx;
-                                mi = i;
-                                mj = j;
+        let mut input_grad = self.view_mut();
+        let output_grad = output_grad.view();
+        let (bs, c, _ih, _iw) = input_grad.dim();
+        let (_bs, _c, oh, ow) = output_grad.dim();
+        debug_assert_eq!(bs, _bs);
+        debug_assert_eq!(c, _c);
+
+        use rayon::prelude::*;
+
+        let threads = rayon::current_num_threads();
+        let chunk_size = bs / threads + (bs % threads != 0) as usize;
+
+        input_grad
+            .axis_chunks_iter_mut(ndarray::Axis(0), chunk_size)
+            .into_par_iter()
+            .enumerate()
+            .for_each(|(chunk_id, mut input_grad)| {
+                for bid_slice in 0..input_grad.dim().0 {
+                    let bid = chunk_id * chunk_size + bid_slice;
+                    for cid in 0..c {
+                        for hid in 0..oh {
+                            for wid in 0..ow {
+                                let mut m = T::default();
+                                let mut hidx_max = 0;
+                                let mut widx_max = 0;
+                                for fi in 0..h {
+                                    for fj in 0..w {
+                                        let hidx = fi + sh * hid;
+                                        let widx = fj + sw * wid;
+                                        let dx = unsafe {
+                                            input_grad.uget_mut([bid_slice, cid, hidx, widx])
+                                        };
+                                        if (fi == 0 && fj == 0) || *dx > m {
+                                            m = *dx;
+                                            hidx_max = hidx;
+                                            widx_max = widx;
+                                        }
+                                        *dx = T::default();
+                                    }
+                                }
+                                unsafe {
+                                    *input_grad.uget_mut([bid_slice, cid, hidx_max, widx_max]) +=
+                                        *output_grad.uget([bid, cid, hid, wid]);
+                                }
                             }
-                            *dx = T::default();
                         }
                     }
-                    unsafe {
-                        *dx.uget_mut((row * sh + mi, col * sw + mj)) = *dy;
-                    }
-                    // *dx.get_mut((row * sh + mi, col * sw + mj)).unwrap() = *dy;
                 }
-            }
-        }
+            });
         Ok(())
     }
 }
@@ -1160,7 +1629,7 @@ mod binary_op {
     use krnl::krnl_core;
     use krnl_core::scalar::Scalar;
 
-    #[cfg_attr(not(target_arch = "spirv"), derive(derive_more::IsVariant))]
+    #[cfg_attr(not(target_arch = "spirv"), derive(Debug, derive_more::IsVariant))]
     #[repr(u32)]
     pub enum BinaryOp {
         Identity = 1,
@@ -1172,6 +1641,7 @@ mod binary_op {
 
     #[cfg(feature = "device")]
     impl BinaryOp {
+        #[inline]
         pub fn as_u32(self) -> u32 {
             self as u32
         }
@@ -1179,6 +1649,7 @@ mod binary_op {
 
     impl TryFrom<u32> for BinaryOp {
         type Error = ();
+        #[inline]
         fn try_from(x: u32) -> Result<Self, ()> {
             Ok(match x {
                 1 => Self::Identity,
@@ -1194,6 +1665,7 @@ mod binary_op {
     }
 
     impl BinaryOp {
+        #[inline]
         pub fn eval<T: Scalar>(&self, a: T, b: T) -> T {
             match self {
                 Self::Identity => a,

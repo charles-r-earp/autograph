@@ -382,29 +382,34 @@ impl<D: Dimension + 'static> Variable<D> {
     pub fn into_shape<E>(self, shape: E) -> Result<Variable<E::Dim>, ShapeError>
     where
         E: IntoDimension,
+        E::Dim: 'static,
     {
         let dim = self.raw_dim();
         let mut builder = Variable::builder();
         if let Some(node) = self.node() {
             builder.edge(node, |output_grad| {
-                output_grad
-                    .into_shape(dim)
-                    .map_err(Error::msg)
-                    .map(Into::into)
+                if let Ok(input_grad) = output_grad.clone().into_shape(dim.clone()) {
+                    Ok(input_grad)
+                } else {
+                    Ok(output_grad
+                        .to_standard_layout_shared()?
+                        .into_shape(dim)
+                        .unwrap())
+                }
             })
         }
         Ok(builder.build(self.value.into_shape(shape)?))
     }
     /// Flattens the variable into 2 dimensions.
     ///
-    /// See [`TensorBase::flatten`].
+    /// See [`TensorBase::flatten()`].
     pub fn flatten(self) -> Result<Variable2, ShapeError> {
         let dim = crate::tensor::flatten(self.shape());
         self.into_shape(dim)
     }
     /// Reverses (transposes) the axes of the variable.
     ///
-    /// See [`TensorBase::reversed_axes`].
+    /// See [`TensorBase::reversed_axes()`].
     pub fn reversed_axes(self) -> Self {
         let mut builder = Self::builder();
         if let Some(node) = self.node() {
@@ -412,13 +417,45 @@ impl<D: Dimension + 'static> Variable<D> {
         }
         builder.build(self.value.reversed_axes())
     }
+    /// Permute the axes of the tensor.
+    ///
+    /// See [`TensorBase::permuted_axes()`].
+    pub fn permuted_axes<A>(self, axes: A) -> Self
+    where
+        A: IntoDimension<Dim = D>,
+    {
+        let mut builder = Self::builder();
+        let axes = axes.into_dimension();
+        let mut input_axes = D::zeros(axes.ndim());
+        for (i, a) in axes.slice().iter().copied().enumerate() {
+            input_axes[a] = i;
+        }
+        if let Some(node) = self.node() {
+            builder.edge(node, move |output_grad| {
+                Ok(output_grad.permuted_axes(input_axes))
+            })
+        }
+        builder.build(self.into_value().permuted_axes(axes))
+    }
+    #[doc(hidden)]
+    /// Converts to standard layout.
+    ///
+    /// **Errors**
+    ///
+    /// See [`ArcTensor::to_standard_layout_shared()`].
+    pub fn to_standard_layout(&self) -> Result<Self> {
+        Ok(Self {
+            value: self.value.to_standard_layout_shared()?,
+            ..self.clone()
+        })
+    }
     /// Transposes the variable.
     pub fn t(&self) -> Self {
         self.clone().reversed_axes()
     }
     /// Attempts to broadcast the variable into `dim`.
     ///
-    /// See [`TensorBase::broadcast`].
+    /// See [`TensorBase::broadcast()`].
     pub fn broadcast<E>(&self, dim: E) -> Option<Variable<E::Dim>>
     where
         E: IntoDimension,
