@@ -31,16 +31,17 @@ jobs:
     - uses: actions/checkout@v2
     - name: cargo fetch
       run: cargo fetch --target ${{ matrix.target }}
-    - name: Build
+    - name: build
+      if: ${{ !canceled() }}
       run: cargo build --all-features --all-targets
-      continue-on-error: true
-    - name: Build Examples
+    - name: build examples
+      if: ${{ !canceled() }}
       run: cargo build -p neural-network-mnist-example
-      continue-on-error: true
-    - name: Build Benches
+    - name: build benches
+      if: ${{ !canceled() }}
       run: cargo build -p neural-network-benches --benches
-      continue-on-error: true
-    - name: Test 
+    - name: test
+      if: ${{ !canceled() }}
       run: cargo test --no-default-features
   krnlc: 
     runs-on: ubuntu-latest
@@ -68,19 +69,18 @@ jobs:
       - name: krnlc
         run: krnlc -p autograph -v --check
   lint:
-    name: Lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v2
-      - name: Install rustup components
-        run: rustup component add rustfmt clippy
-      - name: Rustfmt
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+      - name: fmt
+        if: ${{ !canceled() }}
         run: cargo fmt --all -- --check
-        continue-on-error: true
-      - name: Clippy
+      - name: clippy
+        if: ${{ !canceled() }}
         run: cargo clippy --no-default-features --features "neural-network" -- -D warnings
-        continue-on-error: true
-      - name: Docs
-        run: cargo doc --all-features
-        env:
-          RUSTDOCFLAGS: -Dwarnings 
+      - name: rustdoc
+        run: cargo rustdoc --all-features -- --D warnings
