@@ -32,16 +32,16 @@ jobs:
     - name: cargo fetch
       run: cargo fetch --target ${{ matrix.target }}
     - name: build
-      if: ${{ !canceled() }}
+      if: ${{ !cancelled() }}
       run: cargo build --all-features --all-targets
     - name: build examples
-      if: ${{ !canceled() }}
+      if: ${{ !cancelled() }}
       run: cargo build -p neural-network-mnist-example
     - name: build benches
-      if: ${{ !canceled() }}
+      if: ${{ !cancelled() }}
       run: cargo build -p neural-network-benches --benches
     - name: test
-      if: ${{ !canceled() }}
+      if: ${{ !cancelled() }}
       run: cargo test --no-default-features
   krnlc: 
     runs-on: ubuntu-latest
@@ -77,10 +77,10 @@ jobs:
           toolchain: stable
           components: rustfmt, clippy
       - name: fmt
-        if: ${{ !canceled() }}
+        if: ${{ !cancelled() }}
         run: cargo fmt --all -- --check
       - name: clippy
-        if: ${{ !canceled() }}
+        if: ${{ !cancelled() }}
         run: cargo clippy --no-default-features --features "neural-network" -- -D warnings
       - name: rustdoc
         run: cargo rustdoc --all-features -- --D warnings
