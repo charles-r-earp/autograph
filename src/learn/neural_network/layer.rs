@@ -196,7 +196,7 @@ pub mod builder {
             let mut weight_dim = <D::Larger as Dimension>::Larger::zeros(2 + filter.ndim());
             weight_dim[0] = outputs;
             weight_dim[1] = inputs;
-            weight_dim.slice_mut()[2..].copy_from_slice(filter.slice());
+            weight_dim.slice_mut().get_mut(2..).unwrap().copy_from_slice(filter.slice());
             let weight_iter = Uniform::new(-a, a)
                 .sample_iter(&mut rng)
                 .take(weight_dim.size());
@@ -1613,8 +1613,7 @@ impl<A: Forward<Variable2, Output = Variable2> + Any> Forward<Variable2> for Den
         if let Some(bias) = self.bias.as_ref() {
             output.add_assign(&bias.to_variable())?;
         }
-        let output = self.activation.forward(output);
-        output
+        self.activation.forward(output)
     }
 }
 
@@ -1754,7 +1753,7 @@ impl<D: Dimension + 'static> Forward<Variable<D>> for Relu {
         let mut builder = Variable::builder();
         if let Some(node) = input.node() {
             let input = input.value().clone();
-            builder.edge(&node, move |output_grad| {
+            builder.edge(node, move |output_grad| {
                 scalar_relu_backward(input, output_grad)
             });
         }
@@ -1838,12 +1837,12 @@ fn relu_mut<T: Scalar + num_traits::Float, D: Dimension>(
                 return Ok(());
             }
         });
-        bail!("relu_mut {:?} unimplemented!", T::scalar_type())
+        bail!("relu_mut {:?} unimplemented!", T::SCALAR_TYPE)
     }
 }
 
 fn relu<T: Scalar, D: Dimension>(input: TensorView<T, D>) -> Result<Tensor<T, D>> {
-    let scalar_type = T::scalar_type();
+    let scalar_type = T::SCALAR_TYPE;
     if !matches!(scalar_type, ScalarType::BF16 | ScalarType::F32) {
         bail!("Relu {scalar_type:?} unimplemented!");
     }
@@ -1862,7 +1861,7 @@ fn relu<T: Scalar, D: Dimension>(input: TensorView<T, D>) -> Result<Tensor<T, D>
     #[cfg(feature = "device")]
     {
         macro_for!($T in [bf16, f32] {
-            if scalar_type == $T::scalar_type() {
+            if scalar_type == $T::SCALAR_TYPE {
                 let mut output = unsafe { Tensor::<$T, D>::uninit(input.device(), input.raw_dim())? };
                 let x = input.as_slice().unwrap();
                 let mut y = output.as_slice_mut().unwrap();

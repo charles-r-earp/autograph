@@ -645,6 +645,7 @@ mod kernels {
                     }
                 }
 
+                #[allow(clippy::too_many_arguments)]
                 #[kernel]
                 pub fn [<sum_axis2_ $t>]<const AXIS: u32>(
                     d0: u32,
@@ -697,6 +698,7 @@ mod kernels {
                     }
                 }
 
+                #[allow(clippy::too_many_arguments)]
                 #[kernel]
                 pub fn [<sum_axis4_ $t>]<const AXIS: u32>(
                     d0: u32,
@@ -763,6 +765,7 @@ mod kernels {
                     }
                 }
 
+                #[allow(clippy::too_many_arguments)]
                 #[kernel]
                 pub fn [<sum_axis6_ $t>]<const AXIS: u32>(
                     d0: u32,

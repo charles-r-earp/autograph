@@ -1,7 +1,11 @@
+#[cfg(feature = "neural-network")]
 use krnl::scalar::Scalar;
-use ndarray::{ArrayViewMut, Axis, Dimension, Ix4, Ix5, RawArrayViewMut, RemoveAxis};
+use ndarray::{ArrayViewMut, Dimension,  RawArrayViewMut};
+#[cfg(feature = "neural-network")]
+use ndarray::{Axis, Ix4, Ix5, RemoveAxis};
 use std::marker::PhantomData;
 
+#[cfg(feature = "neural-network")]
 pub(crate) fn array_par_outer_iter_mut_for_each<T: Scalar, D: RemoveAxis, F>(
     array: ArrayViewMut<T, D>,
     f: F,
@@ -26,11 +30,14 @@ pub(crate) fn array_par_outer_iter_mut_for_each<T: Scalar, D: RemoveAxis, F>(
 
 #[derive(Clone)]
 pub(crate) struct SyncRawArrayViewMut<'a, T, D: Dimension> {
+    #[allow(unused)]
     inner: RawArrayViewMut<T, D>,
     _m: PhantomData<&'a T>,
 }
 
+#[cfg(feature = "neural-network")]
 pub(crate) type SyncRawArrayViewMut4<'a, T> = SyncRawArrayViewMut<'a, T, Ix4>;
+#[cfg(feature = "neural-network")]
 pub(crate) type SyncRawArrayViewMut5<'a, T> = SyncRawArrayViewMut<'a, T, Ix5>;
 
 impl<'a, T, D: Dimension> TryFrom<ArrayViewMut<'a, T, D>> for SyncRawArrayViewMut<'a, T, D> {
@@ -49,6 +56,7 @@ impl<'a, T, D: Dimension> TryFrom<ArrayViewMut<'a, T, D>> for SyncRawArrayViewMu
     }
 }
 
+#[cfg(feature = "neural-network")]
 impl<'a, T, D: Dimension> SyncRawArrayViewMut<'a, T, D> {
     pub(crate) fn as_mut_ptr(&mut self) -> *mut T {
         self.inner.as_mut_ptr()
@@ -108,6 +116,7 @@ impl<'a, T, D: Dimension> SyncRawArrayViewMut<'a, T, D> {
 unsafe impl<T: Send + Sync + 'static, D: Dimension> Send for SyncRawArrayViewMut<'_, T, D> {}
 unsafe impl<T: Send + Sync + 'static, D: Dimension> Sync for SyncRawArrayViewMut<'_, T, D> {}
 
+#[cfg(feature = "neural-network")]
 pub(crate) fn broadcast(threads: Option<usize>, f: impl Fn(usize, usize) + Send + Sync) {
     let threads = threads
         .unwrap_or(usize::MAX)

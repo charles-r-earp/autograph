@@ -285,7 +285,7 @@ fn assign<X: Scalar, Y: Scalar>(
             && x.device() != y.device()
             && alpha == Y::zero()
             && x.strides() == y.strides()
-            && X::scalar_type() == Y::scalar_type()
+            && X::SCALAR_TYPE == Y::SCALAR_TYPE
         {
             if let Some((x, mut y)) = x.as_slice_memory_order().zip(y.as_slice_memory_order_mut()) {
                 return y.copy_from_slice(&x.as_scalar_slice().try_into().unwrap());
@@ -364,9 +364,9 @@ fn scalar_assign(
     let device = y.device();
     if device.is_host() && x.device().is_host() {
         macro_for!($X in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
-            if $X::scalar_type() == x.scalar_type() {
+            if $X::SCALAR_TYPE == x.scalar_type() {
                 macro_for!($Y in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
-                    if $Y::scalar_type() == y.scalar_type() {
+                    if $Y::SCALAR_TYPE == y.scalar_type() {
                         let alpha = $Y::try_from(alpha).unwrap();
                         let x = x.try_into_tensor_view::<$X>().unwrap();
                         let y = y.try_into_tensor_view_mut::<$Y>().unwrap();
@@ -1642,6 +1642,7 @@ mod binary_op {
     #[cfg(feature = "device")]
     impl BinaryOp {
         #[inline]
+        #[allow(clippy::wrong_self_convention)]
         pub fn as_u32(self) -> u32 {
             self as u32
         }
@@ -1713,6 +1714,7 @@ mod kernels {
                     *y = op.eval(alpha * x.cast::<$Y>(), *y);
                 }
 
+                #[allow(clippy::too_many_arguments)]
                 #[kernel]
                 pub fn [<assign2_ $X _ $Y>]<const OP: u32>(
                     rows: u32,
@@ -1742,6 +1744,7 @@ mod kernels {
                     }
                 }
 
+                #[allow(clippy::too_many_arguments)]
                 #[kernel]
                 pub unsafe fn [<assign4_ $X _ $Y>]<const OP: u32>(
                     d0: u32,
@@ -1783,6 +1786,7 @@ mod kernels {
                     }
                 }
 
+                #[allow(clippy::too_many_arguments)]
                 #[kernel]
                 pub unsafe fn [<assign6_ $X _ $Y>]<const OP: u32>(
                     d0: u32,

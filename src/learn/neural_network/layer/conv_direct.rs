@@ -123,20 +123,18 @@ fn conv2_direct_packed<S: ScalarData>(
 ) -> Result<PackedOutput<Ix4>> {
     match input {
         PackedInput::Tensor(input) => {
-            if input.device().is_host() {
-                if input.scalar_type() == ScalarType::F32 {
-                    let x = input.view().try_into_tensor_view::<f32>().unwrap();
-                    let x: ArrayView4<f32> = x.as_array().unwrap();
-                    let x: ArrayView4<[f32; 1]> = unsafe { std::mem::transmute(x) };
-                    let w = weight.array_1xf32x8().unwrap();
-                    let y = conv2_direct_host_f32(x, ic, w.view(), options);
-                    return Ok(PackedOutput::Arrayf32x8(y));
-                }
+            if input.device().is_host() && input.scalar_type() == ScalarType::F32 {
+                let x = input.view().try_into_tensor_view::<f32>().unwrap();
+                let x: ArrayView4<f32> = x.as_array().unwrap();
+                let x: ArrayView4<[f32; 1]> = unsafe { std::mem::transmute(x) };
+                let w = weight.array_1xf32x8().unwrap();
+                let y = conv2_direct_host_f32(x, ic, w.view(), options);
+                return Ok(PackedOutput::Arrayf32x8(y));
             }
             todo!()
         }
-        #[cfg(feature = "device")]
-        PackedInput::TensorPacked(_) => todo!(),
+        //#[cfg(feature = "device")]
+        //PackedInput::TensorPacked(_) => todo!(),
         PackedInput::Array8xf32(input) => {
             let w = weight.array_8xf32x8().unwrap();
             let y = conv2_direct_host_f32(input.view(), ic, w.view(), options);
@@ -159,7 +157,7 @@ fn conv2_direct_backward_input_packed(
                 weight.view(),
                 output_grad.view(),
                 oc,
-                &options,
+                options,
             );
             let input_grad: Array4<f32> = unsafe { std::mem::transmute(input_grad) };
             Ok(Tensor::from(input_grad).into())
@@ -171,7 +169,7 @@ fn conv2_direct_backward_input_packed(
                 weight.view(),
                 output_grad.view(),
                 oc,
-                &options,
+                options,
             );
             let input_grad = unpack_input2_host_f32(input_grad.view(), ic);
             Ok(Tensor::from(input_grad).into())
@@ -196,20 +194,20 @@ fn conv2_direct_backward_weight_packed<S: ScalarData>(
             let weight_grad = conv2_direct_backward_weight_host_f32(
                 input,
                 output_grad.view(),
-                &options,
+                options,
                 weight_shape,
             );
             let weight_grad = unpack_weight2_host_f32(weight_grad.view(), ic, oc);
             Ok(Tensor::from(weight_grad).into())
         }
-        #[cfg(feature = "device")]
-        PackedInput::TensorPacked(_) => todo!(),
+        //#[cfg(feature = "device")]
+        //PackedInput::TensorPacked(_) => todo!(),
         PackedInput::Array8xf32(input) => {
             let output_grad = output_grad.array_f32x8().unwrap();
             let weight_grad = conv2_direct_backward_weight_host_f32(
                 input.view(),
                 output_grad.view(),
-                &options,
+                options,
                 weight_shape,
             );
             let weight_grad = unpack_weight2_host_f32(weight_grad.view(), ic, oc);
@@ -224,8 +222,8 @@ const fn div_up(a: usize, b: usize) -> usize {
 
 enum PackedInput<S: ScalarData, D: Dimension> {
     Tensor(ScalarTensorBase<S, D>),
-    #[cfg(feature = "device")]
-    TensorPacked(ScalarTensor<D::Larger>),
+    //#[cfg(feature = "device")]
+    //TensorPacked(ScalarTensor<D::Larger>),
     Array8xf32(Array<[f32; 8], D>),
 }
 
@@ -247,12 +245,10 @@ impl<S: ScalarData> TryFrom<ScalarTensorBase<S, Ix4>> for PackedInput<S, Ix4> {
         if ic == 1 {
             return Ok(Self::Tensor(input));
         }
-        if input.device().is_host() {
-            if input.scalar_type() == ScalarType::F32 {
-                let x = input.view().try_into_tensor_view::<f32>().unwrap();
-                let x_packed = pack_input2_host_f32(x.as_array().unwrap());
-                return Ok(Self::Array8xf32(x_packed));
-            }
+        if input.device().is_host() && input.scalar_type() == ScalarType::F32 {
+            let x = input.view().try_into_tensor_view::<f32>().unwrap();
+            let x_packed = pack_input2_host_f32(x.as_array().unwrap());
+            return Ok(Self::Array8xf32(x_packed));
         }
         todo!()
     }
@@ -293,17 +289,15 @@ impl<S: ScalarData> TryFrom<ScalarTensorBase<S, Ix4>> for PackedWeight<Ix4> {
     type Error = Error;
     fn try_from(weight: ScalarTensorBase<S, Ix4>) -> Result<Self> {
         let (_oc, ic, _fh, _fw) = weight.dim();
-        if weight.device().is_host() {
-            if weight.scalar_type() == ScalarType::F32 {
-                let w = weight.view().try_into_tensor_view::<f32>().unwrap();
-                let w = w.as_array().unwrap();
-                let w_packed = if ic == 1 {
-                    Self::Array1xf32x8(pack_weight2_host_f32(w))
-                } else {
-                    Self::Array8xf32x8(pack_weight2_host_f32(w))
-                };
-                return Ok(w_packed);
-            }
+        if weight.device().is_host() && weight.scalar_type() == ScalarType::F32 {
+            let w = weight.view().try_into_tensor_view::<f32>().unwrap();
+            let w = w.as_array().unwrap();
+            let w_packed = if ic == 1 {
+                Self::Array1xf32x8(pack_weight2_host_f32(w))
+            } else {
+                Self::Array8xf32x8(pack_weight2_host_f32(w))
+            };
+            return Ok(w_packed);
         }
         todo!()
     }
@@ -344,13 +338,11 @@ impl<D: Dimension> PackedOutput<D> {
 impl<S: ScalarData> TryFrom<ScalarTensorBase<S, Ix4>> for PackedOutput<Ix4> {
     type Error = Error;
     fn try_from(output: ScalarTensorBase<S, Ix4>) -> Result<Self> {
-        if output.device().is_host() {
-            if output.scalar_type() == ScalarType::F32 {
-                let y = output.view().try_into_tensor_view::<f32>().unwrap();
-                return Ok(Self::Arrayf32x8(pack_output2_host_f32(
-                    y.as_array().unwrap(),
-                )));
-            }
+        if output.device().is_host() && output.scalar_type() == ScalarType::F32 {
+            let y = output.view().try_into_tensor_view::<f32>().unwrap();
+            return Ok(Self::Arrayf32x8(pack_output2_host_f32(
+                y.as_array().unwrap(),
+            )));
         }
         todo!()
     }
@@ -415,7 +407,7 @@ fn pack_input2_host_f32(input: ArrayView4<f32>) -> Array4<[f32; 8]> {
                             for (x, x_tile) in x
                                 .chunks_exact(8)
                                 .remainder()
-                                .into_iter()
+                                .iter()
                                 .copied()
                                 .zip(x_tile.as_array_mut())
                             {
@@ -731,7 +723,7 @@ fn unpack_output2_host_f32(output_packed: ArrayView4<f32x8>, oc: usize) -> Array
                     if !y_packed.is_empty() {
                         let widy = (0..ow).step_by(8).last().unwrap();
                         let mut y_tile = [f32x8::default(); 8];
-                        for (y_packed, y_tile) in y_packed.into_iter().zip(y_tile.iter_mut()) {
+                        for (y_packed, y_tile) in y_packed.iter().zip(y_tile.iter_mut()) {
                             *y_tile = *y_packed;
                         }
                         y_tile = f32x8::transpose(y_tile);
@@ -765,7 +757,7 @@ fn conv2_direct_host_f32<const TCX: usize>(
 ) -> Array4<f32x8> {
     #[allow(unused_mut, unused_assignments)]
     const fn twy_for_tby(tby: usize) -> usize {
-        let mut twy = 15 / (2 * (tby + 2));
+        
         #[cfg(target_feature = "avx")]
         {
             twy = 15 / (tby + 2);
@@ -774,9 +766,10 @@ fn conv2_direct_host_f32<const TCX: usize>(
         {
             twy = 15 / (tby + 1);
         }
-        twy
+        15 / (2 * (tby + 2))
     }
 
+    #[allow(clippy::too_many_arguments)]
     #[inline(never)]
     unsafe fn kernel<const TCX: usize, const TBY: usize, const TWY: usize, const UNROLL: bool>(
         cidx_block: usize,
@@ -827,6 +820,7 @@ fn conv2_direct_host_f32<const TCX: usize>(
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     #[inline(never)]
     fn inner<const TCX: usize, const TBY: usize, const TWY: usize>(
         thread_id: usize,
@@ -878,10 +872,10 @@ fn conv2_direct_host_f32<const TCX: usize>(
                                     kernel::<TCX, TBY, TWY, true>(
                                         cidx_block,
                                         widy,
-                                        &x,
+                                        x,
                                         tcx,
                                         iw,
-                                        &w,
+                                        w,
                                         tby,
                                         ic_blocks,
                                         [fh, fw],
@@ -894,10 +888,10 @@ fn conv2_direct_host_f32<const TCX: usize>(
                                     kernel::<TCX, TBY, TWY, false>(
                                         cidx_block,
                                         widy,
-                                        &x,
+                                        x,
                                         tcx,
                                         iw,
-                                        &w,
+                                        w,
                                         tby,
                                         ic_blocks,
                                         [fh, fw],
@@ -947,6 +941,7 @@ fn conv2_direct_host_f32<const TCX: usize>(
 }
 
 trait Conv2DirectBackwardInputHostF32Kernel<const TCX: usize> {
+    #[allow(clippy::too_many_arguments)]
     unsafe fn conv2_direct_backward_input_host_f32_kernel<const TWY: usize, const UNROLL: bool>(
         widy: usize,
         w: &[[f32x8; TCX]],
@@ -1163,7 +1158,7 @@ fn conv2_direct_backward_weight_host_f32<const TCX: usize>(
 ) -> Array4<[f32x8; TCX]> {
     #[allow(unused_mut, unused_assignments)]
     const fn tw_for_tby(tby: usize) -> usize {
-        let mut tw = 15 / (2 * tby + 2);
+        
         #[cfg(target_feature = "avx")]
         {
             tw = 15 / (tby + 2);
@@ -1172,7 +1167,7 @@ fn conv2_direct_backward_weight_host_f32<const TCX: usize>(
         {
             tw = 15 / (tby + 1);
         }
-        tw
+        15 / (2 * tby + 2)
     }
 
     fn inner<const TCX: usize, const TBY: usize, const TW: usize>(
@@ -1314,7 +1309,8 @@ fn conv2_direct_backward_weight_host_f32<const TCX: usize>(
             });
         }
     });
-    let weight_grad = if threads_bs == 1 {
+    
+    if threads_bs == 1 {
         weight_grad_tmp
             .into_shape([oc_blocks, ic_blocks, fh, fw])
             .unwrap()
@@ -1345,6 +1341,5 @@ fn conv2_direct_backward_weight_host_f32<const TCX: usize>(
             }
         }
         weight_grad
-    };
-    weight_grad
+    }
 }
