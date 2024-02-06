@@ -1418,7 +1418,6 @@ mod learn {
             options: &Conv2Options,
             alg: ConvAlg,
         ) {
-            dbg!(x_shape);
             let [bs, inputs, ih, iw] = x_shape;
             let [fh, fw] = filter;
             let w_shape = [outputs, inputs, fh, fw];

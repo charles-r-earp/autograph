@@ -757,7 +757,6 @@ fn conv2_direct_host_f32<const TCX: usize>(
 ) -> Array4<f32x8> {
     #[allow(unused_mut, unused_assignments)]
     const fn twy_for_tby(tby: usize) -> usize {
-        
         #[cfg(target_feature = "avx")]
         {
             twy = 15 / (tby + 2);
@@ -1158,7 +1157,6 @@ fn conv2_direct_backward_weight_host_f32<const TCX: usize>(
 ) -> Array4<[f32x8; TCX]> {
     #[allow(unused_mut, unused_assignments)]
     const fn tw_for_tby(tby: usize) -> usize {
-        
         #[cfg(target_feature = "avx")]
         {
             tw = 15 / (tby + 2);
@@ -1235,7 +1233,7 @@ fn conv2_direct_backward_weight_host_f32<const TCX: usize>(
                         }
                     }
                     for (hidy, x) in x.windows(fh * iw).step_by(iw).enumerate() {
-                        for widy in 0..oh {
+                        for widy in 0..ow {
                             let mut dy_packed = [f32x8::default(); TBY];
                             for (cidy_block, dy_packed) in
                                 (cidy_block..oc_blocks).zip(dy_packed.iter_mut())
@@ -1309,7 +1307,7 @@ fn conv2_direct_backward_weight_host_f32<const TCX: usize>(
             });
         }
     });
-    
+
     if threads_bs == 1 {
         weight_grad_tmp
             .into_shape([oc_blocks, ic_blocks, fh, fw])
