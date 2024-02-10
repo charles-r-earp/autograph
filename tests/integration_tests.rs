@@ -949,7 +949,7 @@ mod learn {
                             {
                                 let batch_size_inputs_outputs_list = batch_size_inputs_outputs_list.clone();
                                 let input_shapes = input_shapes.clone();
-                                
+
                                 device_test(device, &format!("col2im_conv2_{scalar_name}_{conv2_name}"), move |device| {
                                     let im2col_options = Im2ColConv2Options {
                                         filter,

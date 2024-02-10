@@ -1293,58 +1293,56 @@ impl<T: Scalar, S: Data<Elem = T>> Col2ImConv2 for TensorBase<S, Ix2> {
 impl<S: ScalarData> Col2ImConv2 for ScalarTensorBase<S, Ix2> {
     type Output = ScalarTensor4;
     fn col2im_conv2(&self, options: &Col2ImConv2Options) -> Result<Self::Output> {
-        macro_wrap!(
-            paste! { match self.scalar_type() {
-                macro_for!($T in [bf16, f32] {
-                   $T::SCALAR_TYPE => {
-                        let input = self.view().try_into_tensor_view::<$T>().unwrap();
-                        if let Some(input) = input.as_array() {
-                            return Ok(Tensor::from(input.col2im_conv2(options)?).into());
-                        }
-                        #[cfg(feature = "device")] {
-                            let input = input.as_standard_layout()?;
-                            let (rows, cols) = input.dim();
-                            let [oh, ow] = options.output_shape();
-                            let Col2ImConv2Options {
-                                shape: [ih, iw],
-                                filter: [fh, fw],
-                                padding: [ph, pw],
-                                stride: [sh, sw],
-                                dilation: [dh, dw],
-                            } = options.clone();
-                            let bs = rows / (ih * iw);
-                            let c = cols / (fh * fw);
-                            let mut output = unsafe {
-                                Tensor::<$T, _>::uninit(input.device(), [bs, c, oh, ow])?
-                            };
-                            neural_network_kernels::[<col2im_conv2_ $T>]::builder()?
-                                .specialize(
-                                    c.to_u32().unwrap(),
-                                    ih.to_u32().unwrap(),
-                                    iw.to_u32().unwrap(),
-                                    oh.to_u32().unwrap(),
-                                    ow.to_u32().unwrap(),
-                                    fh.to_u32().unwrap(),
-                                    fw.to_u32().unwrap(),
-                                    ph.to_u32().unwrap(),
-                                    pw.to_u32().unwrap(),
-                                    sh.to_u32().unwrap(),
-                                    sw.to_u32().unwrap(),
-                                    dh.to_u32().unwrap(),
-                                    dw.to_u32().unwrap(),
-                                )
-                                .build(output.device())?
-                                .dispatch(
-                                    input.as_slice().unwrap(),
-                                     output.as_slice_mut().unwrap(),
-                                )?;
-                            return Ok(output.into());
-                        }
-                   }
-                })
-                _ => (),
-            }}
-        );
+        macro_wrap!(paste! { match self.scalar_type() {
+            macro_for!($T in [bf16, f32] {
+               $T::SCALAR_TYPE => {
+                    let input = self.view().try_into_tensor_view::<$T>().unwrap();
+                    if let Some(input) = input.as_array() {
+                        return Ok(Tensor::from(input.col2im_conv2(options)?).into());
+                    }
+                    #[cfg(feature = "device")] {
+                        let input = input.as_standard_layout()?;
+                        let (rows, cols) = input.dim();
+                        let [oh, ow] = options.output_shape();
+                        let Col2ImConv2Options {
+                            shape: [ih, iw],
+                            filter: [fh, fw],
+                            padding: [ph, pw],
+                            stride: [sh, sw],
+                            dilation: [dh, dw],
+                        } = options.clone();
+                        let bs = rows / (ih * iw);
+                        let c = cols / (fh * fw);
+                        let mut output = unsafe {
+                            Tensor::<$T, _>::uninit(input.device(), [bs, c, oh, ow])?
+                        };
+                        neural_network_kernels::[<col2im_conv2_ $T>]::builder()?
+                            .specialize(
+                                c.to_u32().unwrap(),
+                                ih.to_u32().unwrap(),
+                                iw.to_u32().unwrap(),
+                                oh.to_u32().unwrap(),
+                                ow.to_u32().unwrap(),
+                                fh.to_u32().unwrap(),
+                                fw.to_u32().unwrap(),
+                                ph.to_u32().unwrap(),
+                                pw.to_u32().unwrap(),
+                                sh.to_u32().unwrap(),
+                                sw.to_u32().unwrap(),
+                                dh.to_u32().unwrap(),
+                                dw.to_u32().unwrap(),
+                            )
+                            .build(output.device())?
+                            .dispatch(
+                                input.as_slice().unwrap(),
+                                 output.as_slice_mut().unwrap(),
+                            )?;
+                        return Ok(output.into());
+                    }
+               }
+            })
+            _ => (),
+        }});
         bail!("im2col_conv2 {:?} unimplemented!()", self.scalar_type())
     }
 }
@@ -1913,7 +1911,7 @@ mod neural_network_kernels {
                     *y.unsafe_index_mut(y_idx as usize) = x;
                 }
             }
-            
+
             #[kernel]
             pub fn [<col2im_conv2_ $T>]<
                 const C: u32,
@@ -1952,7 +1950,7 @@ mod neural_network_kernels {
                 let cidy = cid * oh * ow;
                 let hidy = hwid / ow + ph;
                 let widy = hwid % ow + pw;
-                
+
                 #[inline]
                 fn div_exact(a: u32, b: u32) -> Option<u32> {
                     if a % b == 0 {
@@ -1961,14 +1959,14 @@ mod neural_network_kernels {
                         None
                     }
                 }
-                
+
                 let fh_max = fh.min(hidy / dh + 1);
                 let fw_max = fw.min(widy / dw + 1);
-                
+
                 let mut acc = 0f32;
                 for fi in 0 .. fh_max {
                     if let Some(hidx) = div_exact(hidy - fi * dh, sh)
-                    .filter(|hidx| *hidx < ih) {  
+                    .filter(|hidx| *hidx < ih) {
                         for fj in 0 .. fw_max {
                             if let Some(widx) = div_exact(widy - fj * dw, sw)
                             .filter(|widx| *widx < iw) {
@@ -1978,8 +1976,8 @@ mod neural_network_kernels {
                             }
                         }
                     }
-                }       
-                *y = acc.cast(); 
+                }
+                *y = acc.cast();
             }
 
             #[kernel]

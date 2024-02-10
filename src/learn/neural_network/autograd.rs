@@ -504,8 +504,7 @@ fn broadcast_backward<T: Scalar, D1: Dimension, D2: Dimension>(
             .copy_from_slice(&output_dim.slice()[strip_dims..]);
         output_dim_stripped
     };
-    let batch_dims = input
-        .ndim().saturating_sub(output_dim_stripped.ndim());
+    let batch_dims = input.ndim().saturating_sub(output_dim_stripped.ndim());
     let input_dim_packed = if batch_dims > 0 {
         let batch_size = input.shape()[0..batch_dims].iter().product();
         let non_batch_dims = &input.shape()[batch_dims..];

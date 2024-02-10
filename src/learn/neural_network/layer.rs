@@ -196,7 +196,11 @@ pub mod builder {
             let mut weight_dim = <D::Larger as Dimension>::Larger::zeros(2 + filter.ndim());
             weight_dim[0] = outputs;
             weight_dim[1] = inputs;
-            weight_dim.slice_mut().get_mut(2..).unwrap().copy_from_slice(filter.slice());
+            weight_dim
+                .slice_mut()
+                .get_mut(2..)
+                .unwrap()
+                .copy_from_slice(filter.slice());
             let weight_iter = Uniform::new(-a, a)
                 .sample_iter(&mut rng)
                 .take(weight_dim.size());

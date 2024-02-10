@@ -1,6 +1,6 @@
 #[cfg(feature = "neural-network")]
 use krnl::scalar::Scalar;
-use ndarray::{ArrayViewMut, Dimension,  RawArrayViewMut};
+use ndarray::{ArrayViewMut, Dimension, RawArrayViewMut};
 #[cfg(feature = "neural-network")]
 use ndarray::{Axis, Ix4, Ix5, RemoveAxis};
 use std::marker::PhantomData;
