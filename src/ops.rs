@@ -82,7 +82,7 @@ impl Default for Col2ImConv2Options {
 
 #[cfg(feature = "neural-network")]
 impl Col2ImConv2Options {
-    pub(crate) fn output_shape(&self) -> [usize; 2] {
+    pub fn output_shape(&self) -> [usize; 2] {
         let mut shape = self.shape;
         for ((a, f), (s, (p, d))) in shape.iter_mut().zip(self.filter).zip(
             self.stride

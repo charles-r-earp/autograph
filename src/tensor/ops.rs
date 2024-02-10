@@ -1293,35 +1293,10 @@ impl<T: Scalar, S: Data<Elem = T>> Col2ImConv2 for TensorBase<S, Ix2> {
 impl<S: ScalarData> Col2ImConv2 for ScalarTensorBase<S, Ix2> {
     type Output = ScalarTensor4;
     fn col2im_conv2(&self, options: &Col2ImConv2Options) -> Result<Self::Output> {
-        // adapted from https://github.com/CNugteren/CLBlast/blob/master/src/utilities/utilities.cpp
-        #[allow(clippy::many_single_char_names)]
-        #[cfg(feature = "device")]
-        fn eclid_gcd(mut a: usize, mut b: usize) -> (usize, usize, usize) {
-            let mut p = 0;
-            let mut q = 1;
-            let mut p_1 = 1;
-            let mut q_1 = 0;
-            loop {
-                let c = a % b;
-                if c == 0 {
-                    break;
-                }
-                let p_2 = p_1;
-                let q_2 = q_1;
-                p_1 = p;
-                q_1 = q;
-                p = p_2 - p_1 * (a / b);
-                q = q_2 - q_1 * (a / b);
-                a = b;
-                b = c;
-            }
-            (p, q, b)
-        }
-
         macro_wrap!(
-            paste! { #[allow(clippy::single_match)] match self.scalar_type() {
+            paste! { match self.scalar_type() {
                 macro_for!($T in [bf16, f32] {
-                   ScalarType::[<$T:upper>] => {
+                   $T::SCALAR_TYPE => {
                         let input = self.view().try_into_tensor_view::<$T>().unwrap();
                         if let Some(input) = input.as_array() {
                             return Ok(Tensor::from(input.col2im_conv2(options)?).into());
@@ -1339,8 +1314,6 @@ impl<S: ScalarData> Col2ImConv2 for ScalarTensorBase<S, Ix2> {
                             } = options.clone();
                             let bs = rows / (ih * iw);
                             let c = cols / (fh * fw);
-                            let (s_bez_h, d_bez_h, gcd_h) = eclid_gcd(sh, dh);
-                            let (s_bez_w, d_bez_w, gcd_w) = eclid_gcd(sw, dw);
                             let mut output = unsafe {
                                 Tensor::<$T, _>::uninit(input.device(), [bs, c, oh, ow])?
                             };
@@ -1359,12 +1332,6 @@ impl<S: ScalarData> Col2ImConv2 for ScalarTensorBase<S, Ix2> {
                                     sw.to_u32().unwrap(),
                                     dh.to_u32().unwrap(),
                                     dw.to_u32().unwrap(),
-                                    s_bez_h.to_u32().unwrap(),
-                                    s_bez_w.to_u32().unwrap(),
-                                    d_bez_h.to_u32().unwrap(),
-                                    d_bez_w.to_u32().unwrap(),
-                                    gcd_h.to_u32().unwrap(),
-                                    gcd_w.to_u32().unwrap(),
                                 )
                                 .build(output.device())?
                                 .dispatch(
@@ -1946,7 +1913,7 @@ mod neural_network_kernels {
                     *y.unsafe_index_mut(y_idx as usize) = x;
                 }
             }
-
+            
             #[kernel]
             pub fn [<col2im_conv2_ $T>]<
                 const C: u32,
@@ -1962,12 +1929,6 @@ mod neural_network_kernels {
                 const SW: u32,
                 const DH: u32,
                 const DW: u32,
-                const S_BEZ_H: u32,
-                const S_BEZ_W: u32,
-                const D_BEZ_H: u32,
-                const D_BEZ_W: u32,
-                const GCD_H: u32,
-                const GCD_W: u32,
             >(
                 #[global] x: Slice<$T>,
                 #[item] y: &mut $T,
@@ -1979,11 +1940,8 @@ mod neural_network_kernels {
                 let [ph, pw] = [PH, PW];
                 let [sh, sw] = [SH, SW];
                 let [dh, dw] = [DH, DW];
-                let [s_bez_h, s_bez_w] = [S_BEZ_H, S_BEZ_W];
-                let [d_bez_h, d_bez_w] = [D_BEZ_H, D_BEZ_W];
-                let [gcd_h, gcd_w] = [GCD_H, GCD_W];
 
-                let idx = kernel.item_id;
+                let idx = kernel.item_id() as u32;
                 let bcid = idx / (oh * ow);
                 let hwid = idx % (oh * ow);
                 let bid = bcid / c;
@@ -1992,63 +1950,36 @@ mod neural_network_kernels {
                 let bidy = bid * c * oh * ow;
                 let cidx = cid * fh * fw;
                 let cidy = cid * oh * ow;
-
-                let ow_scaled = (ow - 1) / gcd_w + 1;
-                let gcd_scale_h = hwid / ow_scaled + (ph - 1) / gcd_h + 1;
-                let gcd_scale_w = hwid % ow_scaled + (pw - 1) / gcd_w + 1;
-                let hidy = gcd_scale_h * gcd_h - ph;
-                let widy = gcd_scale_w * gcd_w - pw;
-                let th_step = sh * dh / gcd_h;
-                let tw_step = sw * dw / gcd_w;
-
-                fn grid_ceil(x: i32, step: i32) -> i32 {
-                    if x > 0 {
-                        (x - 1) / step + 1
+                let hidy = hwid / ow + ph;
+                let widy = hwid % ow + pw;
+                
+                #[inline]
+                fn div_exact(a: u32, b: u32) -> Option<u32> {
+                    if a % b == 0 {
+                        Some(a / b)
                     } else {
-                        x / step * step
+                        None
                     }
                 }
-
-                let th_begin = grid_ceil(
-                    i32::max(
-                        -((s_bez_h * gcd_scale_h * sh) as i32),
-                        ((d_bez_h * gcd_scale_h - fh + 1) * dh) as i32,
-                    ),
-                    th_step as i32,
-                ) as u32;
-                let th_end = u32::min(
-                    (ih - s_bez_h * gcd_scale_h) * sh,
-                    (d_bez_h * gcd_scale_h + 1) * dh,
-                );
-                let tw_begin = grid_ceil(
-                    i32::max(
-                        -((s_bez_w * gcd_scale_w * sw) as i32),
-                        ((d_bez_w * gcd_scale_w - fw + 1) * dw) as i32,
-                    ),
-                    tw_step as i32,
-                ) as u32;
-                let tw_end = u32::min(
-                    (iw - s_bez_w * gcd_scale_w) * sw,
-                    (d_bez_w * gcd_scale_w + 1) * dw,
-                );
-
+                
+                let fh_max = fh.min(hidy / dh + 1);
+                let fw_max = fw.min(widy / dw + 1);
+                
                 let mut acc = 0f32;
-                let mut th = th_begin;
-                while th < th_end {
-                    let mut tw = tw_begin;
-                    while tw < tw_end {
-                        let fhid = d_bez_h * gcd_scale_h - th / dh;
-                        let fwid = d_bez_w * gcd_scale_w - tw / dw;
-                        let hid = th / sh + s_bez_h * gcd_scale_h;
-                        let wid = tw / sw + s_bez_w * gcd_scale_w;
-                        let fidx = fhid * fw + fwid;
-                        let patch_idx = (hid * iw + wid) * c * fh * fw;
-                        acc += x[(bidx + patch_idx + cidx + fidx) as usize].cast::<f32>();
-                        tw += tw_step;
+                for fi in 0 .. fh_max {
+                    if let Some(hidx) = div_exact(hidy - fi * dh, sh)
+                    .filter(|hidx| *hidx < ih) {  
+                        for fj in 0 .. fw_max {
+                            if let Some(widx) = div_exact(widy - fj * dw, sw)
+                            .filter(|widx| *widx < iw) {
+                                let fidx = fi * fw + fj;
+                                let patch_idx = (hidx * iw + widx) * c * fh * fw;
+                                acc += x[(bidx + patch_idx + cidx + fidx) as usize].cast::<f32>();
+                            }
+                        }
                     }
-                    th += th_step;
-                }
-                *y = acc.cast();
+                }       
+                *y = acc.cast(); 
             }
 
             #[kernel]

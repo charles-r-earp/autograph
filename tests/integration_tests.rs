@@ -949,6 +949,7 @@ mod learn {
                             {
                                 let batch_size_inputs_outputs_list = batch_size_inputs_outputs_list.clone();
                                 let input_shapes = input_shapes.clone();
+                                
                                 device_test(device, &format!("col2im_conv2_{scalar_name}_{conv2_name}"), move |device| {
                                     let im2col_options = Im2ColConv2Options {
                                         filter,
@@ -959,7 +960,6 @@ mod learn {
                                     for (batch_size, inputs, outputs) in batch_size_inputs_outputs_list.iter().copied() {
                                         for (ih, iw) in input_shapes.iter().copied() {
                                             col2im_conv2::<$T>(device, [batch_size, inputs, ih, iw], &im2col_options);
-
                                         }
                                     }
                                 }).with_ignored_flag(ignore)
