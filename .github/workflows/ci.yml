@@ -42,7 +42,7 @@ jobs:
       run: cargo build -p neural-network-benches --benches
     - name: test
       if: ${{ !cancelled() }}
-      run: cargo test --no-default-features
+      run: cargo test --no-default-features --features "serde neural-network" -- --format=terse
   krnlc: 
     runs-on: ubuntu-latest
     # spirv tools install copied from https://github.com/EmbarkStudios/rust-gpu/blob/main/.github/workflows/ci.yaml

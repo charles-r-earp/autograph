@@ -19,6 +19,7 @@ use krnl::{
 use ndarray::Zip;
 #[cfg(feature = "device")]
 use paste::paste;
+#[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 use std::any::TypeId;
 
@@ -103,7 +104,8 @@ pub mod builder {
 use builder::*;
 
 /// Tensor value.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct TensorValue {
     tensor: ScalarTensorD,
     parameter_device: bool,
@@ -118,7 +120,8 @@ impl TensorValue {
 }
 
 /// [`State`] value.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum Value {
     /// A tensor.
     Tensor(TensorValue),
@@ -166,14 +169,16 @@ impl<'a> ValueMut<'a> {
 ///
 /// Created with [`ParameterBase::init_optimizer_state()`](super::autograd::ParameterBase::init_optimizer_state).
 /// Stores per parameter training progress.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct State {
     name: String,
-    #[serde(skip, default = "default_type_id")]
+    #[cfg_attr(feature = "serde", serde(skip, default = "default_type_id"))]
     id: TypeId,
     key_values: Vec<(String, Value)>,
 }
 
+#[cfg(feature = "serde")]
 fn default_type_id() -> TypeId {
     TypeId::of::<()>()
 }
@@ -290,7 +295,8 @@ pub trait Optimizer {
 /// Stochastic Gradient Descent.
 ///
 /// Implemented for bf16 and f32.
-#[derive(Default, Debug, Serialize, Deserialize)]
+#[derive(Default, Debug)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct SGD {
     momentum: Option<f32>,
 }

@@ -38,6 +38,7 @@ use rand::{
     distributions::{Distribution, Uniform},
     thread_rng,
 };
+#[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 use std::any::Any;
@@ -599,11 +600,15 @@ impl<X, T: Forward<X, Output = X>> Forward<X> for Vec<T> {
 /// # Ok(())
 /// # }
 ///```
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(bound(
-    serialize = "D: Serialize, <D::Larger as Dimension>::Larger: Serialize, A: Serialize",
-    deserialize = "D: Deserialize<'de>, <D::Larger as Dimension>::Larger: Deserialize<'de>, A: Deserialize<'de>",
-))]
+#[derive(Debug)]
+#[cfg_attr(
+    feature = "serde",
+    derive(Serialize, Deserialize),
+    serde(bound(
+        serialize = "D: Serialize, <D::Larger as Dimension>::Larger: Serialize, A: Serialize",
+        deserialize = "D: Deserialize<'de>, <D::Larger as Dimension>::Larger: Deserialize<'de>, A: Deserialize<'de>",
+    ))
+)]
 pub struct Conv<D: Dimension, A = Identity> {
     weight: Parameter<<D::Larger as Dimension>::Larger>,
     padding: D,
@@ -1542,7 +1547,8 @@ impl<A: Forward<Variable4, Output = Variable4>> Forward<Variable4> for Conv2<A> 
 /// # Ok(())
 /// # }
 ///```
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Dense<A = Identity> {
     weight: Parameter2,
     bias: Option<Parameter1>,
@@ -1625,7 +1631,8 @@ impl<A: Forward<Variable2, Output = Variable2> + Any> Forward<Variable2> for Den
 ///
 /// See [`MaxPool1`] and [`MaxPool2`].
 /// Implemented for bf16 and f32.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct MaxPool<D: Dimension> {
     filter: D,
     stride: D,
@@ -1718,7 +1725,8 @@ impl MaxPool2 {
 /// Flatten.
 ///
 /// See [`Variable::flatten()`](Variable::flatten).
-#[derive(Default, Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Default, Clone, Copy, Debug)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Flatten;
 
 impl Layer for Flatten {}
@@ -1731,7 +1739,8 @@ impl<D: Dimension + 'static> Forward<Variable<D>> for Flatten {
 }
 
 /// Identity.
-#[derive(Default, Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Default, Clone, Copy, Debug)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Identity;
 
 impl Layer for Identity {}
@@ -1746,7 +1755,8 @@ impl<X> Forward<X> for Identity {
 /// ReLU.
 ///
 /// Implemented for bf16 and f32.
-#[derive(Default, Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Default, Clone, Copy, Debug)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Relu;
 
 impl Layer for Relu {}

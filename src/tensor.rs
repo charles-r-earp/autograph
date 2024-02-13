@@ -60,6 +60,7 @@ use ndarray::{
 #[cfg(feature = "device")]
 use num_traits::ToPrimitive;
 use paste::paste;
+#[cfg(feature = "serde")]
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::{
     convert::{TryFrom, TryInto},
@@ -1227,6 +1228,7 @@ impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
     }
 }*/
 
+#[cfg(feature = "serde")]
 #[derive(Serialize, Deserialize)]
 #[serde(bound(
     serialize = "S: ScalarData, D: Dimension + Serialize",
@@ -1238,6 +1240,7 @@ struct ScalarTensorSerde<S: ScalarData, D: Dimension> {
     buffer: ScalarBufferBase<S>,
 }
 
+#[cfg(feature = "serde")]
 impl<S1: ScalarData, D: Dimension + Serialize> Serialize for ScalarTensorBase<S1, D> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -1260,6 +1263,7 @@ impl<S1: ScalarData, D: Dimension + Serialize> Serialize for ScalarTensorBase<S1
     }
 }
 
+#[cfg(feature = "serde")]
 impl<'de, S: ScalarDataOwned, D1: Dimension + Deserialize<'de>> Deserialize<'de>
     for ScalarTensorBase<S, D1>
 {
@@ -2223,6 +2227,7 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     }*/
 }
 
+#[cfg(feature = "serde")]
 #[derive(Serialize, Deserialize)]
 #[serde(bound(
     serialize = "S: Data, D: Dimension + Serialize",
@@ -2234,6 +2239,7 @@ struct TensorSerde<S: Data, D: Dimension> {
     buffer: BufferBase<S>,
 }
 
+#[cfg(feature = "serde")]
 impl<S1: Data, D: Dimension + Serialize> Serialize for TensorBase<S1, D> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -2256,6 +2262,7 @@ impl<S1: Data, D: Dimension + Serialize> Serialize for TensorBase<S1, D> {
     }
 }
 
+#[cfg(feature = "serde")]
 impl<'de, S: DataOwned, D1: Dimension + Deserialize<'de>> Deserialize<'de> for TensorBase<S, D1> {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -2270,7 +2277,7 @@ impl<'de, S: DataOwned, D1: Dimension + Deserialize<'de>> Deserialize<'de> for T
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "serde"))]
 mod tests {
     use super::*;
     use serde_test::{assert_tokens, Token};

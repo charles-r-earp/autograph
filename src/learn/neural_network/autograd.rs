@@ -25,6 +25,7 @@ use ndarray::{
 };
 use parking_lot::{Mutex, RwLock};
 use paste::paste;
+#[cfg(feature = "serde")]
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::{
     any::TypeId,
@@ -632,16 +633,23 @@ impl Dot<Self> for Variable2 {
 /// the variable created from this parameter has a [`Node`].
 /// A parameter stores the [`OptimizerState`] which can be updated during training
 /// in [`Optimizer::update`]. Training progress may be saved by serializing with [`serde`].
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(bound(
-    serialize = "D: Serialize",
-    deserialize = "S: ScalarDataOwned, D: Deserialize<'de>"
-))]
+#[derive(Clone)]
+#[cfg_attr(
+    feature = "serde",
+    derive(Serialize, Deserialize),
+    serde(bound(
+        serialize = "D: Serialize",
+        deserialize = "S: ScalarDataOwned, D: Deserialize<'de>"
+    ))
+)]
 pub struct ParameterBase<S: ScalarData, D: Dimension> {
     value: ScalarTensorBase<S, D>,
-    #[serde(skip)]
+    #[cfg_attr(feature = "serde", serde(skip))]
     grad: Option<Arc<RwLock<Option<ScalarArcTensorD>>>>,
-    #[serde(skip_serializing_if = "OptimState::is_none", default)]
+    #[cfg_attr(
+        feature = "serde",
+        serde(skip_serializing_if = "OptimState::is_none", default)
+    )]
     optim_state: OptimState<'static>,
 }
 
@@ -968,6 +976,7 @@ impl Clone for OptimState<'_> {
     }
 }
 
+#[cfg(feature = "serde")]
 impl Serialize for OptimState<'_> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -981,6 +990,7 @@ impl Serialize for OptimState<'_> {
     }
 }
 
+#[cfg(feature = "serde")]
 impl<'de> Deserialize<'de> for OptimState<'_> {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where

@@ -51,7 +51,7 @@ krnl = { version = "0.0.4", default-features = false, features = ["serde"] }
 anyhow.workspace = true
 ndarray = { workspace = true, features = ["serde", "rayon", "matrixmultiply-threading"] }
 rand = { version = "0.8.4", optional = true }
-serde = { workspace = true, features = ["derive", "rc"] }
+serde = { workspace = true, features = ["derive", "rc"], optional = true }
 derive_more = { workspace = true }
 thiserror = "1.0.23"
 approx = "0.5.0"
@@ -86,11 +86,13 @@ libtest-mimic = "0.6.0"
 [features]
 default = ["device"]
 device = ["krnl/device", "dep:once_cell"]
+serde = ["dep:serde"]
 dataset = ["dep:rand"]
 iris = []
 mnist = ["dataset", "dep:dirs", "dep:flate2", "dep:downloader", "dep:byteorder", "dep:http"]
 learn = []
 neural-network = ["learn", "dep:autograph_derive", "dep:crossbeam-channel", "dep:parking_lot", "dep:rand", "dep:once_cell", "dep:smallvec"]
+
 
 [package.metadata.krnlc]
 features = ["neural-network"]
