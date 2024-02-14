@@ -913,6 +913,7 @@ enum OptimState<'a> {
 }
 
 impl OptimState<'_> {
+    #[cfg(feature = "serde")]
     fn is_none(&self) -> bool {
         match self {
             Self::State(x) => x.is_none(),
