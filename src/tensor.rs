@@ -38,23 +38,22 @@ let c = c.into_array()?;
 */
 use anyhow::{anyhow, bail, Result};
 use dry::macro_for;
+#[cfg(feature = "serde")]
+use krnl::buffer::{CowBuffer, ScalarCowBuffer};
 #[cfg(feature = "device")]
 use krnl::krnl_core::half::bf16;
 #[cfg(doc)]
 use krnl::{buffer::ArcBuffer, device::error::DeviceLost};
 use krnl::{
     buffer::{
-        ArcBufferRepr, Buffer, BufferBase, BufferRepr, CowBufferRepr, Data, DataMut,
-        DataOwned, ScalarArcBufferRepr, ScalarBuffer, ScalarBufferBase, ScalarBufferRepr,
-       ScalarCowBufferRepr, ScalarData, ScalarDataMut, ScalarDataOwned,
-        ScalarSlice, ScalarSliceMut, ScalarSliceMutRepr, ScalarSliceRepr, Slice, SliceMut,
-        SliceMutRepr, SliceRepr,
+        ArcBufferRepr, Buffer, BufferBase, BufferRepr, CowBufferRepr, Data, DataMut, DataOwned,
+        ScalarArcBufferRepr, ScalarBuffer, ScalarBufferBase, ScalarBufferRepr, ScalarCowBufferRepr,
+        ScalarData, ScalarDataMut, ScalarDataOwned, ScalarSlice, ScalarSliceMut,
+        ScalarSliceMutRepr, ScalarSliceRepr, Slice, SliceMut, SliceMutRepr, SliceRepr,
     },
     device::Device,
     scalar::{Scalar, ScalarElem, ScalarType},
 };
-#[cfg(feature = "serde")]
-use krnl::buffer::{CowBuffer, ScalarCowBuffer};
 use ndarray::{
     Array, ArrayBase, ArrayView, ArrayViewMut, Axis, Dimension, IntoDimension, Ix0, Ix1, Ix2, Ix3,
     Ix4, Ix5, Ix6, IxDyn, RawArrayView, RemoveAxis, ShapeError, StrideShape,

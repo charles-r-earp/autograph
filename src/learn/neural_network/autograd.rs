@@ -14,8 +14,10 @@ use crate::{
 use anyhow::{bail, Error, Result};
 use dry::macro_wrap;
 use half::{bf16, f16};
+#[cfg(feature = "serde")]
+use krnl::buffer::ScalarDataOwned;
 use krnl::{
-    buffer::{ScalarArcBufferRepr, ScalarData, ScalarDataMut, ScalarDataOwned, ScalarSliceMutRepr},
+    buffer::{ScalarArcBufferRepr, ScalarData, ScalarDataMut, ScalarSliceMutRepr},
     device::Device,
     scalar::{Scalar, ScalarType},
 };

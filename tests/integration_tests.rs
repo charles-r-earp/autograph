@@ -703,7 +703,6 @@ mod learn {
     mod criterion {
         use super::*;
         use autograph::learn::criterion::Accuracy;
-        use autograph::learn::neural_network::layer::ConvOptions;
         use num_traits::{Float, Unsigned};
 
         pub fn criterion_tests(device: &Device) -> Vec<Trial> {
@@ -819,11 +818,12 @@ mod learn {
         use super::*;
         use autograph::{
             learn::neural_network::{
+                self,
                 autograd::Variable,
-                layer::{Conv2Options, Forward, MaxPool2, Relu},
+                layer::{Forward, MaxPool2, Relu, __private::Conv2Options},
             },
-            ops::{Col2ImConv2, Col2ImConv2Options, Im2ColConv2, Im2ColConv2Options},
-            tensor::Tensor1,
+            ops::__private::{Col2ImConv2, Col2ImConv2Options, Im2ColConv2, Im2ColConv2Options},
+            tensor::{ScalarArcTensor, Tensor1},
         };
         use ndarray::{Array1, Array4, ArrayView1, ArrayView4};
         use num_traits::{Float, Unsigned};
@@ -869,8 +869,6 @@ mod learn {
             });
             {
                 let batch_size_list = [2, 3, 13];
-                //let inputs_list = [9]; //[1, 2, 3, 13];
-                //let outputs_list = [1]; //[1, 2, 3, 13];
                 let filter_list = [[1, 1], [3, 3], [5, 5], [7, 7], [1, 3], [3, 5], [1, 7]];
                 let padding_list = [[0, 1], [1, 1]];
                 let stride_list = [[1, 2], [2, 2]];
@@ -1078,7 +1076,7 @@ mod learn {
             batch_size: usize,
             classes: usize,
         ) {
-            use autograph::learn::neural_network::criterion::cross_entropy_loss_backward as backward;
+            use neural_network::criterion::cross_entropy_loss_backward as backward;
             let x_vec: Vec<X> = (0..10u8)
                 .map(|x| X::from_u8(x).unwrap())
                 .cycle()
@@ -1205,13 +1203,13 @@ mod learn {
                 .unwrap();
             let y_host = Tensor::from(conv2_direct_naive(x_host.view(), w_host.view(), options));
             let y_device = match alg {
-                ConvAlg::Im2Col => autograph::learn::neural_network::layer::conv2_im2col_forward(
+                ConvAlg::Im2Col => neural_network::layer::__private::conv2_im2col_forward(
                     x_device.view().into(),
                     w_device.view().into(),
                     options,
                 )
                 .unwrap(),
-                ConvAlg::Direct => autograph::learn::neural_network::layer::conv2_direct_forward(
+                ConvAlg::Direct => neural_network::layer::__private::conv2_direct_forward(
                     x_device.view().into(),
                     w_device.view().into(),
                     options,
@@ -1336,14 +1334,12 @@ mod learn {
             ));
             let dx_device = match alg {
                 ConvAlg::Im2Col => todo!(),
-                ConvAlg::Direct => {
-                    autograph::learn::neural_network::layer::conv2_direct_backward_input(
-                        w_device.view().into(),
-                        dy_device.view().into(),
-                        options,
-                    )
-                    .unwrap()
-                }
+                ConvAlg::Direct => neural_network::layer::__private::conv2_direct_backward_input(
+                    w_device.view().into(),
+                    dy_device.view().into(),
+                    options,
+                )
+                .unwrap(),
             };
             let dx_device = dx_device
                 .try_into_tensor::<T>()
@@ -1462,15 +1458,13 @@ mod learn {
             ));
             let dw_device = match alg {
                 ConvAlg::Im2Col => todo!(),
-                ConvAlg::Direct => {
-                    autograph::learn::neural_network::layer::conv2_direct_backward_weight(
-                        x_device.view().into(),
-                        dy_device.view().into(),
-                        filter,
-                        options,
-                    )
-                    .unwrap()
-                }
+                ConvAlg::Direct => neural_network::layer::__private::conv2_direct_backward_weight(
+                    x_device.view().into(),
+                    dy_device.view().into(),
+                    filter,
+                    options,
+                )
+                .unwrap(),
             };
             let dw_device = dw_device
                 .try_into_tensor::<T>()
@@ -1578,6 +1572,7 @@ mod learn {
             input_shape: [usize; 4],
             pool: &MaxPool2,
         ) {
+            use neural_network::layer::__private::max_pool2_backward as backward;
             let len = input_shape.iter().product();
             let x_vec: Vec<T> = (0..10u8)
                 .map(|x| T::from_u8(x).unwrap())
@@ -1602,15 +1597,13 @@ mod learn {
             let dy_host = Tensor::from(dy_array).into_shared().unwrap();
             let x_device = x_host.to_device_shared(device.clone()).unwrap();
             let dy_device = dy_host.to_device_shared(device.clone()).unwrap();
-            let dx_host = pool
-                .backward(x_host.into(), dy_host.into())
+            let dx_host = backward(&pool, x_host.into(), dy_host.into())
                 .unwrap()
                 .into_owned()
                 .unwrap()
                 .try_into_tensor::<T>()
                 .unwrap();
-            let dx_device = pool
-                .backward(x_device.into(), dy_device.into())
+            let dx_device = backward(&pool, x_device.into(), dy_device.into())
                 .unwrap()
                 .into_owned()
                 .unwrap()
@@ -1652,6 +1645,7 @@ mod learn {
         }
 
         fn relu_backward<T: Scalar>(device: &Device, input_shape: [usize; 2]) {
+            use neural_network::layer::__private::relu_backward as backward;
             let len = input_shape.iter().product();
             let y_vec: Vec<T> = (-1i8..1)
                 .map(|x| T::from_i8(x).unwrap())
@@ -1669,15 +1663,13 @@ mod learn {
                 (dy_host.clone(), dy_device.clone()), // relu_backward
                 (dy_host, dy_device),                 // relu_backward_mut
             ] {
-                let dx_host = Relu
-                    .backward(y_host.clone().into(), dy_host.into())
+                let dx_host = backward(y_host.clone().into(), dy_host.into())
                     .unwrap()
                     .into_owned()
                     .unwrap()
                     .try_into_tensor::<T>()
                     .unwrap();
-                let dx_device = Relu
-                    .backward(y_device.clone().into(), dy_device.into())
+                let dx_device = backward(y_device.clone().into(), dy_device.into())
                     .unwrap()
                     .into_owned()
                     .unwrap()
@@ -1695,8 +1687,6 @@ mod learn {
             input_dim: D1,
             output_dim: D2,
         ) {
-            use autograph::tensor::ScalarArcTensor;
-
             let input_dim = input_dim.into_dimension();
             let output_dim = output_dim.into_dimension();
             let x = ScalarArcTensor::zeros(device.clone(), input_dim, ScalarType::F32).unwrap();
