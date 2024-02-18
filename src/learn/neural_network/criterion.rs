@@ -24,6 +24,10 @@ use paste::paste;
 /// Implemented for:
 /// - input: bf16, f32
 /// - target: u8, u16, u32
+///
+/// **Panics**
+///
+/// Panics on the host if `target` indices are out of bounds.
 impl CrossEntropyLoss<ScalarArcTensor1> for Variable2 {
     type Output = Variable0;
     fn cross_entropy_loss(&self, target: ScalarArcTensor1) -> Result<Variable0> {
@@ -143,12 +147,7 @@ mod kernels {
     use krnl::krnl_core;
     use krnl_core::macros::kernel;
     #[cfg(target_arch = "spirv")]
-    use krnl_core::{
-        buffer::UnsafeIndex,
-        half::bf16,
-        num_traits::{Float, ToPrimitive},
-        scalar::Scalar,
-    };
+    use krnl_core::{buffer::UnsafeIndex, half::bf16, num_traits::Float, scalar::Scalar};
     use paste::paste;
 
     macro_for!($X in [bf16, f32] {
@@ -162,25 +161,26 @@ mod kernels {
                     dy: f32,
                     #[global] dx: UnsafeSlice<$X>,
                 ) {
-                    let idx = kernel.global_id;
-                    if idx as usize > t.len() {
+                    let idx = kernel.global_id();
+                    if idx > t.len() {
                         return;
                     }
-                    let mut m = x[(idx * classes) as usize].cast::<f32>();
+                    let classes = classes as usize;
+                    let mut m = x[idx * classes].cast::<f32>();
                     for i in 1..classes {
-                        let x = x[(idx * classes + i) as usize].cast::<f32>();
+                        let x = x[idx * classes + i].cast::<f32>();
                         m = m.max(x);
                     }
                     let mut s = 0f32;
                     for i in 0..classes {
-                        let x = x[(idx * classes + i) as usize].cast::<f32>();
+                        let x = x[idx * classes + i].cast::<f32>();
                         s += (x - m).exp();
                     }
-                    let t = t[idx as usize].to_u32().unwrap();
+                    let t = t[idx] as usize;
                     for i in 0..classes {
-                        let x = x[(idx * classes + i) as usize].cast::<f32>();
+                        let x = x[idx * classes + i].cast::<f32>();
                         let t = (i == t) as u8 as f32;
-                        let dx = unsafe { dx.unsafe_index_mut((idx * classes + i) as usize) };
+                        let dx = unsafe { dx.unsafe_index_mut(idx * classes + i) };
                         *dx = (dy * ((x - m).exp() / s - t)).cast();
                     }
                 }

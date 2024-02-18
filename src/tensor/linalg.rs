@@ -77,7 +77,7 @@ mod kernels {
                     let groups_mn = groups_m * groups_n;
                     let global_unroll = groups_k * unroll;
 
-                    let group_id = kernel.group_id as usize;
+                    let group_id = kernel.group_id();
                     let group_k = group_id / groups_mn;
                     let group_mn = group_id % groups_mn;
                     let group_m = group_mn / groups_n;
@@ -86,7 +86,7 @@ mod kernels {
                     let mut global_k = group_k * unroll;
                     let global_n = group_n * n_group;
 
-                    let thread_id = kernel.thread_id as usize;
+                    let thread_id = kernel.thread_id();
                     let thread_m = thread_id / threads_n;
                     let thread_n = thread_id % threads_n;
 

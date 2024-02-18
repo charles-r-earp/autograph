@@ -334,109 +334,109 @@ pub struct ScalarTensorBase<S: ScalarData, D: Dimension> {
     offset: usize,
 }
 
-/// Owned Scalar Tensor
+/// Owned Scalar Tensor.
 ///
 /// See [`ScalarTensorBase`].
 pub type ScalarTensor<D> = ScalarTensorBase<ScalarBufferRepr, D>;
-/// ScalarTensor with 1 element
+/// ScalarTensor with 1 element.
 pub type ScalarTensor0 = ScalarTensor<Ix0>;
-/// ScalarTensor with 1 dimension
+/// ScalarTensor with 1 dimension.
 pub type ScalarTensor1 = ScalarTensor<Ix1>;
-/// ScalarTensor with 2 dimensions
+/// ScalarTensor with 2 dimensions.
 pub type ScalarTensor2 = ScalarTensor<Ix2>;
-/// ScalarTensor with 3 dimensions
+/// ScalarTensor with 3 dimensions.
 pub type ScalarTensor3 = ScalarTensor<Ix3>;
-/// ScalarTensor with 4 dimensions
+/// ScalarTensor with 4 dimensions.
 pub type ScalarTensor4 = ScalarTensor<Ix4>;
-/// ScalarTensor with 5 dimensions
+/// ScalarTensor with 5 dimensions.
 pub type ScalarTensor5 = ScalarTensor<Ix5>;
-/// ScalarTensor with 6 dimensions
+/// ScalarTensor with 6 dimensions.
 pub type ScalarTensor6 = ScalarTensor<Ix6>;
-/// ScalarTensor with dynamic dimensions
+/// ScalarTensor with dynamic dimensions.
 pub type ScalarTensorD = ScalarTensor<IxDyn>;
 
-/// Shared Scalar Tensor
+/// Shared Scalar Tensor.
 ///
 /// See [`ScalarTensorBase`].
 pub type ScalarArcTensor<D> = ScalarTensorBase<ScalarArcBufferRepr, D>;
-/// ScalarArcTensor with 1 element
+/// ScalarArcTensor with 1 element.
 pub type ScalarArcTensor0 = ScalarArcTensor<Ix0>;
-/// ScalarArcTensor with 1 dimension
+/// ScalarArcTensor with 1 dimension.
 pub type ScalarArcTensor1 = ScalarArcTensor<Ix1>;
-/// ScalarArcTensor with 2 dimensions
+/// ScalarArcTensor with 2 dimensions.
 pub type ScalarArcTensor2 = ScalarArcTensor<Ix2>;
-/// ScalarArcTensor with 3 dimensions
+/// ScalarArcTensor with 3 dimensions.
 pub type ScalarArcTensor3 = ScalarArcTensor<Ix3>;
-/// ScalarArcTensor with 4 dimensions
+/// ScalarArcTensor with 4 dimensions.
 pub type ScalarArcTensor4 = ScalarArcTensor<Ix4>;
-/// ScalarArcTensor with 5 dimensions
+/// ScalarArcTensor with 5 dimensions.
 pub type ScalarArcTensor5 = ScalarArcTensor<Ix5>;
-/// ScalarArcTensor with 6 dimensions
+/// ScalarArcTensor with 6 dimensions.
 pub type ScalarArcTensor6 = ScalarArcTensor<Ix6>;
-/// ScalarArcTensor with dynamic dimensions
+/// ScalarArcTensor with dynamic dimensions.
 pub type ScalarArcTensorD = ScalarArcTensor<IxDyn>;
 
-/// Borrowed Scalar Tensor
+/// Borrowed Scalar Tensor.
 ///
 /// See [`ScalarTensorBase`].
 pub type ScalarTensorView<'a, D> = ScalarTensorBase<ScalarSliceRepr<'a>, D>;
-/// ScalarTensorView with 1 element
+/// ScalarTensorView with 1 element.
 pub type ScalarTensorView0<'a> = ScalarTensorView<'a, Ix0>;
-/// ScalarTensorView with 1 dimension
+/// ScalarTensorView with 1 dimension.
 pub type ScalarTensorView1<'a> = ScalarTensorView<'a, Ix1>;
-/// ScalarTensorView with 2 dimensions
+/// ScalarTensorView with 2 dimensions.
 pub type ScalarTensorView2<'a> = ScalarTensorView<'a, Ix2>;
-/// ScalarTensorView with 3 dimensions
+/// ScalarTensorView with 3 dimensions.
 pub type ScalarTensorView3<'a> = ScalarTensorView<'a, Ix3>;
-/// ScalarTensorView with 4 dimensions
+/// ScalarTensorView with 4 dimensions.
 pub type ScalarTensorView4<'a> = ScalarTensorView<'a, Ix4>;
-/// ScalarTensorView with 5 dimensions
+/// ScalarTensorView with 5 dimensions.
 pub type ScalarTensorView5<'a> = ScalarTensorView<'a, Ix5>;
-/// ScalarTensorView with 6 dimensions
+/// ScalarTensorView with 6 dimensions.
 pub type ScalarTensorView6<'a> = ScalarTensorView<'a, Ix6>;
-/// ScalarTensorView with dynamic dimensions
+/// ScalarTensorView with dynamic dimensions.
 pub type ScalarTensorViewD<'a> = ScalarTensorView<'a, IxDyn>;
 
-/// Mutably borrowed Scalar Tensor
+/// Mutably borrowed Scalar Tensor.
 ///
 /// See [`ScalarTensorBase`].
 pub type ScalarTensorViewMut<'a, D> = ScalarTensorBase<ScalarSliceMutRepr<'a>, D>;
-/// ScalarTensorViewMut with 1 element
+/// ScalarTensorViewMut with 1 element.
 pub type ScalarTensorViewMut0<'a> = ScalarTensorViewMut<'a, Ix0>;
-/// ScalarTensorViewMut with 1 dimension
+/// ScalarTensorViewMut with 1 dimension.
 pub type ScalarTensorViewMut1<'a> = ScalarTensorViewMut<'a, Ix1>;
-/// ScalarTensorViewMut with 2 dimensions
+/// ScalarTensorViewMut with 2 dimensions.
 pub type ScalarTensorViewMut2<'a> = ScalarTensorViewMut<'a, Ix2>;
-/// ScalarTensorViewMut with 3 dimensions
+/// ScalarTensorViewMut with 3 dimensions.
 pub type ScalarTensorViewMut3<'a> = ScalarTensorViewMut<'a, Ix3>;
-/// ScalarTensorViewMut with 4 dimensions
+/// ScalarTensorViewMut with 4 dimensions.
 pub type ScalarTensorViewMut4<'a> = ScalarTensorViewMut<'a, Ix4>;
-/// ScalarTensorViewMut with 5 dimensions
+/// ScalarTensorViewMut with 5 dimensions.
 pub type ScalarTensorViewMut5<'a> = ScalarTensorViewMut<'a, Ix5>;
-/// ScalarTensorViewMut with 6 dimensions
+/// ScalarTensorViewMut with 6 dimensions.
 pub type ScalarTensorViewMut6<'a> = ScalarTensorViewMut<'a, Ix6>;
-/// ScalarTensorViewMut with dynamic dimensions
+/// ScalarTensorViewMut with dynamic dimensions.
 pub type ScalarTensorViewMutD<'a> = ScalarTensorViewMut<'a, IxDyn>;
 
 /// Scalar Tensor that is either borrowed or owned.
 ///
 /// See [`ScalarTensorBase`].
 pub type ScalarCowTensor<'a, D> = ScalarTensorBase<ScalarCowBufferRepr<'a>, D>;
-/// ScalarCowTensor with 1 element
+/// ScalarCowTensor with 1 element.
 pub type ScalarCowTensor0<'a> = ScalarCowTensor<'a, Ix0>;
-/// ScalarCowTensor with 1 dimension
+/// ScalarCowTensor with 1 dimension.
 pub type ScalarCowTensor1<'a> = ScalarCowTensor<'a, Ix1>;
-/// ScalarCowTensor with 2 dimensions
+/// ScalarCowTensor with 2 dimensions.
 pub type ScalarCowTensor2<'a> = ScalarCowTensor<'a, Ix2>;
-/// ScalarCowTensor with 3 dimensions
+/// ScalarCowTensor with 3 dimensions.
 pub type ScalarCowTensor3<'a> = ScalarCowTensor<'a, Ix3>;
-/// ScalarCowTensor with 4 dimensions
+/// ScalarCowTensor with 4 dimensions.
 pub type ScalarCowTensor4<'a> = ScalarCowTensor<'a, Ix4>;
-/// ScalarCowTensor with 5 dimensions
+/// ScalarCowTensor with 5 dimensions.
 pub type ScalarCowTensor5<'a> = ScalarCowTensor<'a, Ix5>;
-/// ScalarCowTensor with 6 dimensions
+/// ScalarCowTensor with 6 dimensions.
 pub type ScalarCowTensor6<'a> = ScalarCowTensor<'a, Ix6>;
-/// ScalarCowTensor with dynamic dimensions
+/// ScalarCowTensor with dynamic dimensions.
 pub type ScalarCowTensorD<'a> = ScalarCowTensor<'a, IxDyn>;
 
 impl<S: ScalarDataOwned, D: Dimension> ScalarTensorBase<S, D> {
@@ -465,6 +465,7 @@ impl<S: ScalarDataOwned, D: Dimension> ScalarTensorBase<S, D> {
     /// Creates a tensor on `device` with `shape` filled with `elem`.
     ///
     /// **Errors**
+    ///
     /// See [`ScalarBuffer::from_elem()`].
     pub fn from_elem<Sh>(device: Device, shape: Sh, elem: ScalarElem) -> Result<Self>
     where
@@ -1655,7 +1656,7 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     /// # Note
     /// This operation merely reorders the dimensions / strides and does not copy the data. Combine with [`.into_standard_layout()`](TensorBase::into_standard_layout()) to execute the operation, returning a tensor in standard layout.
     ///
-    /// **Errors**
+    /// **Panics**
     ///
     /// Each axis 0 .. ndim must be used exactly once.
     pub fn permuted_axes<A>(self, axes: A) -> Self

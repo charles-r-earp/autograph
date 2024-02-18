@@ -183,7 +183,7 @@ impl NodeInner {
 /// Node.
 ///
 /// Nodes store gradients and can be connected via [`VariableBuilder::edge()`] to
-/// form a graph that is traversed in [`.backward()`].
+/// form a graph that is traversed in [`.backward()`](Self::backward).
 #[derive(Clone, Debug)]
 pub struct Node<D: Dimension> {
     inner: Arc<NodeInner>,
@@ -634,7 +634,7 @@ impl Dot<Self> for Variable2 {
 /// During training, [`.set_training(true)`](Parameter::set_training) ensures that
 /// the variable created from this parameter has a [`Node`].
 /// A parameter stores the [`OptimizerState`] which can be updated during training
-/// in [`Optimizer::update`]. Training progress may be saved by serializing with [`serde`].
+/// in [`Optimizer::update`].
 #[derive(Clone)]
 #[cfg_attr(
     feature = "serde",

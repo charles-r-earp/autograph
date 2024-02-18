@@ -614,12 +614,12 @@ mod kernels {
                 ) {
                     type T = $t;
                     type A = $a;
-                    let thread_id = kernel.thread_id as usize;
-                    let subgroup_id = kernel.subgroup_id as usize;
+                    let thread_id = kernel.thread_id();
+                    let subgroup_id = kernel.subgroup_id();
                     if subgroup_id > 0 {
                         return;
                     }
-                    let subgroup_threads = (kernel.threads / kernel.subgroups) as usize;
+                    let subgroup_threads = kernel.threads() / kernel.subgroups();
                     let mut y_thread = A::default();
                     let mut idx = 0;
                     let n = x.len() / y.len();
@@ -661,9 +661,9 @@ mod kernels {
                 ) {
                     type T = $t;
                     type A = $a;
-                    let group_id = kernel.group_id as usize;
-                    let thread_id = kernel.thread_id as usize;
-                    let subgroup_id = kernel.subgroup_id as usize;
+                    let group_id = kernel.group_id();
+                    let thread_id = kernel.thread_id();
+                    let subgroup_id = kernel.subgroup_id();
                     if subgroup_id > 0 {
                         return;
                     }
@@ -672,7 +672,7 @@ mod kernels {
                     let stride_group = [sx1, sx0][axis];
                     let stride_axis = [sx0, sx1][axis];
                     let mut x_start = group_id as i32 * stride_group + offset_x as i32;
-                    let subgroup_threads = (kernel.threads / kernel.subgroups) as usize;
+                    let subgroup_threads = kernel.threads() / kernel.subgroups();
                     let mut y_thread = A::default();
                     let mut idx = 0;
                     while idx < n {
@@ -720,9 +720,9 @@ mod kernels {
                 ) {
                     type T = $t;
                     type A = $a;
-                    let group_id = kernel.group_id;
-                    let thread_id = kernel.thread_id as usize;
-                    let subgroup_id = kernel.subgroup_id as usize;
+                    let group_id = kernel.group_id() as u32;
+                    let thread_id = kernel.thread_id();
+                    let subgroup_id = kernel.subgroup_id();
                     if subgroup_id > 0 {
                         return;
                     }
@@ -739,7 +739,7 @@ mod kernels {
                         [i0 as i32, i1 as i32, i2 as i32]
                     };
                     let mut x_start = i0 * sg0 + i1 * sg1 + i2 * sg2 + offset_x as i32;
-                    let subgroup_threads = (kernel.threads / kernel.subgroups) as usize;
+                    let subgroup_threads = kernel.threads() / kernel.subgroups();
                     let mut y_thread = A::default();
                     let mut idx = 0;
                     while idx < n {
@@ -793,9 +793,9 @@ mod kernels {
                 ) {
                     type T = $t;
                     type A = $a;
-                    let group_id = kernel.group_id;
-                    let thread_id = kernel.thread_id as usize;
-                    let subgroup_id = kernel.subgroup_id as usize;
+                    let group_id = kernel.group_id() as u32;
+                    let thread_id = kernel.thread_id();
+                    let subgroup_id = kernel.subgroup_id();
                     if subgroup_id > 0 {
                         return;
                     }
@@ -816,7 +816,7 @@ mod kernels {
                         [i0 as i32, i1 as i32, i2 as i32, i3 as i32, i4 as i32]
                     };
                     let mut x_start = i0 * sg0 + i1 * sg1 + i2 * sg2 + i3 * sg3 + i4 * sg4 + offset_x as i32;
-                    let subgroup_threads = (kernel.threads / kernel.subgroups) as usize;
+                    let subgroup_threads = kernel.threads() / kernel.subgroups();
                     let mut y_thread = A::default();
                     let mut idx = 0;
                     while idx < n {

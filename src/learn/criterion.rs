@@ -27,37 +27,33 @@ pub trait Accuracy<T> {
     fn accuracy(&self, target: T) -> Result<usize>;
 }
 
-fn accuracy_host<T1: Scalar, T2: Scalar + Unsigned>(
+fn accuracy_host<T1: Scalar + Float, T2: Scalar + Unsigned>(
     input: ArrayView2<T1>,
     target: ArrayView1<T2>,
 ) -> usize {
-    let mut correct = 0;
-    for (x, t) in input
+    input
         .outer_iter()
-        .zip(target.iter().map(|x| x.to_usize().unwrap()))
-    {
-        let mut m = x[0];
-        let mut mi = 0;
-        for (i, x) in x.iter().copied().enumerate() {
-            if let Some(x_f64) = x.to_f64() {
-                assert!(x_f64.is_finite());
-            }
-            if x > m {
-                m = x;
-                mi = i;
-            }
-        }
-        if mi == t {
-            correct += 1;
-        }
-    }
-    correct
+        .zip(target.iter())
+        .filter(|(x, t)| {
+            let t = t.to_usize().unwrap();
+            let xt = x[t];
+            x.iter()
+                .copied()
+                .enumerate()
+                .filter(|(i, _)| *i != t)
+                .all(|(_, x)| xt > x)
+        })
+        .count()
 }
 
 /// Implemented for:
 /// - input: bf16, f32
 /// - target: u8, u16, u32
-impl<T1: Scalar, S1: Data<Elem = T1>, T2: Scalar + Unsigned, S2: Data<Elem = T2>>
+///
+/// **Panics**
+///
+/// Panics on the host if `target` indices are out of bounds.
+impl<T1: Scalar + Float, S1: Data<Elem = T1>, T2: Scalar + Unsigned, S2: Data<Elem = T2>>
     Accuracy<TensorBase<S2, Ix1>> for TensorBase<S1, Ix2>
 {
     fn accuracy(&self, target: TensorBase<S2, Ix1>) -> Result<usize> {
@@ -72,6 +68,10 @@ impl<T1: Scalar, S1: Data<Elem = T1>, T2: Scalar + Unsigned, S2: Data<Elem = T2>
 /// Implemented for:
 /// - input: bf16, f32
 /// - target: u8, u16, u32
+///
+/// **Panics**
+///
+/// Panics on the host if `target` indices are out of bounds.
 impl<S1: ScalarData, S2: ScalarData> Accuracy<ScalarTensorBase<S2, Ix1>>
     for ScalarTensorBase<S1, Ix2>
 {
@@ -132,6 +132,16 @@ impl<S1: ScalarData, S2: ScalarData> Accuracy<ScalarTensorBase<S2, Ix1>>
 }
 
 /// Cross Entropy Loss.
+///
+///```text
+///  N     C
+///  ∑ ln ( ∑ { exp(input[batch][class]) } - target[batch] )
+///       
+///```
+/// Where `N` is the batch_size and `C` is the number of classes.
+/// Shapes:
+/// - input: \[batch_size, classes\]
+/// - target: \[classes\]
 pub trait CrossEntropyLoss<T> {
     /// Type of the output.
     type Output;
@@ -142,6 +152,10 @@ pub trait CrossEntropyLoss<T> {
 /// Implemented for:
 /// - input: bf16, f32
 /// - target: u8, u16, u32
+///
+/// **Panics**
+///
+/// Panics on the host if `target` indices are out of bounds.
 impl<S1: ScalarData, S2: ScalarData> CrossEntropyLoss<ScalarTensorBase<S2, Ix1>>
     for ScalarTensorBase<S1, Ix2>
 {
@@ -167,11 +181,22 @@ impl<S1: ScalarData, S2: ScalarData> CrossEntropyLoss<ScalarTensorBase<S2, Ix1>>
 /// Implemented for:
 /// - input: bf16, f32
 /// - target: u8, u16, u32
+///
+/// **Panics**
+///
+/// Panics on the host if `target` indices are out of bounds.
 impl<T1: Scalar + Float, S1: Data<Elem = T1>, T2: Scalar + Unsigned, S2: Data<Elem = T2>>
     CrossEntropyLoss<TensorBase<S2, Ix1>> for TensorBase<S1, Ix2>
 {
     type Output = f32;
     fn cross_entropy_loss(&self, target: TensorBase<S2, Ix1>) -> Result<Self::Output> {
+        let (batch_size, _classes) = self.dim();
+        if target.dim() != batch_size {
+            bail!(
+                "Expected target with shape [{batch_size}], found [{}]",
+                target.dim()
+            );
+        }
         if let Some((input, target)) = self.as_array().zip(target.as_array()) {
             Ok(cross_entropy_loss_host(input, target))
         } else {
@@ -260,7 +285,7 @@ mod kernels {
                     #[item] y: &mut u32,
                 ) {
                     let classes = classes as usize;
-                    let idx = kernel.item_id as usize;
+                    let idx = kernel.item_id();
                     let t = t[idx] as usize;
                     if t > classes {
                         *y = 0;
@@ -288,7 +313,7 @@ mod kernels {
                     #[item] y: &mut f32,
                 ) {
                     let classes = classes as usize;
-                    let idx = kernel.item_id as usize;
+                    let idx = kernel.item_id();
                     let mut m = x[(idx * classes) as usize].cast::<f32>();
                     for i in 1..classes {
                         let x = x[(idx * classes + i) as usize].cast::<f32>();
@@ -300,7 +325,11 @@ mod kernels {
                         s += (x - m).exp();
                     }
                     let t = t[idx as usize] as usize;
-                    let x = x[idx * classes + t].cast::<f32>();
+                    let x =  if t < classes {
+                        x[idx * classes + t].cast::<f32>()
+                    } else {
+                        0f32
+                    };
                     *y = s.ln() - (x - m);
                 }
             }
