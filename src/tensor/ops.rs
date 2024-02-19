@@ -23,8 +23,7 @@ impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
     ///
     /// If in standard layout, borrows the tensor. Otherwise, copies into a new standard layout tensor.
     ///
-    /// **Errors**
-    ///
+    /// # Errors
     /// See [`.into_standard_layout()`](TensorBase::into_standard_layout()).
     pub fn as_standard_layout(&self) -> Result<ScalarCowTensor<D>> {
         if self.is_standard_layout() {
@@ -37,8 +36,7 @@ impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
     ///
     /// If in standard layout, converts into an owned [`Tensor`]. Otherwise, copies the data into a new standard layout tensor.
     ///
-    /// **Errors**
-    ///
+    /// # Errors
     /// See [`.into_standard_layout()`](TensorBase::into_standard_layout()).
     pub fn into_standard_layout(self) -> Result<ScalarTensor<D>> {
         if self.is_standard_layout() {
@@ -54,8 +52,7 @@ impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
     ///
     /// If in standard layout, converts to an [`ArcTensor`] (or clones the [`ArcTensor`]), otherwise copies the data into a new [`ArcTensor`].
     ///
-    /// **Errors**
-    ///
+    /// # Errors
     /// See [`.into_standard_layout()`](TensorBase::into_standard_layout()).
     pub fn to_standard_layout_shared(&self) -> Result<ScalarArcTensor<D>> {
         if self.is_standard_layout() {
@@ -68,7 +65,7 @@ impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
     ///
     /// Broadcasts `rhs` to the shape of `self`.
     ///
-    /// **Errors**
+    /// # Errors
     /// - Broadcasting is not possible.
     /// - The operation could not be executed on the device.
     pub fn scaled_add<S2, D2>(
@@ -81,23 +78,6 @@ impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
         S2: ScalarData,
         D2: Dimension,
     {
-        /*{
-            let mut y = self.view_mut().try_into_tensor_view_mut::<f32>().unwrap();
-            let alpha: f32 = alpha.try_into().unwrap();
-            let x = rhs.view().try_into_tensor_view::<f32>().unwrap();
-            if let Some((x, mut y)) = x.as_array().zip(y.as_array_mut()) {
-                //y.zip_mut_with(&x, |y, x| *y += alpha * *x);
-                if let Some((x, mut y)) = x.as_slice().zip(y.as_slice_mut()) {
-                    let start = std::time::Instant::now();
-                    x.iter()
-                        .copied()
-                        .zip(y.iter_mut())
-                        .for_each(|(x, y)| *y += alpha * x);
-                    println!("ScaledAdd {:?}: {:?}", rhs.shape(), start.elapsed());
-                    return Ok(());
-                }
-            }
-        }*/
         scalar_assign(
             BinaryOp::Add,
             alpha,
@@ -107,8 +87,8 @@ impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
     }
     /// Performs the operation `self as _ * alpha`.
     ///
-    /// **Errors**
-    /// - The operation could not be executed on the device.
+    /// # Errors
+    /// The operation could not be executed on the device.
     pub fn scaled_cast(&self, alpha: ScalarElem) -> Result<ScalarTensor<D>> {
         let mut output =
             unsafe { ScalarTensor::uninit(self.device(), self.raw_dim(), alpha.scalar_type())? };
@@ -124,7 +104,7 @@ impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
     ///
     /// Broadcasts `rhs` to shape of `self`.
     ///
-    /// **Errors**
+    /// # Errors
     /// - Broadcasting is not possible.
     /// - The operation could not be executed on the device.
     pub fn assign<S2, D2>(&mut self, rhs: &ScalarTensorBase<S2, D2>) -> Result<()>
@@ -163,8 +143,7 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     ///
     /// If in standard layout, borrows the tensor. Otherwise, copies into a new standard layout tensor.
     ///
-    /// **Errors**
-    ///
+    /// # Errors
     /// See [`.into_standard_layout()`](TensorBase::into_standard_layout()).
     pub fn as_standard_layout(&self) -> Result<CowTensor<T, D>> {
         if self.is_standard_layout() {
@@ -177,11 +156,11 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     ///
     /// If in standard layout, converts into an owned [`Tensor`]. Otherwise, copies the data into a new standard layout tensor.
     ///
-    /// **Errors**
+    /// # Errors
     /// - On device, supports up to 6 dimensional inputs.
     /// - [`DeviceLost`]
     /// - The kernel could not be dispatched.
-    /// - See [`.into_owned()`](TensorBase::into_owned()).
+    /// See [`.into_owned()`](TensorBase::into_owned()).
     pub fn into_standard_layout(self) -> Result<Tensor<T, D>> {
         if self.is_standard_layout() {
             self.into_owned()
@@ -205,7 +184,7 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     ///
     /// Broadcasts `rhs` to the shape of `self`.
     ///
-    /// **Errors**
+    /// # Errors
     /// - Broadcasting is not possible.
     /// - The operation could not be executed on the device.
     pub fn scaled_add<S2, D2>(&mut self, alpha: T, rhs: &TensorBase<S2, D2>) -> Result<()>
@@ -223,7 +202,7 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     }
     /// Performs the operation `self as T2 * alpha`.
     ///
-    /// **Errors**
+    /// # Errors
     /// - The operation could not be executed on the device.
     pub fn scaled_cast<T2: Scalar>(&self, alpha: T2) -> Result<Tensor<T2, D>> {
         let mut output = unsafe { Tensor::<T2, D>::uninit(self.device(), self.raw_dim())? };
@@ -239,7 +218,7 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     ///
     /// Broadcasts `rhs` to shape of `self`.
     ///
-    /// **Errors**
+    /// # Errors
     /// - Broadcasting is not possible.
     /// - The operation could not be executed on the device.
     pub fn assign<S2, D2>(&mut self, rhs: &TensorBase<S2, D2>) -> Result<()>
@@ -928,83 +907,47 @@ impl<T: Scalar, S: ArrayData<Elem = T>> Col2ImConv2 for ArrayBase<S, Ix2> {
         let c = cols / (fh * fw);
         let input = input.into_shape([bs, ih, iw, c, fh, fw]).unwrap();
         let mut output = Array::zeros([bs, c, oh, ow]);
-
-        {
-            //use rayon::prelude::*;
-
-            //let threads = rayon::current_num_threads();
-            //let chunk_size = bs / threads + (bs % threads != 0) as usize;
-
-            if is_default_padding_stride_dilation {
-                array_par_outer_iter_mut_for_each(output.view_mut(), |bid, mut output| {
-                    let input = input.index_axis(Axis(0), bid);
-                    for cid in 0..c {
-                        for hid in 0..ih {
-                            for wid in 0..iw {
-                                for fi in 0..fh {
-                                    for fj in 0..fw {
-                                        let hidy = fi + hid;
-                                        let widy = fj + wid;
-                                        unsafe {
-                                            *output.uget_mut([cid, hidy, widy]) +=
-                                                *input.uget([hid, wid, cid, fi, fj]);
-                                        }
+        if is_default_padding_stride_dilation {
+            array_par_outer_iter_mut_for_each(output.view_mut(), |bid, mut output| {
+                let input = input.index_axis(Axis(0), bid);
+                for cid in 0..c {
+                    for hid in 0..ih {
+                        for wid in 0..iw {
+                            for fi in 0..fh {
+                                for fj in 0..fw {
+                                    let hidy = fi + hid;
+                                    let widy = fj + wid;
+                                    unsafe {
+                                        *output.uget_mut([cid, hidy, widy]) +=
+                                            *input.uget([hid, wid, cid, fi, fj]);
                                     }
                                 }
                             }
                         }
                     }
-                });
-            } else {
-                array_par_outer_iter_mut_for_each(output.view_mut(), |bid, mut output| {
-                    let input = input.index_axis(Axis(0), bid);
-                    for cid in 0..c {
-                        for hid in 0..ih {
-                            for wid in 0..iw {
-                                for fi in 0..fh {
-                                    for fj in 0..fw {
-                                        let hidy = -(ph as isize) + (fi * dh + sh * hid) as isize;
-                                        let widy = -(pw as isize) + (fj * dw + sw * wid) as isize;
-                                        if hidy >= 0
-                                            && hidy < oh as isize
-                                            && widy >= 0
-                                            && widy < ow as isize
-                                        {
-                                            unsafe {
-                                                *output.uget_mut([
-                                                    cid,
-                                                    hidy as usize,
-                                                    widy as usize,
-                                                ]) += *input.uget([hid, wid, cid, fi, fj]);
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                });
-            }
-        }
-        /*
-        #[cfg(not(feature = "rayon"))]
-        {
-            if is_default_padding_stride_dilation {
-                for bid in 0..bs {
-                    for cid in 0..c {
-                        for hid in 0..ih {
-                            for wid in 0..iw {
-                                for fi in 0..fh {
-                                    for fj in 0..fw {
-                                        let hidy = fi + hid;
-                                        let widy = fj + wid;
+                }
+            });
+        } else {
+            array_par_outer_iter_mut_for_each(output.view_mut(), |bid, mut output| {
+                let input = input.index_axis(Axis(0), bid);
+                for cid in 0..c {
+                    for hid in 0..ih {
+                        for wid in 0..iw {
+                            for fi in 0..fh {
+                                for fj in 0..fw {
+                                    let hidy = -(ph as isize) + (fi * dh + sh * hid) as isize;
+                                    let widy = -(pw as isize) + (fj * dw + sw * wid) as isize;
+                                    if hidy >= 0
+                                        && hidy < oh as isize
+                                        && widy >= 0
+                                        && widy < ow as isize
+                                    {
                                         unsafe {
                                             *output.uget_mut([
-                                                bid,
                                                 cid,
                                                 hidy as usize,
                                                 widy as usize,
-                                            ]) += *input.uget([bid, hid, wid, cid, fi, fj]);
+                                            ]) += *input.uget([hid, wid, cid, fi, fj]);
                                         }
                                     }
                                 }
@@ -1012,38 +955,8 @@ impl<T: Scalar, S: ArrayData<Elem = T>> Col2ImConv2 for ArrayBase<S, Ix2> {
                         }
                     }
                 }
-            } else {
-                for bid in 0..bs {
-                    for cid in 0..c {
-                        for hid in 0..ih {
-                            for wid in 0..iw {
-                                for fi in 0..fh {
-                                    for fj in 0..fw {
-                                        let hidy = -(ph as isize) + (fi * dh + sh * hid) as isize;
-                                        let widy = -(pw as isize) + (fj * dw + sw * wid) as isize;
-                                        if hidy >= 0
-                                            && hidy < oh as isize
-                                            && widy >= 0
-                                            && widy < ow as isize
-                                        {
-                                            unsafe {
-                                                *output.uget_mut([
-                                                    bid,
-                                                    cid,
-                                                    hidy as usize,
-                                                    widy as usize,
-                                                ]) += *input.uget([bid, hid, wid, cid, fi, fj]);
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }*/
-        //println!("col2im {:?}: {:?}", output.shape(), start.elapsed());
+            });
+        }
         Ok(output)
     }
 }

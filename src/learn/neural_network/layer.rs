@@ -353,7 +353,7 @@ pub mod builder {
         }
         /// Builds the layer.
         ///
-        /// **Errors**
+        /// # Errors
         /// - The `scalar_type` is not BF16 or F32.
         /// - Initializing parameters on the `device` failed.
         pub fn build(self) -> Result<Conv<D, A>> {
@@ -498,7 +498,7 @@ pub mod builder {
         }
         /// Builds the layer.
         ///
-        /// **Errors**
+        /// # Errors
         /// - The `scalar_type` is not BF16 or F32.
         /// - Initializing parameters on the `device` failed.
         pub fn build(self) -> Result<Dense<A>> {

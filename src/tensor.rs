@@ -446,8 +446,7 @@ impl<S: ScalarDataOwned, D: Dimension> ScalarTensorBase<S, D> {
     ///
     /// The tensor is not initialized.
     ///
-    /// **Errors**
-    ///
+    /// # Errors
     /// See [`ScalarBuffer::uninit()`].
     pub unsafe fn uninit<Sh>(device: Device, shape: Sh, scalar_type: ScalarType) -> Result<Self>
     where
@@ -464,8 +463,7 @@ impl<S: ScalarDataOwned, D: Dimension> ScalarTensorBase<S, D> {
     }
     /// Creates a tensor on `device` with `shape` filled with `elem`.
     ///
-    /// **Errors**
-    ///
+    /// # Errors
     /// See [`ScalarBuffer::from_elem()`].
     pub fn from_elem<Sh>(device: Device, shape: Sh, elem: ScalarElem) -> Result<Self>
     where
@@ -482,8 +480,7 @@ impl<S: ScalarDataOwned, D: Dimension> ScalarTensorBase<S, D> {
     }
     /// Creates a tensor on `device` with `shape` filled with 0's.
     ///
-    /// **Errors**
-    ///
+    /// # Errors
     /// See [`ScalarBuffer::zeros()`].
     pub fn zeros<Sh>(device: Device, shape: Sh, scalar_type: ScalarType) -> Result<Self>
     where
@@ -493,8 +490,7 @@ impl<S: ScalarDataOwned, D: Dimension> ScalarTensorBase<S, D> {
     }
     /// Creates a tensor on `device` with `shape` filled with 1's.
     ///
-    /// **Errors**
-    ///
+    /// # Errors
     /// See [`ScalarBuffer::ones()`].
     pub fn ones<Sh>(device: Device, shape: Sh, scalar_type: ScalarType) -> Result<Self>
     where
@@ -545,7 +541,7 @@ impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
     ///
     /// Typically this is used to downcast from [`IxDyn`](type@ndarray::IxDyn) to a static dimensionality. For conversions to [`IxDyn`](type@ndarray::IxDyn), use [`.into_dyn()`](TensorBase::into_dyn()).
     ///
-    /// **Errors**
+    /// # Errors
     /// - The number of axes of `D2` must be the same as `D`.
     pub fn into_dimensionality<D2>(self) -> Result<ScalarTensorBase<S, D2>, ShapeError>
     where
@@ -570,8 +566,8 @@ impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
     }
     /// Returns the tensor with dim `shape`.
     ///
-    /// **Errors**
-    /// - The tensor must be contiguous, with default strides.
+    /// # Errors
+    /// The tensor must be contiguous, with default strides.
     pub fn into_shape<E>(self, shape: E) -> Result<ScalarTensorBase<S, E::Dim>, ShapeError>
     where
         E: IntoDimension,
@@ -685,8 +681,8 @@ impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
     /// # Note
     /// This operation merely reorders the dimensions / strides and does not copy the data. Combine with [`.into_standard_layout()`](TensorBase::into_standard_layout()) to execute the operation, returning a tensor in standard layout.
     ///
-    /// **Errors**
-    /// - Each axis 0 .. ndim must be used exactly once.
+    /// # Errors
+    /// Each axis 0 .. ndim must be used exactly once.
     pub fn permuted_axes<A>(self, axes: A) -> Self
     where
         A: IntoDimension<Dim = D>,
@@ -746,8 +742,8 @@ impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
     }
     /// Selects `index` along the `axis`, collapsing the axis into length one.
     ///
-    /// **Panics**
-    /// - `axis` or `index` is out of bounds.
+    /// # Panics
+    ///  `axis` or `index` is out of bounds.
     ///
     /// See [`TensorBase::collapse_axis`].
     pub fn collapse_axis(&mut self, axis: Axis, index: usize) {
@@ -1183,53 +1179,6 @@ impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
     }
 }
 
-/*
-// Logits
-impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
-    /// A one hot vector given class labels.
-    ///
-    /// Output shape = [input_shape.., `classes`].
-    pub fn to_one_hot(
-        self,
-        classes: usize,
-        scalar_type: ScalarType,
-    ) -> Result<ScalarTensor<D::Larger>> {
-        let mut dim = D::Larger::zeros(self.dim.ndim() + 1);
-        for (x, y) in self
-            .shape()
-            .iter()
-            .copied()
-            .chain([classes])
-            .zip(dim.slice_mut())
-        {
-            *y = x;
-        }
-        macro_for!($X in [u8, u16, u32, u64] {
-            if let Ok(input) = TensorView::<$X, D>::try_from(self.view()) {
-                let input = input.as_array().unwrap();
-
-                macro_for!($Y in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
-                    if scalar_type == $Y::scalar_type() {
-                        let mut output = Array::zeros(dim);
-                        for (x, y) in input
-                            .iter()
-                            .zip(output.as_slice_mut().unwrap().chunks_mut(classes))
-                        {
-                            y[x.to_usize().unwrap()] = $Y::one();
-                        }
-                        return Ok(Tensor::from(output).into());
-                    }
-                });
-            }
-        });
-        bail!(
-            "to_one_hot {:?} {:?} unimplemented!",
-            self.scalar_type(),
-            scalar_type
-        );
-    }
-}*/
-
 #[cfg(feature = "serde")]
 #[derive(Serialize, Deserialize)]
 #[serde(bound(
@@ -1406,8 +1355,7 @@ impl<T: Scalar, S: DataOwned<Elem = T>, D: Dimension> TensorBase<S, D> {
     ///
     /// The tensor is not initialized.
     ///
-    /// **Errors**
-    ///
+    /// # Errors
     /// See [`Buffer::uninit()`].
     pub unsafe fn uninit<Sh>(device: Device, shape: Sh) -> Result<Self>
     where
@@ -1424,8 +1372,7 @@ impl<T: Scalar, S: DataOwned<Elem = T>, D: Dimension> TensorBase<S, D> {
     }
     /// Creates a tensor on `device` with `shape` filled with `elem`.
     ///
-    /// **Errors**
-    ///
+    /// # Errors
     /// See [`Buffer::from_elem()`].
     pub fn from_elem<Sh>(device: Device, shape: Sh, elem: T) -> Result<Self>
     where
@@ -1442,7 +1389,7 @@ impl<T: Scalar, S: DataOwned<Elem = T>, D: Dimension> TensorBase<S, D> {
     }
     /// Creates a tensor on `device` with `shape` filled with 0's.
     ///
-    /// **Errors**
+    /// # Errors
     /// See [`Buffer::zeros()`].
     pub fn zeros<Sh>(device: Device, shape: Sh) -> Result<Self>
     where
@@ -1452,7 +1399,7 @@ impl<T: Scalar, S: DataOwned<Elem = T>, D: Dimension> TensorBase<S, D> {
     }
     /// Creates a tensor on `device` with `shape` filled with 1's.
     ///
-    /// **Errors**
+    /// # Errors
     /// See [`Buffer::ones()`].
     pub fn ones<Sh>(device: Device, shape: Sh) -> Result<Self>
     where
@@ -1503,8 +1450,8 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     ///
     /// Typically this is used to downcast from [`IxDyn`](type@ndarray::IxDyn) to a static dimensionality. For conversions to [`IxDyn`](type@ndarray::IxDyn), use [`.into_dyn()`](TensorBase::into_dyn()).
     ///
-    /// **Errors**
-    /// - The number of axes of `D2` must be the same as `D`.
+    /// # Errors
+    /// The number of axes of `D2` must be the same as `D`.
     pub fn into_dimensionality<D2>(self) -> Result<TensorBase<S, D2>, ShapeError>
     where
         D2: Dimension,
@@ -1528,8 +1475,8 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     }
     /// Returns the tensor with dim `shape`.
     ///
-    /// **Errors**
-    /// - The tensor must be contiguous, with default strides.
+    /// # Errors
+    /// The tensor must be contiguous, with default strides.
     pub fn into_shape<E>(self, shape: E) -> Result<TensorBase<S, E::Dim>, ShapeError>
     where
         E: IntoDimension,
@@ -1548,8 +1495,7 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     ///
     /// The output has shape [d0, d1 * d2 .. * dn].
     ///
-    /// **Errors**
-    ///
+    /// # Errors
     /// See [`TensorBase::into_shape()`].
     pub fn flatten(self) -> Result<TensorBase<S, Ix2>, ShapeError> {
         let dim = flatten(self.shape());
@@ -1656,8 +1602,7 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     /// # Note
     /// This operation merely reorders the dimensions / strides and does not copy the data. Combine with [`.into_standard_layout()`](TensorBase::into_standard_layout()) to execute the operation, returning a tensor in standard layout.
     ///
-    /// **Panics**
-    ///
+    /// # Panics
     /// Each axis 0 .. ndim must be used exactly once.
     pub fn permuted_axes<A>(self, axes: A) -> Self
     where
@@ -1682,10 +1627,10 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     }
     /// Returns a view restricted to index along the `axis`, with the `axis` removed.
     ///
-    /// **Panics**
-    /// - `axis` or `index` is out of bounds.
+    /// # Panics
+    /// `axis` or `index` is out of bounds.
     ///
-    /// See <https://docs.rs/ndarray/0.15.6/ndarray/struct.ArrayBase.html#method.index_axis>
+    /// See [`ArrayBase::index_axis()`].
     pub fn index_axis(&self, axis: Axis, index: usize) -> TensorView<T, D::Smaller>
     where
         D: RemoveAxis,
@@ -1694,10 +1639,10 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     }
     /// Returns a mutable view restricted to index along the `axis`, with the `axis` removed.
     ///
-    /// **Panics**
-    /// - `axis` or `index` is out of bounds.
+    /// # Panics
+    ///  `axis` or `index` is out of bounds.
     ///
-    /// See <https://docs.rs/ndarray/0.15.6/ndarray/struct.ArrayBase.html#method.index_axis_mut>
+    /// See [`ArrayBase::index_axis_mut()`].
     pub fn index_axis_mut(&mut self, axis: Axis, index: usize) -> TensorViewMut<T, D::Smaller>
     where
         S: DataMut,
@@ -1707,8 +1652,10 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     }
     /// Returns a tensor restricted to index along the `axis`, with the `axis` removed.
     ///
-    /// **Panics**
-    /// - `axis` or `index` is out of bounds.
+    /// # Panics
+    /// `axis` or `index` is out of bounds.
+    ///
+    /// See [`.index_axis()`](Self::index_axis).
     pub fn index_axis_into(mut self, axis: Axis, index: usize) -> TensorBase<S, D::Smaller>
     where
         D: RemoveAxis,
@@ -1725,10 +1672,10 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     }
     /// Selects `index` along the `axis`, collapsing the axis into length one.
     ///
-    /// **Panics**
-    /// - `axis` or `index` is out of bounds.
+    /// # Panics
+    ///  `axis` or `index` is out of bounds.
     ///
-    /// See <https://docs.rs/ndarray/0.15.6/ndarray/struct.ArrayBase.html#method.collapse_axis>
+    /// See [`ArrayBase::collapse_axis()`].
     pub fn collapse_axis(&mut self, axis: Axis, index: usize) {
         let offset =
             collapse_axis(&mut self.dim, &self.strides, axis, index) + self.offset as isize;
@@ -1934,8 +1881,8 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     }
     /// Fills the tensor with `elem`.
     ///
-    /// **Errors**
-    /// - Device tensors must be contiguous.
+    /// # Errors
+    /// Device tensors must be contiguous.
     ///
     /// See [`BufferBase::fill()`].
     pub fn fill(&mut self, elem: T) -> Result<()>
@@ -1953,8 +1900,8 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     }
     /// Moves the tensor into an [`Array`].
     ///
-    /// **Errors**
-    /// - Device tensors must be contiguous.
+    /// # Errors
+    /// Device tensors must be contiguous.
     ///
     /// See [`Buffer::into_vec()`].
     pub fn into_array(self) -> Result<Array<T, D>> {
@@ -2123,8 +2070,8 @@ impl<'a, T: Scalar, D: Dimension> From<ArrayView<'a, T, D>> for CowTensor<'a, T,
 
 impl<'a, T: Scalar, D: Dimension> TryFrom<ArrayView<'a, T, D>> for TensorView<'a, T, D> {
     type Error = anyhow::Error;
-    /// **Errors**
-    /// - The `array` is not contiguous.
+    /// # Errors
+    /// The `array` is not contiguous.
     fn try_from(array: ArrayView<'a, T, D>) -> Result<Self> {
         let slice = array
             .as_slice_memory_order()

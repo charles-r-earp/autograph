@@ -26,6 +26,7 @@ enum Dynamic {
     Conv(Conv2),
     Pool(MaxPool2),
 }
+```
 */
 
 // TODO: remove `#[layer]` attribute.

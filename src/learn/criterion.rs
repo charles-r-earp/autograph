@@ -50,9 +50,8 @@ fn accuracy_host<T1: Scalar + Float, T2: Scalar + Unsigned>(
 /// - input: bf16, f32
 /// - target: u8, u16, u32
 ///
-/// **Panics**
-///
-/// Panics on the host if `target` indices are out of bounds.
+/// # Panics
+/// On the host if `target` indices are out of bounds.
 impl<T1: Scalar + Float, S1: Data<Elem = T1>, T2: Scalar + Unsigned, S2: Data<Elem = T2>>
     Accuracy<TensorBase<S2, Ix1>> for TensorBase<S1, Ix2>
 {
@@ -69,9 +68,8 @@ impl<T1: Scalar + Float, S1: Data<Elem = T1>, T2: Scalar + Unsigned, S2: Data<El
 /// - input: bf16, f32
 /// - target: u8, u16, u32
 ///
-/// **Panics**
-///
-/// Panics on the host if `target` indices are out of bounds.
+/// # Panics
+/// On the host if `target` indices are out of bounds.
 impl<S1: ScalarData, S2: ScalarData> Accuracy<ScalarTensorBase<S2, Ix1>>
     for ScalarTensorBase<S1, Ix2>
 {
@@ -153,9 +151,8 @@ pub trait CrossEntropyLoss<T> {
 /// - input: bf16, f32
 /// - target: u8, u16, u32
 ///
-/// **Panics**
-///
-/// Panics on the host if `target` indices are out of bounds.
+/// # Panics
+/// On the host if `target` indices are out of bounds.
 impl<S1: ScalarData, S2: ScalarData> CrossEntropyLoss<ScalarTensorBase<S2, Ix1>>
     for ScalarTensorBase<S1, Ix2>
 {
@@ -182,9 +179,8 @@ impl<S1: ScalarData, S2: ScalarData> CrossEntropyLoss<ScalarTensorBase<S2, Ix1>>
 /// - input: bf16, f32
 /// - target: u8, u16, u32
 ///
-/// **Panics**
-///
-/// Panics on the host if `target` indices are out of bounds.
+/// # Panics
+/// On the host if `target` indices are out of bounds.
 impl<T1: Scalar + Float, S1: Data<Elem = T1>, T2: Scalar + Unsigned, S2: Data<Elem = T2>>
     CrossEntropyLoss<TensorBase<S2, Ix1>> for TensorBase<S1, Ix2>
 {
