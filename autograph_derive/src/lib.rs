@@ -1,7 +1,7 @@
 /*!
 # Usage
 You can derive Layer and Forward for structs and enums:
-```no_run
+```text
 use autograph::{
     anyhow::Result,
     learn::neural_network::{
@@ -28,7 +28,7 @@ enum Dynamic {
 }
 ```
 */
-
+// TOOD: move docs to autograph::neural_network::layer
 // TODO: remove `#[layer]` attribute.
 
 use derive_syn_parse::Parse;

@@ -7,6 +7,10 @@ license = "MIT/Apache-2.0"
 description = "Procedural macro crate for autograph"
 homepage = "https://github.com/charles-r-earp/autograph"
 repository = "https://github.com/charles-r-earp/autograph"
+autobins = false 
+autoexamples = false
+autotests = false
+autobenches = false
 
 [lib]
 proc-macro = true
