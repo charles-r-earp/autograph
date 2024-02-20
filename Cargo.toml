@@ -47,7 +47,7 @@ autobenches = false
 
 [dependencies]
 autograph_derive = { path = "autograph_derive", optional = true }
-krnl = { version = "0.0.4", default-features = false, features = ["serde"] }
+krnl = { version = "0.0.4", default-features = false}
 anyhow.workspace = true
 ndarray = { workspace = true, features = ["serde", "rayon", "matrixmultiply-threading"] }
 rand = { version = "0.8.4", optional = true }
@@ -86,7 +86,7 @@ libtest-mimic = "0.6.0"
 [features]
 default = ["device"]
 device = ["krnl/device", "dep:once_cell"]
-serde = ["dep:serde"]
+serde = ["dep:serde", "krnl/serde"]
 dataset = ["dep:rand"]
 iris = []
 mnist = ["dataset", "dep:dirs", "dep:flate2", "dep:downloader", "dep:byteorder", "dep:http"]
