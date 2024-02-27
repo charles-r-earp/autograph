@@ -152,11 +152,14 @@ fn sum(x: ScalarTensorViewD, beta: ScalarElem, mut y: ScalarTensorViewMutD) -> R
         todo!();
     }
     let device = y.device();
-    // let info = device.info().unwrap();
-
-    let groups: u32 = y.len() as u32;
-    let threads = 32; // info.subgroup_threads();
-
+    let info = device.info().unwrap();
+    let subgroup_threads = if info.min_subgroup_threads() == info.max_subgroup_threads() {
+        info.max_subgroup_threads()
+    } else {
+        0
+    };
+    let threads = info.max_subgroup_threads();
+    let groups = y.len().to_u32().unwrap();
     let x = if x.is_contiguous() {
         x.into()
     } else {
@@ -164,13 +167,12 @@ fn sum(x: ScalarTensorViewD, beta: ScalarElem, mut y: ScalarTensorViewMutD) -> R
     };
     let x = x.as_scalar_slice().unwrap();
     let y = y.as_scalar_slice_mut().unwrap();
-
     macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
         if x.scalar_type() == $T::SCALAR_TYPE {
             let x = Slice::try_from(x).unwrap();
             let y = SliceMut::try_from(y).unwrap();
             let kernel = paste! {
-                kernels::[<sum_ $T>]::builder()?.with_threads(threads).build(device)?
+                kernels::[<sum_ $T>]::builder()?.with_threads(threads).specialize(subgroup_threads).build(device)?
             };
             kernel.with_groups(groups).dispatch(
                 x,
@@ -197,12 +199,18 @@ fn sum_axis(
         todo!();
     }
     let device = y.device();
-    // let info = device.info().unwrap();
-
-    let groups = y.len().to_u32().unwrap();
-    let threads = 32; // info.subgroup_threads();
+    let info = device.info().unwrap();
+    let subgroup_threads = if info.min_subgroup_threads() == info.max_subgroup_threads() {
+        info.max_subgroup_threads()
+    } else {
+        0
+    };
+    let global_subgroups = y.len().to_u32().unwrap();
+    let threads = info.default_threads().max(subgroup_threads);
+    let subgroups = (threads / info.max_subgroup_threads()).min(global_subgroups);
+    let threads = subgroups * info.max_subgroup_threads();
+    let groups = global_subgroups / subgroups + (global_subgroups % subgroups != 0) as u32;
     let axis = axis.0.to_u32().unwrap();
-
     let ndim = x.ndim();
     assert!(x.ndim() == y.ndim() + 1, "{:?} {:?}", x.shape(), y.shape());
     if ndim <= 2 {
@@ -224,7 +232,6 @@ fn sum_axis(
         let offset_x = offset_x.to_u32().unwrap();
         let (y, offset_y) = y.as_raw_scalar_slice_offset_mut();
         let offset_y = offset_y.to_u32().unwrap();
-
         macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
             if x.scalar_type() == $T::SCALAR_TYPE {
                 let x = Slice::try_from(x).unwrap();
@@ -232,7 +239,7 @@ fn sum_axis(
                 let kernel = paste! {
                     kernels::[<sum_axis2_ $T>]::builder()?
                         .with_threads(threads)
-                        .specialize(axis)
+                        .specialize(subgroups, subgroup_threads, axis)
                         .build(device)?
                 };
                 kernel.with_groups(groups).dispatch(
@@ -304,7 +311,7 @@ fn sum_axis(
                 let kernel = paste! {
                     kernels::[<sum_axis4_ $T>]::builder()?
                         .with_threads(threads)
-                        .specialize(axis)
+                        .specialize(subgroups, subgroup_threads, axis)
                         .build(device)?
                 };
                 kernel.with_groups(groups).dispatch(
@@ -398,7 +405,7 @@ fn sum_axis(
                 let kernel = paste! {
                     kernels::[<sum_axis6_ $T>]::builder()?
                         .with_threads(threads)
-                        .specialize(axis)
+                        .specialize(subgroups, subgroup_threads, axis)
                         .build(device)?
                 };
                 kernel.with_groups(groups).dispatch(
@@ -607,24 +614,26 @@ mod kernels {
         ($t:ty => $a:ty) => {
             paste! {
                 #[kernel]
-                pub fn [<sum_ $t>](
+                pub fn [<sum_ $t>]<const SUBGROUP_THREADS: u32>(
                     #[global] x: Slice<$t>,
                     beta: $a,
                     #[global] y: UnsafeSlice<$t>,
                 ) {
                     type T = $t;
                     type A = $a;
-                    let thread_id = kernel.thread_id();
-                    let subgroup_id = kernel.subgroup_id();
-                    if subgroup_id > 0 {
+                    if SUBGROUP_THREADS == 0 && kernel.subgroup_id() > 0 {
                         return;
                     }
-                    let subgroup_threads = kernel.threads() / kernel.subgroups();
+                    let subgroup_threads = if SUBGROUP_THREADS > 0 {
+                        SUBGROUP_THREADS as usize
+                    } else {
+                        kernel.threads() / kernel.subgroups()
+                    };
                     let mut y_thread = A::default();
                     let mut idx = 0;
                     let n = x.len() / y.len();
                     while idx < n {
-                        let x_idx = idx + thread_id;
+                        let x_idx = idx + kernel.thread_id();
                         if x_idx < n {
                             y_thread += x[x_idx].cast::<A>();
                         }
@@ -633,7 +642,7 @@ mod kernels {
                     unsafe {
                         y_thread = y_thread.subgroup_add();
                     };
-                    if thread_id == 0 {
+                    if kernel.thread_id() == 0 {
                         if beta != A::default() {
                             unsafe {
                                 y_thread += beta * y.unsafe_index(0).cast::<A>();
@@ -647,7 +656,7 @@ mod kernels {
 
                 #[allow(clippy::too_many_arguments)]
                 #[kernel]
-                pub fn [<sum_axis2_ $t>]<const AXIS: u32>(
+                pub fn [<sum_axis2_ $t>]<const SUBGROUPS: u32, const SUBGROUP_THREADS: u32, const AXIS: u32>(
                     d0: u32,
                     d1: u32,
                     #[global] x: Slice<$t>,
@@ -661,22 +670,28 @@ mod kernels {
                 ) {
                     type T = $t;
                     type A = $a;
-                    let group_id = kernel.group_id();
-                    let thread_id = kernel.thread_id();
-                    let subgroup_id = kernel.subgroup_id();
-                    if subgroup_id > 0 {
+                    let subgroups = SUBGROUPS as usize;
+                    if SUBGROUP_THREADS == 0 && kernel.subgroup_id() >= subgroups {
                         return;
                     }
+                    let subgroup_threads = if SUBGROUP_THREADS > 0 {
+                        SUBGROUP_THREADS as usize
+                    } else {
+                        kernel.threads() / kernel.subgroups()
+                    };
                     let axis = AXIS as usize;
+                    let global_subgroup_id = kernel.group_id() * subgroups + kernel.subgroup_id();
+                     if global_subgroup_id >= y.len() {
+                        return;
+                    }
                     let n = [d0, d1][axis] as usize;
                     let stride_group = [sx1, sx0][axis];
                     let stride_axis = [sx0, sx1][axis];
-                    let mut x_start = group_id as i32 * stride_group + offset_x as i32;
-                    let subgroup_threads = kernel.threads() / kernel.subgroups();
+                    let mut x_start = global_subgroup_id as i32 * stride_group + offset_x as i32;
                     let mut y_thread = A::default();
                     let mut idx = 0;
                     while idx < n {
-                        let x_idx = idx + thread_id;
+                        let x_idx = idx + kernel.subgroup_thread_id();
                         if x_idx < n {
                             y_thread += x[(x_start + x_idx as i32 * stride_axis) as usize].cast::<A>();
                         }
@@ -685,8 +700,8 @@ mod kernels {
                     unsafe {
                         y_thread = y_thread.subgroup_add();
                     };
-                    let y_idx = (group_id as i32 * sy0 + offset_y as i32) as usize;
-                    if thread_id == 0 {
+                    let y_idx = (global_subgroup_id as i32 * sy0 + offset_y as i32) as usize;
+                    if kernel.subgroup_thread_id() == 0 {
                         if beta != A::default() {
                             unsafe {
                                 y_thread += beta * y.unsafe_index(y_idx).cast::<A>();
@@ -700,7 +715,7 @@ mod kernels {
 
                 #[allow(clippy::too_many_arguments)]
                 #[kernel]
-                pub fn [<sum_axis4_ $t>]<const AXIS: u32>(
+                pub fn [<sum_axis4_ $t>]<const SUBGROUPS: u32, const SUBGROUP_THREADS: u32, const AXIS: u32>(
                     d0: u32,
                     d1: u32,
                     d2: u32,
@@ -720,30 +735,37 @@ mod kernels {
                 ) {
                     type T = $t;
                     type A = $a;
-                    let group_id = kernel.group_id() as u32;
-                    let thread_id = kernel.thread_id();
-                    let subgroup_id = kernel.subgroup_id();
-                    if subgroup_id > 0 {
+                    let subgroups = SUBGROUPS as usize;
+                    if SUBGROUP_THREADS == 0 && kernel.subgroup_id() >= subgroups {
                         return;
                     }
+                    let subgroup_threads = if SUBGROUP_THREADS > 0 {
+                        SUBGROUP_THREADS as usize
+                    } else {
+                        kernel.threads() / kernel.subgroups()
+                    };
                     let axis = AXIS as usize;
+                    let global_subgroup_id = kernel.group_id() * subgroups + kernel.subgroup_id();
+                     if global_subgroup_id >= y.len() {
+                        return;
+                    }
                     let n = [d0, d1, d2, d3][axis] as usize;
                     let stride_axis = [sx0, sx1, sx2, sx3][axis];
                     let [gd0, gd1, gd2] = remove_from_array4([d0, d1, d2, d3], axis);
                     let [sg0, sg1, sg2] = remove_from_array4([sx0, sx1, sx2, sx3], axis);
                     let [i0, i1, i2] = {
-                        let i0 = group_id / (gd1 * gd2);
-                        let r0 = group_id % (gd1 * gd2);
+                        let global_subgroup_id = global_subgroup_id as u32;
+                        let i0 = global_subgroup_id / (gd1 * gd2);
+                        let r0 = global_subgroup_id % (gd1 * gd2);
                         let i1 = r0 / gd2;
                         let i2 = r0 % gd2;
                         [i0 as i32, i1 as i32, i2 as i32]
                     };
                     let mut x_start = i0 * sg0 + i1 * sg1 + i2 * sg2 + offset_x as i32;
-                    let subgroup_threads = kernel.threads() / kernel.subgroups();
                     let mut y_thread = A::default();
                     let mut idx = 0;
                     while idx < n {
-                        let x_idx = idx + thread_id;
+                        let x_idx = idx + kernel.subgroup_thread_id();
                         if x_idx < n {
                             y_thread += x[(x_start + x_idx as i32 * stride_axis) as usize].cast::<A>();
                         }
@@ -753,7 +775,7 @@ mod kernels {
                         y_thread = y_thread.subgroup_add();
                     };
                     let y_idx = (i0 * sy0 + i1 * sy1 + i2 * sy2 + offset_y as i32) as usize;
-                    if thread_id == 0 {
+                    if kernel.subgroup_thread_id() == 0 {
                         if beta != A::default() {
                             unsafe {
                                 y_thread += beta * y.unsafe_index(y_idx).cast::<A>();
@@ -767,7 +789,7 @@ mod kernels {
 
                 #[allow(clippy::too_many_arguments)]
                 #[kernel]
-                pub fn [<sum_axis6_ $t>]<const AXIS: u32>(
+                pub fn [<sum_axis6_ $t>]<const SUBGROUPS: u32, const SUBGROUP_THREADS: u32, const AXIS: u32>(
                     d0: u32,
                     d1: u32,
                     d2: u32,
@@ -793,20 +815,28 @@ mod kernels {
                 ) {
                     type T = $t;
                     type A = $a;
-                    let group_id = kernel.group_id() as u32;
-                    let thread_id = kernel.thread_id();
-                    let subgroup_id = kernel.subgroup_id();
-                    if subgroup_id > 0 {
+                    let subgroups = SUBGROUPS as usize;
+                    if SUBGROUP_THREADS == 0 && kernel.subgroup_id() >= subgroups {
                         return;
                     }
+                    let subgroup_threads = if SUBGROUP_THREADS > 0 {
+                        SUBGROUP_THREADS as usize
+                    } else {
+                        kernel.threads() / kernel.subgroups()
+                    };
                     let axis = AXIS as usize;
+                    let global_subgroup_id = kernel.group_id() * subgroups + kernel.subgroup_id();
+                     if global_subgroup_id >= y.len() {
+                        return;
+                    }
                     let n = [d0, d1, d2, d3, d4, d5][axis] as usize;
                     let stride_axis = [sx0, sx1, sx2, sx3, sx4, sx5][axis];
                     let [gd0, gd1, gd2, gd3, gd4] = remove_from_array6([d0, d1, d2, d3, d4, d5], axis);
                     let [sg0, sg1, sg2, sg3, sg4] = remove_from_array6([sx0, sx1, sx2, sx3, sx4, sx5], axis);
                     let [i0, i1, i2, i3, i4] = {
-                        let i0 = group_id / (gd1 * gd2 * gd3 * gd4);
-                        let r0 = group_id % (gd1 * gd2 * gd3 * gd4);
+                        let global_subgroup_id = global_subgroup_id as u32;
+                        let i0 = global_subgroup_id / (gd1 * gd2 * gd3 * gd4);
+                        let r0 = global_subgroup_id % (gd1 * gd2 * gd3 * gd4);
                         let i1 = r0 / (gd2 * gd3 * gd4);
                         let r1 = r0 % (gd2 * gd3 * gd4);
                         let i2 = r1 / (gd3 * gd4);
@@ -816,11 +846,10 @@ mod kernels {
                         [i0 as i32, i1 as i32, i2 as i32, i3 as i32, i4 as i32]
                     };
                     let mut x_start = i0 * sg0 + i1 * sg1 + i2 * sg2 + i3 * sg3 + i4 * sg4 + offset_x as i32;
-                    let subgroup_threads = kernel.threads() / kernel.subgroups();
                     let mut y_thread = A::default();
                     let mut idx = 0;
                     while idx < n {
-                        let x_idx = idx + thread_id;
+                        let x_idx = idx + kernel.subgroup_thread_id();
                         if x_idx < n {
                             y_thread += x[(x_start + x_idx as i32 * stride_axis) as usize].cast::<A>();
                         }
@@ -830,7 +859,7 @@ mod kernels {
                         y_thread = y_thread.subgroup_add();
                     };
                     let y_idx = (i0 * sy0 + i1 * sy1 + i2 * sy2 + i3 * sy3 + i4 * sy4 + offset_y as i32) as usize;
-                    if thread_id == 0 {
+                    if kernel.subgroup_thread_id() == 0 {
                         if beta != A::default() {
                             unsafe {
                                 y_thread += beta * y.unsafe_index(y_idx).cast::<A>();

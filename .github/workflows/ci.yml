@@ -65,7 +65,7 @@ jobs:
           curl -fL "$spirv_tools_linux_url" | tar -xz -C "${HOME}/spirv-tools"
           echo "${HOME}/spirv-tools/install/bin" >> $GITHUB_PATH
       - name: Install krnlc
-        run: cargo +nightly-2023-05-27 install krnlc --version=0.0.4 --locked -v --no-default-features --features use-installed-tools
+        run: cargo +nightly-2023-05-27 install krnlc --git="https://github.com/charles-r-earp/krnl" --locked -v --no-default-features --features use-installed-tools
       - name: krnlc
         run: krnlc -p autograph -v --check
   lint:
