@@ -81,6 +81,7 @@ jobs:
         run: cargo fmt --all -- --check
       - name: clippy
         if: ${{ !cancelled() }}
-        run: cargo clippy --no-default-features --features "neural-network" -- -D warnings
+        run: cargo clippy --all-features -- -D warnings
       - name: rustdoc
+        if: ${{ !cancelled() }}
         run: cargo rustdoc --all-features -- --D warnings
