@@ -742,7 +742,7 @@ impl<T: Layer> Layer for Vec<T> {
     }
     fn make_parameters_mut(&mut self) -> Result<impl Iterator<Item = ParameterViewMutD> + '_> {
         for layer in self.iter_mut() {
-            layer.make_parameters_mut()?;
+            let _ = layer.make_parameters_mut()?;
         }
         Ok(self
             .iter_mut()
