@@ -21,26 +21,23 @@ use dry::macro_for;
 use half::bf16;
 #[cfg(feature = "device")]
 use krnl::buffer::ScalarSliceMut;
+#[cfg(feature = "device")]
+use krnl::macros::module;
 use krnl::{
     buffer::{Buffer, ScalarBuffer, ScalarData},
     device::Device,
     scalar::{Scalar, ScalarType},
 };
+use ndarray::{linalg::Dot, Dimension, IntoDimension, Ix1, Ix2};
 #[cfg(feature = "device")]
 use paste::paste;
-use rayon::iter::{IntoParallelIterator, ParallelIterator};
-
-#[cfg(feature = "device")]
-use krnl::macros::module;
-use ndarray::{linalg::Dot, Dimension, IntoDimension, Ix1, Ix2};
-
 use rand::{
     distributions::{Distribution, Uniform},
     thread_rng,
 };
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
-use smallvec::SmallVec;
 use std::any::Any;
 
 mod conv_direct;
@@ -598,15 +595,6 @@ pub mod builder {
 }
 use builder::*;
 
-/// ParameterVec
-///
-/// See [`Layer::parameters()`](Layer::parameters).
-pub type ParameterVec = SmallVec<[ParameterD; 2]>;
-/// ParameterMutVec
-///
-/// See [`Layer::parameters_mut()`](Layer::parameters_mut).
-pub type ParameterMutVec<'a> = SmallVec<[ParameterViewMutD<'a>; 2]>;
-
 /// Layer.
 ///
 /// Typically Layers implement [`Forward<Variable<D>>`](Forward) for the appropriate
@@ -615,27 +603,57 @@ pub type ParameterMutVec<'a> = SmallVec<[ParameterViewMutD<'a>; 2]>;
 /// Layers with parameters or those that store the `device` or `scalar_type` should implement the
 /// relevant methods. Functional layers and activations may only need the default implementation.
 ///
-/// Layer can be [derived](autograph_derive) for structs and enums where each field or variant
-/// is a layer.
+/// # Derive
+/// [`Layer`] and [`Forward`] can be derived for structs and enums:
+/**
+```no_run
+# use autograph::anyhow::Result;
+# use autograph::learn::neural_network;
+# use neural_network::autograd::{Variable4, Variable2};
+# use neural_network::layer::{Layer, Forward, Flatten, Conv2, Relu, MaxPool2, Dense};
+
+// Layer and Forward can be derived for structs composed of layers.
+#[derive(Layer, Forward)]
+#[autograph(forward(Variable4, Output=Variable2))]
+struct Network {
+    conv: Conv2<Relu>,
+    flatten: Flatten,
+    dense: Dense,
+}
+
+// Can also be applied to enums.
+#[derive(Layer, Forward)]
+#[autograph(forward(Variable4, Output=Variable4))]
+enum Dynamic {
+    Conv(Conv2),
+    Pool(MaxPool2),
+}
+```
+*/
 pub trait Layer {
+    /// Iterator over Parameters of the layer.
+    ///
+    /// Layers with parameters should implement all the relevant Layer methods.
+    fn parameters(&self) -> impl Iterator<Item = ParameterD> + '_ {
+        std::iter::empty()
+    }
+    /// Makes an iterator over mutable parameter views of the layer.
+    ///
+    /// The mutable parameter views can be provided to [`Optimizer::update()`](Optimizer::update).
+    ///
+    /// # Errors
+    /// - The parameters are not exclusive, and could not be copied on the device.
+    ///
+    /// See [`Parameter::make_view_mut()`](Parameter::make_view_mut).
+    fn make_parameters_mut(&mut self) -> Result<impl Iterator<Item = ParameterViewMutD> + '_> {
+        Ok(std::iter::empty())
+    }
     /// Prepares for training or inference.
     ///
     /// Calls [`.set_training(training)`](Parameter::set_training) on each parameter and
     /// [`.set_training(training)`][Layer::set_training] on each child layer as appropriate.
     fn set_training(&mut self, #[allow(unused_variables)] training: bool) -> Result<()> {
         Ok(())
-    }
-    /// Parameters of the layer.
-    fn parameters(&self) -> ParameterVec {
-        ParameterVec::new()
-    }
-    /// Mutable parameter views of the parameters of the layer.
-    ///
-    /// The mutable parameter views can be provided to [`Optimizer::update()`](Optimizer::update).
-    ///
-    /// See [`Parameter::make_view_mut()`](Parameter::make_view_mut).
-    fn parameters_mut(&mut self) -> Result<ParameterMutVec> {
-        Ok(ParameterMutVec::new())
     }
     /// Casts the layer to `scalar_type` in place.
     fn cast_mut(&mut self, #[allow(unused_variables)] scalar_type: ScalarType) -> Result<()> {
@@ -653,10 +671,9 @@ pub trait Layer {
         Ok(self)
     }
 }
-
 /// Forward.
 ///
-/// Forward can be [derived](autograph_derive).
+/// Forward can be [derived](Layer#derive).
 pub trait Forward<X> {
     /// The type of the Output.
     type Output;
@@ -665,22 +682,24 @@ pub trait Forward<X> {
 }
 
 impl<T: Layer> Layer for Option<T> {
+    fn parameters(&self) -> impl Iterator<Item = ParameterD> + '_ {
+        self.as_ref()
+            .into_iter()
+            .flat_map(|layer| layer.parameters())
+    }
+    fn make_parameters_mut(&mut self) -> Result<impl Iterator<Item = ParameterViewMutD> + '_> {
+        Ok(self
+            .as_mut()
+            .map(Layer::make_parameters_mut)
+            .transpose()?
+            .into_iter()
+            .flatten())
+    }
     fn set_training(&mut self, training: bool) -> Result<()> {
         if let Some(layer) = self.as_mut() {
-            layer.set_training(training)
-        } else {
-            Ok(())
+            layer.set_training(training)?;
         }
-    }
-    fn parameters(&self) -> ParameterVec {
-        self.as_ref()
-            .map(|layer| layer.parameters())
-            .unwrap_or_default()
-    }
-    fn parameters_mut(&mut self) -> Result<ParameterMutVec> {
-        self.as_mut()
-            .map(|layer| layer.parameters_mut())
-            .unwrap_or(Ok(ParameterMutVec::new()))
+        Ok(())
     }
     fn cast_mut(&mut self, scalar_type: ScalarType) -> Result<()> {
         if let Some(layer) = self.as_mut() {
@@ -688,7 +707,7 @@ impl<T: Layer> Layer for Option<T> {
         }
         Ok(())
     }
-    fn to_device_mut(&mut self, #[allow(unused_variables)] device: Device) -> Result<()> {
+    fn to_device_mut(&mut self, device: Device) -> Result<()> {
         if let Some(layer) = self.as_mut() {
             layer.to_device_mut(device)?;
         }
@@ -718,21 +737,16 @@ impl<T: Layer> Layer for Vec<T> {
         self.iter_mut()
             .try_for_each(|layer| layer.set_training(training))
     }
-    fn parameters(&self) -> ParameterVec {
-        self.iter().flat_map(Layer::parameters).collect()
+    fn parameters(&self) -> impl Iterator<Item = ParameterD> + '_ {
+        self.iter().flat_map(Layer::parameters)
     }
-    fn parameters_mut(&mut self) -> Result<ParameterMutVec> {
-        if self.is_empty() {
-            Ok(ParameterMutVec::new())
-        } else if self.len() == 1 {
-            self.first_mut().unwrap().parameters_mut()
-        } else {
-            let mut parameter_vecs = SmallVec::<[ParameterMutVec; 8]>::with_capacity(self.len());
-            for layer in self.iter_mut() {
-                parameter_vecs.push(layer.parameters_mut()?);
-            }
-            Ok(parameter_vecs.into_iter().flatten().collect())
+    fn make_parameters_mut(&mut self) -> Result<impl Iterator<Item = ParameterViewMutD> + '_> {
+        for layer in self.iter_mut() {
+            layer.make_parameters_mut()?;
         }
+        Ok(self
+            .iter_mut()
+            .flat_map(|layer| layer.make_parameters_mut().unwrap()))
     }
     fn cast_mut(&mut self, scalar_type: ScalarType) -> Result<()> {
         self.iter_mut()
@@ -832,28 +846,26 @@ impl<D: Dimension, A> Conv<D, A> {
 }
 
 impl<D: Dimension, A> Layer for Conv<D, A> {
+    fn parameters(&self) -> impl Iterator<Item = ParameterD> + '_ {
+        let weight = self.weight.clone().into_dyn();
+        let bias = self.bias.clone().map(Parameter::into_dyn);
+        std::iter::once(weight).chain(bias)
+    }
+    fn make_parameters_mut(&mut self) -> Result<impl Iterator<Item = ParameterViewMutD> + '_> {
+        let weight = self.weight.make_view_mut()?.into_dyn();
+        let bias = if let Some(bias) = self.bias.as_mut() {
+            Some(bias.make_view_mut()?.into_dyn())
+        } else {
+            None
+        };
+        Ok(std::iter::once(weight).chain(bias))
+    }
     fn set_training(&mut self, training: bool) -> Result<()> {
         self.weight.set_training(training);
         if let Some(bias) = self.bias.as_mut() {
             bias.set_training(training);
         }
         Ok(())
-    }
-    fn parameters(&self) -> ParameterVec {
-        let mut parameters = ParameterVec::new();
-        parameters.push(self.weight.clone().into_dyn());
-        if let Some(bias) = self.bias.as_ref() {
-            parameters.push(bias.clone().into_dyn());
-        }
-        parameters
-    }
-    fn parameters_mut(&mut self) -> Result<ParameterMutVec> {
-        let mut parameters = ParameterMutVec::new();
-        parameters.push(self.weight.make_view_mut()?.into_dyn());
-        if let Some(bias) = self.bias.as_mut() {
-            parameters.push(bias.make_view_mut()?.into_dyn());
-        }
-        Ok(parameters)
     }
     fn to_device_mut(&mut self, device: Device) -> Result<()> {
         self.weight.to_device_mut(device.clone())?;
@@ -1051,28 +1063,26 @@ impl<A> Dense<A> {
 }
 
 impl<A> Layer for Dense<A> {
+    fn parameters(&self) -> impl Iterator<Item = ParameterD> + '_ {
+        let weight = self.weight.clone().into_dyn();
+        let bias = self.bias.clone().map(Parameter::into_dyn);
+        std::iter::once(weight).chain(bias)
+    }
+    fn make_parameters_mut(&mut self) -> Result<impl Iterator<Item = ParameterViewMutD> + '_> {
+        let weight = self.weight.make_view_mut()?.into_dyn();
+        let bias = if let Some(bias) = self.bias.as_mut() {
+            Some(bias.make_view_mut()?.into_dyn())
+        } else {
+            None
+        };
+        Ok(std::iter::once(weight).chain(bias))
+    }
     fn set_training(&mut self, training: bool) -> Result<()> {
         self.weight.set_training(training);
         if let Some(bias) = self.bias.as_mut() {
             bias.set_training(training);
         }
         Ok(())
-    }
-    fn parameters(&self) -> ParameterVec {
-        let mut parameters = ParameterVec::new();
-        parameters.push(self.weight.clone().into_dyn());
-        if let Some(bias) = self.bias.as_ref() {
-            parameters.push(bias.clone().into_dyn());
-        }
-        parameters
-    }
-    fn parameters_mut(&mut self) -> Result<ParameterMutVec> {
-        let mut parameters = ParameterMutVec::new();
-        parameters.push(self.weight.make_view_mut()?.into_dyn());
-        if let Some(bias) = self.bias.as_mut() {
-            parameters.push(bias.make_view_mut()?.into_dyn());
-        }
-        Ok(parameters)
     }
     fn to_device_mut(&mut self, device: Device) -> Result<()> {
         self.weight.to_device_mut(device.clone())?;

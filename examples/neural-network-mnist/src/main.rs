@@ -163,7 +163,6 @@ fn main() -> Result<()> {
     println!("model: {model:#?}");
     let parameter_count = model
         .parameters()
-        .iter()
         .map(|x| x.raw_dim().size())
         .sum::<usize>();
     println!(
@@ -303,7 +302,7 @@ fn train<I: Iterator<Item = Result<(Tensor4<u8>, Tensor1<u8>)>>>(
             .into_array()?
             .into_scalar();
         loss.backward()?;
-        for parameter in model.parameters_mut()? {
+        for parameter in model.make_parameters_mut()? {
             optimizer.update(learning_rate, parameter)?;
         }
         model.set_training(false)?;

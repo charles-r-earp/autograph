@@ -1,35 +1,8 @@
+#![forbid(unsafe_code)]
+
 /*!
-# Usage
-You can derive Layer and Forward for structs and enums:
-```text
-use autograph::{
-    anyhow::Result,
-    learn::neural_network::{
-        autograd::{Variable4, Variable2},
-        layer::{Layer, Forward, Flatten, Conv2, Relu, MaxPool2, Dense},
-    },
-};
-
-// Layer and Forward can be derived for structs composed of layers.
-#[derive(Layer, Forward)]
-#[autograph(forward(Variable4, Output=Variable2))]
-struct Network {
-    conv: Conv2<Relu>,
-    flatten: Flatten,
-    dense: Dense,
-}
-
-// Can also be applied to enums.
-#[derive(Layer, Forward)]
-#[autograph(forward(Variable4, Output=Variable4))]
-enum Dynamic {
-    Conv(Conv2),
-    Pool(MaxPool2),
-}
-```
+Derive macros for [**autograph**](https://docs.rs/autograph).
 */
-// TOOD: move docs to autograph::neural_network::layer
-// TODO: remove `#[layer]` attribute.
 
 use derive_syn_parse::Parse;
 use proc_macro::TokenStream;
@@ -170,44 +143,64 @@ impl Layers {
             }
         }
     }
-    fn collect(&self, method: Ident) -> TokenStream2 {
+    fn iter(&self, method: Ident) -> TokenStream2 {
         match self {
             Self::Struct(layers) => {
                 quote! {
                     ::std::iter::empty()
                     #(.chain(self.#layers.#method()))*
-                    .collect()
                 }
             }
             Self::Enum(layers) => {
                 quote! {
-                    match self {
-                        #(
-                            Self::#layers(layer) => layer.#method(),
-                        )*
-                    }
+                    ::std::iter::empty()
+                    #(
+                        .chain((if let Self::#layers(layer) = self {
+                            Some(layer.#method())
+                        } else {
+                            None
+                        }).into_iter().flatten())
+                    )*
                 }
             }
         }
     }
-    fn try_collect(&self, method: Ident) -> TokenStream2 {
+    fn try_iter_mut(&self, method: Ident) -> TokenStream2 {
         match self {
             Self::Struct(layers) => {
                 quote! {
                     Ok(
                         ::std::iter::empty()
                         #(.chain(self.#layers.#method()?))*
-                        .collect()
                     )
                 }
             }
             Self::Enum(layers) => {
-                quote! {
-                    match self {
-                        #(
-                            Self::#layers(layer) => layer.#method(),
-                        )*
+                let some_layer = quote! { Some(layer) };
+                let none = quote! { None };
+                let match_arms = layers.iter().enumerate().map(|(i, layer)| {
+                    let fields =
+                        (0..layers.len()).map(|u| if i == u { &some_layer } else { &none });
+                    quote! {
+                        Self::#layer(layer) => (#(#fields),*)
                     }
+                });
+                let iters = (0 .. layers.len()).map(|u| {
+                    let index = Index::from(u);
+                    quote! {
+                        layers.#index.map(|layer| layer.#method()).transpose()?.into_iter().flatten()
+                    }
+                });
+                quote! {
+                    let layers = match self {
+                        #(#match_arms),*
+                    };
+                    Ok(
+                        ::std::iter::empty()
+                        #(
+                            .chain(#iters)
+                        )*
+                    )
                 }
             }
         }
@@ -227,7 +220,7 @@ impl Layers {
                 quote! {
                     match self {
                         #(
-                            Self::#layers(layer) => Ok(Self::#layers(layer.#method()?)),
+                            Self::#layers(layer) => Ok(Self::#layers(layer.#method(#arg)?)),
                         )*
                     }
                 }
@@ -282,23 +275,23 @@ fn layer_impl(input: TokenStream2) -> Result<TokenStream2> {
     let autograph = autograph_crate(&input.attrs)?;
     let ident = &input.ident;
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
+    let parameters = layers.iter(format_ident!("parameters"));
+    let make_parameters_mut = layers.try_iter_mut(format_ident!("make_parameters_mut"));
     let set_training = layers.try_for_each(format_ident!("set_training"), quote! { training });
-    let parameters = layers.collect(format_ident!("parameters"));
-    let parameters_mut = layers.try_collect(format_ident!("parameters_mut"));
     let cast_mut = layers.try_for_each(format_ident!("cast_mut"), quote!(scalar_type));
     let to_device_mut = layers.try_for_each(format_ident!("to_device_mut"), quote!(device.clone()));
     let into_device = layers.try_map(format_ident!("into_device"), quote! { device.clone() });
     Ok(quote! {
         #[automatically_derived]
         impl #impl_generics Layer for #ident #ty_generics #where_clause {
-            fn set_training(&mut self, training: bool) -> #autograph::anyhow::Result<()> {
-                #set_training
-            }
-            fn parameters(&self) -> #autograph::learn::neural_network::layer::ParameterVec {
+            fn parameters(&self) -> impl ::std::iter::Iterator<Item=#autograph::learn::neural_network::autograd::ParameterD> + '_ {
                 #parameters
             }
-            fn parameters_mut(&mut self) -> #autograph::anyhow::Result<#autograph::learn::neural_network::layer::ParameterMutVec> {
-                #parameters_mut
+            fn make_parameters_mut(&mut self) -> #autograph::anyhow::Result<impl ::std::iter::Iterator<Item= #autograph::learn::neural_network::autograd::ParameterViewMutD> + '_> {
+                #make_parameters_mut
+            }
+            fn set_training(&mut self, training: bool) -> #autograph::anyhow::Result<()> {
+                #set_training
             }
             fn cast_mut(&mut self, scalar_type: #autograph::krnl::scalar::ScalarType) -> #autograph::anyhow::Result<()> {
                 #cast_mut
@@ -315,8 +308,6 @@ fn layer_impl(input: TokenStream2) -> Result<TokenStream2> {
 }
 
 /// Derive for Layer.
-///
-/// See [`autograph_derive`](crate).
 #[proc_macro_derive(Layer, attributes(autograph, layer))]
 pub fn layer(input: TokenStream) -> TokenStream {
     match layer_impl(input.into()) {
@@ -370,8 +361,6 @@ fn forward_impl(input: TokenStream2) -> Result<TokenStream2> {
 }
 
 /// Derive for Forward.
-///
-/// See [`autograph_derive`](crate).
 #[proc_macro_derive(Forward, attributes(autograph, layer))]
 pub fn forward(input: TokenStream) -> TokenStream {
     match forward_impl(input.into()) {
