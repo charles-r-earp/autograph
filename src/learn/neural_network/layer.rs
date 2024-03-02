@@ -1024,7 +1024,6 @@ impl Layer for Dense {
         Ok(Self {
             weight: self.weight.into_device(device.clone())?,
             bias: self.bias.map(|b| b.into_device(device)).transpose()?,
-            ..self
         })
     }
 }
