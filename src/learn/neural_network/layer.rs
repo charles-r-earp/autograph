@@ -38,7 +38,6 @@ use rand::{
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
-use std::any::Any;
 
 mod conv_direct;
 
@@ -237,7 +236,7 @@ pub mod builder {
     }
 
     /// Builder for creating a [`Conv`].
-    pub struct ConvBuilder<D: Dimension, A = Identity> {
+    pub struct ConvBuilder<D: Dimension> {
         inputs: usize,
         outputs: usize,
         filter: D,
@@ -247,7 +246,6 @@ pub mod builder {
         bias: bool,
         scalar_type: ScalarType,
         device: Device,
-        activation: A,
     }
 
     impl<D: Dimension> ConvBuilder<D> {
@@ -262,12 +260,11 @@ pub mod builder {
                 bias: false,
                 scalar_type: ScalarType::F32,
                 device: Device::host(),
-                activation: Identity,
             }
         }
     }
 
-    impl<D: Dimension, A> ConvBuilder<D, A> {
+    impl<D: Dimension> ConvBuilder<D> {
         /// Sets the number of input channels.
         pub fn inputs(self, inputs: usize) -> Self {
             Self { inputs, ..self }
@@ -308,33 +305,6 @@ pub mod builder {
         pub fn bias(self, bias: bool) -> Self {
             Self { bias, ..self }
         }
-        /// Add an activation layer.
-        pub fn activation<A2>(self, activation: A2) -> ConvBuilder<D, A2> {
-            let Self {
-                inputs,
-                outputs,
-                filter,
-                padding,
-                stride,
-                dilation,
-                bias,
-                activation: _,
-                scalar_type,
-                device,
-            } = self;
-            ConvBuilder {
-                inputs,
-                outputs,
-                filter,
-                padding,
-                stride,
-                dilation,
-                bias,
-                activation,
-                scalar_type,
-                device,
-            }
-        }
         /// Sets the scalar type. Defaults to F32.
         ///
         /// BF16 and F32 are implemented.
@@ -353,7 +323,7 @@ pub mod builder {
         /// # Errors
         /// - The `scalar_type` is not BF16 or F32.
         /// - Initializing parameters on the `device` failed.
-        pub fn build(self) -> Result<Conv<D, A>> {
+        pub fn build(self) -> Result<Conv<D>> {
             let Self {
                 inputs,
                 outputs,
@@ -362,7 +332,6 @@ pub mod builder {
                 stride,
                 dilation,
                 bias,
-                activation,
                 scalar_type,
                 device,
             } = self;
@@ -420,19 +389,17 @@ pub mod builder {
                 stride,
                 dilation,
                 bias,
-                activation,
             })
         }
     }
 
     /// Builder for creating a [`Dense`].
-    pub struct DenseBuilder<A = Identity> {
+    pub struct DenseBuilder {
         inputs: usize,
         outputs: usize,
         bias: bool,
         scalar_type: ScalarType,
         device: Device,
-        activation: A,
     }
 
     impl DenseBuilder {
@@ -443,12 +410,11 @@ pub mod builder {
                 bias: false,
                 scalar_type: ScalarType::F32,
                 device: Device::host(),
-                activation: Identity,
             }
         }
     }
 
-    impl<A> DenseBuilder<A> {
+    impl DenseBuilder {
         /// Sets the number of input channels.
         pub fn inputs(self, inputs: usize) -> Self {
             Self { inputs, ..self }
@@ -460,25 +426,6 @@ pub mod builder {
         /// Adds a bias. Defaults to false.
         pub fn bias(self, bias: bool) -> Self {
             Self { bias, ..self }
-        }
-        /// Adds and activation layer.
-        pub fn activation<A2>(self, activation: A2) -> DenseBuilder<A2> {
-            let Self {
-                inputs,
-                outputs,
-                bias,
-                activation: _,
-                scalar_type,
-                device,
-            } = self;
-            DenseBuilder {
-                inputs,
-                outputs,
-                bias,
-                activation,
-                scalar_type,
-                device,
-            }
         }
         /// Sets the scalar type. Defaults to F32.
         ///
@@ -498,12 +445,11 @@ pub mod builder {
         /// # Errors
         /// - The `scalar_type` is not BF16 or F32.
         /// - Initializing parameters on the `device` failed.
-        pub fn build(self) -> Result<Dense<A>> {
+        pub fn build(self) -> Result<Dense> {
             let Self {
                 inputs,
                 outputs,
                 bias,
-                activation,
                 scalar_type,
                 device,
             } = self;
@@ -550,11 +496,7 @@ pub mod builder {
             } else {
                 None
             };
-            Ok(Dense {
-                weight,
-                bias,
-                activation,
-            })
+            Ok(Dense { weight, bias })
         }
     }
 
@@ -616,7 +558,8 @@ use builder::*;
 #[derive(Layer, Forward)]
 #[autograph(forward(Variable4, Output=Variable2))]
 struct Network {
-    conv: Conv2<Relu>,
+    conv: Conv2,
+    relu: Relu,
     flatten: Flatten,
     dense: Dense,
 }
@@ -789,7 +732,6 @@ impl<X, T: Forward<X, Output = X>> Forward<X> for Vec<T> {
 ///    .outputs(1)
 ///    .filter([5, 5])
 ///    .bias(true)
-///    .activation(Relu)
 ///    .scalar_type(ScalarType::BF16)
 ///    .device(device.clone())
 ///    .build()?;
@@ -801,27 +743,26 @@ impl<X, T: Forward<X, Output = X>> Forward<X> for Vec<T> {
     feature = "serde",
     derive(Serialize, Deserialize),
     serde(bound(
-        serialize = "D: Serialize, <D::Larger as Dimension>::Larger: Serialize, A: Serialize",
-        deserialize = "D: Deserialize<'de>, <D::Larger as Dimension>::Larger: Deserialize<'de>, A: Deserialize<'de>",
+        serialize = "D: Serialize, <D::Larger as Dimension>::Larger: Serialize",
+        deserialize = "D: Deserialize<'de>, <D::Larger as Dimension>::Larger: Deserialize<'de>",
     ))
 )]
-pub struct Conv<D: Dimension, A = Identity> {
+pub struct Conv<D: Dimension> {
     weight: Parameter<<D::Larger as Dimension>::Larger>,
     padding: D,
     stride: D,
     dilation: D,
     bias: Option<Parameter1>,
-    activation: A,
 }
 
 /// Convolutional layer with 1 dimension.
 ///
 /// See [`Conv`].
-pub type Conv1<A = Identity> = Conv<Ix1, A>;
+pub type Conv1 = Conv<Ix1>;
 /// Convolutional layer with 2 dimensions.
 ///
 /// See [`Conv`].
-pub type Conv2<A = Identity> = Conv<Ix2, A>;
+pub type Conv2 = Conv<Ix2>;
 
 impl<D: Dimension> Conv<D> {
     /// Returns a builder for creating a [`Conv`].
@@ -830,7 +771,7 @@ impl<D: Dimension> Conv<D> {
     }
 }
 
-impl<D: Dimension, A> Conv<D, A> {
+impl<D: Dimension> Conv<D> {
     /// The weight as a mutable parameter view.
     pub fn weight_view_mut(
         &mut self,
@@ -843,7 +784,7 @@ impl<D: Dimension, A> Conv<D, A> {
     }
 }
 
-impl<D: Dimension, A> Layer for Conv<D, A> {
+impl<D: Dimension> Layer for Conv<D> {
     fn parameter_iter(&self) -> impl Iterator<Item = ParameterD> + '_ {
         let weight = self.weight.clone().into_dyn();
         let bias = self.bias.clone().map(Parameter::into_dyn);
@@ -884,16 +825,12 @@ impl<D: Dimension, A> Layer for Conv<D, A> {
     }
 }
 
-fn conv2<A>(
+fn conv2(
     input: Variable4,
     weight: Variable4,
     options: &ConvOptions<Ix2>,
     bias: Option<Variable1>,
-    activation: &A,
-) -> Result<Variable4>
-where
-    A: Forward<Variable4, Output = Variable4>,
-{
+) -> Result<Variable4> {
     let mut output = if input.device().is_host()
         && options.is_default()
         && input.scalar_type() == ScalarType::F32
@@ -905,7 +842,7 @@ where
     if let Some(bias) = bias.as_ref() {
         output.add_assign(bias)?;
     }
-    output.forward(activation)
+    Ok(output)
 }
 
 fn conv2_im2col(
@@ -965,8 +902,7 @@ fn conv2_im2col(
         .to_standard_layout()
 }
 
-/*
-impl<A: Forward<Variable3, Output = Variable3>> Forward<Variable3> for Conv1<A> {
+impl Forward<Variable3> for Conv1 {
     type Output = Variable3;
     fn forward(&self, input: Variable3) -> Result<Variable3> {
         let (n, ic, ih) = input.dim();
@@ -986,21 +922,15 @@ impl<A: Forward<Variable3, Output = Variable3>> Forward<Variable3> for Conv1<A> 
             dilation: [dh, 1].into_dimension(),
         };
         let bias = self.bias.as_ref().map(Parameter::to_variable);
-        let relu = if std::any::TypeId::of::<A>() == std::any::TypeId::of::<Relu>() {
-            Some(Relu)
-        } else {
-            None
-        };
-        let output = conv2(input, weight, options, bias, &relu)?;
+        let output = conv2(input, weight, &options, bias)?;
         let (n2, oc, oh, ow) = output.dim();
         debug_assert_eq!(n, n2);
         debug_assert_eq!(ow, 1);
-        let output = output.into_shape([n, oc, oh]).map_err(Error::msg)?;
-        self.activation.forward(output)
+        output.into_shape([n, oc, oh]).map_err(Error::msg)
     }
-}*/
+}
 
-impl<A: Forward<Variable4, Output = Variable4>> Forward<Variable4> for Conv2<A> {
+impl Forward<Variable4> for Conv2 {
     type Output = Variable4;
     fn forward(&self, input: Variable4) -> Result<Variable4> {
         let weight = self.weight.to_variable();
@@ -1010,7 +940,7 @@ impl<A: Forward<Variable4, Output = Variable4>> Forward<Variable4> for Conv2<A> 
             dilation: self.dilation,
         };
         let bias = self.bias.as_ref().map(Parameter::to_variable);
-        conv2(input, weight, &options, bias, &self.activation)
+        conv2(input, weight, &options, bias)
     }
 }
 
@@ -1027,7 +957,6 @@ impl<A: Forward<Variable4, Output = Variable4>> Forward<Variable4> for Conv2<A> 
 ///    .inputs(1)
 ///    .outputs(1)
 ///    .bias(true)
-///    .activation(Relu)
 ///    .scalar_type(ScalarType::BF16)
 ///    .device(device.clone())
 ///    .build()?;
@@ -1036,10 +965,9 @@ impl<A: Forward<Variable4, Output = Variable4>> Forward<Variable4> for Conv2<A> 
 ///```
 #[derive(Debug)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub struct Dense<A = Identity> {
+pub struct Dense {
     weight: Parameter2,
     bias: Option<Parameter1>,
-    activation: A,
 }
 
 impl Dense {
@@ -1049,7 +977,7 @@ impl Dense {
     }
 }
 
-impl<A> Dense<A> {
+impl Dense {
     /// The weight as a mutable parameter view.
     pub fn weight_view_mut(&mut self) -> Result<ParameterViewMut2> {
         self.weight.make_view_mut()
@@ -1060,7 +988,7 @@ impl<A> Dense<A> {
     }
 }
 
-impl<A> Layer for Dense<A> {
+impl Layer for Dense {
     fn parameter_iter(&self) -> impl Iterator<Item = ParameterD> + '_ {
         let weight = self.weight.clone().into_dyn();
         let bias = self.bias.clone().map(Parameter::into_dyn);
@@ -1096,19 +1024,18 @@ impl<A> Layer for Dense<A> {
         Ok(Self {
             weight: self.weight.into_device(device.clone())?,
             bias: self.bias.map(|b| b.into_device(device)).transpose()?,
-            ..self
         })
     }
 }
 
-impl<A: Forward<Variable2, Output = Variable2> + Any> Forward<Variable2> for Dense<A> {
+impl Forward<Variable2> for Dense {
     type Output = Variable2;
     fn forward(&self, input: Variable2) -> Result<Self::Output> {
         let mut output = input.dot(&self.weight.to_variable())?;
         if let Some(bias) = self.bias.as_ref() {
             output.add_assign(&bias.to_variable())?;
         }
-        self.activation.forward(output)
+        Ok(output)
     }
 }
 

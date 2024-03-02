@@ -23,16 +23,20 @@ GPGPU kernels implemented with [**krnl**](https://github.com/charles-r-earp/krnl
 
 ## Neural Networks
 ```rust
-#[derive(Layer, Forward, Debug)]
+#[derive(Layer, Forward)]
 #[autograph(forward(Variable4, Output=Variable2))]
 struct LeNet5 {
-    conv1: Conv2<Relu>,
+    conv1: Conv2,
+    relu1: Relu,
     pool1: MaxPool2,
-    conv2: Conv2<Relu>,
+    conv2: Conv2,
+    relu2: Relu,
     pool2: MaxPool2,
     flatten: Flatten,
-    dense1: Dense<Relu>,
-    dense2: Dense<Relu>,
+    dense1: Dense,
+    relu3: Relu,
+    dense2: Dense,
+    relu4: Relu,
     dense3: Dense,
 }
 
@@ -44,8 +48,8 @@ impl LeNet5 {
             .inputs(1)
             .outputs(6)
             .filter([5, 5])
-            .activation(Relu)
             .build()?;
+        let relu1 = Relu;
         let pool1 = MaxPool2::builder().filter([2, 2]).build();
         let conv2 = Conv2::builder()
             .device(device.clone())
@@ -53,8 +57,8 @@ impl LeNet5 {
             .inputs(6)
             .outputs(16)
             .filter([5, 5])
-            .activation(Relu)
             .build()?;
+        let relu2 = Relu;
         let pool2 = MaxPool2::builder().filter([2, 2]).build();
         let flatten = Flatten;
         let dense1 = Dense::builder()
@@ -62,15 +66,15 @@ impl LeNet5 {
             .scalar_type(scalar_type)
             .inputs(16 * 4 * 4)
             .outputs(128)
-            .activation(Relu)
             .build()?;
+        let relu3 = Relu;
         let dense2 = Dense::builder()
             .device(device.clone())
             .scalar_type(scalar_type)
             .inputs(128)
             .outputs(84)
-            .activation(Relu)
             .build()?;
+        let relu4 = Relu;
         let dense3 = Dense::builder()
             .device(device.clone())
             .scalar_type(scalar_type)
@@ -80,12 +84,16 @@ impl LeNet5 {
             .build()?;
         Ok(Self {
             conv1,
+            relu1,
             pool1,
             conv2,
+            relu2,
             pool2,
             flatten,
             dense1,
+            relu3,
             dense2,
+            relu4,
             dense3,
         })
     }
