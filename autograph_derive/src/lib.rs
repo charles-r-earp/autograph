@@ -275,8 +275,8 @@ fn layer_impl(input: TokenStream2) -> Result<TokenStream2> {
     let autograph = autograph_crate(&input.attrs)?;
     let ident = &input.ident;
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
-    let parameters = layers.iter(format_ident!("parameters"));
-    let make_parameters_mut = layers.try_iter_mut(format_ident!("make_parameters_mut"));
+    let parameter_iter = layers.iter(format_ident!("parameter_iter"));
+    let make_parameter_iter_mut = layers.try_iter_mut(format_ident!("make_parameter_iter_mut"));
     let set_training = layers.try_for_each(format_ident!("set_training"), quote! { training });
     let cast_mut = layers.try_for_each(format_ident!("cast_mut"), quote!(scalar_type));
     let to_device_mut = layers.try_for_each(format_ident!("to_device_mut"), quote!(device.clone()));
@@ -284,11 +284,11 @@ fn layer_impl(input: TokenStream2) -> Result<TokenStream2> {
     Ok(quote! {
         #[automatically_derived]
         impl #impl_generics Layer for #ident #ty_generics #where_clause {
-            fn parameters(&self) -> impl ::std::iter::Iterator<Item=#autograph::learn::neural_network::autograd::ParameterD> + '_ {
-                #parameters
+            fn parameter_iter(&self) -> impl ::std::iter::Iterator<Item=#autograph::learn::neural_network::autograd::ParameterD> + '_ {
+                #parameter_iter
             }
-            fn make_parameters_mut(&mut self) -> #autograph::anyhow::Result<impl ::std::iter::Iterator<Item= #autograph::learn::neural_network::autograd::ParameterViewMutD> + '_> {
-                #make_parameters_mut
+            fn make_parameter_iter_mut(&mut self) -> #autograph::anyhow::Result<impl ::std::iter::Iterator<Item= #autograph::learn::neural_network::autograd::ParameterViewMutD> + '_> {
+                #make_parameter_iter_mut
             }
             fn set_training(&mut self, training: bool) -> #autograph::anyhow::Result<()> {
                 #set_training
