@@ -757,15 +757,13 @@ fn conv2_direct_host_f32<const TCX: usize>(
 ) -> Array4<f32x8> {
     #[allow(unused_mut, unused_assignments)]
     const fn twy_for_tby(tby: usize) -> usize {
-        #[cfg(target_feature = "avx")]
-        {
-            twy = 15 / (tby + 2);
+        if cfg!(target_feature = "fma") {
+            15 / (tby + 1)
+        } else if cfg!(target_feature = "avx") {
+            15 / (tby + 2)
+        } else {
+            15 / (2 * (tby + 2))
         }
-        #[cfg(target_feature = "fma")]
-        {
-            twy = 15 / (tby + 1);
-        }
-        15 / (2 * (tby + 2))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1155,17 +1153,14 @@ fn conv2_direct_backward_weight_host_f32<const TCX: usize>(
     options: &Conv2Options,
     weight_shape: [usize; 4],
 ) -> Array4<[f32x8; TCX]> {
-    #[allow(unused_mut, unused_assignments)]
     const fn tw_for_tby(tby: usize) -> usize {
-        #[cfg(target_feature = "avx")]
-        {
-            tw = 15 / (tby + 2);
+        if cfg!(target_feature = "fma") {
+            15 / (tby + 1)
+        } else if cfg!(target_feature = "avx") {
+            15 / (tby + 2)
+        } else {
+            15 / (2 * tby + 2)
         }
-        #[cfg(target_feature = "fma")]
-        {
-            tw = 15 / (tby + 1);
-        }
-        15 / (2 * tby + 2)
     }
 
     fn inner<const TCX: usize, const TBY: usize, const TW: usize>(
