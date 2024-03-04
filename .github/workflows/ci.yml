@@ -44,7 +44,9 @@ jobs:
       if: ${{ !cancelled() }}
       run: cargo test --no-default-features --features "serde neural-network" -- --format=terse
     - name: test avx
-      run: cargo check --no-default-features --features neural-network --target ${{ matrix.target }} --config build.rustflags=\"-Ctarget-feature=+avx\"
+      env:
+        RUST_BUILD_RUSTFLAGS: -Ctarget-feature=+avx
+      run: cargo test --test=integration_tests --no-default-features --features neural-network --target ${{ matrix.target }} conv_2direct -- --format=terse
   krnlc: 
     runs-on: ubuntu-latest
     # spirv tools install copied from https://github.com/EmbarkStudios/rust-gpu/blob/main/.github/workflows/ci.yaml
