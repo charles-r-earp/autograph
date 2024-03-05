@@ -88,6 +88,9 @@ pub mod builder {
         /// When multiple edges compute the same gradient, they are added together.
         /// Once there are no more edges needed to compute a gradient for a node, its edges can
         /// be computed.
+        ///
+        /// # Panics
+        /// On backward pass, asserts that the gradient has the same device, shape, and scalar type as `node`.
         pub fn edge<D2, F>(&mut self, node: &Node<D2>, f: F)
         where
             D2: Dimension,

@@ -1,3 +1,4 @@
+use super::parallel::parallel_size;
 use super::*;
 use crate::ops::AddAssign;
 #[cfg(feature = "neural-network")]
@@ -17,6 +18,7 @@ use ndarray::{Array2, Array4, Data as ArrayData, DataMut as ArrayDataMut};
 #[cfg(feature = "device")]
 use num_traits::ToPrimitive;
 use num_traits::Unsigned;
+use std::mem::size_of;
 
 impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
     /// Converts to standard layout.
@@ -289,7 +291,7 @@ fn assign<X: Scalar, Y: Scalar>(
         IntoParallelRefMutIterator, ParallelIterator,
     };
 
-    let parallel = y.len() >= 40_000;
+    let parallel = (x.len() * size_of::<X>() + y.len() * size_of::<Y>()) > parallel_size();
     let eval = |(x, y): (&X, &mut Y)| *y = op.eval(alpha * x.cast(), *y);
     if x.strides() == y.strides()
         && x.as_slice_memory_order().is_some()

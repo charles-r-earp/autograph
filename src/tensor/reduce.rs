@@ -3,23 +3,22 @@ use super::*;
 use half::f16;
 #[cfg(feature = "device")]
 use krnl::macros::module;
-#[cfg(feature = "rayon")]
-use rayon::iter::{IntoParallelIterator, IntoParallelRefMutIterator, ParallelIterator};
+use parallel::parallel_size;
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
+use std::mem::size_of;
 
 impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     /// Sums the tensor.
     pub fn sum(&self) -> Result<T> {
         if let Some(input) = self.as_array() {
-            #[cfg(feature = "rayon")]
+            if  input.len() * size_of::<T>() > parallel_size() 
+                && rayon::current_num_threads() > 1
             {
                 Ok(input
                     .into_par_iter()
-                    .with_min_len(32)
                     .copied()
                     .reduce(T::default, |a, b| a + b))
-            }
-            #[cfg(not(feature = "rayon"))]
-            {
+            } else {
                 Ok(input.sum())
             }
         } else {
@@ -34,11 +33,11 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
         beta: T,
         output: &mut TensorBase<S2, Ix0>,
     ) -> Result<()> {
-        if let Some((input, mut output)) = self.as_array().zip(output.as_array_mut()) {
+        if let Some((_input, mut output)) = self.as_array().zip(output.as_array_mut()) {
             if beta == T::default() {
-                output[()] = input.sum();
+                output[()] = self.sum().unwrap();
             } else {
-                output[()] = input.sum() + beta * output[()];
+                output[()] = self.sum().unwrap() + beta * output[()];
             }
             return Ok(());
         }
@@ -60,19 +59,8 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
 impl<T: Scalar, S: Data<Elem = T>, D: RemoveAxis> TensorBase<S, D> {
     /// Sums the tensor along `axis`.
     pub fn sum_axis(&self, axis: Axis) -> Result<Tensor<T, D::Smaller>> {
-        /*if let Some(input) = self.as_array() {
-            #[cfg(feature = "rayon")]
-            {
-                Ok(input
-                    .axis_iter()
-                    .into_par_iter()
-                    .copied()
-                    .reduce(T::default, |a, b| a + b))
-            }
-            #[cfg(not(feature = "rayon"))]
-            {
-                return Ok(input.sum_axis(axis).into());
-            }
+        if let Some(input) = self.as_array() {
+            return Ok(input.sum_axis(axis).into());
         }
         #[cfg(not(feature = "device"))]
         {
@@ -80,12 +68,11 @@ impl<T: Scalar, S: Data<Elem = T>, D: RemoveAxis> TensorBase<S, D> {
         }
         #[cfg(feature = "device")]
         {
-            */
-        let mut output =
-            unsafe { Tensor::uninit(self.device(), self.raw_dim().remove_axis(axis))? };
-        self.sum_axis_with(axis, T::default(), &mut output)?;
-        Ok(output)
-        //}
+            let mut output =
+                unsafe { Tensor::uninit(self.device(), self.raw_dim().remove_axis(axis))? };
+            self.sum_axis_with(axis, T::default(), &mut output)?;
+            Ok(output)
+        }
     }
     /// Sums the tensor along `axis` with `output`.
     pub fn sum_axis_with<S2: DataMut<Elem = T>>(
@@ -98,30 +85,15 @@ impl<T: Scalar, S: Data<Elem = T>, D: RemoveAxis> TensorBase<S, D> {
             output.fill(T::default())?;
         }
         if let Some((x, mut y)) = self.as_array().zip(output.as_array_mut()) {
-            if beta != T::default() {
-                #[cfg(feature = "rayon")]
-                {
-                    y.view_mut()
-                        .into_par_iter()
-                        .with_min_len(32)
-                        .for_each(|y| *y *= beta);
-                }
-                #[cfg(not(feature = "rayon"))]
-                {
-                    for y in y.iter_mut() {
-                        *y *= beta;
+            // TOOD: impl in parallel
+            for (i, x) in x.axis_iter(axis).enumerate() {
+                if i == 0 {
+                    if beta != T::default() {
+                        y.zip_mut_with(&x, |y, x| *y = *x + beta * *y);
+                    } else {
+                        y.zip_mut_with(&x, |y, x| *y = *x);
                     }
-                }
-            }
-            #[cfg(feature = "rayon")]
-            {
-                for x in x.axis_iter(axis) {
-                    y.zip_mut_with(&x, |y, x| *y += *x);
-                }
-            }
-            #[cfg(not(feature = "rayon"))]
-            {
-                for x in x.axis_iter(axis) {
+                } else {
                     y.zip_mut_with(&x, |y, x| *y += *x);
                 }
             }
@@ -145,12 +117,6 @@ impl<T: Scalar, S: Data<Elem = T>, D: RemoveAxis> TensorBase<S, D> {
 
 #[cfg(feature = "device")]
 fn sum(x: ScalarTensorViewD, beta: ScalarElem, mut y: ScalarTensorViewMutD) -> Result<()> {
-    if x.scalar_type() != y.scalar_type() {
-        todo!();
-    }
-    if x.device() != y.device() {
-        todo!();
-    }
     let device = y.device();
     let info = device.info().unwrap();
     let subgroup_threads = if info.min_subgroup_threads() == info.max_subgroup_threads() {
@@ -182,7 +148,7 @@ fn sum(x: ScalarTensorViewD, beta: ScalarElem, mut y: ScalarTensorViewMutD) -> R
             return Ok(());
         }
     });
-    todo!()
+    unreachable!()
 }
 
 #[cfg(feature = "device")]
@@ -192,11 +158,8 @@ fn sum_axis(
     beta: ScalarElem,
     mut y: ScalarTensorViewMutD,
 ) -> Result<()> {
-    if x.scalar_type() != y.scalar_type() {
-        todo!();
-    }
     if x.device() != y.device() {
-        todo!();
+        bail!("Expected {:?}, found {:?}", x.device(), y.device());
     }
     let device = y.device();
     let info = device.info().unwrap();

@@ -3,15 +3,35 @@ use krnl::scalar::Scalar;
 use ndarray::{ArrayViewMut, Dimension, RawArrayViewMut};
 #[cfg(feature = "neural-network")]
 use ndarray::{Axis, Ix4, Ix5, RemoveAxis};
-use std::marker::PhantomData;
+use std::{marker::PhantomData, sync::OnceLock};
+
+pub(crate) fn parallel_size() -> usize {
+    const L1_CACHE_SIZE: OnceLock<usize> = OnceLock::new();
+    let l1_cache_size = *L1_CACHE_SIZE.get_or_init(|| {
+        cache_size::l1_cache_size().unwrap_or(1 << 15)
+    });
+    let simd_width = if cfg!(target_feature = "avx") {
+        256
+    } else {
+        32
+    };
+    2 * simd_width * l1_cache_size
+}
 
 #[cfg(feature = "neural-network")]
 pub(crate) fn array_par_outer_iter_mut_for_each<T: Scalar, D: RemoveAxis, F>(
-    array: ArrayViewMut<T, D>,
+    mut array: ArrayViewMut<T, D>,
     f: F,
 ) where
     F: Fn(usize, ArrayViewMut<T, D::Smaller>) + Send + Sync,
 {
+    if rayon::current_num_threads() == 1 {
+        array
+            .outer_iter_mut()
+            .into_iter()
+            .for_each(|array| f(0, array));
+        return;
+    }
     let items = array.shape().first().copied().unwrap_or(1);
     let sync_array = SyncRawArrayViewMut::try_from(array).unwrap();
     rayon::scope(|scope| {

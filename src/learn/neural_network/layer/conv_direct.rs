@@ -2,7 +2,10 @@ use super::Conv2Options;
 use crate::{
     learn::neural_network::autograd::{Variable, Variable4},
     tensor::{
-        parallel::{broadcast, SyncRawArrayViewMut, SyncRawArrayViewMut4, SyncRawArrayViewMut5},
+        parallel::{
+            broadcast, parallel_size, SyncRawArrayViewMut, SyncRawArrayViewMut4,
+            SyncRawArrayViewMut5,
+        },
         ScalarTensor, ScalarTensor4, ScalarTensorBase, ScalarTensorView4, Tensor,
     },
 };
@@ -12,7 +15,7 @@ use krnl::{buffer::ScalarData, scalar::ScalarType};
 use ndarray::{Array, Array4, ArrayView4, ArrayViewMut4, Dimension, IntoDimension, Ix4};
 use once_cell::sync::OnceCell;
 use rayon::iter::{IntoParallelRefMutIterator, ParallelIterator};
-use std::sync::Arc;
+use std::{mem::size_of, sync::Arc};
 use wide::f32x8;
 
 pub(super) fn conv2_direct(
@@ -1037,10 +1040,10 @@ impl Conv2DirectBackwardInputHostF32Kernel<1> for () {
 
 fn transpose_weight_host_f32(mut weight: ArrayViewMut4<[f32x8; 8]>) {
     let w = weight.as_slice_mut().unwrap();
-    if w.len() > 40_000 {
-        w.iter_mut().for_each(|w| *w = f32x8::transpose(*w));
-    } else {
+    if w.len() * size_of::<f32>() > parallel_size() && rayon::current_num_threads() > 1 {
         w.par_iter_mut().for_each(|w| *w = f32x8::transpose(*w));
+    } else {
+        w.iter_mut().for_each(|w| *w = f32x8::transpose(*w));
     }
 }
 

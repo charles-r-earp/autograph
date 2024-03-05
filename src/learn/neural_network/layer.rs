@@ -10,8 +10,8 @@ use crate::{
         MaxPool2Backward as _, MaxPool2Options,
     },
     tensor::{
-        ScalarArcTensor, ScalarArcTensor4, ScalarTensor, ScalarTensor4, ScalarTensorBase,
-        ScalarTensorView4, Tensor, TensorView, TensorViewMut,
+        parallel::parallel_size, ScalarArcTensor, ScalarArcTensor4, ScalarTensor, ScalarTensor4,
+        ScalarTensorBase, ScalarTensorView4, Tensor, TensorView, TensorViewMut,
     },
 };
 use anyhow::{bail, Error, Result};
@@ -38,6 +38,7 @@ use rand::{
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
+use std::mem::size_of;
 
 mod conv_direct;
 
@@ -1240,11 +1241,12 @@ fn relu<T: Scalar, D: Dimension>(input: TensorView<T, D>) -> Result<Tensor<T, D>
         bail!("Relu {scalar_type:?} unimplemented!");
     }
     if let Some(x) = input.as_array() {
-        let y = if x.len() > RELU_PAR_LEN {
-            ndarray::Zip::from(&x).par_map_collect(|x| relu_impl(*x))
-        } else {
-            x.map(|x| relu_impl(*x))
-        };
+        let y =
+            if 2 * x.len() * size_of::<T>() > parallel_size() && rayon::current_num_threads() > 1 {
+                ndarray::Zip::from(&x).par_map_collect(|x| relu_impl(*x))
+            } else {
+                x.map(|x| relu_impl(*x))
+            };
         return Ok(y.into());
     }
     #[cfg(not(feature = "device"))]
@@ -1317,7 +1319,9 @@ fn relu_backward_mut<T: Scalar, D: Dimension>(
     mut output_grad: TensorViewMut<T, D>,
 ) -> Result<()> {
     if let Some((x, mut dy)) = input.as_array().zip(output_grad.as_array_mut()) {
-        if x.len() >= RELU_PAR_LEN {
+        if (x.len() + dy.len()) * size_of::<T>() > parallel_size()
+            && rayon::current_num_threads() > 1
+        {
             ndarray::Zip::from(&x)
                 .and(&mut dy)
                 .par_for_each(|x, dy| *dy = relu_backward_impl(*x, *dy));
@@ -1363,7 +1367,9 @@ fn relu_backward<T: Scalar, D: Dimension>(
     output_grad: TensorView<T, D>,
 ) -> Result<Tensor<T, D>> {
     if let Some((x, dy)) = input.as_array().zip(output_grad.as_array()) {
-        let y = if x.len() >= RELU_PAR_LEN {
+        let y = if (x.len() + dy.len()) * size_of::<T>() > parallel_size()
+            && rayon::current_num_threads() > 1
+        {
             ndarray::Zip::from(&x)
                 .and(&dy)
                 .par_map_collect(|x, dy| relu_backward_impl(*x, *dy))

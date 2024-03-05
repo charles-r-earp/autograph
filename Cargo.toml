@@ -70,9 +70,8 @@ parking_lot = { workspace = true, optional = true }
 rayon.workspace = true
 once_cell = { version = "1.17.1", optional = true, features = ["std"] }
 num-traits = "0.2.15"
-matrixmultiply_mt = { version = "0.2.1", optional = true }
-matrixmultiply = { version = "0.3.8", optional = true }
 wide = "0.7.13"
+cache-size = "0.6.0"
 
 [dev-dependencies]
 approx = "0.4.0"
@@ -91,7 +90,6 @@ iris = []
 mnist = ["dataset", "dep:dirs", "dep:flate2", "dep:downloader", "dep:byteorder", "dep:http"]
 learn = []
 neural-network = ["learn", "dep:autograph_derive", "dep:crossbeam-channel", "dep:parking_lot", "dep:rand", "dep:once_cell"]
-
 
 [package.metadata.krnlc]
 features = ["neural-network"]
