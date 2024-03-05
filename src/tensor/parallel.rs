@@ -6,10 +6,9 @@ use ndarray::{Axis, Ix4, Ix5, RemoveAxis};
 use std::{marker::PhantomData, sync::OnceLock};
 
 pub(crate) fn parallel_size() -> usize {
-    const L1_CACHE_SIZE: OnceLock<usize> = OnceLock::new();
-    let l1_cache_size = *L1_CACHE_SIZE.get_or_init(|| {
-        cache_size::l1_cache_size().unwrap_or(1 << 15)
-    });
+    static L1_CACHE_SIZE: OnceLock<usize> = OnceLock::new();
+    let l1_cache_size =
+        *L1_CACHE_SIZE.get_or_init(|| cache_size::l1_cache_size().unwrap_or(1 << 15));
     let simd_width = if cfg!(target_feature = "avx") {
         256
     } else {
@@ -28,7 +27,6 @@ pub(crate) fn array_par_outer_iter_mut_for_each<T: Scalar, D: RemoveAxis, F>(
     if rayon::current_num_threads() == 1 {
         array
             .outer_iter_mut()
-            .into_iter()
             .for_each(|array| f(0, array));
         return;
     }

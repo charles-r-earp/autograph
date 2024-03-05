@@ -11,9 +11,7 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     /// Sums the tensor.
     pub fn sum(&self) -> Result<T> {
         if let Some(input) = self.as_array() {
-            if  input.len() * size_of::<T>() > parallel_size() 
-                && rayon::current_num_threads() > 1
-            {
+            if input.len() * size_of::<T>() > parallel_size() && rayon::current_num_threads() > 1 {
                 Ok(input
                     .into_par_iter()
                     .copied()
