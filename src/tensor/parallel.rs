@@ -25,9 +25,7 @@ pub(crate) fn array_par_outer_iter_mut_for_each<T: Scalar, D: RemoveAxis, F>(
     F: Fn(usize, ArrayViewMut<T, D::Smaller>) + Send + Sync,
 {
     if rayon::current_num_threads() == 1 {
-        array
-            .outer_iter_mut()
-            .for_each(|array| f(0, array));
+        array.outer_iter_mut().for_each(|array| f(0, array));
         return;
     }
     let items = array.shape().first().copied().unwrap_or(1);
