@@ -28,28 +28,23 @@ jobs:
           target: x86_64-apple-darwin
     steps:
     - uses: actions/checkout@v2
-    - name: cargo fetch
-      run: cargo fetch --target ${{ matrix.target }}
     - name: build
       if: ${{ !cancelled() }}
-      run: cargo build --all-features --all-targets
-    - name: build examples
-      if: ${{ !cancelled() }}
-      run: cargo build -p neural-network-mnist-example
+      run: cargo build --all-features --all-targets -p autograph -p neural-network-mnist-example -v
     - name: build benches
       if: ${{ !cancelled() }}
-      run: cargo build -p neural-network-benches --benches
+      run: cargo build -p neural-network-benches --benches -v
     - name: test
       if: ${{ !cancelled() }}
-      run: cargo test --no-default-features --features "serde neural-network mnist" -- --format=terse
+      run: cargo test --workspace --no-default-features --features "serde neural-network mnist" -v 
     - name: test avx
       env:
         RUST_BUILD_RUSTFLAGS: -Ctarget-feature=+avx
-      run: cargo test --test=integration_tests --no-default-features --features neural-network --target ${{ matrix.target }} conv2_direct -- --format=terse
+      run: cargo test --test=integration_tests --no-default-features --features neural-network --target ${{ matrix.target }} -v conv2_direct
     - name: test fma
       env:
         RUST_BUILD_RUSTFLAGS: -Ctarget-feature=+fma
-      run: cargo test --test=integration_tests --no-default-features --features neural-network --target ${{ matrix.target }} conv2_direct -- --format=terse
+      run: cargo test --test=integration_tests --no-default-features --features neural-network --target ${{ matrix.target }} -v conv2_direct 
   careful:
     runs-on: ubuntu-latest
     steps:
@@ -62,12 +57,12 @@ jobs:
       run: cargo +nightly install cargo-careful
     - name: careful test
       if: ${{ !cancelled() }}
-      run: cargo +nightly careful test --test=integration_tests --no-default-features --features neural-network
+      run: cargo +nightly careful test --test=integration_tests --no-default-features --features neural-network -v
     - name: careful test single-thread
       env:
         RAYON_NUM_THREADS: 1
-      run: cargo +nightly careful test --test=integration_tests --no-default-features --features neural-network
-  wasm:
+      run: cargo +nightly careful test --test=integration_tests --no-default-features --features neural-network -v
+  wasm: 
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v2
@@ -114,7 +109,7 @@ jobs:
         components: rustfmt, clippy
     - name: fmt
       if: ${{ !cancelled() }}
-      run: cargo fmt --all -- --check
+      run: cargo fmt --check
     - name: clippy
       if: ${{ !cancelled() }}
       run: cargo clippy --all-features -- -D warnings
