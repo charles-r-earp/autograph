@@ -10,13 +10,12 @@ use crate::ops::{
 use anyhow::format_err;
 #[cfg(feature = "neural-network")]
 use dry::{macro_for, macro_wrap};
-use half::{bf16, f16};
+#[cfg(feature = "device")]
+use half::f16;
 #[cfg(feature = "device")]
 use krnl::macros::module;
 #[cfg(feature = "neural-network")]
 use ndarray::{Array2, Array4, Data as ArrayData, DataMut as ArrayDataMut};
-#[cfg(feature = "device")]
-use num_traits::ToPrimitive;
 use num_traits::Unsigned;
 use std::mem::size_of;
 

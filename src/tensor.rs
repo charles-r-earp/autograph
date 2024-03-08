@@ -63,10 +63,7 @@ use num_traits::ToPrimitive;
 use paste::paste;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use std::{
-    convert::{TryFrom, TryInto},
-    fmt::{self, Debug},
-};
+use std::fmt::{self, Debug};
 
 mod linalg;
 mod ops;
