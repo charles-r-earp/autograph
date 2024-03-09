@@ -10,8 +10,8 @@ use crate::ops::{
 use anyhow::format_err;
 #[cfg(feature = "neural-network")]
 use dry::{macro_for, macro_wrap};
-#[cfg(feature = "device")]
-use half::f16;
+#[allow(unused_imports)]
+use half::{bf16, f16};
 #[cfg(feature = "device")]
 use krnl::macros::module;
 #[cfg(feature = "neural-network")]

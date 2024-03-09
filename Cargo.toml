@@ -39,17 +39,27 @@ readme.workspace = true
 homepage.workspace = true
 repository.workspace = true
 license.workspace = true
-keywords = ["neural-networks", "machine-learning", "deep-learning", "autograd", "gpu"]
+keywords = [
+    "neural-networks",
+    "machine-learning",
+    "deep-learning",
+    "autograd",
+    "gpu",
+]
 categories = ["hardware-support", "science", "mathematics"]
 publish.workspace = true
-autobins = false 
+autobins = false
 autobenches = false
 
 [dependencies]
 autograph_derive = { path = "autograph_derive", optional = true }
 krnl = { git = "https://github.com/charles-r-earp/krnl", default-features = false }
 anyhow.workspace = true
-ndarray = { workspace = true, features = ["serde", "rayon", "matrixmultiply-threading"] }
+ndarray = { workspace = true, features = [
+    "serde",
+    "rayon",
+    "matrixmultiply-threading",
+] }
 rand = { version = "0.8.4", optional = true }
 serde = { workspace = true, features = ["derive", "rc"], optional = true }
 derive_more = { workspace = true }
@@ -71,6 +81,8 @@ rayon.workspace = true
 once_cell = { version = "1.17.1", optional = true, features = ["std"] }
 num-traits = "0.2.15"
 wide = "0.7.13"
+
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
 cache-size = "0.6.0"
 
 [dev-dependencies]
@@ -87,9 +99,23 @@ device = ["krnl/device", "dep:once_cell"]
 serde = ["dep:serde", "krnl/serde"]
 dataset = ["dep:rand"]
 iris = []
-mnist = ["dataset", "dep:dirs", "dep:flate2", "dep:downloader", "dep:byteorder", "dep:http"]
+mnist = [
+    "dataset",
+    "dep:dirs",
+    "dep:flate2",
+    "dep:downloader",
+    "dep:byteorder",
+    "dep:http",
+]
 learn = []
-neural-network = ["learn", "dep:autograph_derive", "dep:crossbeam-channel", "dep:parking_lot", "dep:rand", "dep:once_cell"]
+neural-network = [
+    "learn",
+    "dep:autograph_derive",
+    "dep:crossbeam-channel",
+    "dep:parking_lot",
+    "dep:rand",
+    "dep:once_cell",
+]
 
 [package.metadata.krnlc]
 features = ["neural-network"]
