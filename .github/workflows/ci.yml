@@ -50,6 +50,23 @@ jobs:
       env:
         RUST_BUILD_RUSTFLAGS: -Ctarget-feature=+fma
       run: cargo test --test=integration_tests --no-default-features --features neural-network --target ${{ matrix.target }} conv2_direct -- --format=terse
+  careful:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v2
+    - uses: actions-rs/toolchain@v1
+      with:
+        toolchain: nightly
+    - name: install cargo-careful
+      if: ${{ !cancelled() }}
+      run: cargo +nightly install cargo-careful
+    - name: careful test
+      if: ${{ !cancelled() }}
+      run: cargo +nightly careful test --test=integration_tests --no-default-features --features neural-network
+    - name: careful test single-thread
+      env:
+        RAYON_NUM_THREADS: 1
+      run: cargo +nightly careful test --test=integration_tests --no-default-features --features neural-network
   wasm:
     runs-on: ubuntu-latest
     steps:
