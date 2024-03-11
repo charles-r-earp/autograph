@@ -16,6 +16,8 @@ use ndarray::{Array, Array4, ArrayView4, ArrayViewMut4, Dimension, IntoDimension
 use once_cell::sync::OnceCell;
 use rayon::iter::{IntoParallelRefMutIterator, ParallelIterator};
 use std::{mem::size_of, sync::Arc};
+#[cfg(debug_assertions)]
+use unchecked_index::GetUnchecked;
 use wide::f32x8;
 
 pub(super) fn conv2_direct(
@@ -1094,7 +1096,7 @@ where
                     let tcy = (cidy_block * 8..oc).take(8).len();
                     let w = w.chunks_exact(fh * fw).nth(cidx_block).unwrap();
                     for (hidy, dy) in dy.chunks_exact(ow).enumerate() {
-                        let dx = unsafe { dx.get_unchecked_mut(hidy * iw..(hidy + 1) * iw) };
+                        let dx = unsafe { dx.get_unchecked_mut(hidy * iw..(hidy + fh) * iw) };
                         let mut dy_chunks = dy.chunks_exact(TWY);
                         for (widy, dy) in (0..).step_by(TWY).zip(dy_chunks.by_ref()) {
                             dy_tile = dy.try_into().unwrap();

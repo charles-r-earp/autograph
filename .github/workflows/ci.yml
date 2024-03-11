@@ -55,9 +55,11 @@ jobs:
     steps:
     - uses: actions/checkout@v2
     - name: install wasm-pack
+      if: ${{ !cancelled() }}
       run: cargo install wasm-pack -vv
     - name: wasm test
-      run: wasm-pack test --headless --firefox -- --no-default-features -vv
+      if: ${{ !cancelled() }}
+      run: wasm-pack test --headless --firefox -- --no-default-features --features "serde neural-network" -vv
       env:
         RUSTFLAGS: --cfg run_in_browser
   krnlc:

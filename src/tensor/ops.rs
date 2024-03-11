@@ -740,7 +740,7 @@ impl<T: Scalar + Unsigned, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
 impl<T: Scalar, S: ArrayData<Elem = T>> Im2ColConv2 for ArrayBase<S, Ix4> {
     type Output = Array2<T>;
     fn im2col_conv2(&self, options: &Im2ColConv2Options) -> Result<Self::Output> {
-        let input = self.view(); //self.as_standard_layout();
+        let input = self.view();
         let (bs, c, ih, iw) = input.dim();
         let [oh, ow] = options.output_shape([ih, iw]);
         let Im2ColConv2Options {

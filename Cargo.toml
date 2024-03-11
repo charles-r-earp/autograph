@@ -81,6 +81,7 @@ rayon.workspace = true
 once_cell = { version = "1.17.1", optional = true, features = ["std"] }
 num-traits = "0.2.15"
 wide = "0.7.13"
+unchecked-index = "0.2.2"
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 cache-size = "0.6.0"
@@ -90,8 +91,11 @@ approx = "0.4.0"
 serde_test = "1.0.160"
 ndarray = { workspace = true, features = ["approx"] }
 
-[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+[target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
 libtest-mimic = "0.6.0"
+
+[target.'cfg(target_family = "wasm")'.dev-dependencies]
+getrandom = { version = "0.2", features = ["js"] }
 
 [features]
 default = ["device"]

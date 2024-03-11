@@ -11,22 +11,22 @@ use half::{bf16, f16};
 use krnl::buffer::Buffer;
 use krnl::{buffer::Slice, device::Device, scalar::Scalar};
 use krnl::{device::Features, scalar::ScalarType};
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 use libtest_mimic::{Arguments, Trial};
 use ndarray::{Array, Array1, Axis, Dimension, IntoDimension, RemoveAxis};
 use paste::paste;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 use std::str::FromStr;
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_arch = "wasm")]
 use wasm_bindgen_test::wasm_bindgen_test as test;
 
-#[cfg(all(target_arch = "wasm32", run_in_browser))]
+#[cfg(all(target_family = "wasm", run_in_browser))]
 wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_family = "wasm")]
 fn main() {}
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 fn main() {
     let args = Arguments::from_args();
     let tests = if cfg!(feature = "device") && !cfg!(miri) {
@@ -58,7 +58,7 @@ fn main() {
     libtest_mimic::run(&args, tests).exit()
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 fn device_test(device: &Device, name: &str, f: impl Fn(&Device) + Send + Sync + 'static) -> Trial {
     let name = format!(
         "{name}_{}",
@@ -148,12 +148,12 @@ fn check_eq(a: ScalarTensorViewD, b: ScalarTensorViewD) {
     });
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 fn tests(device: &Device) -> Vec<Trial> {
     tensor_tests(device)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 fn tensor_tests(device: &Device) -> Vec<Trial> {
     let features = device
         .info()
@@ -246,7 +246,7 @@ mod linalg {
     use ndarray::{linalg::Dot, Array2};
     use std::fmt::{self, Display};
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(target_family = "wasm"))]
     pub fn linalg_tests(device: &Device) -> Vec<Trial> {
         let mut tests = Vec::new();
         let features = if let Some(info) = device.info() {
@@ -357,7 +357,7 @@ mod linalg {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 mod ops {
     use super::*;
     use ndarray::{Array1, IntoDimension};
@@ -461,7 +461,7 @@ mod ops {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 mod reorder {
     use super::*;
     use ndarray::IntoDimension;
@@ -533,7 +533,7 @@ mod reorder {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 mod reduce {
     use super::*;
     use std::mem::size_of;
@@ -684,7 +684,7 @@ mod reduce {
     }
 }
 
-#[cfg(feature = "learn")]
+#[cfg(all(not(target_family = "wasm"), feature = "learn"))]
 mod learn {
     use super::*;
     use approx::assert_relative_eq;
@@ -1703,7 +1703,7 @@ mod learn {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_family = "wasm")]
 #[test]
 fn tensor_dot_f32_m2_k2_n2_nn() {
     use linalg::Transpose;

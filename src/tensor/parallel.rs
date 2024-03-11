@@ -3,14 +3,16 @@ use krnl::scalar::Scalar;
 use ndarray::{ArrayViewMut, Dimension, RawArrayViewMut};
 #[cfg(feature = "neural-network")]
 use ndarray::{Axis, Ix4, Ix5, RemoveAxis};
-use std::{marker::PhantomData, sync::OnceLock};
+use std::marker::PhantomData;
+#[cfg(not(target_family = "wasm"))]
+use std::sync::OnceLock;
 
 pub(crate) fn parallel_size() -> usize {
     const L1_CACHE_SIZE_DEFAULT: usize = 1 << 15;
     let l1_cache_size: usize = {
         #[cfg(not(target_family = "wasm"))]
         {
-            static L1_CACHE_SIZE: OnceLock<usize> = OnceLock::new();
+            static L1_CACHE_SIZE: OnceLock<usize> = std::sync::OnceLock::new();
             *L1_CACHE_SIZE
                 .get_or_init(|| cache_size::l1_cache_size().unwrap_or(L1_CACHE_SIZE_DEFAULT))
         }
@@ -35,7 +37,10 @@ pub(crate) fn array_par_outer_iter_mut_for_each<T: Scalar, D: RemoveAxis, F>(
     F: Fn(usize, ArrayViewMut<T, D::Smaller>) + Send + Sync,
 {
     if rayon::current_num_threads() == 1 {
-        array.outer_iter_mut().for_each(|array| f(0, array));
+        array
+            .outer_iter_mut()
+            .enumerate()
+            .for_each(|(i, array)| f(i, array));
         return;
     }
     let items = array.shape().first().copied().unwrap_or(1);
