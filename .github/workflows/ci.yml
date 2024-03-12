@@ -122,3 +122,8 @@ jobs:
     - name: rustdoc
       if: ${{ !cancelled() }}
       run: cargo rustdoc --all-features -- --D warnings
+  cargo-deny:    
+    runs-on: ubuntu-latest    
+    steps:
+    - uses: actions/checkout@v2
+    - uses: EmbarkStudios/cargo-deny-action@v1
