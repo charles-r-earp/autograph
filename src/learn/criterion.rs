@@ -135,7 +135,7 @@ impl<S1: ScalarData, S2: ScalarData> Accuracy<ScalarTensorBase<S2, Ix1>>
 ///```text
 ///  N       C
 ///  ∑ { ln ( ∑ { exp(input[batch][class]) } ) - input[target[batch]] }
-///       
+///
 ///```
 /// Where `N` is the batch_size and `C` is the number of classes.
 */
