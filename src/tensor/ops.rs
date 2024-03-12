@@ -1148,9 +1148,6 @@ impl<T: Scalar, S1: ArrayDataMut<Elem = T>, S2: ArrayData<Elem = T>>
         output_grad: ArrayBase<S2, Ix4>,
         options: MaxPool2Options,
     ) -> Result<()> {
-        //use std::time::Instant;
-
-        //let start = Instant::now();
         let MaxPool2Options {
             size: [h, w],
             strides: [sh, sw],

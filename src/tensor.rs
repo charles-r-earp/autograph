@@ -2147,7 +2147,7 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     /// See [`BufferBase::cast()`].
     pub fn cast<Y: Scalar>(&self) -> Result<Tensor<Y, D>> {
         if !self.is_contiguous() {
-            todo!();
+            return self.scaled_cast(Y::one());
         }
         Ok(TensorBase {
             dim: self.dim.clone(),

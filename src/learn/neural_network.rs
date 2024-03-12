@@ -128,11 +128,30 @@ for parameter in model.make_parameter_iter_mut()? {
 # }
 */
 
+#[doc(hidden)]
+pub mod __private {
+    pub mod criterion {
+        use crate::{
+            krnl::scalar::Scalar,
+            tensor::{Tensor2, TensorView1, TensorView2},
+        };
+        use anyhow::Result;
+        use num_traits::{Float, Unsigned};
+
+        pub fn cross_entropy_loss_backward<T1: Scalar + Float, T2: Scalar + Unsigned>(
+            x: TensorView2<T1>,
+            t: TensorView1<T2>,
+            dy: f32,
+        ) -> Result<Tensor2<T1>> {
+            super::super::criterion::cross_entropy_loss_backward(x, t, dy)
+        }
+    }
+}
+
+mod criterion;
+
 /// Autograd.
 pub mod autograd;
-// public for testing
-#[doc(hidden)]
-pub mod criterion;
 /// Layers.
 pub mod layer;
 /// Optimizers.

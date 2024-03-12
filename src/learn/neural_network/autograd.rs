@@ -446,8 +446,6 @@ impl<D: Dimension + 'static> Variable<D> {
     #[doc(hidden)]
     /// Converts to standard layout.
     ///
-    /// **Errors**
-    ///
     /// See [`ArcTensor::to_standard_layout_shared()`].
     pub fn to_standard_layout(&self) -> Result<Self> {
         Ok(Self {

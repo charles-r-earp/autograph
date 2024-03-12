@@ -1076,7 +1076,7 @@ mod learn {
             batch_size: usize,
             classes: usize,
         ) {
-            use neural_network::criterion::cross_entropy_loss_backward as backward;
+            use neural_network::__private::criterion::cross_entropy_loss_backward as backward;
             let x_vec: Vec<X> = (0..10u8)
                 .map(|x| X::from_u8(x).unwrap())
                 .cycle()
