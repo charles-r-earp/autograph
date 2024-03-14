@@ -68,10 +68,8 @@ approx = "0.5.0"
 bytemuck.workspace = true
 byteorder = { version = "1.4.3", optional = true }
 dirs = { version = "3.0.2", optional = true }
-downloader = { version = "0.2.6", optional = true }
 flate2 = { version = "1.0.20", optional = true }
 half = { version = "=2.1.0", features = ["num-traits", "bytemuck", "serde"] }
-http = { version = "0.2.4", optional = true }
 paste = "1.0.7"
 dry = "0.1.1"
 crunchy = { version = "0.2.2" }
@@ -82,6 +80,8 @@ once_cell = { version = "1.17.1", optional = true, features = ["std"] }
 num-traits = "0.2.15"
 wide = "0.7.13"
 unchecked-index = "0.2.2"
+curl = { version = "0.4.46", optional = true }
+indicatif = { version = "0.17.8", optional = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 cache-size = "0.6.0"
@@ -93,6 +93,7 @@ ndarray = { workspace = true, features = ["approx"] }
 
 [target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
 libtest-mimic = "0.6.0"
+tempfile = "3.10.1"
 
 [target.'cfg(target_family = "wasm")'.dev-dependencies]
 getrandom = { version = "0.2", features = ["js"] }
@@ -107,9 +108,9 @@ mnist = [
     "dataset",
     "dep:dirs",
     "dep:flate2",
-    "dep:downloader",
     "dep:byteorder",
-    "dep:http",
+    "dep:indicatif",
+    "dep:curl",
 ]
 learn = []
 neural-network = [
