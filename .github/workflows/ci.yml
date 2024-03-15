@@ -41,7 +41,7 @@ jobs:
       run: cargo build -p neural-network-benches --benches
     - name: test
       if: ${{ !cancelled() }}
-      run: cargo test --no-default-features --features "serde neural-network" -- --format=terse
+      run: cargo test --no-default-features --features "serde neural-network mnist" -- --format=terse
     - name: test avx
       env:
         RUST_BUILD_RUSTFLAGS: -Ctarget-feature=+avx
