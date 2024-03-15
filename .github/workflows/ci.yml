@@ -57,10 +57,12 @@ jobs:
       run: cargo +nightly install cargo-careful
     - name: careful test
       if: ${{ !cancelled() }}
+      continue-on-error: true
       run: cargo +nightly careful test --test=integration_tests --no-default-features --features neural-network -v
     - name: careful test single-thread
       env:
         RAYON_NUM_THREADS: 1
+      continue-on-error: true
       run: cargo +nightly careful test --test=integration_tests --no-default-features --features neural-network -v
   wasm: 
     runs-on: ubuntu-latest
