@@ -902,9 +902,9 @@ impl<D: Dimension> From<ScalarArcTensor<D>> for Parameter<D> {
 impl<S: ScalarData, D: Dimension> Debug for ParameterBase<S, D> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("ParameterBase")
-            .field("value:", &self.value)
+            .field("value", &self.value)
             .field("grad", &self.grad)
-            .field("optim_state", &self.optim_state)
+            .field("optimizer_state", &self.optim_state.as_ref())
             .finish()
     }
 }
