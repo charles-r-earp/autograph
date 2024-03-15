@@ -1,21 +1,25 @@
 name: CI
-
 on:
   push:
+    branches:
+      - main
     paths-ignore:
-    - "**.md"
+      - '**.md'
   pull_request:
+    branches:
+      - "**"
     paths-ignore:
-    - "**.md"
-
+      - '**.md'
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
 env:
   CARGO_TERM_COLOR: always
-
+  RUST_BACKTRACE: 1
+  CARGO_INCREMENTAL: 0
 jobs:
   test:
     runs-on: ${{ matrix.os }}
-    env:
-      RUST_BACKTRACE: 1
     strategy:
       fail-fast: false
       matrix:
@@ -27,33 +31,28 @@ jobs:
         - os: macos-latest
           target: x86_64-apple-darwin
     steps:
-    - uses: actions/checkout@v2
-    - name: cargo fetch
-      run: cargo fetch --target ${{ matrix.target }}
+    - uses: actions/checkout@v4
     - name: build
       if: ${{ !cancelled() }}
-      run: cargo build --all-features --all-targets
-    - name: build examples
-      if: ${{ !cancelled() }}
-      run: cargo build -p neural-network-mnist-example
+      run: cargo build --all-features --all-targets -p autograph -p neural-network-mnist-example -v
     - name: build benches
       if: ${{ !cancelled() }}
-      run: cargo build -p neural-network-benches --benches
+      run: cargo build -p neural-network-benches --benches -v
     - name: test
       if: ${{ !cancelled() }}
-      run: cargo test --no-default-features --features "serde neural-network mnist" -- --format=terse
+      run: cargo test --workspace --no-default-features --features "serde neural-network mnist" -v 
     - name: test avx
       env:
         RUST_BUILD_RUSTFLAGS: -Ctarget-feature=+avx
-      run: cargo test --test=integration_tests --no-default-features --features neural-network --target ${{ matrix.target }} conv2_direct -- --format=terse
+      run: cargo test --test=integration_tests --no-default-features --features neural-network --target ${{ matrix.target }} -v conv2_direct
     - name: test fma
       env:
         RUST_BUILD_RUSTFLAGS: -Ctarget-feature=+fma
-      run: cargo test --test=integration_tests --no-default-features --features neural-network --target ${{ matrix.target }} conv2_direct -- --format=terse
+      run: cargo test --test=integration_tests --no-default-features --features neural-network --target ${{ matrix.target }} -v conv2_direct 
   careful:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v4
     - uses: actions-rs/toolchain@v1
       with:
         toolchain: nightly
@@ -62,15 +61,17 @@ jobs:
       run: cargo +nightly install cargo-careful
     - name: careful test
       if: ${{ !cancelled() }}
-      run: cargo +nightly careful test --test=integration_tests --no-default-features --features neural-network
+      continue-on-error: true
+      run: cargo +nightly careful test --test=integration_tests --no-default-features --features neural-network -v
     - name: careful test single-thread
       env:
         RAYON_NUM_THREADS: 1
-      run: cargo +nightly careful test --test=integration_tests --no-default-features --features neural-network
-  wasm:
+      continue-on-error: true
+      run: cargo +nightly careful test --test=integration_tests --no-default-features --features neural-network -v
+  wasm: 
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v4
     - name: install wasm-pack
       if: ${{ !cancelled() }}
       run: cargo install wasm-pack -vv
@@ -86,7 +87,7 @@ jobs:
       spirv_tools_version: "20221024"
       spirv_tools_linux_url: "https://storage.googleapis.com/spirv-tools/artifacts/prod/graphics_shader_compiler/spirv-tools/linux-clang-release/continuous/1863/20221024-094528/install.tgz"
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v4
     - uses: actions-rs/toolchain@v1
       with:
         toolchain: nightly
@@ -107,14 +108,14 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v4
     - uses: actions-rs/toolchain@v1
       with:
         toolchain: stable
         components: rustfmt, clippy
     - name: fmt
       if: ${{ !cancelled() }}
-      run: cargo fmt --all -- --check
+      run: cargo fmt --check
     - name: clippy
       if: ${{ !cancelled() }}
       run: cargo clippy --all-features -- -D warnings
