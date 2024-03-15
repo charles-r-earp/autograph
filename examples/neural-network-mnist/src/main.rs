@@ -101,9 +101,9 @@ impl LeNet5 {
 #[derive(Clone, Copy, derive_more::Display, Debug, ValueEnum)]
 enum Dataset {
     #[display(fmt = "mnist")]
-    Mnist,
+    MNIST,
     #[display(fmt = "fashion-mnist")]
-    Fashion,
+    FashionMNIST,
 }
 
 #[derive(Clone, Copy, derive_more::Display, Debug, ValueEnum)]
@@ -128,7 +128,7 @@ impl From<ScalarKind> for ScalarType {
 struct Options {
     #[arg(long)]
     device: Option<usize>,
-    #[arg(long, default_value_t = Dataset::Mnist)]
+    #[arg(long, default_value_t = Dataset::MNIST)]
     dataset: Dataset,
     #[arg(long, default_value_t = ScalarKind::F32)]
     scalar_type: ScalarKind,
@@ -148,8 +148,8 @@ fn main() -> Result<()> {
     let options = Options::parse();
     println!("{options:#?}");
     let mnist_kind = match options.dataset {
-        Dataset::Mnist => MnistKind::Digits,
-        Dataset::Fashion => MnistKind::Fashion,
+        Dataset::MNIST => MnistKind::MNIST,
+        Dataset::FashionMNIST => MnistKind::FashionMNIST,
     };
     let Mnist {
         train_images,
@@ -230,7 +230,7 @@ fn main() -> Result<()> {
         let test_acc = test_stats.accuracy();
         let epoch_elapsed = epoch_start.elapsed();
         println!(
-            "[{epoch}] train_loss: {train_loss} train_acc: {train_acc}% {train_correct}/{train_count} test_loss: {test_loss} test_acc: {test_acc}% {test_correct}/{test_count} elapsed: {epoch_elapsed:?}"
+            "[{epoch}] train_loss: {train_loss:.5} train_acc: {train_acc:.2}% {train_correct}/{train_count} test_loss: {test_loss:.5} test_acc: {test_acc:.2}% {test_correct}/{test_count} elapsed: {epoch_elapsed:.2?}"
         );
     }
     println!("Finished in {:?}.", start.elapsed());

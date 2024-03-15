@@ -14,21 +14,14 @@ use std::{
 };
 
 /// The kind of Mnist.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, derive_more::Display)]
 pub enum MnistKind {
-    /// [MNIST](<http://yann.lecun.com/exdb/mnist/>)
-    Digits,
-    /// [FashionMNIST](<https://github.com/zalandoresearch/fashion-mnist>)
-    Fashion,
-}
-
-impl MnistKind {
-    fn name(&self) -> &'static str {
-        match self {
-            Self::Digits => "mnist",
-            Self::Fashion => "fashion-mnist",
-        }
-    }
+    /// [mnist](<http://yann.lecun.org/exdb/mnist>)
+    #[display(fmt = "mnist")]
+    MNIST,
+    /// [fashion-mnist](<https://github.com/zalandoresearch/fashion-mnist>)
+    #[display(fmt = "fashion-mnist")]
+    FashionMNIST,
 }
 
 /// Mnist builder.
@@ -49,7 +42,7 @@ pub mod builders {
         fn default() -> Self {
             Self {
                 path: None,
-                kind: MnistKind::Digits,
+                kind: MnistKind::MNIST,
                 download: false,
                 verbose: false,
             }
@@ -60,15 +53,13 @@ pub mod builders {
         /// The path to load the dataset from.
         ///
         /// This is the folder the files will be downloaded to / loaded from. If not specified, uses the OS specific "Downloads" directory or the "Temp" directory.
-        pub fn path(self, path: impl Into<PathBuf>) -> MnistBuilder {
-            MnistBuilder {
+        pub fn path(self, path: impl Into<PathBuf>) -> Self {
+            Self {
                 path: Some(path.into()),
-                kind: self.kind,
-                download: self.download,
-                verbose: self.verbose,
+                ..self
             }
         }
-        /// The kind of Mnist to use. Defaults to [`MnistKind::Digits`] (ie the original MNIST dataset).
+        /// The kind of Mnist to use. Defaults to [`MnistKind::MNIST`].
         pub fn kind(self, kind: MnistKind) -> Self {
             Self { kind, ..self }
         }
@@ -121,26 +112,30 @@ pub struct Mnist {
 
 impl Mnist {
     /// Returns an [`MnistBuilder`] used to specify options.
-    /*
-    ```
+    /**
+    ```no_run
     # use autograph::{
-    #    result::Result,
+    #    anyhow::Result,
     #    dataset::mnist::{Mnist, MnistKind},
     # };
     # fn main() -> Result<()> {
-        let mnist = Mnist::builder()
-            .path("data")
-            .kind(MnistKind::Fashion)
-            .download(true)
-            .build()?;
-        # Ok(())
+    let mnist = Mnist::builder()
+        .path("data")
+        .kind(MnistKind::FashionMNIST)
+        .download(true)
+        .build()?;
+    # Ok(())
     # }
     */
     pub fn builder() -> MnistBuilder {
         MnistBuilder::default()
     }
     fn build(builder: MnistBuilder) -> Result<Self> {
-        let mnist_name = builder.kind.name();
+        let kind = builder.kind;
+        let mnist_name = match kind {
+            MnistKind::MNIST => "mnist",
+            MnistKind::FashionMNIST => "fashion-mnist",
+        };
         let mnist_path = builder
             .path
             .unwrap_or_else(|| dirs::download_dir().unwrap_or_else(std::env::temp_dir))
@@ -151,17 +146,17 @@ impl Mnist {
             "t10k-images-idx3-ubyte",
             "t10k-labels-idx1-ubyte",
         ];
-        let sizes = match builder.kind {
-            MnistKind::Digits => [9_912_422, 28_881, 1_648_877, 4_542],
-            MnistKind::Fashion => [26_421_880, 29_515, 4_422_102, 5_148],
+        let sizes = match kind {
+            MnistKind::MNIST => [9_912_422, 28_881, 1_648_877, 4_542],
+            MnistKind::FashionMNIST => [26_421_880, 29_515, 4_422_102, 5_148],
         };
         if !mnist_path.exists() {
             if builder.download {
                 fs::create_dir_all(&mnist_path)?;
                 download(builder.kind, &mnist_path, names, sizes, builder.verbose)
-                    .map_err(|e| e.context(format!("Downloading {mnist_name} failed!")))?;
+                    .map_err(|e| e.context(format!("Downloading {kind:?} failed!")))?;
             } else {
-                bail!("{mnist_name} not found at {mnist_path:?}!");
+                bail!("{kind:?} not found at {mnist_path:?}!");
             }
         }
         let [train_images, train_classes, test_images, test_classes] =
@@ -212,9 +207,8 @@ fn download(
     sizes: [usize; 4],
     verbose: bool,
 ) -> Result<()> {
-    let mnist_name = kind.name();
     if verbose {
-        eprintln!("Downloading {mnist_name} to {mnist_path:?}...");
+        eprintln!("Downloading {kind:?} to {mnist_path:?}...");
     }
     let style = ProgressStyle::with_template(
         "[{elapsed}] eta {eta} [{bar:40}] {bytes:>7} / {total_bytes:7}: {msg}",
@@ -239,10 +233,10 @@ fn download(
     let result = names.into_par_iter().zip(bars).try_for_each(|(name, bar)| {
         let guard = AbortGuard::new(&done, &bar);
         let url = match kind {
-            MnistKind::Digits => {
-                format!("http://yann.lecun.com/exdb/mnist/{}.gz", name)
+            MnistKind::MNIST => {
+                format!("http://yann.lecun.org/exdb/mnist/{}.gz", name)
             }
-            MnistKind::Fashion => format!(
+            MnistKind::FashionMNIST => format!(
                 "http://fashion-mnist.s3-website.eu-central-1.amazonaws.com/{}.gz",
                 name
             ),
@@ -283,7 +277,7 @@ fn unzip(mnist_path: &Path, names: [&str; 4], sizes: [usize; 4]) -> Result<[Vec<
     let mut data = <[Vec<u8>; 4]>::default();
     data.par_iter_mut()
         .zip(names.into_par_iter().zip(sizes))
-        .try_for_each(|(mut data, (name, size))| {
+        .try_for_each(|(data, (name, size))| {
             let gz_path = mnist_path.join(name).with_extension("gz");
             let file = File::open(gz_path)?;
             ensure!(file.metadata()?.len() == u64::try_from(size).unwrap());
@@ -300,7 +294,7 @@ fn unzip(mnist_path: &Path, names: [&str; 4], sizes: [usize; 4]) -> Result<[Vec<
                 ensure!(decoder.read_i32::<BigEndian>()? == 28);
             }
             *data = Vec::with_capacity(len);
-            decoder.read_to_end(&mut data)?;
+            decoder.read_to_end(data)?;
             ensure!(data.len() == len);
             Ok(())
         })?;
@@ -312,10 +306,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn mnist_digits() {
+    fn mnist() {
         let dir = tempfile::tempdir().unwrap();
         Mnist::builder()
-            .kind(MnistKind::Digits)
+            .kind(MnistKind::MNIST)
             .download(true)
             .path(dir.path())
             .verbose(false)
@@ -325,10 +319,10 @@ mod tests {
     }
 
     #[test]
-    fn mnist_fashion() {
+    fn fashion() {
         let dir = tempfile::tempdir().unwrap();
         Mnist::builder()
-            .kind(MnistKind::Fashion)
+            .kind(MnistKind::FashionMNIST)
             .download(true)
             .path(dir.path())
             .verbose(false)
