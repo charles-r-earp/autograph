@@ -1,20 +1,15 @@
-#![allow(warnings)]
-
-use anyhow::Result;
+//use anyhow::Result;
 use autograph::{
     krnl::scalar::ScalarElem,
     tensor::{ScalarTensorViewD, Tensor, TensorView},
 };
-use dry::macro_for;
+use dry::{macro_for, macro_wrap};
 use half::{bf16, f16};
-#[cfg(feature = "device")]
-use krnl::buffer::Buffer;
-use krnl::{buffer::Slice, device::Device, scalar::Scalar};
+use krnl::{device::Device, scalar::Scalar};
 use krnl::{device::Features, scalar::ScalarType};
 #[cfg(not(target_family = "wasm"))]
 use libtest_mimic::{Arguments, Trial};
 use ndarray::{Array, Array1, Axis, Dimension, IntoDimension, RemoveAxis};
-use paste::paste;
 #[cfg(not(target_family = "wasm"))]
 use std::str::FromStr;
 #[cfg(target_arch = "wasm")]
@@ -136,15 +131,17 @@ fn check_approx_eq(a: ScalarTensorViewD, b: ScalarTensorViewD, epsilon: Option<S
 }
 
 fn check_eq(a: ScalarTensorViewD, b: ScalarTensorViewD) {
-    macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
-        if a.scalar_type() == $T::scalar_type() {
-            let a = a.try_into_tensor_view::<$T>().unwrap();
-            let a = a.as_array().unwrap();
-            let b = b.try_into_tensor_view::<$T>().unwrap();
-            let b = b.as_array().unwrap();
-            assert_eq!(a, b);
-            return;
-        }
+    macro_wrap!(match a.scalar_type() {
+        macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+            $T::SCALAR_TYPE => {
+                let a = a.try_into_tensor_view::<$T>().unwrap();
+                let a = a.as_array().unwrap();
+                let b = b.try_into_tensor_view::<$T>().unwrap();
+                let b = b.as_array().unwrap();
+                assert_eq!(a, b);
+            }
+        })
+        _ => unreachable!(),
     });
 }
 
@@ -155,10 +152,6 @@ fn tests(device: &Device) -> Vec<Trial> {
 
 #[cfg(not(target_family = "wasm"))]
 fn tensor_tests(device: &Device) -> Vec<Trial> {
-    let features = device
-        .info()
-        .map(|x| x.features())
-        .unwrap_or(Features::empty());
     let mut tests = Vec::new();
 
     tests.extend([
@@ -255,7 +248,7 @@ mod linalg {
             Features::empty()
         };
         macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
-            let scalar_type = $T::scalar_type();
+            let scalar_type = $T::SCALAR_TYPE;
             let type_name = scalar_type.name();
             let ignore = device.is_device() &&
                     !features.contains(&features_for_scalar(scalar_type));
@@ -337,22 +330,26 @@ mod linalg {
         };
         let a_true = a1.dot(&a2);
         let a_out = t1.dot(&t2).unwrap().into_array().unwrap();
-        let scalar_type = T::scalar_type();
-        if matches!(scalar_type, ScalarType::F16 | ScalarType::BF16) {
-            let a_true = a_true.map(|x| x.to_f32().unwrap());
-            let a_out = a_out.map(|x| x.to_f32().unwrap());
-            let epsilon = k as f32;
-            assert_relative_eq!(a_true, a_out, epsilon = epsilon);
-        } else if scalar_type == ScalarType::F32 {
-            let a_true = a_true.map(|x| x.to_f32().unwrap());
-            let a_out = a_out.map(|x| x.to_f32().unwrap());
-            assert_relative_eq!(a_true, a_out);
-        } else if scalar_type == ScalarType::F64 {
-            let a_true = a_true.map(|x| x.to_f64().unwrap());
-            let a_out = a_out.map(|x| x.to_f64().unwrap());
-            assert_relative_eq!(a_true, a_out);
-        } else {
-            assert_eq!(a_out, a_true);
+        match T::SCALAR_TYPE {
+            ScalarType::F16 | ScalarType::BF16 => {
+                let a_true = a_true.map(|x| x.to_f32().unwrap());
+                let a_out = a_out.map(|x| x.to_f32().unwrap());
+                let epsilon = k as f32;
+                assert_relative_eq!(a_true, a_out, epsilon = epsilon);
+            }
+            ScalarType::F32 => {
+                let a_true = a_true.map(|x| x.to_f32().unwrap());
+                let a_out = a_out.map(|x| x.to_f32().unwrap());
+                assert_relative_eq!(a_true, a_out);
+            }
+            ScalarType::F64 => {
+                let a_true = a_true.map(|x| x.to_f64().unwrap());
+                let a_out = a_out.map(|x| x.to_f64().unwrap());
+                assert_relative_eq!(a_true, a_out);
+            }
+            _ => {
+                assert_eq!(a_out, a_true);
+            }
         }
     }
 }
@@ -371,11 +368,10 @@ mod ops {
             Features::empty()
         };
         macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
-            let scalar_type = $T::scalar_type();
+            let scalar_type = $T::SCALAR_TYPE;
             let ignore = device.is_device() &&
                 !features.contains(&features_for_scalar(scalar_type));
             let ty = scalar_type.name();
-            let lens = [7, 64, 300];
             tests.push(
                 device_test(device, &format!("scaled_add_{ty}"), |device| {
                     for n in [7, 64, 300] {
@@ -387,9 +383,9 @@ mod ops {
             );
         });
         macro_for!($X in [u8, u16, u32, u64] {
-            let x_ty = $X::scalar_type();
+            let x_ty = $X::SCALAR_TYPE;
             macro_for!($Y in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
-                let y_ty = $Y::scalar_type();
+                let y_ty = $Y::SCALAR_TYPE;
                 let ignore = device.is_device()
                 && (!features.contains(&features_for_scalar(x_ty)) ||
                     !features.contains(&features_for_scalar(y_ty)));
@@ -443,8 +439,8 @@ mod ops {
             .collect::<Array1<_>>()
             .into_shape(shape)
             .unwrap();
-        let mut y_shape: Vec<_> = shape.iter().copied().chain([classes]).collect();
-        let mut y_array = x_array
+        let y_shape: Vec<_> = shape.iter().copied().chain([classes]).collect();
+        let y_array = x_array
             .iter()
             .copied()
             .flat_map(|x| {
@@ -475,7 +471,7 @@ mod reorder {
             Features::empty()
         };
         macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
-                let scalar_type = $T::scalar_type();
+                let scalar_type = $T::SCALAR_TYPE;
                 let ignore = device.is_device() &&
                     !features.contains(&features_for_scalar(scalar_type));
                 let ty = scalar_type.name();
@@ -545,7 +541,7 @@ mod reduce {
             .map(|info| info.features())
             .unwrap_or(Features::empty());
         macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
-            let scalar_type = $T::scalar_type();
+            let scalar_type = $T::SCALAR_TYPE;
             let ignore = device.is_device() &&
                 !features.contains(&features_for_scalar(scalar_type));
             let ty_name = scalar_type.name();
@@ -642,7 +638,7 @@ mod reduce {
             .into_shape(())
             .unwrap()
             .into_dyn();
-        let epsilon = if matches!(T::scalar_type(), ScalarType::F16 | ScalarType::BF16) {
+        let epsilon = if matches!(T::SCALAR_TYPE, ScalarType::F16 | ScalarType::BF16) {
             Some(ScalarElem::F32(shape.size() as f32))
         } else {
             None
@@ -675,7 +671,7 @@ mod reduce {
             .into_device(Device::host())
             .unwrap()
             .into_dyn();
-        let epsilon = if matches!(T::scalar_type(), ScalarType::F16 | ScalarType::BF16) {
+        let epsilon = if matches!(T::SCALAR_TYPE, ScalarType::F16 | ScalarType::BF16) {
             Some(ScalarElem::F32(shape[axis.0] as f32))
         } else {
             None
@@ -715,10 +711,10 @@ mod learn {
                 macro_for!($T in [u8, u16, u32] {
                     let ignore = device.is_device()
                         && (
-                            !features.contains(&features_for_scalar($X::scalar_type()))
-                            || !features.contains(&features_for_scalar($T::scalar_type()))
+                            !features.contains(&features_for_scalar($X::SCALAR_TYPE))
+                            || !features.contains(&features_for_scalar($T::SCALAR_TYPE))
                         );
-                    tests.push(device_test(device, &format!("accuracy_{}_{}", $X::scalar_type().name(), $T::scalar_type().name()), |device| {
+                    tests.push(device_test(device, &format!("accuracy_{}_{}", $X::SCALAR_TYPE.name(), $T::SCALAR_TYPE.name()), |device| {
                         for (batch_size, classes) in [
                             (1, 8),
                             (31, 16),
@@ -733,10 +729,10 @@ mod learn {
                 macro_for!($T in [u8, u16, u32] {
                     let ignore = device.is_device()
                         && (
-                            !features.contains(&features_for_scalar($X::scalar_type()))
-                            || !features.contains(&features_for_scalar($T::scalar_type()))
+                            !features.contains(&features_for_scalar($X::SCALAR_TYPE))
+                            || !features.contains(&features_for_scalar($T::SCALAR_TYPE))
                         );
-                    tests.push(device_test(device, &format!("cross_entropy_loss_{}_{}", $X::scalar_type().name(), $T::scalar_type().name()), |device| {
+                    tests.push(device_test(device, &format!("cross_entropy_loss_{}_{}", $X::SCALAR_TYPE.name(), $T::SCALAR_TYPE.name()), |device| {
                         for (batch_size, classes) in [
                             (1, 8),
                             (31, 16),
@@ -804,7 +800,7 @@ mod learn {
             let t_device = t_host.to_device(device.clone()).unwrap();
             let y_host = x_host.cross_entropy_loss(t_host).unwrap();
             let y_device = x_device.cross_entropy_loss(t_device).unwrap();
-            let epsilon = if X::scalar_type() == ScalarType::BF16 {
+            let epsilon = if X::SCALAR_TYPE == ScalarType::BF16 {
                 batch_size as f32 * 0.001
             } else {
                 batch_size as f32 * f32::EPSILON
@@ -823,9 +819,9 @@ mod learn {
                 layer::{Forward, MaxPool2, Relu, __private::Conv2Options},
             },
             ops::__private::{Col2ImConv2, Col2ImConv2Options, Im2ColConv2, Im2ColConv2Options},
-            tensor::{ScalarArcTensor, Tensor1},
+            tensor::ScalarArcTensor,
         };
-        use ndarray::{Array1, Array4, ArrayView1, ArrayView4};
+        use ndarray::{Array4, ArrayView4};
         use num_traits::{Float, Unsigned};
         use std::sync::Arc;
 
@@ -853,10 +849,10 @@ mod learn {
                 macro_for!($T in [u8, u16, u32] {
                     let ignore = device.is_device()
                     && (
-                        !features.contains(&features_for_scalar($X::scalar_type()))
-                        || !features.contains(&features_for_scalar($T::scalar_type()))
+                        !features.contains(&features_for_scalar($X::SCALAR_TYPE))
+                        || !features.contains(&features_for_scalar($T::SCALAR_TYPE))
                     );
-                    tests.push(device_test(device, &format!("cross_entropy_loss_backward_{}_{}", $X::scalar_type().name(), $T::scalar_type().name()), |device| {
+                    tests.push(device_test(device, &format!("cross_entropy_loss_backward_{}_{}", $X::SCALAR_TYPE.name(), $T::SCALAR_TYPE.name()), |device| {
                         for (batch_size, classes) in [
                             (1, 8),
                             (31, 16),
@@ -909,11 +905,10 @@ mod learn {
                     .collect::<Vec<_>>();
                 macro_for!($T in [bf16, f32] {
                     let ignore = device.is_device()
-                    && !features.contains(&features_for_scalar($T::scalar_type()));
-                    let scalar_name = $T::scalar_type().name();
+                    && !features.contains(&features_for_scalar($T::SCALAR_TYPE));
+                    let scalar_name = $T::SCALAR_TYPE.name();
                     for (filter, options) in filter_conv2_options_list.iter() {
                         let filter = *filter;
-                        let [fh, fw] = filter;
                         let Conv2Options {
                             padding,
                             stride,
@@ -938,8 +933,10 @@ mod learn {
                                         dilation: [dh, dw],
                                     };
                                     for (batch_size, inputs, outputs) in batch_size_inputs_outputs_list.iter().copied() {
-                                        for (ih, iw) in input_shapes.iter().copied() {
-                                            im2col_conv2::<$T>(device, [batch_size, inputs, ih, iw], &im2col_options);
+                                        if outputs == 1 {
+                                            for (ih, iw) in input_shapes.iter().copied() {
+                                                im2col_conv2::<$T>(device, [batch_size, inputs, ih, iw], &im2col_options);
+                                            }
                                         }
                                     }
                                 }).with_ignored_flag(ignore)
@@ -956,8 +953,10 @@ mod learn {
                                         dilation: [dh, dw],
                                     };
                                     for (batch_size, inputs, outputs) in batch_size_inputs_outputs_list.iter().copied() {
-                                        for (ih, iw) in input_shapes.iter().copied() {
-                                            col2im_conv2::<$T>(device, [batch_size, inputs, ih, iw], &im2col_options);
+                                        if outputs == 1 {
+                                            for (ih, iw) in input_shapes.iter().copied() {
+                                                col2im_conv2::<$T>(device, [batch_size, inputs, ih, iw], &im2col_options);
+                                            }
                                         }
                                     }
                                 }).with_ignored_flag(ignore)
@@ -975,7 +974,7 @@ mod learn {
                                 }).with_ignored_flag(ignore)
                             },
                         ]);
-                        if $T::scalar_type() == ScalarType::F32 && device.is_host() && options.is_default() {
+                        if $T::SCALAR_TYPE == ScalarType::F32 && device.is_host() && options.is_default() {
                             tests.extend([
                                 {
                                     let batch_size_inputs_outputs_list = batch_size_inputs_outputs_list.clone();
@@ -1020,7 +1019,7 @@ mod learn {
             }
             macro_for!($T in [bf16, f32] {
                 let ignore = device.is_device()
-                && !features.contains(&features_for_scalar($T::scalar_type()));
+                && !features.contains(&features_for_scalar($T::SCALAR_TYPE));
                 let input_shapes = [
                     [1, 1, 4, 4],
                     [1, 1, 12, 12],
@@ -1028,13 +1027,13 @@ mod learn {
                     [1, 1, 24, 24],
                 ];
                 tests.extend([
-                    device_test(device, &format!("max_pool2_{}", $T::scalar_type().name()), move |device| {
+                    device_test(device, &format!("max_pool2_{}", $T::SCALAR_TYPE.name()), move |device| {
                         let pool = MaxPool2::builder().filter([2, 2]).build();
                         for input_shape in input_shapes {
                             max_pool2::<$T>(device, input_shape, &pool);
                         }
                     }).with_ignored_flag(ignore),
-                    device_test(device, &format!("max_pool2_backward_{}", $T::scalar_type().name()), move |device| {
+                    device_test(device, &format!("max_pool2_backward_{}", $T::SCALAR_TYPE.name()), move |device| {
                         let pool = MaxPool2::builder().filter([2, 2]).build();
                         for input_shape in input_shapes {
                             max_pool2_backward::<$T>(device, input_shape, &pool);
@@ -1044,15 +1043,15 @@ mod learn {
             });
             macro_for!($T in [bf16, f32] {
                 let ignore = device.is_device()
-                && !features.contains(&features_for_scalar($T::scalar_type()));
+                && !features.contains(&features_for_scalar($T::SCALAR_TYPE));
                 let input_shapes = [[1, 8], [15, 20]];
                 tests.extend([
-                    device_test(device, &format!("relu_{}", $T::scalar_type().name()), move |device| {
+                    device_test(device, &format!("relu_{}", $T::SCALAR_TYPE.name()), move |device| {
                         for input_shape in input_shapes {
                             relu::<$T>(device, input_shape);
                         }
                     }).with_ignored_flag(ignore),
-                    device_test(device, &format!("relu_backward_{}", $T::scalar_type().name()), move |device| {
+                    device_test(device, &format!("relu_backward_{}", $T::SCALAR_TYPE.name()), move |device| {
                         for input_shape in input_shapes {
                             relu_backward::<$T>(device, input_shape);
                         }
@@ -1170,7 +1169,7 @@ mod learn {
             options: &Conv2Options,
             alg: ConvAlg,
         ) {
-            let [bs, inputs, ih, iw] = x_shape;
+            let [_bs, inputs, _ih, _iw] = x_shape;
             let [fh, fw] = filter;
             let w_shape = [outputs, inputs, fh, fw];
             let x_shape = x_shape.into_dimension();
@@ -1221,7 +1220,7 @@ mod learn {
                 .unwrap()
                 .into_device(Device::host())
                 .unwrap();
-            let epsilon = if T::scalar_type() == ScalarType::BF16 {
+            let epsilon = if T::SCALAR_TYPE == ScalarType::BF16 {
                 Some(ScalarElem::F32((fh * fw) as f32))
             } else {
                 None
@@ -1294,7 +1293,6 @@ mod learn {
             let [bs, inputs, ih, iw] = x_shape;
             let [fh, fw] = filter;
             let w_shape = [outputs, inputs, fh, fw];
-            let x_shape = x_shape.into_dimension();
             let w_shape = w_shape.into_dimension();
             let (oh, ow) = options
                 .output_shape([ih, iw].into_dimension(), &filter.into_dimension())
@@ -1346,7 +1344,7 @@ mod learn {
                 .unwrap()
                 .into_device(Device::host())
                 .unwrap();
-            let epsilon = if T::scalar_type() == ScalarType::BF16 {
+            let epsilon = if T::SCALAR_TYPE == ScalarType::BF16 {
                 Some(ScalarElem::F32((fh * fw) as f32))
             } else {
                 None
@@ -1415,10 +1413,7 @@ mod learn {
             alg: ConvAlg,
         ) {
             let [bs, inputs, ih, iw] = x_shape;
-            let [fh, fw] = filter;
-            let w_shape = [outputs, inputs, fh, fw];
             let x_shape = x_shape.into_dimension();
-            let w_shape = w_shape.into_dimension();
             let (oh, ow) = options
                 .output_shape([ih, iw].into_dimension(), &filter.into_dimension())
                 .unwrap()
@@ -1471,7 +1466,7 @@ mod learn {
                 .unwrap()
                 .into_device(Device::host())
                 .unwrap();
-            let epsilon = if T::scalar_type() == ScalarType::BF16 {
+            let epsilon = if T::SCALAR_TYPE == ScalarType::BF16 {
                 Some(ScalarElem::F32(inputs as f32))
             } else {
                 None
@@ -1503,7 +1498,7 @@ mod learn {
             input_shape: [usize; 4],
             options: &Im2ColConv2Options,
         ) {
-            let [batch_size, channels, ih, iw] = input_shape;
+            let [_batch_size, _channels, ih, iw] = input_shape;
             let len = input_shape.iter().product();
             let x_vec: Vec<T> = (1..=len).map(|x| T::from_usize(x).unwrap()).collect();
             let x_array = Array::from(x_vec).into_shape(input_shape).unwrap();
@@ -1526,7 +1521,7 @@ mod learn {
             let dx_host = dy_host.col2im_conv2(&col2im_options).unwrap();
             let dx_device = dy_device.col2im_conv2(&col2im_options).unwrap();
             let [fh, fw] = options.filter;
-            let epsilon = if T::scalar_type() == ScalarType::BF16 {
+            let epsilon = if T::SCALAR_TYPE == ScalarType::BF16 {
                 Some(ScalarElem::F32((fh * fw) as f32))
             } else {
                 None
@@ -1581,7 +1576,6 @@ mod learn {
                 .collect();
             let x_array = Array::from(x_vec).into_shape(input_shape).unwrap();
             let x_host = Tensor::from(x_array).into_shared().unwrap();
-            let x_device = x_host.to_device(device.clone()).unwrap();
             let y_host = pool
                 .forward(Variable::from(x_host.clone()))
                 .unwrap()

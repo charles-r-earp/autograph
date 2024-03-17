@@ -1,5 +1,4 @@
 /*!
-
 # **autograph**
 A machine learning library for Rust.
 
@@ -14,11 +13,6 @@ GPGPU kernels implemented with [**krnl**](https://github.com/charles-r-earp/krnl
 */
 #![deny(unsafe_op_in_unsafe_fn)]
 #![warn(missing_docs)]
-
-#[cfg(feature = "derive")]
-#[allow(unused_imports)]
-#[macro_use]
-extern crate autograph_derive;
 
 /// anyhow
 pub extern crate anyhow;
