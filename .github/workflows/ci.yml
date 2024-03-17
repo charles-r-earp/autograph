@@ -125,13 +125,14 @@ jobs:
       run: cargo rustdoc --all-features -- --D warnings
     - uses: actions-rs/toolchain@v1
       with:
-        toolchain: 1.70.0
+        toolchain: 1.75.0
     - name: msrv
       if: ${{ !cancelled() }}
       run: |
         cargo +nightly generate-lockfile -Zmsrv-policy
         cat Cargo.lock
-        cargo +1.70.0 check --workspace --features serde --all-targets -v
+        cargo +1.75.0 check -p autograph -p neural-network-mnist-example --all-features --all-targets -v
+        cargo +1.75.0 check -p neural-network-benches --all-targets -v
   cargo-deny:    
     runs-on: ubuntu-latest    
     steps:
