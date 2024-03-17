@@ -114,12 +114,24 @@ jobs:
     - name: fmt
       if: ${{ !cancelled() }}
       run: cargo fmt --check
+    - name: install cargo-hack
+      if: ${{ !cancelled() }}
+      run: cargo install cargo-hack -v
     - name: clippy
       if: ${{ !cancelled() }}
-      run: cargo clippy --all-features -- -D warnings
+      run: cargo hack --feature-powerset --workspace --exclude-features "cuda tch" --keep-going clippy --all-targets -- -D warnings
     - name: rustdoc
       if: ${{ !cancelled() }}
       run: cargo rustdoc --all-features -- --D warnings
+    - uses: actions-rs/toolchain@v1
+      with:
+        toolchain: 1.70.0
+    - name: msrv
+      if: ${{ !cancelled() }}
+      run: |
+        cargo +nightly generate-lockfile -Zmsrv-policy
+        cat Cargo.lock
+        cargo +1.70.0 check --workspace --features serde --all-targets -v
   cargo-deny:    
     runs-on: ubuntu-latest    
     steps:
