@@ -300,86 +300,63 @@ fn gemm(
 
     let device = c.device();
     let scalar_type = c.scalar_type();
-    if scalar_type == ScalarType::F32 {
-        let a = Slice::<f32>::try_from(a.clone()).unwrap();
-        let b = Slice::<f32>::try_from(b.clone()).unwrap();
-        let mut c = SliceMut::<f32>::try_from(c.as_scalar_slice_mut()).unwrap();
-
-        let groups_k = if k >= (2 * m * n).max(3 * 64) {
-            (k / 64).min(64)
-        } else {
-            1
-        };
-
-        let alpha = alpha.cast::<f32>();
-        let beta = beta.cast::<f32>();
-        let [m_group, n_group] = [16, 16];
-        let groups_m = m / m_group + (m % m_group != 0) as u32;
-        let groups_n = n / n_group + (n % n_group != 0) as u32;
-        let gemm_kernel = kernels::gemm_f32::builder()?
-            .with_threads(64)
-            .specialize(m, k, n, groups_k, rsa, csa, rsb, csb, rsc, csc)
-            .build(device.clone())?
-            .with_groups(groups_k * groups_m * groups_n);
-        if groups_k > 1 {
-            let mut c_tmp = unsafe {
-                Tensor::<f32, _>::uninit(device.clone(), [(m * n) as usize, groups_k as usize])?
-            };
-            unsafe {
-                gemm_kernel.dispatch(
-                    alpha,
-                    a,
-                    offset_a,
-                    b,
-                    offset_b,
-                    0f32,
-                    c_tmp.as_slice_mut().unwrap(),
-                    offset_c,
-                )?;
+    macro_wrap!(match scalar_type {
+        macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+            $T::SCALAR_TYPE => {
+                let groups_k = if k >= (2 * m * n).max(3 * 64) {
+                    (k / 64).min(64)
+                } else {
+                    1
+                };
+                let a = a.try_into().unwrap();
+                let b = b.try_into().unwrap();
+                let mut c = c.try_into().unwrap();
+                let [m_group, n_group] = [16, 16];
+                let groups_m = m / m_group + (m % m_group != 0) as u32;
+                let groups_n = n / n_group + (n % n_group != 0) as u32;
+                let gemm_kernel = paste! { 
+                    kernels::[<gemm_ $T>]::builder()?
+                    .with_threads(64)
+                    .specialize(m, k, n, groups_k, rsa, csa, rsb, csb, rsc, csc)
+                    .build(device.clone())?
+                    .with_groups(groups_k * groups_m * groups_n)
+                };
+                if groups_k > 1 {
+                    let mut c_tmp = unsafe {
+                        Tensor::<$T, _>::uninit(device.clone(), [(m * n) as usize, groups_k as usize])?
+                    };
+                    unsafe {
+                        gemm_kernel.dispatch(
+                            alpha.cast(),
+                            a,
+                            offset_a,
+                            b,
+                            offset_b,
+                            Default::default(),
+                            c_tmp.as_slice_mut().unwrap(),
+                            offset_c,
+                        )?;
+                    }
+                    c_tmp.sum_axis_with(Axis(1), beta.cast(), &mut TensorViewMut::from(c))?;
+                } else {
+                    unsafe {
+                        gemm_kernel.dispatch(
+                            alpha.cast(),
+                            a,
+                            offset_a,
+                            b,
+                            offset_b,
+                            beta.cast(),
+                            c,
+                            offset_c,
+                        )?;
+                    }
+                }
             }
-            c_tmp.sum_axis_with(Axis(1), beta, &mut TensorViewMut::from(c))?;
-        } else {
-            unsafe {
-                gemm_kernel.dispatch(
-                    alpha,
-                    a,
-                    offset_a,
-                    b,
-                    offset_b,
-                    beta,
-                    c.as_slice_mut(),
-                    offset_c,
-                )?;
-            }
-        }
-        return Ok(());
-    }
-    macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, /* f32, */ u64, i64, f64] {
-        if scalar_type == $T::scalar_type() {
-            let a = Slice::<$T>::try_from(a.clone()).unwrap();
-            let b = Slice::<$T>::try_from(b.clone()).unwrap();
-            let mut c = SliceMut::<$T>::try_from(c.as_scalar_slice_mut()).unwrap();
-
-            let groups_k = 1;
-
-            let alpha = alpha.cast();
-            let beta = beta.cast();
-            let [m_group, n_group] = [16, 16];
-            let groups_m = m / m_group + (m % m_group != 0) as u32;
-            let groups_n = n / n_group + (n % n_group != 0) as u32;
-            let gemm_kernel = paste! { kernels::[<gemm_ $T>]::builder()? }
-                .with_threads(64)
-                .specialize(m, k, n, groups_k, rsa, csa, rsb, csb, rsc, csc)
-                .build(device.clone())?
-                .with_groups(groups_m * groups_n);
-            unsafe {
-                gemm_kernel
-                    .dispatch(alpha, a, offset_a, b, offset_b, beta, c.as_slice_mut(), offset_c)?;
-            }
-            return Ok(());
-        }
+        })
+        _ => bail!("Dot unimplemented for {scalar_type:?}!"),
     });
-    bail!("Dot unimplemented for {scalar_type:?}!")
+    Ok(())
 }
 
 impl<T: Scalar, S1: Data<Elem = T>, S2: Data<Elem = T>> Dot<TensorBase<S2, Ix2>>
