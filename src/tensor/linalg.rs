@@ -314,7 +314,7 @@ fn gemm(
                 let [m_group, n_group] = [16, 16];
                 let groups_m = m / m_group + (m % m_group != 0) as u32;
                 let groups_n = n / n_group + (n % n_group != 0) as u32;
-                let gemm_kernel = paste! { 
+                let gemm_kernel = paste! {
                     kernels::[<gemm_ $T>]::builder()?
                     .with_threads(64)
                     .specialize(m, k, n, groups_k, rsa, csa, rsb, csb, rsc, csc)
