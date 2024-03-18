@@ -164,41 +164,32 @@ fn tensor_tests(device: &Device) -> Vec<Trial> {
             Ok(())
         }),
         Trial::test("tensor_from_array2", || {
-            tensor_from_array(
-                Array::from_shape_vec([2, 3], (1..=6).collect()).unwrap(),
-            );
+            tensor_from_array(Array::from_shape_vec([2, 3], (1..=6).collect()).unwrap());
             Ok(())
         }),
         Trial::test("tensor_from_array3", || {
-            tensor_from_array(
-                Array::from_shape_vec([2, 3, 4], (1..=24).collect()).unwrap(),
-            );
+            tensor_from_array(Array::from_shape_vec([2, 3, 4], (1..=24).collect()).unwrap());
+            Ok(())
+        }),
+        Trial::test("tensor_from_array4", || {
+            tensor_from_array(Array::from_shape_vec([2, 3, 4, 5], (1..=120).collect()).unwrap());
             Ok(())
         }),
         Trial::test("tensor_from_array4", || {
             tensor_from_array(
-                Array::from_shape_vec([2, 3, 4, 5], (1..=120).collect()).unwrap(),
-            );
-            Ok(())
-        }),
-        Trial::test("tensor_from_array4", || {
-            tensor_from_array(
-                Array::from_shape_vec([2, 3, 4, 5, 6], (1..=120 * 6).collect())
-                    .unwrap(),
+                Array::from_shape_vec([2, 3, 4, 5, 6], (1..=120 * 6).collect()).unwrap(),
             );
             Ok(())
         }),
         Trial::test("tensor_from_array5", || {
             tensor_from_array(
-                Array::from_shape_vec([2, 3, 4, 5, 6], (1..=120 * 6).collect())
-                    .unwrap(),
+                Array::from_shape_vec([2, 3, 4, 5, 6], (1..=120 * 6).collect()).unwrap(),
             );
             Ok(())
         }),
         Trial::test("tensor_from_array6", || {
             tensor_from_array(
-                Array::from_shape_vec([2, 3, 4, 5, 6, 7], (1..=120 * 6 * 7).collect())
-                    .unwrap(),
+                Array::from_shape_vec([2, 3, 4, 5, 6, 7], (1..=120 * 6 * 7).collect()).unwrap(),
             );
             Ok(())
         }),
@@ -444,8 +435,7 @@ mod ops {
             .iter()
             .copied()
             .flat_map(|x| {
-                (0..classes)
-                    .map(move |i| Y::from_u32((i == x.to_usize().unwrap()) as u32).unwrap())
+                (0..classes).map(move |i| Y::from_u32((i == x.to_usize().unwrap()) as u32).unwrap())
             })
             .collect::<Array<Y, _>>()
             .into_shape(y_shape.as_slice())
