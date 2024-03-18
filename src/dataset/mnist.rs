@@ -275,7 +275,7 @@ fn unzip(mnist_path: &Path, names: [&str; 4], sizes: [usize; 4]) -> Result<[Vec<
         .zip(names.into_par_iter().zip(sizes))
         .try_for_each(|(data, (name, size))| {
             let gz_path = mnist_path.join(name).with_extension("gz");
-            let file = File::open(&gz_path)?;
+            let file = File::open(gz_path)?;
             {
                 let file_len = file.metadata()?.len();
                 let size_u64 = u64::try_from(size).unwrap();
