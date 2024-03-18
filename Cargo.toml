@@ -102,8 +102,8 @@ getrandom = { version = "0.2", features = ["js"] }
 default = ["device"]
 device = ["krnl/device", "dep:once_cell"]
 serde = ["dep:serde", "krnl/serde"]
-dataset = ["dep:rand"]
-iris = []
+dataset = []
+iris = ["dataset"]
 mnist = [
     "dataset",
     "dep:dirs",
