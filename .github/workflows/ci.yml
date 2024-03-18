@@ -32,14 +32,17 @@ jobs:
           target: x86_64-apple-darwin
     steps:
     - uses: actions/checkout@v4
+    - name: install cargo-hack
+      run: cargo install cargo-hack -v
+    - name: check
+      env:
+        RUSTFLAGS: -D warnings
+      run: cargo hack -p autograph -p neural-network-mnist-example -p neural-network-benches --feature-powerset --include-features device,neural-network,serde check --all-targets
     - name: build
-      if: ${{ !cancelled() }}
-      run: cargo build --all-features --all-targets -p autograph -p neural-network-mnist-example -v
-    - name: build benches
-      if: ${{ !cancelled() }}
-      run: cargo build -p neural-network-benches --benches -v
+      run: |
+        cargo build --all-features --all-targets -p autograph -p neural-network-mnist-example -v
+        cargo build -p neural-network-benches --benches -v
     - name: test
-      if: ${{ !cancelled() }}
       run: cargo test --workspace --no-default-features --features "serde neural-network mnist" -v 
     - name: test avx
       env:
@@ -49,32 +52,20 @@ jobs:
       env:
         RUST_BUILD_RUSTFLAGS: -Ctarget-feature=+fma
       run: cargo test --test=integration_tests --no-default-features --features neural-network --target ${{ matrix.target }} -v conv2_direct 
-  careful:
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v4
-    - uses: actions-rs/toolchain@v1
+    - uses: hecrj/setup-rust-action@v2
       with:
-        toolchain: nightly
+        rust-version: nightly
     - name: install cargo-careful
-      if: ${{ !cancelled() }}
       run: cargo +nightly install cargo-careful
     - name: careful test
-      if: ${{ !cancelled() }}
       run: cargo +nightly careful test --test=integration_tests --no-default-features --features neural-network -v
     - name: careful test single-thread
       env:
         RAYON_NUM_THREADS: 1
       run: cargo +nightly careful test --test=integration_tests --no-default-features --features neural-network -v
-  wasm: 
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v4
     - name: install wasm-pack
-      if: ${{ !cancelled() }}
       run: cargo install wasm-pack -vv
     - name: wasm test
-      if: ${{ !cancelled() }}
       run: wasm-pack test --headless --firefox -- --no-default-features --features "serde neural-network" -vv
       env:
         RUSTFLAGS: --cfg run_in_browser
@@ -89,17 +80,17 @@ jobs:
     - uses: actions-rs/toolchain@v1
       with:
         toolchain: nightly
-    - uses: actions-rs/toolchain@v1
+    - uses: hecrj/setup-rust-action@v2
       with:
-        toolchain: nightly-2023-05-27
+        rust-version: nightly-2023-05-27
         components: rust-src, rustc-dev, llvm-tools-preview
-    - name: Install spirv-tools
+    - name: install spirv-tools
       run: |
         sudo apt install libwayland-cursor0 libxkbcommon-dev libwayland-dev
         mkdir "${HOME}/spirv-tools"
         curl -fL "$spirv_tools_linux_url" | tar -xz -C "${HOME}/spirv-tools"
         echo "${HOME}/spirv-tools/install/bin" >> $GITHUB_PATH
-    - name: Install krnlc
+    - name: install krnlc
       run: cargo +nightly-2023-05-27 install krnlc --git="https://github.com/charles-r-earp/krnl" --locked -v --no-default-features --features use-installed-tools
     - name: krnlc
       run: krnlc -p autograph -v --check
@@ -107,33 +98,28 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
-    - uses: actions-rs/toolchain@v1
+    - uses: hecrj/setup-rust-action@v2
       with:
-        toolchain: stable
+        rust-version: stable
         components: rustfmt, clippy
     - name: fmt
-      if: ${{ !cancelled() }}
       run: cargo fmt --check
-    - name: install cargo-hack
-      if: ${{ !cancelled() }}
-      run: cargo install cargo-hack -v
     - name: clippy
-      if: ${{ !cancelled() }}
-      run: cargo hack --feature-powerset --workspace --exclude-features "cuda tch" --keep-going clippy --all-targets -- -D warnings
+      run: |
+        cargo clippy -p autograph -p autograph_derive -p neural-network-mnist-example --all-targets --all-features -- -D warnings
+        cargo clippy -p neural-network-benches --all-targets -- -D warnings
     - name: rustdoc
-      if: ${{ !cancelled() }}
       run: cargo rustdoc --all-features -- --D warnings
-    - uses: actions-rs/toolchain@v1
+    - uses: hecrj/setup-rust-action@v2
       with:
-        toolchain: 1.75.0
+        rust-version: 1.75.0
     - name: msrv
-      if: ${{ !cancelled() }}
       run: |
         cargo +nightly generate-lockfile -Zmsrv-policy
         cat Cargo.lock
         cargo +1.75.0 check -p autograph -p neural-network-mnist-example --all-features --all-targets -v
         cargo +1.75.0 check -p neural-network-benches --all-targets -v
-  cargo-deny:    
+  deny:    
     runs-on: ubuntu-latest    
     steps:
     - uses: actions/checkout@v4
