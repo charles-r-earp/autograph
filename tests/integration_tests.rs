@@ -160,44 +160,44 @@ fn tensor_tests(device: &Device) -> Vec<Trial> {
             Ok(())
         }),
         Trial::test("tensor_from_array1", || {
-            tensor_from_array(Array::from_shape_vec(3, (1..=3).into_iter().collect()).unwrap());
+            tensor_from_array(Array::from_shape_vec(3, (1..=3).collect()).unwrap());
             Ok(())
         }),
         Trial::test("tensor_from_array2", || {
             tensor_from_array(
-                Array::from_shape_vec([2, 3], (1..=6).into_iter().collect()).unwrap(),
+                Array::from_shape_vec([2, 3], (1..=6).collect()).unwrap(),
             );
             Ok(())
         }),
         Trial::test("tensor_from_array3", || {
             tensor_from_array(
-                Array::from_shape_vec([2, 3, 4], (1..=24).into_iter().collect()).unwrap(),
+                Array::from_shape_vec([2, 3, 4], (1..=24).collect()).unwrap(),
             );
             Ok(())
         }),
         Trial::test("tensor_from_array4", || {
             tensor_from_array(
-                Array::from_shape_vec([2, 3, 4, 5], (1..=120).into_iter().collect()).unwrap(),
+                Array::from_shape_vec([2, 3, 4, 5], (1..=120).collect()).unwrap(),
             );
             Ok(())
         }),
         Trial::test("tensor_from_array4", || {
             tensor_from_array(
-                Array::from_shape_vec([2, 3, 4, 5, 6], (1..=120 * 6).into_iter().collect())
+                Array::from_shape_vec([2, 3, 4, 5, 6], (1..=120 * 6).collect())
                     .unwrap(),
             );
             Ok(())
         }),
         Trial::test("tensor_from_array5", || {
             tensor_from_array(
-                Array::from_shape_vec([2, 3, 4, 5, 6], (1..=120 * 6).into_iter().collect())
+                Array::from_shape_vec([2, 3, 4, 5, 6], (1..=120 * 6).collect())
                     .unwrap(),
             );
             Ok(())
         }),
         Trial::test("tensor_from_array6", || {
             tensor_from_array(
-                Array::from_shape_vec([2, 3, 4, 5, 6, 7], (1..=120 * 6 * 7).into_iter().collect())
+                Array::from_shape_vec([2, 3, 4, 5, 6, 7], (1..=120 * 6 * 7).collect())
                     .unwrap(),
             );
             Ok(())
@@ -206,7 +206,7 @@ fn tensor_tests(device: &Device) -> Vec<Trial> {
             tensor_from_array(
                 Array::from_shape_vec(
                     [2, 3, 4, 5, 6, 7, 8].as_ref(),
-                    (1..=120 * 6 * 7 * 8).into_iter().collect(),
+                    (1..=120 * 6 * 7 * 8).collect(),
                 )
                 .unwrap(),
             );
@@ -445,7 +445,6 @@ mod ops {
             .copied()
             .flat_map(|x| {
                 (0..classes)
-                    .into_iter()
                     .map(move |i| Y::from_u32((i == x.to_usize().unwrap()) as u32).unwrap())
             })
             .collect::<Array<Y, _>>()
@@ -720,7 +719,7 @@ mod learn {
                             (31, 16),
                             (1000, 100),
                         ] {
-                            accuracy::<$X, $T>(&device, batch_size, classes);
+                            accuracy::<$X, $T>(device, batch_size, classes);
                         }
                     }).with_ignored_flag(ignore));
                 });
@@ -738,7 +737,7 @@ mod learn {
                             (31, 16),
                             (1000, 100),
                         ] {
-                            cross_entropy_loss::<$X, $T>(&device, batch_size, classes);
+                            cross_entropy_loss::<$X, $T>(device, batch_size, classes);
                         }
                     }).with_ignored_flag(ignore));
                 });
@@ -917,7 +916,7 @@ mod learn {
                         let (ph, pw) = padding.into_pattern();
                         let (sh, sw) = stride.into_pattern();
                         let (dh, dw) = dilation.into_pattern();
-                        let conv2_name = conv2_string(filter, &options);
+                        let conv2_name = conv2_string(filter, options);
                         let input_shapes = Arc::new(output_shapes.iter().copied().filter_map(move |output_shape| {
                             Some(options.input_shape(output_shape.into_dimension(), &filter.into_dimension())?.into_pattern())
                         }).collect::<Vec<_>>());
@@ -1591,13 +1590,13 @@ mod learn {
             let dy_host = Tensor::from(dy_array).into_shared().unwrap();
             let x_device = x_host.to_device_shared(device.clone()).unwrap();
             let dy_device = dy_host.to_device_shared(device.clone()).unwrap();
-            let dx_host = backward(&pool, x_host.into(), dy_host.into())
+            let dx_host = backward(pool, x_host.into(), dy_host.into())
                 .unwrap()
                 .into_owned()
                 .unwrap()
                 .try_into_tensor::<T>()
                 .unwrap();
-            let dx_device = backward(&pool, x_device.into(), dy_device.into())
+            let dx_device = backward(pool, x_device.into(), dy_device.into())
                 .unwrap()
                 .into_owned()
                 .unwrap()
