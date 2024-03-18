@@ -101,9 +101,9 @@ impl LeNet5 {
 #[derive(Clone, Copy, derive_more::Display, Debug, ValueEnum)]
 enum Dataset {
     #[display(fmt = "mnist")]
-    MNIST,
+    Mnist,
     #[display(fmt = "fashion-mnist")]
-    FashionMNIST,
+    Fashion,
 }
 
 #[derive(Clone, Copy, derive_more::Display, Debug, ValueEnum)]
@@ -128,7 +128,7 @@ impl From<ScalarKind> for ScalarType {
 struct Options {
     #[arg(long)]
     device: Option<usize>,
-    #[arg(long, default_value_t = Dataset::MNIST)]
+    #[arg(long, default_value_t = Dataset::Mnist)]
     dataset: Dataset,
     #[arg(long, default_value_t = ScalarKind::F32)]
     scalar_type: ScalarKind,
@@ -148,8 +148,8 @@ fn main() -> Result<()> {
     let options = Options::parse();
     println!("{options:#?}");
     let mnist_kind = match options.dataset {
-        Dataset::MNIST => MnistKind::MNIST,
-        Dataset::FashionMNIST => MnistKind::FashionMNIST,
+        Dataset::Mnist => MnistKind::Mnist,
+        Dataset::Fashion => MnistKind::Fashion,
     };
     let Mnist {
         train_images,
