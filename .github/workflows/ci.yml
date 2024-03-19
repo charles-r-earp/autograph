@@ -43,7 +43,7 @@ jobs:
         cargo build --all-features --all-targets -p autograph -p neural-network-mnist-example -v
         cargo build -p neural-network-benches --benches -v
     - name: test
-      run: cargo test --workspace --no-default-features --features "serde neural-network mnist" -v 
+      run: cargo test --workspace --no-default-features --features "serde neural-network mnist" -v
     - name: test avx
       env:
         RUST_BUILD_RUSTFLAGS: -Ctarget-feature=+avx
@@ -51,7 +51,7 @@ jobs:
     - name: test fma
       env:
         RUST_BUILD_RUSTFLAGS: -Ctarget-feature=+fma
-      run: cargo test --test=integration_tests --no-default-features --features neural-network --target ${{ matrix.target }} -v conv2_direct 
+      run: cargo test --test=integration_tests --no-default-features --features neural-network --target ${{ matrix.target }} -v conv2_direct
     - uses: hecrj/setup-rust-action@v2
       with:
         rust-version: nightly
@@ -77,7 +77,7 @@ jobs:
       spirv_tools_linux_url: "https://storage.googleapis.com/spirv-tools/artifacts/prod/graphics_shader_compiler/spirv-tools/linux-clang-release/continuous/1863/20221024-094528/install.tgz"
     steps:
     - uses: actions/checkout@v4
-    - uses: actions-rs/toolchain@v1
+    - uses: hecrj/setup-rust-action@v2
       with:
         toolchain: nightly
     - uses: hecrj/setup-rust-action@v2
@@ -112,6 +112,9 @@ jobs:
       run: cargo rustdoc --all-features -- --D warnings
     - uses: hecrj/setup-rust-action@v2
       with:
+        rust-version: nightly
+    - uses: hecrj/setup-rust-action@v2
+      with:
         rust-version: 1.75.0
     - name: msrv
       run: |
@@ -119,8 +122,8 @@ jobs:
         cat Cargo.lock
         cargo +1.75.0 check -p autograph -p neural-network-mnist-example --all-features --all-targets -v
         cargo +1.75.0 check -p neural-network-benches --all-targets -v
-  deny:    
-    runs-on: ubuntu-latest    
+  deny:
+    runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
     - uses: EmbarkStudios/cargo-deny-action@v1
