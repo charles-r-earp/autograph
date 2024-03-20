@@ -122,6 +122,9 @@ neural-network = [
     "dep:once_cell",
 ]
 
+[package.metadata.docs.rs]
+all-features = true
+
 [package.metadata.krnlc]
 features = ["neural-network"]
 
