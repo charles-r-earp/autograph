@@ -575,13 +575,28 @@ enum Dynamic {
 ```
 */
 pub trait Layer {
-    /// Iterator over Parameters of the layer.
+    /// Applies a function `f` to each parameter in the layer.
     ///
-    /// Layers with parameters should implement all the relevant Layer methods.
-    fn parameter_iter(&self) -> impl Iterator<Item = ParameterD> + '_ {
-        std::iter::empty()
+    /// Convenience method for  [`.try_for_each_parameter()`](Layer::try_for_each_parameter)
+    /// with an infallible function.
+    fn for_each_parameter<F>(&self, mut f: F)
+    where
+        F: FnMut(ParameterD),
+    {
+        self.try_for_each_parameter(move |p| -> Result<(), std::convert::Infallible> {
+            f(p);
+            Ok(())
+        })
+        .unwrap();
     }
-    /// Makes an iterator over mutable parameter views of the layer.
+    /// Applies a fallible function `f` to each parameter in the layer.
+    fn try_for_each_parameter<F, E>(&self, #[allow(unused_variables)] f: F) -> Result<(), E>
+    where
+        F: FnMut(ParameterD) -> Result<(), E>,
+    {
+        Ok(())
+    }
+    /// Applies a fallible function `f` to mutable parameter views of the layer.
     ///
     /// The mutable parameter views can be provided to [`Optimizer::update()`](Optimizer::update).
     ///
@@ -589,8 +604,15 @@ pub trait Layer {
     /// - The parameters are not exclusive, and could not be copied on the device.
     ///
     /// See [`Parameter::make_view_mut()`](Parameter::make_view_mut).
-    fn make_parameter_iter_mut(&mut self) -> Result<impl Iterator<Item = ParameterViewMutD> + '_> {
-        Ok(std::iter::empty())
+    fn try_for_each_parameter_view_mut<F, E>(
+        &mut self,
+        #[allow(unused_variables)] f: F,
+    ) -> Result<()>
+    where
+        F: FnMut(ParameterViewMutD) -> Result<(), E>,
+        anyhow::Error: From<E>,
+    {
+        Ok(())
     }
     /// Prepares for training or inference.
     ///
@@ -608,13 +630,17 @@ pub trait Layer {
         Ok(())
     }
     /// Moves the layer into `device`.
-    fn into_device(self, #[allow(unused_variables)] device: Device) -> Result<Self>
+    ///
+    /// The default implementation calls [`.to_device_mut()`](Layer::to_device_mut).
+    fn into_device(mut self, device: Device) -> Result<Self>
     where
         Self: Sized,
     {
+        self.to_device_mut(device)?;
         Ok(self)
     }
 }
+
 /// Forward.
 ///
 /// Forward can be [derived](Layer#derive).
@@ -626,16 +652,26 @@ pub trait Forward<X> {
 }
 
 impl<T: Layer> Layer for Option<T> {
-    fn parameter_iter(&self) -> impl Iterator<Item = ParameterD> + '_ {
-        self.as_ref().into_iter().flat_map(Layer::parameter_iter)
+    fn try_for_each_parameter<F, E>(&self, f: F) -> Result<(), E>
+    where
+        F: FnMut(ParameterD) -> Result<(), E>,
+    {
+        if let Some(layer) = self.as_ref() {
+            layer.try_for_each_parameter(f)
+        } else {
+            Ok(())
+        }
     }
-    fn make_parameter_iter_mut(&mut self) -> Result<impl Iterator<Item = ParameterViewMutD> + '_> {
-        Ok(self
-            .as_mut()
-            .map(Layer::make_parameter_iter_mut)
-            .transpose()?
-            .into_iter()
-            .flatten())
+    fn try_for_each_parameter_view_mut<F, E>(&mut self, f: F) -> Result<()>
+    where
+        F: FnMut(ParameterViewMutD) -> Result<(), E>,
+        anyhow::Error: From<E>,
+    {
+        if let Some(layer) = self.as_mut() {
+            layer.try_for_each_parameter_view_mut(f)
+        } else {
+            Ok(())
+        }
     }
     fn set_training(&mut self, training: bool) -> Result<()> {
         if let Some(layer) = self.as_mut() {
@@ -675,16 +711,20 @@ impl<X, T: Forward<X, Output = X>> Forward<X> for Option<T> {
 }
 
 impl<T: Layer> Layer for Vec<T> {
-    fn parameter_iter(&self) -> impl Iterator<Item = ParameterD> + '_ {
-        self.iter().flat_map(Layer::parameter_iter)
+    fn try_for_each_parameter<F, E>(&self, mut f: F) -> Result<(), E>
+    where
+        F: FnMut(ParameterD) -> Result<(), E>,
+    {
+        self.iter()
+            .try_for_each(|layer| layer.try_for_each_parameter(&mut f))
     }
-    fn make_parameter_iter_mut(&mut self) -> Result<impl Iterator<Item = ParameterViewMutD> + '_> {
-        for layer in self.iter_mut() {
-            let _ = layer.make_parameter_iter_mut()?;
-        }
-        Ok(self
-            .iter_mut()
-            .flat_map(|layer| layer.make_parameter_iter_mut().unwrap()))
+    fn try_for_each_parameter_view_mut<F, E>(&mut self, mut f: F) -> Result<()>
+    where
+        F: FnMut(ParameterViewMutD) -> Result<(), E>,
+        anyhow::Error: From<E>,
+    {
+        self.iter_mut()
+            .try_for_each(|layer| layer.try_for_each_parameter_view_mut(&mut f))
     }
     fn set_training(&mut self, training: bool) -> Result<()> {
         self.iter_mut()
@@ -786,19 +826,26 @@ impl<D: Dimension> Conv<D> {
 }
 
 impl<D: Dimension> Layer for Conv<D> {
-    fn parameter_iter(&self) -> impl Iterator<Item = ParameterD> + '_ {
-        let weight = self.weight.clone().into_dyn();
-        let bias = self.bias.clone().map(Parameter::into_dyn);
-        std::iter::once(weight).chain(bias)
+    fn try_for_each_parameter<F, E>(&self, mut f: F) -> Result<(), E>
+    where
+        F: FnMut(ParameterD) -> Result<(), E>,
+    {
+        f(self.weight.clone().into_dyn())?;
+        if let Some(bias) = self.bias.clone() {
+            f(bias.into_dyn())?;
+        }
+        Ok(())
     }
-    fn make_parameter_iter_mut(&mut self) -> Result<impl Iterator<Item = ParameterViewMutD> + '_> {
-        let weight = self.weight.make_view_mut()?.into_dyn();
-        let bias = if let Some(bias) = self.bias.as_mut() {
-            Some(bias.make_view_mut()?.into_dyn())
-        } else {
-            None
-        };
-        Ok(std::iter::once(weight).chain(bias))
+    fn try_for_each_parameter_view_mut<F, E>(&mut self, mut f: F) -> Result<()>
+    where
+        F: FnMut(ParameterViewMutD) -> Result<(), E>,
+        anyhow::Error: From<E>,
+    {
+        f(self.weight.make_view_mut()?.into_dyn())?;
+        if let Some(bias) = self.bias.as_mut() {
+            f(bias.make_view_mut()?.into_dyn())?;
+        }
+        Ok(())
     }
     fn set_training(&mut self, training: bool) -> Result<()> {
         self.weight.set_training(training);
@@ -990,19 +1037,26 @@ impl Dense {
 }
 
 impl Layer for Dense {
-    fn parameter_iter(&self) -> impl Iterator<Item = ParameterD> + '_ {
-        let weight = self.weight.clone().into_dyn();
-        let bias = self.bias.clone().map(Parameter::into_dyn);
-        std::iter::once(weight).chain(bias)
+    fn try_for_each_parameter<F, E>(&self, mut f: F) -> Result<(), E>
+    where
+        F: FnMut(ParameterD) -> Result<(), E>,
+    {
+        f(self.weight.clone().into_dyn())?;
+        if let Some(bias) = self.bias.clone() {
+            f(bias.into_dyn())?;
+        }
+        Ok(())
     }
-    fn make_parameter_iter_mut(&mut self) -> Result<impl Iterator<Item = ParameterViewMutD> + '_> {
-        let weight = self.weight.make_view_mut()?.into_dyn();
-        let bias = if let Some(bias) = self.bias.as_mut() {
-            Some(bias.make_view_mut()?.into_dyn())
-        } else {
-            None
-        };
-        Ok(std::iter::once(weight).chain(bias))
+    fn try_for_each_parameter_view_mut<F, E>(&mut self, mut f: F) -> Result<()>
+    where
+        F: FnMut(ParameterViewMutD) -> Result<(), E>,
+        anyhow::Error: From<E>,
+    {
+        f(self.weight.make_view_mut()?.into_dyn())?;
+        if let Some(bias) = self.bias.as_mut() {
+            f(bias.make_view_mut()?.into_dyn())?;
+        }
+        Ok(())
     }
     fn set_training(&mut self, training: bool) -> Result<()> {
         self.weight.set_training(training);

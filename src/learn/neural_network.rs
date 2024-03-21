@@ -121,9 +121,9 @@ model.set_training(true)?;
 let y = model.forward(x)?;
 let loss = y.cross_entropy_loss(t)?;
 loss.backward()?;
-for parameter in model.make_parameter_iter_mut()? {
-    optimizer.update(learning_rate, parameter)?;
-}
+model.try_for_each_parameter_view_mut(|parameter| {
+    optimizer.update(learning_rate, parameter)
+})?;
 # Ok(())
 # }
 */

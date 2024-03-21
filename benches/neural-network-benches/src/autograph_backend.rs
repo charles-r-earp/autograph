@@ -80,9 +80,9 @@ impl LeNet5Classifier {
         loss.backward()?;
         let optimizer = self.optimizer.as_ref().unwrap();
         let learning_rate = 0.01;
-        for parameter in self.model.make_parameter_iter_mut()? {
-            optimizer.update(learning_rate, parameter)?;
-        }
+        self.model.try_for_each_parameter_view_mut(|parameter| {
+            optimizer.update(learning_rate, parameter)
+        })?;
         self.model.set_training(false)?;
         Ok(())
     }
