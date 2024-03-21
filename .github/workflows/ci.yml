@@ -115,13 +115,13 @@ jobs:
         rust-version: nightly
     - uses: hecrj/setup-rust-action@v2
       with:
-        rust-version: 1.75.0
+        rust-version: 1.70.0
     - name: msrv
       run: |
         cargo +nightly generate-lockfile -Zmsrv-policy
         cat Cargo.lock
-        cargo +1.75.0 check -p autograph -p neural-network-mnist-example --all-features --all-targets -v
-        cargo +1.75.0 check -p neural-network-benches --all-targets -v
+        cargo +1.70.0 check -p autograph -p neural-network-mnist-example --all-features --all-targets -v
+        cargo +1.70.0 check -p neural-network-benches --all-targets -v
   deny:
     runs-on: ubuntu-latest
     steps:
