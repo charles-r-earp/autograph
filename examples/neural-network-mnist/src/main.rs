@@ -183,10 +183,11 @@ fn main() -> Result<()> {
         builder.build()
     };
     println!("model: {model:#?}");
-    let parameter_count = model
-        .parameter_iter()
-        .map(|x| x.raw_dim().size())
-        .sum::<usize>();
+    let parameter_count = {
+        let mut count = 0;
+        model.for_each_parameter(|parameter| count += parameter.raw_dim().size());
+        count
+    };
     println!(
         "{} parameters",
         parameter_count.to_formatted_string(&Locale::en)
@@ -324,9 +325,9 @@ fn train<I: Iterator<Item = Result<(Tensor4<u8>, Tensor1<u8>)>>>(
             .into_array()?
             .into_scalar();
         loss.backward()?;
-        for parameter in model.make_parameter_iter_mut()? {
-            optimizer.update(learning_rate, parameter)?;
-        }
+        model.try_for_each_parameter_view_mut(|parameter| {
+            optimizer.update(learning_rate, parameter)
+        })?;
         model.set_training(false)?;
     }
     Ok(stats)
