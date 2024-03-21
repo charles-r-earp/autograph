@@ -826,22 +826,6 @@ impl<D: Dimension> Conv<D> {
 }
 
 impl<D: Dimension> Layer for Conv<D> {
-    /*
-    fn parameter_iter(&self) -> impl Iterator<Item = ParameterD> + '_ {
-        let weight = self.weight.clone().into_dyn();
-        let bias = self.bias.clone().map(Parameter::into_dyn);
-        std::iter::once(weight).chain(bias)
-    }
-    fn make_parameter_iter_mut(&mut self) -> Result<impl Iterator<Item = ParameterViewMutD> + '_> {
-        let weight = self.weight.make_view_mut()?.into_dyn();
-        let bias = if let Some(bias) = self.bias.as_mut() {
-            Some(bias.make_view_mut()?.into_dyn())
-        } else {
-            None
-        };
-        Ok(std::iter::once(weight).chain(bias))
-    }
-    */
     fn try_for_each_parameter<F, E>(&self, mut f: F) -> Result<(), E>
     where
         F: FnMut(ParameterD) -> Result<(), E>,
@@ -1053,22 +1037,6 @@ impl Dense {
 }
 
 impl Layer for Dense {
-    /*
-    fn parameter_iter(&self) -> impl Iterator<Item = ParameterD> + '_ {
-        let weight = self.weight.clone().into_dyn();
-        let bias = self.bias.clone().map(Parameter::into_dyn);
-        std::iter::once(weight).chain(bias)
-    }
-    fn make_parameter_iter_mut(&mut self) -> Result<impl Iterator<Item = ParameterViewMutD> + '_> {
-        let weight = self.weight.make_view_mut()?.into_dyn();
-        let bias = if let Some(bias) = self.bias.as_mut() {
-            Some(bias.make_view_mut()?.into_dyn())
-        } else {
-            None
-        };
-        Ok(std::iter::once(weight).chain(bias))
-    }
-    */
     fn try_for_each_parameter<F, E>(&self, mut f: F) -> Result<(), E>
     where
         F: FnMut(ParameterD) -> Result<(), E>,
