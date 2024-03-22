@@ -97,6 +97,7 @@ tempfile = "3.10.1"
 
 [target.'cfg(target_family = "wasm")'.dev-dependencies]
 getrandom = { version = "0.2", features = ["js"] }
+wasm-bindgen-test = "0.3.33"
 
 [features]
 default = ["device"]
@@ -138,6 +139,3 @@ crunchy = { default-features = false, features = ["limit_64"] }
 name = "integration_tests"
 path = "tests/integration_tests.rs"
 harness = false
-
-[target.'cfg(target_family = "wasm32")'.dev-dependencies]
-wasm-bindgen-test = "0.3.33"
