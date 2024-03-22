@@ -139,5 +139,5 @@ name = "integration_tests"
 path = "tests/integration_tests.rs"
 harness = false
 
-[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+[target.'cfg(target_family = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "0.3.33"
