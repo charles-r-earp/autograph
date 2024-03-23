@@ -4,7 +4,9 @@ use curl::easy::Easy;
 use flate2::read::GzDecoder;
 use indicatif::{MultiProgress, ProgressBar, ProgressFinish, ProgressStyle};
 use ndarray::{Array, Array1, Array4};
-use rayon::prelude::*;
+use rayon::iter::{
+    IndexedParallelIterator, IntoParallelIterator, IntoParallelRefMutIterator, ParallelIterator,
+};
 use std::{
     fs::{self, File},
     io::Read,

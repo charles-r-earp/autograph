@@ -302,13 +302,18 @@ impl Stats {
     }
 }
 
-fn train<I: Iterator<Item = Result<(Tensor4<u8>, Tensor1<u8>)>>>(
-    model: &mut LeNet5,
+fn train<M, O, I>(
+    model: &mut M,
     image_scale: ScalarElem,
-    optimizer: &SGD,
+    optimizer: &O,
     learning_rate: f32,
     mut iter: I,
-) -> Result<Stats> {
+) -> Result<Stats>
+where
+    M: Layer + Forward<Variable4, Output = Variable2>,
+    O: Optimizer,
+    I: Iterator<Item = Result<(Tensor4<u8>, Tensor1<u8>)>>,
+{
     let mut stats = Stats::default();
     while let Some((x, t)) = iter.by_ref().next().transpose()? {
         stats.count += x.shape().first().unwrap();
@@ -333,11 +338,11 @@ fn train<I: Iterator<Item = Result<(Tensor4<u8>, Tensor1<u8>)>>>(
     Ok(stats)
 }
 
-fn test<I: Iterator<Item = Result<(Tensor4<u8>, Tensor1<u8>)>>>(
-    model: &LeNet5,
-    image_scale: ScalarElem,
-    mut iter: I,
-) -> Result<Stats> {
+fn test<M, I>(model: &M, image_scale: ScalarElem, mut iter: I) -> Result<Stats>
+where
+    M: Layer + Forward<Variable4, Output = Variable2>,
+    I: Iterator<Item = Result<(Tensor4<u8>, Tensor1<u8>)>>,
+{
     let mut stats = Stats::default();
     while let Some((x, t)) = iter.by_ref().next().transpose()? {
         stats.count += x.shape().first().unwrap();
