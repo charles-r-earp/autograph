@@ -1,4 +1,3 @@
-//use anyhow::Result;
 use autograph::{
     krnl::scalar::ScalarElem,
     tensor::{ScalarTensorViewD, Tensor, TensorView},
@@ -12,7 +11,7 @@ use libtest_mimic::{Arguments, Trial};
 use ndarray::{Array, Array1, Axis, Dimension, IntoDimension, RemoveAxis};
 #[cfg(not(target_family = "wasm"))]
 use std::str::FromStr;
-#[cfg(target_arch = "wasm")]
+#[cfg(target_family = "wasm")]
 use wasm_bindgen_test::wasm_bindgen_test as test;
 
 #[cfg(all(target_family = "wasm", run_in_browser))]

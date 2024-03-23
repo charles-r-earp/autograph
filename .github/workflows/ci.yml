@@ -32,15 +32,14 @@ jobs:
           target: x86_64-apple-darwin
     steps:
     - uses: actions/checkout@v4
+    - name: install toolchains
+      run: |
+          rustup update
+          rustup toolchain install nightly
     - name: build
-      if: ${{ !cancelled() }}
-      run: cargo build --all-features --all-targets -p autograph -p neural-network-mnist-example -v
-    - name: build benches
-      if: ${{ !cancelled() }}
-      run: cargo build -p neural-network-benches --benches -v
+      run: cargo build --workspace --features serde,iris,mnist,neural-network --all-targets -v
     - name: test
-      if: ${{ !cancelled() }}
-      run: cargo test --workspace --no-default-features --features "serde neural-network mnist" -v 
+      run: cargo test --workspace --no-default-features --features serde,mnist,neural-network -v
     - name: test avx
       env:
         RUST_BUILD_RUSTFLAGS: -Ctarget-feature=+avx
@@ -48,36 +47,22 @@ jobs:
     - name: test fma
       env:
         RUST_BUILD_RUSTFLAGS: -Ctarget-feature=+fma
-      run: cargo test --test=integration_tests --no-default-features --features neural-network --target ${{ matrix.target }} -v conv2_direct 
-  careful:
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v4
-    - uses: actions-rs/toolchain@v1
-      with:
-        toolchain: nightly
+      run: cargo test --test=integration_tests --no-default-features --features neural-network --target ${{ matrix.target }} -v conv2_direct
     - name: install cargo-careful
-      if: ${{ !cancelled() }}
       run: cargo +nightly install cargo-careful
     - name: careful test
-      if: ${{ !cancelled() }}
       run: cargo +nightly careful test --test=integration_tests --no-default-features --features neural-network -v
     - name: careful test single-thread
       env:
         RAYON_NUM_THREADS: 1
       run: cargo +nightly careful test --test=integration_tests --no-default-features --features neural-network -v
-  wasm: 
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v4
     - name: install wasm-pack
-      if: ${{ !cancelled() }}
       run: cargo install wasm-pack -vv
     - name: wasm test
-      if: ${{ !cancelled() }}
-      run: wasm-pack test --headless --firefox -- --no-default-features --features "serde neural-network" -vv
+      run: wasm-pack test --headless --firefox -- --no-default-features --features serde,neural-network -vv
       env:
-        RUSTFLAGS: --cfg run_in_browser
+        # conv_direct won't compile without optimization
+        RUSTFLAGS: --cfg run_in_browser -C opt-level=1
   krnlc:
     runs-on: ubuntu-latest
     # spirv tools install copied from https://github.com/EmbarkStudios/rust-gpu/blob/main/.github/workflows/ci.yaml
@@ -86,20 +71,19 @@ jobs:
       spirv_tools_linux_url: "https://storage.googleapis.com/spirv-tools/artifacts/prod/graphics_shader_compiler/spirv-tools/linux-clang-release/continuous/1863/20221024-094528/install.tgz"
     steps:
     - uses: actions/checkout@v4
-    - uses: actions-rs/toolchain@v1
-      with:
-        toolchain: nightly
-    - uses: actions-rs/toolchain@v1
-      with:
-        toolchain: nightly-2023-05-27
-        components: rust-src, rustc-dev, llvm-tools-preview
-    - name: Install spirv-tools
+    - name: install toolchains
+      run: |
+        rustup update
+        rustup toolchain install nightly
+        rustup toolchain install nightly-2023-05-27
+        rustup component add rust-src  rustc-dev  llvm-tools-preview --toolchain nightly-2023-05-27
+    - name: install spirv-tools
       run: |
         sudo apt install libwayland-cursor0 libxkbcommon-dev libwayland-dev
         mkdir "${HOME}/spirv-tools"
         curl -fL "$spirv_tools_linux_url" | tar -xz -C "${HOME}/spirv-tools"
         echo "${HOME}/spirv-tools/install/bin" >> $GITHUB_PATH
-    - name: Install krnlc
+    - name: install krnlc
       run: cargo +nightly-2023-05-27 install krnlc --git="https://github.com/charles-r-earp/krnl" --locked -v --no-default-features --features use-installed-tools
     - name: krnlc
       run: krnlc -p autograph -v --check
@@ -107,21 +91,34 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
-    - uses: actions-rs/toolchain@v1
-      with:
-        toolchain: stable
-        components: rustfmt, clippy
+    - name: install toolchains
+      run: |
+        rustup update
+        rustup component add rustfmt clippy
+        rustup toolchain install nightly
+        rustup toolchain install nightly-2023-05-27
+        rustup component add rustfmt clippy rust-src rustc-dev llvm-tools-preview --toolchain nightly-2023-05-27
+        rustup toolchain install 1.70.0
     - name: fmt
-      if: ${{ !cancelled() }}
       run: cargo fmt --check
+    - name: install cargo-hack
+      run: cargo install cargo-hack -v
     - name: clippy
-      if: ${{ !cancelled() }}
-      run: cargo clippy --all-features -- -D warnings
+      env:
+        CARGO_ALIAS_CLIPPYALL: clippy --workspace
+      run: |
+        cargo hack --feature-powerset --skip default,learn,dataset,iris,mnist clippyall --all-targets -v -- -D warnings
+        cargo clippy --no-default-features --features iris,mnist --all-targets -v -- -D warnings
     - name: rustdoc
-      if: ${{ !cancelled() }}
       run: cargo rustdoc --all-features -- --D warnings
-  cargo-deny:    
-    runs-on: ubuntu-latest    
+    - name: msrv
+      run: |
+        cargo +nightly generate-lockfile -Zmsrv-policy
+        cat Cargo.lock
+        cargo +1.70.0 check -p autograph -p neural-network-mnist-example --all-features --all-targets -v
+        cargo +1.70.0 check -p neural-network-benches --all-targets -v
+  deny:
+    runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
     - uses: EmbarkStudios/cargo-deny-action@v1
