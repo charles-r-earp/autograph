@@ -32,14 +32,6 @@ jobs:
           target: x86_64-apple-darwin
     steps:
     - uses: actions/checkout@v4
-    - name: install cargo-hack
-      run: cargo install cargo-hack -v
-    - name: check
-      env:
-        RUSTFLAGS: -D warnings
-      run: |
-        cargo hack --feature-powerset --include-features device,neural-network,serde check --all-targets
-        cargo hack --feature-powerset --include-features device -p neural-network-mnist-example -p neural-network-benches check --all-targets
     - name: build
       run: |
         cargo build --all-features --all-targets -p autograph -p neural-network-mnist-example -v
@@ -106,10 +98,14 @@ jobs:
         components: rustfmt, clippy
     - name: fmt
       run: cargo fmt --check
+    - name: install cargo-hack
+      run: cargo install cargo-hack -v
     - name: clippy
       run: |
-        cargo clippy -p autograph -p autograph_derive -p neural-network-mnist-example --all-targets --all-features -- -D warnings
-        cargo clippy -p neural-network-benches --all-targets -- -D warnings
+        cargo clippy -p autograph -p autograph_derive --all-features -v -- --D warnings
+        cargo hack -p autograph --feature-powerset --include-features device,neural-network,serde clippy --all-targets -v -- -D warnings
+        cargo clippy -p neural-network-benches -p neural-network-mnist-example --no-default-features --all-targets -v -- -D warnings
+        cargo clippy -p neural-network-benches -p neural-network-mnist-example --all-targets -v -- -D warnings
     - name: rustdoc
       run: cargo rustdoc --all-features -- --D warnings
     - uses: hecrj/setup-rust-action@v2
