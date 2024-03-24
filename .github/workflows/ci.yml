@@ -20,6 +20,7 @@ env:
 jobs:
   test:
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -34,8 +35,8 @@ jobs:
     - uses: actions/checkout@v4
     - name: install toolchains
       run: |
-          rustup update
-          rustup toolchain install nightly
+        rustup set profile minimal
+        rustup toolchain install stable nightly
     - name: build
       run: cargo build --workspace --features serde,iris,mnist,neural-network --all-targets -v
     - name: test
@@ -65,6 +66,7 @@ jobs:
         RUSTFLAGS: --cfg run_in_browser -C opt-level=1
   krnlc:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     # spirv tools install copied from https://github.com/EmbarkStudios/rust-gpu/blob/main/.github/workflows/ci.yaml
     env:
       spirv_tools_version: "20221024"
@@ -73,10 +75,9 @@ jobs:
     - uses: actions/checkout@v4
     - name: install toolchains
       run: |
-        rustup update
-        rustup toolchain install nightly
-        rustup toolchain install nightly-2023-05-27
-        rustup component add rust-src  rustc-dev  llvm-tools-preview --toolchain nightly-2023-05-27
+        rustup set profile minimal
+        rustup toolchain install stable nightly
+        rustup toolchain install nightly-2023-05-27 --component rust-src  rustc-dev  llvm-tools-preview
     - name: install spirv-tools
       run: |
         sudo apt install libwayland-cursor0 libxkbcommon-dev libwayland-dev
@@ -89,16 +90,15 @@ jobs:
       run: krnlc -p autograph -v --check
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
     - uses: actions/checkout@v4
     - name: install toolchains
       run: |
-        rustup update
-        rustup component add rustfmt clippy
-        rustup toolchain install nightly
-        rustup toolchain install nightly-2023-05-27
-        rustup component add rustfmt clippy rust-src rustc-dev llvm-tools-preview --toolchain nightly-2023-05-27
-        rustup toolchain install 1.70.0
+        rustup set profile minimal
+        rustup toolchain install stable --component rustfmt clippy rust-docs
+        rustup toolchain install nightly 1.70.0
+        rustup toolchain install nightly-2023-05-27 --component rustfmt clippy rust-src rustc-dev llvm-tools-preview
     - name: fmt
       run: cargo fmt --check
     - name: install cargo-hack
@@ -119,6 +119,7 @@ jobs:
         cargo +1.70.0 check -p neural-network-benches --all-targets -v
   deny:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
     - uses: actions/checkout@v4
     - uses: EmbarkStudios/cargo-deny-action@v1
