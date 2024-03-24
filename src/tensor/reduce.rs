@@ -83,7 +83,7 @@ impl<T: Scalar, S: Data<Elem = T>, D: RemoveAxis> TensorBase<S, D> {
             output.fill(T::default())?;
         }
         if let Some((x, mut y)) = self.as_array().zip(output.as_array_mut()) {
-            // TOOD: impl in parallel
+            // TODO: impl in parallel
             for (i, x) in x.axis_iter(axis).enumerate() {
                 if i == 0 {
                     if beta != T::default() {

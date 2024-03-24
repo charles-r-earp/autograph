@@ -2,7 +2,8 @@
 use super::autograd::Parameter;
 use super::autograd::ParameterViewMutD;
 use crate::tensor::{
-    ScalarTensor, ScalarTensorD, ScalarTensorViewMutD, TensorViewD, TensorViewMutD,
+    parallel::parallel_size, ScalarTensor, ScalarTensorD, ScalarTensorViewMutD, TensorViewD,
+    TensorViewMutD,
 };
 #[cfg(feature = "device")]
 use crate::tensor::{ScalarTensorView, ScalarTensorViewMut};
@@ -21,7 +22,7 @@ use ndarray::Zip;
 use paste::paste;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
-use std::any::TypeId;
+use std::{any::TypeId, mem::size_of};
 
 /// Optimizer builders.
 pub mod builder {
@@ -390,23 +391,29 @@ fn sgd_update_with_momentum<T: Scalar>(
         .zip(grad.as_array())
         .zip(velocity.as_array_mut())
     {
-        Zip::from(value)
-            .and(grad)
-            .and(velocity)
-            .for_each(|value, grad, velocity| {
-                let mut value_f32 = value.cast::<f32>();
-                let grad_f32 = grad.cast::<f32>();
-                let mut velocity_f32 = velocity.cast::<f32>();
-                kernels::sgd_update_with_momentum(
-                    &mut value_f32,
-                    grad_f32,
-                    learning_rate,
-                    momentum,
-                    &mut velocity_f32,
-                );
-                *velocity = velocity_f32.cast();
-                *value = value_f32.cast();
-            });
+        let parallel = (value.len() + grad.len() + velocity.len()) * size_of::<T>()
+            > parallel_size()
+            && rayon::current_num_threads() > 1;
+        let zip = Zip::from(value).and(grad).and(velocity);
+        let f = |value: &mut T, grad: &T, velocity: &mut T| {
+            let mut value_f32 = value.cast::<f32>();
+            let grad_f32 = grad.cast::<f32>();
+            let mut velocity_f32 = velocity.cast::<f32>();
+            kernels::sgd_update_with_momentum(
+                &mut value_f32,
+                grad_f32,
+                learning_rate,
+                momentum,
+                &mut velocity_f32,
+            );
+            *velocity = velocity_f32.cast();
+            *value = value_f32.cast();
+        };
+        if parallel {
+            zip.par_for_each(f);
+        } else {
+            zip.for_each(f);
+        }
         return Ok(());
     }
     #[cfg(not(feature = "device"))]

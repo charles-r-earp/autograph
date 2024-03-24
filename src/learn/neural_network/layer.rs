@@ -1253,13 +1253,11 @@ fn scalar_relu<S: ScalarData, D: Dimension>(
     }
 }
 
-const RELU_PAR_LEN: usize = 40_000;
-
 fn relu_mut<T: Scalar + num_traits::Float, D: Dimension>(
     mut input: TensorViewMut<T, D>,
 ) -> Result<()> {
     if let Some(mut x) = input.as_array_mut() {
-        if x.len() >= RELU_PAR_LEN {
+        if x.len() * size_of::<T>() > parallel_size() && rayon::current_num_threads() > 1 {
             x.into_par_iter().for_each(|x| *x = relu_impl(*x));
         } else {
             x.iter_mut().for_each(|x| *x = relu_impl(*x));

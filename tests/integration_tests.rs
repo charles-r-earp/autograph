@@ -347,7 +347,6 @@ mod linalg {
 #[cfg(not(target_family = "wasm"))]
 mod ops {
     use super::*;
-    use ndarray::{Array1, IntoDimension};
     use num_traits::Unsigned;
 
     pub fn ops_tests(device: &Device) -> Vec<Trial> {
@@ -448,7 +447,6 @@ mod ops {
 #[cfg(not(target_family = "wasm"))]
 mod reorder {
     use super::*;
-    use ndarray::IntoDimension;
 
     pub fn reorder_tests(device: &Device) -> Vec<Trial> {
         let mut tests = Vec::new();
