@@ -96,15 +96,16 @@ jobs:
       run: krnlc -p autograph -v --check
   lint:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
     - uses: actions/checkout@v4
     - name: install toolchains
       run: |
         rustup set profile minimal
         rustup toolchain install stable --component rustfmt clippy rust-docs
-        rustup toolchain install nightly 1.70.0
+        rustup toolchain install nightly --component rust-docs
         rustup toolchain install nightly-2023-05-27 --component rustfmt clippy rust-src rustc-dev llvm-tools-preview
+        rustup toolchain install 1.70.0
     - name: fmt
       run: cargo fmt --check
     - name: install cargo-hack
@@ -116,7 +117,11 @@ jobs:
         cargo hack --feature-powerset --skip default,learn,dataset,iris,mnist clippyall --all-targets -v -- -D warnings
         cargo clippy --no-default-features --features iris,mnist --all-targets -v -- -D warnings
     - name: rustdoc
-      run: cargo rustdoc --all-features -- --D warnings
+      run: |
+        cargo rustdoc -p autograph_derive -- -D warnings
+        cargo hack --feature-powerset --include-features device,serde,neural-network rustdoc -- --D warnings
+        cargo rustdoc --all-features -- --D warnings
+        cargo +nightly rustdoc --all-features -- --D warnings --cfg doc_cfg
     - name: msrv
       run: |
         cargo +nightly generate-lockfile -Zmsrv-policy

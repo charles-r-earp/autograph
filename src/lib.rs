@@ -1,16 +1,16 @@
 /*!
-# **autograph**
 A machine learning library for Rust.
 
-GPGPU kernels implemented with [**krnl**](https://github.com/charles-r-earp/krnl).
-- Host / Device execution.
-- Tensors emulate [ndarray](https://github.com/rust-ndarray/ndarray)
+GPGPU kernels implemented with [krnl].
+- Host and device execution.
+- Tensors emulate [ndarray].
    - Host tensors can be borrowed as arrays.
-- Tensors / Models / Optimizers can be serialized with [serde](https://github.com/serde-rs/serde).
+- Tensors, models, and optimizers can be serialized with [serde](https://docs.rs/serde).
    - Portable between platforms.
-   - Save / resume training progress.
+   - Save and resume training progress.
 - Fully extensible, in Rust.
 */
+#![cfg_attr(doc_cfg, feature(doc_auto_cfg))]
 #![deny(unsafe_op_in_unsafe_fn)]
 #![warn(missing_docs)]
 
@@ -25,16 +25,13 @@ pub extern crate ndarray;
 /// num-traits
 pub extern crate num_traits;
 
-/// Ops.
-pub mod ops;
-
-/// Tensors.
-pub mod tensor;
-
 /// Datasets.
 #[cfg(feature = "dataset")]
 pub mod dataset;
-
 /// Machine Learning.
 #[cfg(feature = "learn")]
 pub mod learn;
+/// Ops.
+pub mod ops;
+/// Tensors.
+pub mod tensor;

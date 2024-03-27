@@ -7,18 +7,18 @@
 [Docs]: https://docs.rs/autograph
 [DocsBadge]: https://docs.rs/autograph/badge.svg
 
-# **autograph**
+# autograph
 
 A machine learning library for Rust.
 
-GPGPU kernels implemented with [**krnl**](https://github.com/charles-r-earp/krnl).
+GPGPU kernels implemented with [krnl](https://github.com/charles-r-earp/krnl).
 
-- Host / Device execution.
+- Host and device execution.
 - Tensors emulate [ndarray](https://github.com/rust-ndarray/ndarray)
   - Host tensors can be borrowed as arrays.
-- Tensors / Models / Optimizers can be serialized with [serde](https://github.com/serde-rs/serde).
+- Tensors, models, and optimizers can be serialized with [serde](https://github.com/serde-rs/serde).
   - Portable between platforms.
-  - Save / resume training progress.
+  - Save and resume training progress.
 - Fully extensible, in Rust.
 
 ## Neural Networks
@@ -120,19 +120,19 @@ _NVIDIA GeForce GTX 1060 with Max-Q Design_
 
 |                   | `autograph`                | `tch`                            |
 | :---------------- | :------------------------- | :------------------------------- |
-| **`bf16_host`**   | `494.98 ms` (✅ **1.00x**) | `78.29 ms` (🚀 **6.32x faster**) |
-| **`f32_host`**    | `7.21 ms` (✅ **1.00x**)   | `3.15 ms` (🚀 **2.28x faster**)  |
-| **`bf16_device`** | `10.12 ms` (✅ **1.00x**)  | `17.65 ms` (❌ _1.74x slower_)   |
-| **`f32_device`**  | `1.71 ms` (✅ **1.00x**)   | `1.19 ms` (✅ **1.43x faster**)  |
+| **`bf16_host`**   | `482.80 ms` (✅ **1.00x**) | `75.30 ms` (🚀 **6.41x faster**) |
+| **`f32_host`**    | `5.44 ms` (✅ **1.00x**)   | `3.09 ms` (✅ **1.76x faster**)  |
+| **`bf16_device`** | `1.76 ms` (✅ **1.00x**)   | `17.99 ms` (❌ _10.20x slower_)  |
+| **`f32_device`**  | `1.75 ms` (✅ **1.00x**)   | `1.20 ms` (✅ **1.45x faster**)  |
 
 ## LeNet5(inference, batch_size = 1,000)
 
 |                   | `autograph`               | `tch`                             |
 | :---------------- | :------------------------ | :-------------------------------- |
-| **`bf16_host`**   | `1.82 s` (✅ **1.00x**)   | `197.40 ms` (🚀 **9.23x faster**) |
-| **`f32_host`**    | `16.96 ms` (✅ **1.00x**) | `9.49 ms` (✅ **1.79x faster**)   |
-| **`bf16_device`** | `4.61 ms` (✅ **1.00x**)  | `48.71 ms` (❌ _10.57x slower_)   |
-| **`f32_device`**  | `4.60 ms` (✅ **1.00x**)  | `1.84 ms` (🚀 **2.49x faster**)   |
+| **`bf16_host`**   | `1.78 s` (✅ **1.00x**)   | `192.75 ms` (🚀 **9.25x faster**) |
+| **`f32_host`**    | `12.23 ms` (✅ **1.00x**) | `9.57 ms` (✅ **1.28x faster**)   |
+| **`bf16_device`** | `4.62 ms` (✅ **1.00x**)  | `48.72 ms` (❌ _10.54x slower_)   |
+| **`f32_device`**  | `4.76 ms` (✅ **1.00x**)  | `1.84 ms` (🚀 **2.58x faster**)   |
 
 See the [Neural Network](benches/neural-network-benches) benchmark.
 
