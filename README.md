@@ -13,12 +13,12 @@ A machine learning library for Rust.
 
 GPGPU kernels implemented with [krnl](https://github.com/charles-r-earp/krnl).
 
-- Host / Device execution.
+- Host and device execution.
 - Tensors emulate [ndarray](https://github.com/rust-ndarray/ndarray)
   - Host tensors can be borrowed as arrays.
-- Tensors / Models / Optimizers can be serialized with [serde](https://github.com/serde-rs/serde).
+- Tensors, models, and optimizers can be serialized with [serde](https://github.com/serde-rs/serde).
   - Portable between platforms.
-  - Save / resume training progress.
+  - Save and resume training progress.
 - Fully extensible, in Rust.
 
 ## Neural Networks
