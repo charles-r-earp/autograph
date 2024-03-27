@@ -50,16 +50,22 @@ jobs:
         RUST_BUILD_RUSTFLAGS: -Ctarget-feature=+fma
       run: cargo test --test=integration_tests --no-default-features --features neural-network --target ${{ matrix.target }} -v conv2_direct
     - name: install cargo-careful
+      # windows and mac too slow
+      if: ${{ matrix.os == "ubuntu-latest" }}
       run: cargo +nightly install cargo-careful
     - name: careful test
+      if: ${{ matrix.os == "ubuntu-latest" }}
       run: cargo +nightly careful test --test=integration_tests --no-default-features --features neural-network -v
     - name: careful test single-thread
+      if: ${{ matrix.os == "ubuntu-latest" }}
       env:
         RAYON_NUM_THREADS: 1
       run: cargo +nightly careful test --test=integration_tests --no-default-features --features neural-network -v
     - name: install wasm-pack
+      if: ${{ matrix.os == "ubuntu-latest" }}
       run: cargo install wasm-pack -vv
     - name: wasm test
+      if: ${{ matrix.os == "ubuntu-latest" }}
       run: wasm-pack test --headless --firefox -- --no-default-features --features serde,neural-network -vv
       env:
         # conv_direct won't compile without optimization
@@ -76,7 +82,7 @@ jobs:
     - name: install toolchains
       run: |
         rustup set profile minimal
-        rustup toolchain install stable nightly
+        rustup toolchain install nightly
         rustup toolchain install nightly-2023-05-27 --component rust-src  rustc-dev  llvm-tools-preview
     - name: install spirv-tools
       run: |
