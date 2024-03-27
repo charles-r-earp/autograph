@@ -119,8 +119,8 @@ jobs:
     - name: rustdoc
       run: |
         cargo rustdoc -p autograph_derive -- -D warnings
-        cargo hack --feature-powerset --skip default,dataset rustdoc --all-features -- --D warnings
-        cargo +nightly hack --feature-powerset --skip default,dataset rustdoc --all-features -- --D warnings --cfg doc_cfg
+        cargo hack --feature-powerset --skip default,dataset rustdoc -- --D warnings
+        cargo +nightly hack --feature-powerset --skip default,dataset rustdoc -- --D warnings --cfg doc_cfg
     - name: msrv
       run: |
         cargo +nightly generate-lockfile -Zmsrv-policy
