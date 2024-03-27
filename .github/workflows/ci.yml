@@ -119,7 +119,8 @@ jobs:
     - name: rustdoc
       run: |
         cargo rustdoc -p autograph_derive -- -D warnings
-        cargo hack --feature-powerset --skip default,learn,dataset --group-features iris,mnist rustdoc -- --D warnings
+        cargo hack --feature-powerset --include-features device,serde,neural-network rustdoc -- --D warnings
+        cargo rustdoc --all-features -- --D warnings
         cargo +nightly rustdoc --all-features -- --D warnings --cfg doc_cfg
     - name: msrv
       run: |
