@@ -96,7 +96,7 @@ jobs:
       run: krnlc -p autograph -v --check
   lint:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
     - uses: actions/checkout@v4
     - name: install toolchains
