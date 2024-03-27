@@ -7,11 +7,11 @@
 [Docs]: https://docs.rs/autograph
 [DocsBadge]: https://docs.rs/autograph/badge.svg
 
-# **autograph**
+# autograph
 
 A machine learning library for Rust.
 
-GPGPU kernels implemented with [**krnl**](https://github.com/charles-r-earp/krnl).
+GPGPU kernels implemented with [krnl](https://github.com/charles-r-earp/krnl).
 
 - Host / Device execution.
 - Tensors emulate [ndarray](https://github.com/rust-ndarray/ndarray)

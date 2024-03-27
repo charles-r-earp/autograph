@@ -125,6 +125,7 @@ neural-network = [
 
 [package.metadata.docs.rs]
 all-features = true
+rustdoc-args = ["--cfg", "doc_cfg"]
 
 [package.metadata.krnlc]
 features = ["neural-network"]

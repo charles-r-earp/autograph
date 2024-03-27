@@ -24,7 +24,7 @@ During training, nodes and edges form a backward graph, connecting the node of a
 
 The [`optimizer`](neural_network::optimizer), such as [`SGD`](neural_network::optimizer::SGD), [`updates`](neural_network::optimizer::Optimizer::update) the parameters.
 
-Example:
+# Example
 ```
 # use anyhow::Result;
 # use autograph::{krnl::{device::Device, scalar::ScalarType}, tensor::{Tensor, ScalarArcTensor}};
