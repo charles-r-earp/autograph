@@ -66,14 +66,46 @@ fn device_test(device: &Device, name: &str, f: impl Fn(&Device) + Send + Sync + 
 }
 
 fn features_for_scalar_size(size: usize) -> Features {
-    Features::empty()
-        .with_shader_int8(size == 1)
-        .with_shader_int16(size == 2)
-        .with_shader_int64(size == 8)
+    if size == 1 {
+        Features::INT8
+    } else if size == 2 {
+        Features::INT16
+    } else if size == 8 {
+        Features::INT64
+    } else {
+        Features::empty()
+    }
+}
+
+fn features_for_scalar_buffer_size(size: usize) -> Features {
+    if size == 1 {
+        Features::BUFFER8
+    } else if size == 2 {
+        Features::BUFFER16
+    } else {
+        Features::empty()
+    }
+}
+
+fn features_for_scalar_push_constant_size(size: usize) -> Features {
+    if size == 1 {
+        Features::PUSH_CONSTANT8
+    } else if size == 2 {
+        Features::PUSH_CONSTANT16
+    } else {
+        Features::empty()
+    }
 }
 
 fn features_for_scalar(scalar_type: ScalarType) -> Features {
-    features_for_scalar_size(scalar_type.size()).with_shader_float64(scalar_type == ScalarType::F64)
+    let size = scalar_type.size();
+    let mut features = features_for_scalar_size(size);
+    features |= features_for_scalar_buffer_size(size);
+    features |= features_for_scalar_push_constant_size(size);
+    if scalar_type == ScalarType::F64 {
+        features |= Features::FLOAT64
+    }
+    features
 }
 
 fn check_approx_eq(a: ScalarTensorViewD, b: ScalarTensorViewD, epsilon: Option<ScalarElem>) {
@@ -241,7 +273,7 @@ mod linalg {
             let scalar_type = $T::SCALAR_TYPE;
             let type_name = scalar_type.name();
             let ignore = device.is_device() &&
-                    !features.contains(&features_for_scalar(scalar_type));
+                    !features.contains(features_for_scalar(scalar_type));
             for n in [2, 4, 5, 8, 16, 32, 64, 128] {
                 let [m, k, n] = [n; 3];
                 use Transpose::*;
@@ -359,7 +391,7 @@ mod ops {
         macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
             let scalar_type = $T::SCALAR_TYPE;
             let ignore = device.is_device() &&
-                !features.contains(&features_for_scalar(scalar_type));
+                !features.contains(features_for_scalar(scalar_type));
             let ty = scalar_type.name();
             tests.push(
                 device_test(device, &format!("scaled_add_{ty}"), |device| {
@@ -376,8 +408,8 @@ mod ops {
             macro_for!($Y in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
                 let y_ty = $Y::SCALAR_TYPE;
                 let ignore = device.is_device()
-                && (!features.contains(&features_for_scalar(x_ty)) ||
-                    !features.contains(&features_for_scalar(y_ty)));
+                && (!features.contains(features_for_scalar(x_ty)) ||
+                    !features.contains(features_for_scalar(y_ty)));
                 tests.push(device_test(device, &format!("one_hot_{}_{}", x_ty.name(), y_ty.name()), |device| {
                     for n in [1, 7, 64, 300] {
                         for classes in [1, 5, 10, 100] {
@@ -459,7 +491,7 @@ mod reorder {
         macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
                 let scalar_type = $T::SCALAR_TYPE;
                 let ignore = device.is_device() &&
-                    !features.contains(&features_for_scalar(scalar_type));
+                    !features.contains(features_for_scalar(scalar_type));
                 let ty = scalar_type.name();
                 tests.extend([
                     device_test(device, &format!("into_standard_layout2_{ty}"), |device| {
@@ -529,7 +561,7 @@ mod reduce {
         macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
             let scalar_type = $T::SCALAR_TYPE;
             let ignore = device.is_device() &&
-                !features.contains(&features_for_scalar(scalar_type));
+                !features.contains(features_for_scalar(scalar_type));
             let ty_name = scalar_type.name();
             let size = size_of::<$T>();
             let ns: &[usize] = if size == 1 {
@@ -697,8 +729,8 @@ mod learn {
                 macro_for!($T in [u8, u16, u32] {
                     let ignore = device.is_device()
                         && (
-                            !features.contains(&features_for_scalar($X::SCALAR_TYPE))
-                            || !features.contains(&features_for_scalar($T::SCALAR_TYPE))
+                            !features.contains(features_for_scalar($X::SCALAR_TYPE))
+                            || !features.contains(features_for_scalar($T::SCALAR_TYPE))
                         );
                     tests.push(device_test(device, &format!("accuracy_{}_{}", $X::SCALAR_TYPE.name(), $T::SCALAR_TYPE.name()), |device| {
                         for (batch_size, classes) in [
@@ -715,8 +747,8 @@ mod learn {
                 macro_for!($T in [u8, u16, u32] {
                     let ignore = device.is_device()
                         && (
-                            !features.contains(&features_for_scalar($X::SCALAR_TYPE))
-                            || !features.contains(&features_for_scalar($T::SCALAR_TYPE))
+                            !features.contains(features_for_scalar($X::SCALAR_TYPE))
+                            || !features.contains(features_for_scalar($T::SCALAR_TYPE))
                         );
                     tests.push(device_test(device, &format!("cross_entropy_loss_{}_{}", $X::SCALAR_TYPE.name(), $T::SCALAR_TYPE.name()), |device| {
                         for (batch_size, classes) in [
@@ -835,8 +867,8 @@ mod learn {
                 macro_for!($T in [u8, u16, u32] {
                     let ignore = device.is_device()
                     && (
-                        !features.contains(&features_for_scalar($X::SCALAR_TYPE))
-                        || !features.contains(&features_for_scalar($T::SCALAR_TYPE))
+                        !features.contains(features_for_scalar($X::SCALAR_TYPE))
+                        || !features.contains(features_for_scalar($T::SCALAR_TYPE))
                     );
                     tests.push(device_test(device, &format!("cross_entropy_loss_backward_{}_{}", $X::SCALAR_TYPE.name(), $T::SCALAR_TYPE.name()), |device| {
                         for (batch_size, classes) in [
@@ -891,7 +923,7 @@ mod learn {
                     .collect::<Vec<_>>();
                 macro_for!($T in [bf16, f32] {
                     let ignore = device.is_device()
-                    && !features.contains(&features_for_scalar($T::SCALAR_TYPE));
+                    && !features.contains(features_for_scalar($T::SCALAR_TYPE));
                     let scalar_name = $T::SCALAR_TYPE.name();
                     for (filter, options) in filter_conv2_options_list.iter() {
                         let filter = *filter;
@@ -1005,7 +1037,7 @@ mod learn {
             }
             macro_for!($T in [bf16, f32] {
                 let ignore = device.is_device()
-                && !features.contains(&features_for_scalar($T::SCALAR_TYPE));
+                && !features.contains(features_for_scalar($T::SCALAR_TYPE));
                 let input_shapes = [
                     [1, 1, 4, 4],
                     [1, 1, 12, 12],
@@ -1029,7 +1061,7 @@ mod learn {
             });
             macro_for!($T in [bf16, f32] {
                 let ignore = device.is_device()
-                && !features.contains(&features_for_scalar($T::SCALAR_TYPE));
+                && !features.contains(features_for_scalar($T::SCALAR_TYPE));
                 let input_shapes = [[1, 8], [15, 20]];
                 tests.extend([
                     device_test(device, &format!("relu_{}", $T::SCALAR_TYPE.name()), move |device| {
