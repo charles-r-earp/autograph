@@ -14,6 +14,7 @@ license = "MIT OR Apache-2.0"
 publish = false
 
 [workspace.dependencies]
+autograph_derive = { path = "autograph_derive", version = "0.2.0-alpha" }
 autograph = { path = ".", default-features = false }
 anyhow = "1.0.37"
 clap = "4.2.5"
@@ -52,8 +53,8 @@ autobins = false
 autobenches = false
 
 [dependencies]
-autograph_derive = { path = "autograph_derive", optional = true }
-krnl = { git = "https://github.com/charles-r-earp/krnl", default-features = false }
+autograph_derive = { workspace = true, optional = true }
+krnl = { version = "0.1.0", default-features = false }
 anyhow.workspace = true
 ndarray = { workspace = true, features = [
     "serde",
