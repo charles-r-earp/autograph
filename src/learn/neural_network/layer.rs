@@ -1,9 +1,12 @@
-use super::autograd::{
-    Parameter, Parameter1, Parameter2, ParameterD, ParameterViewMut, ParameterViewMut1,
-    ParameterViewMut2, ParameterViewMutD, Variable, Variable1, Variable2, Variable3, Variable4,
-};
 #[cfg(doc)]
-use super::optimizer::Optimizer;
+use super::autograd::ParameterBase;
+use super::{
+    autograd::{
+        Parameter, Parameter1, Parameter2, ParameterD, ParameterViewMut, ParameterViewMut1,
+        ParameterViewMut2, ParameterViewMutD, Variable, Variable1, Variable2, Variable3, Variable4,
+    },
+    optimizer::Optimizer,
+};
 use crate::{
     ops::{
         AddAssign, Col2ImConv2, Col2ImConv2Options, Im2ColConv2, Im2ColConv2Options, MaxPool2 as _,
@@ -543,9 +546,6 @@ use builder::*;
 /// Typically Layers implement [`Forward<Variable<D>>`](Forward) for the appropriate
 /// dimension `D`.
 ///
-/// Layers with parameters or those that store the `device` or `scalar_type` should implement the
-/// relevant methods. Functional layers and activations may only need the default implementation.
-///
 /// # Derive
 /// [`Layer`] and [`Forward`] can be derived for structs and enums:
 /**
@@ -554,10 +554,15 @@ use builder::*;
 # use autograph::learn::neural_network;
 # use neural_network::autograd::{Variable4, Variable2};
 # use neural_network::layer::{Layer, Forward, Flatten, Conv2, Relu, MaxPool2, Dense};
-
+# mod foo { pub(super) use autograph; }
 // Layer and Forward can be derived for structs composed of layers.
 #[derive(Layer, Forward)]
-#[autograph(forward(Variable4, Output=Variable2))]
+#[autograph(
+    // Override path to autograph when it isn't a dependency.
+    crate=foo::autograph,
+    // Can be specified multiple times.
+    forward(Variable4, Output=Variable2),
+)]
 struct Network {
     conv: Conv2,
     relu: Relu,
@@ -571,6 +576,21 @@ struct Network {
 enum Dynamic {
     Conv(Conv2),
     Pool(MaxPool2),
+}
+
+#[derive(Layer)]
+// skip all fields or variants
+#[autograph(skip)]
+struct Activation {
+    alpha: f32,
+}
+
+#[derive(Layer)]
+struct Custom<T: Layer>  {
+    layer: T,
+    // skip a field
+    #[autograph(skip)]
+    name: String,
 }
 ```
 */
@@ -590,11 +610,21 @@ pub trait Layer {
         .unwrap();
     }
     /// Applies a fallible function `f` to each parameter in the layer.
-    fn try_for_each_parameter<F, E>(&self, #[allow(unused_variables)] f: F) -> Result<(), E>
+    fn try_for_each_parameter<F, E>(&self, f: F) -> Result<(), E>
     where
-        F: FnMut(ParameterD) -> Result<(), E>,
+        F: FnMut(ParameterD) -> Result<(), E>;
+    /// Applies a function `f` to mutable parameter views of the layer.
+    ///
+    /// Convenience method for  [`.try_for_each_parameter_view_mut()`](Layer::try_for_each_parameter_view_mut)
+    /// with an infallible function.
+    fn for_each_parameter_view_mut<F>(&mut self, mut f: F) -> Result<()>
+    where
+        F: FnMut(ParameterViewMutD),
     {
-        Ok(())
+        self.try_for_each_parameter_view_mut(move |p| -> Result<(), std::convert::Infallible> {
+            f(p);
+            Ok(())
+        })
     }
     /// Applies a fallible function `f` to mutable parameter views of the layer.
     ///
@@ -604,34 +634,48 @@ pub trait Layer {
     /// - The parameters are not exclusive, and could not be copied on the device.
     ///
     /// See [`Parameter::make_view_mut()`](Parameter::make_view_mut).
-    fn try_for_each_parameter_view_mut<F, E>(
-        &mut self,
-        #[allow(unused_variables)] f: F,
-    ) -> Result<()>
+    fn try_for_each_parameter_view_mut<F, E>(&mut self, f: F) -> Result<()>
     where
         F: FnMut(ParameterViewMutD) -> Result<(), E>,
-        anyhow::Error: From<E>,
-    {
-        Ok(())
-    }
-    /// Prepares for training or inference.
+        anyhow::Error: From<E>;
+    /// Initializes the gradients of each parameter in the layer.
     ///
-    /// Calls [`.set_training(training)`](Parameter::set_training) on each parameter and
-    /// [`.set_training(training)`][Layer::set_training] on each child layer as appropriate.
-    fn set_training(&mut self, #[allow(unused_variables)] training: bool) -> Result<()> {
-        Ok(())
+    /// Should be called prior to the forward pass during training.
+    ///
+    /// Convenience method implemented via [`.for_each_parameter_view_mut()`](Layer::for_each_parameter_view_mut).
+    ///
+    /// See [`ParameterBase::init_grad()`].
+    fn init_parameter_grads(&mut self) -> Result<()> {
+        self.for_each_parameter_view_mut(|mut parameter| parameter.init_grad())
+    }
+    /// Optimizes the layer with `optimizer`, updating each parameter with `learning_rate`.
+    ///
+    /// Convenience method implemented via [`.try_for_each_parameter_view_mut()`](Layer::try_for_each_parameter_view_mut).
+    ///
+    /// See [`Optimizer::update()`].
+    fn update<O: Optimizer>(&mut self, learning_rate: f32, optimizer: &O) -> Result<()> {
+        self.try_for_each_parameter_view_mut(|parameter| optimizer.update(learning_rate, parameter))
     }
     /// Casts the layer to `scalar_type` in place.
-    fn cast_mut(&mut self, #[allow(unused_variables)] scalar_type: ScalarType) -> Result<()> {
-        Ok(())
+    ///
+    /// See [`Parameter::cast_mut()`].
+    fn cast_mut(&mut self, scalar_type: ScalarType) -> Result<()>;
+    /// Casts the layer into `scalar_type`.
+    ///
+    /// Convenience method implemented via [`.cast_mut()`](Layer::cast_mut).
+    fn cast_into(mut self, scalar_type: ScalarType) -> Result<Self>
+    where
+        Self: Sized,
+    {
+        self.cast_mut(scalar_type).map(|_| self)
     }
     /// Transfers the layer to `device` in place.
-    fn to_device_mut(&mut self, #[allow(unused_variables)] device: Device) -> Result<()> {
-        Ok(())
-    }
+    ///
+    /// See [`Parameter::to_device_mut()`].
+    fn to_device_mut(&mut self, device: Device) -> Result<()>;
     /// Moves the layer into `device`.
     ///
-    /// The default implementation calls [`.to_device_mut()`](Layer::to_device_mut).
+    /// Convenience method implemented via  [`.to_device_mut()`](Layer::to_device_mut).
     fn into_device(mut self, device: Device) -> Result<Self>
     where
         Self: Sized,
@@ -650,6 +694,36 @@ pub trait Forward<X> {
     /// Executes the forward pass given `input`.
     fn forward(&self, input: X) -> Result<Self::Output>;
 }
+
+/**
+```no_run
+# use autograph::anyhow::Result;
+# use autograph::learn::neural_network;
+# use neural_network::autograd::{Variable4, Variable2};
+# use neural_network::layer::{Layer, Forward, Conv2, Dense};
+#[derive(Layer, Forward)]
+#[autograph(skip, forward(Variable2, Output=Variable2))]
+enum SkipEnum {
+    A,
+    B(i32)
+}
+
+#[derive(Layer, Forward)]
+#[autograph(forward(Variable4, Output=Variable4))]
+struct OptionField {
+    conv2: Option<Conv2>,
+}
+
+#[derive(Layer, Forward)]
+#[autograph(forward(Variable2, Output=Variable2))]
+struct VecField {
+    layers: Vec<Dense>,
+}
+```
+*/
+#[cfg(doc)]
+#[allow(dead_code)]
+enum DeriveTests {}
 
 impl<T: Layer> Layer for Option<T> {
     fn try_for_each_parameter<F, E>(&self, f: F) -> Result<(), E>
@@ -673,12 +747,6 @@ impl<T: Layer> Layer for Option<T> {
             Ok(())
         }
     }
-    fn set_training(&mut self, training: bool) -> Result<()> {
-        if let Some(layer) = self.as_mut() {
-            layer.set_training(training)?;
-        }
-        Ok(())
-    }
     fn cast_mut(&mut self, scalar_type: ScalarType) -> Result<()> {
         if let Some(layer) = self.as_mut() {
             layer.cast_mut(scalar_type)?;
@@ -690,12 +758,6 @@ impl<T: Layer> Layer for Option<T> {
             layer.to_device_mut(device)?;
         }
         Ok(())
-    }
-    fn into_device(self, device: Device) -> Result<Self>
-    where
-        Self: Sized,
-    {
-        self.map(|layer| layer.into_device(device)).transpose()
     }
 }
 
@@ -726,10 +788,12 @@ impl<T: Layer> Layer for Vec<T> {
         self.iter_mut()
             .try_for_each(|layer| layer.try_for_each_parameter_view_mut(&mut f))
     }
+    /*
     fn set_training(&mut self, training: bool) -> Result<()> {
         self.iter_mut()
             .try_for_each(|layer| layer.set_training(training))
     }
+    */
     fn cast_mut(&mut self, scalar_type: ScalarType) -> Result<()> {
         self.iter_mut()
             .try_for_each(|layer| layer.cast_mut(scalar_type))
@@ -737,13 +801,6 @@ impl<T: Layer> Layer for Vec<T> {
     fn to_device_mut(&mut self, device: Device) -> Result<()> {
         self.iter_mut()
             .try_for_each(|layer| layer.to_device_mut(device.clone()))
-    }
-    fn into_device(mut self, device: Device) -> Result<Self>
-    where
-        Self: Sized,
-    {
-        self.to_device_mut(device)?;
-        Ok(self)
     }
 }
 
@@ -847,10 +904,22 @@ impl<D: Dimension> Layer for Conv<D> {
         }
         Ok(())
     }
+    /*
     fn set_training(&mut self, training: bool) -> Result<()> {
         self.weight.set_training(training);
         if let Some(bias) = self.bias.as_mut() {
             bias.set_training(training);
+        }
+        Ok(())
+    }
+    */
+    fn cast_mut(&mut self, scalar_type: ScalarType) -> Result<()> {
+        if !matches!(scalar_type, ScalarType::BF16 | ScalarType::F32) {
+            bail!("Conv {scalar_type:?} not implemented!");
+        }
+        self.weight.cast_mut(scalar_type)?;
+        if let Some(bias) = self.bias.as_mut() {
+            bias.cast_mut(scalar_type)?;
         }
         Ok(())
     }
@@ -1058,10 +1127,13 @@ impl Layer for Dense {
         }
         Ok(())
     }
-    fn set_training(&mut self, training: bool) -> Result<()> {
-        self.weight.set_training(training);
+    fn cast_mut(&mut self, scalar_type: ScalarType) -> Result<()> {
+        if !matches!(scalar_type, ScalarType::BF16 | ScalarType::F32) {
+            bail!("Dense {scalar_type:?} not implemented!");
+        }
+        self.weight.cast_mut(scalar_type)?;
         if let Some(bias) = self.bias.as_mut() {
-            bias.set_training(training);
+            bias.cast_mut(scalar_type)?;
         }
         Ok(())
     }
@@ -1071,15 +1143,6 @@ impl Layer for Dense {
             bias.to_device_mut(device)?;
         }
         Ok(())
-    }
-    fn into_device(self, device: Device) -> Result<Self>
-    where
-        Self: Sized,
-    {
-        Ok(Self {
-            weight: self.weight.into_device(device.clone())?,
-            bias: self.bias.map(|b| b.into_device(device)).transpose()?,
-        })
     }
 }
 
@@ -1098,8 +1161,9 @@ impl Forward<Variable2> for Dense {
 ///
 /// See [`MaxPool1`] and [`MaxPool2`].
 /// Implemented for bf16 and f32.
-#[derive(Debug)]
+#[derive(Debug, Layer)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[autograph(skip, crate=crate)]
 pub struct MaxPool<D: Dimension> {
     filter: D,
     stride: D,
@@ -1120,8 +1184,6 @@ impl<D: Dimension> MaxPool<D> {
         MaxPoolBuilder::new()
     }
 }
-
-impl<D: Dimension> Layer for MaxPool<D> {}
 
 impl Forward<Variable3> for MaxPool1 {
     type Output = Variable3;
@@ -1171,11 +1233,10 @@ impl Forward<Variable4> for MaxPool2 {
 /// Flatten.
 ///
 /// See [`Variable::flatten()`](Variable::flatten).
-#[derive(Default, Clone, Copy, Debug)]
+#[derive(Default, Clone, Copy, Debug, Layer)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[autograph(skip, crate=crate)]
 pub struct Flatten;
-
-impl Layer for Flatten {}
 
 impl<D: Dimension + 'static> Forward<Variable<D>> for Flatten {
     type Output = Variable2;
@@ -1185,11 +1246,10 @@ impl<D: Dimension + 'static> Forward<Variable<D>> for Flatten {
 }
 
 /// Identity.
-#[derive(Default, Clone, Copy, Debug)]
+#[derive(Default, Clone, Copy, Debug, Layer)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[autograph(skip, crate=crate)]
 pub struct Identity;
-
-impl Layer for Identity {}
 
 impl<X> Forward<X> for Identity {
     type Output = X;
@@ -1201,11 +1261,10 @@ impl<X> Forward<X> for Identity {
 /// ReLU.
 ///
 /// Implemented for bf16 and f32.
-#[derive(Default, Clone, Copy, Debug)]
+#[derive(Default, Clone, Copy, Debug, Layer)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[autograph(skip, crate=crate)]
 pub struct Relu;
-
-impl Layer for Relu {}
 
 impl<D: Dimension + 'static> Forward<Variable<D>> for Relu {
     type Output = Variable<D>;

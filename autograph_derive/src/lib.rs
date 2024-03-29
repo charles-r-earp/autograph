@@ -1,8 +1,5 @@
+//! Derive macros for [autograph](https://docs.rs/autograph).
 #![forbid(unsafe_code)]
-
-/*!
-Derive macros for [**autograph**](https://docs.rs/autograph).
-*/
 
 use derive_syn_parse::Parse;
 use proc_macro::TokenStream;
@@ -34,7 +31,6 @@ struct AutographArg {
     eq: Option<SynEq>,
     #[parse_if(crate_token.is_some())]
     autograph_crate: Option<Path>,
-    #[allow(unused)]
     #[parse_if(crate_token.is_none())]
     ident: Option<Ident>,
     #[parse_if(ident.as_ref().map(|x| x == "forward").unwrap_or_default())]
@@ -64,8 +60,12 @@ impl ForwardArgs {
     fn from_attributes(attrs: &[Attribute]) -> Result<Vec<Self>> {
         let mut forward_args = Vec::new();
         for attr in attrs {
-            if attr.path.to_token_stream().to_string() == "autograph" {
-                let args = syn::parse2::<AutographArgs>(attr.tokens.to_token_stream())?;
+            if attr
+                .path
+                .get_ident()
+                .map_or(false, |path| path == "autograph")
+            {
+                let args = syn::parse2::<AutographArgs>(attr.tokens.clone())?;
                 for arg in args.args {
                     if let Some(args) = arg.forward_args {
                         if args.output_ident != "Output" {
@@ -85,8 +85,12 @@ impl ForwardArgs {
 
 fn autograph_crate(attrs: &[Attribute]) -> Result<Path> {
     for attr in attrs {
-        if attr.path.to_token_stream().to_string() == "autograph" {
-            let args = syn::parse2::<AutographArgs>(attr.tokens.to_token_stream())?;
+        if attr
+            .path
+            .get_ident()
+            .map_or(false, |path| path == "autograph")
+        {
+            let args = syn::parse2::<AutographArgs>(attr.tokens.clone())?;
             for arg in args.args {
                 if let Some(autograph_crate) = arg.autograph_crate {
                     return Ok(autograph_crate);
@@ -99,21 +103,69 @@ fn autograph_crate(attrs: &[Attribute]) -> Result<Path> {
     })
 }
 
+fn autograph_skip(attrs: &[Attribute]) -> Result<bool> {
+    for attr in attrs {
+        if attr
+            .path
+            .get_ident()
+            .map_or(false, |path| path == "autograph")
+        {
+            let args = syn::parse2::<AutographArgs>(attr.tokens.clone())?;
+            for arg in args.args {
+                if arg.forward_args.is_some() {
+                    continue;
+                }
+                if let Some(ident) = arg.ident.as_ref() {
+                    if ident == "skip" {
+                        return Ok(true);
+                    } else {
+                        return Err(Error::new(
+                            ident.span(),
+                            "expected `crate`, `forward` or  `skip`",
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    Ok(false)
+}
+
+fn autograph_skip_field(attrs: &[Attribute]) -> Result<bool> {
+    for attr in attrs {
+        if attr
+            .path
+            .get_ident()
+            .map_or(false, |path| path == "autograph")
+        {
+            let ident: Ident = attr.parse_args()?;
+            if ident == "skip" {
+                return Ok(true);
+            }
+            return Err(Error::new(ident.span(), "expected `skip`"));
+        }
+    }
+    Ok(false)
+}
+
 enum Layers {
     Struct(Vec<Layer>),
     Enum(Vec<Layer>),
 }
 
 impl Layers {
-    fn parse(data: &Data) -> Result<Self> {
-        match data {
-            Data::Struct(data) => Ok(Self::Struct(
-                data.fields
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(index, field)| Layer::parse_field(field, index))
-                    .collect(),
-            )),
+    fn parse(input: &DeriveInput) -> Result<Self> {
+        if autograph_skip(&input.attrs)? {
+            return Ok(Self::Struct(Vec::new()));
+        }
+        match &input.data {
+            Data::Struct(data) => {
+                let mut layers = Vec::with_capacity(data.fields.len());
+                for (index, field) in data.fields.iter().enumerate() {
+                    layers.extend(Layer::parse_field(field, index)?);
+                }
+                Ok(Self::Struct(layers))
+            }
             Data::Enum(data) => {
                 let mut layers = Vec::with_capacity(data.variants.len());
                 for variant in data.variants.iter() {
@@ -143,6 +195,7 @@ impl Layers {
             }
         }
     }
+    /*
     fn try_map(&self, method: Ident, arg: TokenStream2) -> TokenStream2 {
         match self {
             Self::Struct(layers) => {
@@ -165,6 +218,7 @@ impl Layers {
             }
         }
     }
+    */
 }
 
 enum Layer {
@@ -173,11 +227,13 @@ enum Layer {
 }
 
 impl Layer {
-    fn parse_field(field: &Field, index: usize) -> Option<Self> {
-        if let Some(ident) = field.ident.clone() {
-            Some(Self::Ident(ident))
+    fn parse_field(field: &Field, index: usize) -> Result<Option<Self>> {
+        if autograph_skip_field(&field.attrs)? {
+            Ok(None)
+        } else if let Some(ident) = field.ident.clone() {
+            Ok(Some(Self::Ident(ident)))
         } else {
-            Some(Self::Index(index.into()))
+            Ok(Some(Self::Index(index.into())))
         }
     }
     fn parse_variant(variant: &Variant) -> Result<Self> {
@@ -209,8 +265,8 @@ impl ToTokens for Layer {
 
 fn layer_impl(input: TokenStream2) -> Result<TokenStream2> {
     let input: DeriveInput = syn::parse2(input)?;
-    let layers = Layers::parse(&input.data)?;
     let autograph = autograph_crate(&input.attrs)?;
+    let layers = Layers::parse(&input)?;
     let ident = &input.ident;
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
     let try_for_each_parameter =
@@ -219,10 +275,8 @@ fn layer_impl(input: TokenStream2) -> Result<TokenStream2> {
         format_ident!("try_for_each_parameter_view_mut"),
         quote! { &mut f },
     );
-    let set_training = layers.try_for_each(format_ident!("set_training"), quote! { training });
     let cast_mut = layers.try_for_each(format_ident!("cast_mut"), quote!(scalar_type));
     let to_device_mut = layers.try_for_each(format_ident!("to_device_mut"), quote!(device.clone()));
-    let into_device = layers.try_map(format_ident!("into_device"), quote! { device.clone() });
     Ok(quote! {
         #[automatically_derived]
         impl #impl_generics Layer for #ident #ty_generics #where_clause {
@@ -239,25 +293,18 @@ fn layer_impl(input: TokenStream2) -> Result<TokenStream2> {
             {
                 #try_for_each_parameter_view_mut
             }
-            fn set_training(&mut self, training: bool) -> #autograph::anyhow::Result<()> {
-                #set_training
-            }
             fn cast_mut(&mut self, scalar_type: #autograph::krnl::scalar::ScalarType) -> #autograph::anyhow::Result<()> {
                 #cast_mut
             }
             fn to_device_mut(&mut self, device: #autograph::krnl::device::Device) -> #autograph::anyhow::Result<()> {
                 #to_device_mut
             }
-            fn into_device(self, device: #autograph::krnl::device::Device) -> #autograph::anyhow::Result<Self>
-            where Self: ::std::marker::Sized {
-                #into_device
-            }
         }
     })
 }
 
 /// Derive for Layer.
-#[proc_macro_derive(Layer, attributes(autograph, layer))]
+#[proc_macro_derive(Layer, attributes(autograph))]
 pub fn layer(input: TokenStream) -> TokenStream {
     match layer_impl(input.into()) {
         Ok(output) => output.into(),
@@ -267,9 +314,9 @@ pub fn layer(input: TokenStream) -> TokenStream {
 
 fn forward_impl(input: TokenStream2) -> Result<TokenStream2> {
     let input: DeriveInput = syn::parse2(input)?;
-    let layers = Layers::parse(&input.data)?;
     let autograph = autograph_crate(&input.attrs)?;
     let forward_args = ForwardArgs::from_attributes(&input.attrs)?;
+    let layers = Layers::parse(&input)?;
     let ident = &input.ident;
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
 
@@ -282,7 +329,7 @@ fn forward_impl(input: TokenStream2) -> Result<TokenStream2> {
                 }
             } else {
                 quote! {
-                    Ok(())
+                    Ok(input)
                 }
             }
         }
