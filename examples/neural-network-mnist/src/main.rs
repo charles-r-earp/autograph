@@ -317,9 +317,9 @@ where
     let mut stats = Stats::default();
     while let Some((x, t)) = iter.by_ref().next().transpose()? {
         stats.count += x.shape().first().unwrap();
-        model.set_training(true)?;
         let x = Variable::from(ScalarTensor::from(x).scaled_cast(image_scale)?);
         let t = ScalarTensor::from(t).into_shared()?;
+        model.init_parameter_grads()?;
         let y = model.forward(x)?;
         stats.correct += y.value().accuracy(t.view())?;
         let loss = y.cross_entropy_loss(t)?;
@@ -330,10 +330,7 @@ where
             .into_array()?
             .into_scalar();
         loss.backward()?;
-        model.try_for_each_parameter_view_mut(|parameter| {
-            optimizer.update(learning_rate, parameter)
-        })?;
-        model.set_training(false)?;
+        model.update(learning_rate, optimizer)?;
     }
     Ok(stats)
 }

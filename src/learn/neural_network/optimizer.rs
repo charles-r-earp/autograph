@@ -230,14 +230,34 @@ impl State {
             .iter_mut()
             .map(|(key, value)| (key.as_str(), value.as_mut()))
     }
+    pub(crate) fn same_device(&self, device: &Device) -> bool {
+        for (_key, value) in self.key_values.iter() {
+            if let Value::Tensor(tensor_value) = value {
+                if tensor_value.parameter_device && tensor_value.tensor.device() != *device {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+    pub(crate) fn same_scalar_type(&self, scalar_type: ScalarType) -> bool {
+        for (_key, value) in self.key_values.iter() {
+            if let Value::Tensor(tensor_value) = value {
+                if tensor_value.parameter_type && tensor_value.tensor.scalar_type() != scalar_type {
+                    return false;
+                }
+            }
+        }
+        true
+    }
     pub(crate) fn to_owned(&self) -> Result<Self> {
         let mut key_values = Vec::with_capacity(self.key_values.len());
         for (key, value) in self.key_values.iter() {
             let value = match value {
                 Value::Tensor(tensor_value) => Value::Tensor(TensorValue {
                     tensor: tensor_value.tensor.to_owned()?,
-                    parameter_type: tensor_value.parameter_type,
                     parameter_device: tensor_value.parameter_device,
+                    parameter_type: tensor_value.parameter_type,
                 }),
                 Value::Elem(elem) => Value::Elem(*elem),
             };
@@ -248,6 +268,42 @@ impl State {
             id: self.id,
             key_values,
         })
+    }
+    pub(crate) fn cast(&self, scalar_type: ScalarType) -> Result<Self> {
+        let mut key_values = Vec::with_capacity(self.key_values.len());
+        for (key, value) in self.key_values.iter() {
+            let value = match value {
+                Value::Tensor(tensor_value) => {
+                    let tensor = if tensor_value.parameter_type {
+                        tensor_value.tensor.cast(scalar_type)?
+                    } else {
+                        tensor_value.tensor.to_owned()?
+                    };
+                    Value::Tensor(TensorValue {
+                        tensor,
+                        parameter_device: tensor_value.parameter_device,
+                        parameter_type: tensor_value.parameter_type,
+                    })
+                }
+                Value::Elem(elem) => Value::Elem(*elem),
+            };
+            key_values.push((key.clone(), value));
+        }
+        Ok(Self {
+            name: self.name.clone(),
+            id: self.id,
+            key_values,
+        })
+    }
+    pub(crate) fn cast_mut(&mut self, scalar_type: ScalarType) -> Result<()> {
+        for (_, value) in self.key_values.iter_mut() {
+            if let Value::Tensor(tensor_value) = value {
+                if tensor_value.parameter_type {
+                    tensor_value.tensor.cast_mut(scalar_type)?;
+                }
+            }
+        }
+        Ok(())
     }
     pub(crate) fn to_device(&self, device: Device) -> Result<Self> {
         let mut key_values = Vec::with_capacity(self.key_values.len());
@@ -261,8 +317,8 @@ impl State {
                     };
                     Value::Tensor(TensorValue {
                         tensor,
-                        parameter_type: tensor_value.parameter_type,
                         parameter_device: tensor_value.parameter_device,
+                        parameter_type: tensor_value.parameter_type,
                     })
                 }
                 Value::Elem(elem) => Value::Elem(*elem),
@@ -275,7 +331,7 @@ impl State {
             key_values,
         })
     }
-    /*pub(crate) fn to_device_mut(&mut self, device: Device) -> Result<()> {
+    pub(crate) fn to_device_mut(&mut self, device: Device) -> Result<()> {
         for (_, value) in self.key_values.iter_mut() {
             if let Value::Tensor(tensor_value) = value {
                 if tensor_value.parameter_device {
@@ -284,12 +340,12 @@ impl State {
             }
         }
         Ok(())
-    }*/
+    }
 }
 
 /// Optimizer.
 pub trait Optimizer {
-    /// Performs the optimization, updating the parameter with `learning_rate`.
+    /// Updates `parameter` with `learning_rate`.
     fn update(&self, learning_rate: f32, parameter: ParameterViewMutD) -> Result<()>;
 }
 
@@ -344,7 +400,7 @@ impl Optimizer for SGD {
             bail!("SGD {scalar_type:?} unimplemented!");
         }
         self.init_state(&mut parameter)?;
-        if let Some(grad) = parameter.grad() {
+        if let Some(grad) = parameter.take_grad() {
             let (value, state) = parameter.value_view_optimizer_state_mut();
             let state = state.unwrap();
             let grad = grad.view();

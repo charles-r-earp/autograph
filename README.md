@@ -101,13 +101,11 @@ impl LeNet5 {
 }
 
 let mut model = LeNet5::new(device.clone(), ScalarType::F32)?;
-model.set_training(true)?;
+model.init_parameter_grads()?;
 let y = model.forward(x)?;
 let loss = y.cross_entropy_loss(t)?;
 loss.backward()?;
-model.try_for_each_parameter_view_mut(|parameter| {
-    optimizer.update(learning_rate, parameter)
-})?;
+model.update(learning_rate, &optimizer)?;
 ```
 
 See the [Neural Network MNIST](examples/neural-network-mnist) example.

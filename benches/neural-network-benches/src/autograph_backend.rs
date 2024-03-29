@@ -7,7 +7,7 @@ use autograph::{
         neural_network::{
             autograd::{Variable2, Variable4},
             layer::{Conv2, Dense, Flatten, Forward, Layer, MaxPool2, Relu},
-            optimizer::{Optimizer, SGD},
+            optimizer::SGD,
         },
     },
     tensor::ScalarArcTensor,
@@ -68,7 +68,7 @@ impl LeNet5Classifier {
         Ok(())
     }
     pub fn train(&mut self, batch_size: usize) -> Result<()> {
-        self.model.set_training(true)?;
+        self.model.init_parameter_grads()?;
         let x = ScalarArcTensor::zeros(
             self.device.clone(),
             [batch_size, 1, 28, 28],
@@ -80,10 +80,7 @@ impl LeNet5Classifier {
         loss.backward()?;
         let optimizer = self.optimizer.as_ref().unwrap();
         let learning_rate = 0.01;
-        self.model.try_for_each_parameter_view_mut(|parameter| {
-            optimizer.update(learning_rate, parameter)
-        })?;
-        self.model.set_training(false)?;
+        self.model.update(learning_rate, optimizer)?;
         Ok(())
     }
 }

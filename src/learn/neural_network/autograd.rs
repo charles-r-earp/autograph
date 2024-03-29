@@ -443,7 +443,6 @@ impl<D: Dimension + 'static> Variable<D> {
         }
         builder.build(self.into_value().permuted_axes(axes))
     }
-    #[doc(hidden)]
     /// Converts to standard layout.
     ///
     /// See [`ArcTensor::to_standard_layout_shared()`].
@@ -632,7 +631,7 @@ impl Dot<Self> for Variable2 {
 /// Parameter values are updated during training by the [`Optimizer`]. A Parameter
 /// can be converted to a [`Variable`] via [`.to_variable()`](Parameter::to_variable),
 /// which allows it to be used in operations.
-/// During training, [`.set_training(true)`](Parameter::set_training) ensures that
+/// During training, [`.init_grad()`](ParameterBase::init_grad) ensures that
 /// the variable created from this parameter has a [`Node`].
 /// A parameter stores the [`OptimizerState`] which can be updated during training
 /// in [`Optimizer::update`].
@@ -648,7 +647,7 @@ impl Dot<Self> for Variable2 {
 pub struct ParameterBase<S: ScalarData, D: Dimension> {
     value: ScalarTensorBase<S, D>,
     #[cfg_attr(feature = "serde", serde(skip))]
-    grad: Option<Arc<RwLock<Option<ScalarArcTensorD>>>>,
+    grad: ParamGrad<'static>,
     #[cfg_attr(
         feature = "serde",
         serde(skip_serializing_if = "OptimState::is_none", default)
@@ -714,7 +713,37 @@ impl<S: ScalarData, D: Dimension> ParameterBase<S, D> {
     pub fn grad(&self) -> Option<ScalarArcTensor<D>> {
         Some(
             self.grad
-                .as_ref()?
+                .get()?
+                .read()
+                .clone()?
+                .into_dimensionality()
+                .unwrap(),
+        )
+    }
+    /// Initializes the gradient.
+    ///
+    /// Should be called prior to the forward pass during training. Ensures that [`.to_variable()`](Self::to_variable)
+    /// will have a [`Node`] for computing a gradient.
+    ///
+    /// Clones or variables created from this parameter will be unaffected,
+    /// and no longer point to the same gradient.
+    ///
+    /// Note: Does not allocate a gradient tensor, it will be computed in the backward pass.
+    pub fn init_grad(&mut self) {
+        self.grad.init();
+    }
+    /// Takes the gradient out of the parameter.
+    ///
+    /// This should be called by the optimizer in [`.update()`](Optimizer::update).
+    ///
+    /// Resets this parameter back to initial state, where [`.to_variable()`](Self::to_variable) does
+    /// not have a [`Node`]. Clones or variables created from this parameter will be unaffected,
+    /// and no longer point to the same gradient.
+    pub fn take_grad(&mut self) -> Option<ScalarArcTensor<D>> {
+        Some(
+            self.grad
+                .as_mut()
+                .take()?
                 .read()
                 .clone()?
                 .into_dimensionality()
@@ -740,18 +769,6 @@ impl<S: ScalarData, D: Dimension> ParameterBase<S, D> {
     /// The dim.
     pub fn raw_dim(&self) -> D {
         self.value.raw_dim()
-    }
-    /// Enables / disables training.
-    ///
-    /// If `training`, ensures that when the parameter is converted to a [`Variable`],
-    /// it will have a [`Node`] for computing a gradient.
-    /// If `training` is false, discards any gradient that has been computed.
-    pub fn set_training(&mut self, training: bool) {
-        if training && self.grad.is_none() {
-            self.grad.replace(Arc::new(RwLock::default()));
-        } else if !training {
-            self.grad = None;
-        }
     }
     /// Borrows the optimizer state.
     pub fn optimizer_state(&self) -> Option<&OptimizerState> {
@@ -799,7 +816,7 @@ impl<S: ScalarData, D: Dimension> ParameterBase<S, D> {
     {
         Ok(ParameterBase {
             value: self.value.into_dimensionality()?,
-            grad: self.grad.clone(),
+            grad: self.grad,
             optim_state: self.optim_state,
         })
     }
@@ -807,7 +824,7 @@ impl<S: ScalarData, D: Dimension> ParameterBase<S, D> {
     pub fn into_dyn(self) -> ParameterBase<S, IxDyn> {
         ParameterBase {
             value: self.value.into_dyn(),
-            grad: self.grad.clone(),
+            grad: self.grad,
             optim_state: self.optim_state,
         }
     }
@@ -817,7 +834,7 @@ impl<D: Dimension> Parameter<D> {
     /// Converts to a `Variable`.
     pub fn to_variable(&self) -> Variable<D> {
         let value = self.value.clone();
-        let node = self.grad.as_ref().map(|grad| {
+        let node = self.grad.get().map(|grad| {
             Node::new(
                 value.device(),
                 value.raw_dim().into_dyn(),
@@ -835,17 +852,43 @@ impl<D: Dimension> Parameter<D> {
     /// See [`TensorBase::make_view_mut`].
     pub fn make_view_mut(&mut self) -> Result<ParameterViewMut<D>> {
         let value = self.value.make_view_mut()?;
-        let grad = self.grad.clone();
-        let optim_state = self.optim_state.make_mut()?;
-        let optim_state = OptimState::StateMut(unsafe {
-            let optim_state_ptr = optim_state as *mut Option<Arc<OptimizerState>>;
-            &mut *optim_state_ptr as &mut Option<Arc<OptimizerState>>
-        });
+        let grad = unsafe { self.grad.borrow_mut_static() };
+        let optim_state = unsafe { self.optim_state.borrow_mut_static()? };
+        /*let optim_state = OptimState::StateMut(unsafe {
+        let optim_state_ptr = optim_state as *mut Option<Arc<OptimizerState>>;
+        &mut *optim_state_ptr as &mut Option<Arc<OptimizerState>>
+        });*/
         Ok(ParameterViewMut {
             value,
             grad,
             optim_state,
         })
+    }
+    /*
+    /// Enables or disables training.
+    ///
+    /// If `training`, ensures that when the parameter is converted to a [`Variable`],
+    /// it will have a [`Node`] for computing a gradient.
+    /// If `training` is false, discards any gradient that has been computed.
+    ///
+    /// Training should be enabled prior to the forward pass for each parameter that
+    /// is being trained (and which should have gradients computed), and disabled after
+    /// the optimizer
+    pub fn set_training(&mut self, training: bool) {
+        if training && self.grad.is_none() {
+            self.grad.replace(Arc::new(RwLock::default()));
+        } else if !training {
+            self.grad = None;
+        }
+    }
+    */
+    /// Casts to `scalar_type` in place if necessary.
+    pub fn cast_mut(&mut self, scalar_type: ScalarType) -> Result<()> {
+        let prev = self.value.scalar_type();
+        self.value.cast_mut(scalar_type)?;
+        self.grad.cast_mut(scalar_type, prev != scalar_type)?;
+        self.optim_state.cast_mut(scalar_type)?;
+        Ok(())
     }
     /// Moves the parameter into `device`.
     ///
@@ -857,15 +900,9 @@ impl<D: Dimension> Parameter<D> {
     }
     /// Transfers the parameter to `device` if necessary.
     pub fn to_device_mut(&mut self, device: Device) -> Result<()> {
+        let prev = self.value.device();
         self.value.to_device_mut(device.clone())?;
-        if let Some(grad) = self.grad.as_mut() {
-            let value = if let Some(value) = grad.read().clone() {
-                Some(value.clone().into_device_shared(device.clone())?)
-            } else {
-                None
-            };
-            *grad = Arc::new(RwLock::new(value));
-        }
+        self.grad.to_device_mut(device.clone(), prev != device)?;
         self.optim_state.to_device_mut(device)?;
         Ok(())
     }
@@ -893,7 +930,7 @@ impl<D: Dimension> From<ScalarArcTensor<D>> for Parameter<D> {
     fn from(tensor: ScalarArcTensor<D>) -> Self {
         Self {
             value: tensor,
-            grad: None,
+            grad: ParamGrad::default(),
             optim_state: OptimState::default(),
         }
     }
@@ -903,9 +940,106 @@ impl<S: ScalarData, D: Dimension> Debug for ParameterBase<S, D> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("ParameterBase")
             .field("value", &self.value)
-            .field("grad", &self.grad)
-            .field("optimizer_state", &self.optim_state.as_ref())
+            .field("grad", &self.grad.as_ref())
+            .field("optimizer_state", self.optim_state.as_ref())
             .finish()
+    }
+}
+
+// # Safety
+// Borrows `x` with static lifetime. Caller must ensure it
+// is valid to do so.
+unsafe fn borrow_static_mut<T>(x: &mut T) -> &'static mut T {
+    unsafe { &mut *(x as *mut T) }
+}
+
+enum ParamGrad<'a> {
+    Owned(Option<Arc<RwLock<Option<ScalarArcTensorD>>>>),
+    BorrowedMut(&'a mut Option<Arc<RwLock<Option<ScalarArcTensorD>>>>),
+}
+
+impl ParamGrad<'_> {
+    fn get(&self) -> Option<&Arc<RwLock<Option<ScalarArcTensorD>>>> {
+        match self {
+            Self::Owned(grad) => grad.as_ref(),
+            Self::BorrowedMut(grad) => grad.as_ref(),
+        }
+    }
+    fn get_mut(&mut self) -> Option<&mut Arc<RwLock<Option<ScalarArcTensorD>>>> {
+        match self {
+            Self::Owned(grad) => grad.as_mut(),
+            Self::BorrowedMut(grad) => grad.as_mut(),
+        }
+    }
+    fn as_ref(&self) -> &Option<Arc<RwLock<Option<ScalarArcTensorD>>>> {
+        match self {
+            Self::Owned(grad) => grad,
+            Self::BorrowedMut(grad) => grad,
+        }
+    }
+    fn as_mut(&mut self) -> &mut Option<Arc<RwLock<Option<ScalarArcTensorD>>>> {
+        match self {
+            Self::Owned(grad) => grad,
+            Self::BorrowedMut(grad) => grad,
+        }
+    }
+    // # Safety
+    // The ParameterViewMut borrows from a Parameter.
+    unsafe fn borrow_mut_static(&mut self) -> ParamGrad<'static> {
+        match self {
+            Self::Owned(grad) => ParamGrad::BorrowedMut(unsafe { borrow_static_mut(grad) }),
+            Self::BorrowedMut(_) => unreachable!(),
+        }
+    }
+    fn init(&mut self) {
+        self.as_mut().replace(Arc::new(RwLock::new(None)));
+    }
+    fn cast_mut(&mut self, scalar_type: ScalarType, reset: bool) -> Result<()> {
+        if let Some(grad) = self.as_mut() {
+            let guard = grad.read();
+            if let Some(value) = guard.as_ref() {
+                if value.scalar_type() != scalar_type {
+                    let value = value.cast(scalar_type)?;
+                    std::mem::drop(guard);
+                    *grad = Arc::new(RwLock::new(Some(value.into())));
+                }
+            } else if reset {
+                std::mem::drop(guard);
+                *grad = Arc::new(RwLock::new(None));
+            };
+        }
+        Ok(())
+    }
+    fn to_device_mut(&mut self, device: Device, reset: bool) -> Result<()> {
+        if let Some(grad) = self.get_mut() {
+            let guard = grad.read();
+            if let Some(value) = guard.as_ref() {
+                if value.device() != device {
+                    let value = value.to_device_shared(device)?;
+                    std::mem::drop(guard);
+                    *grad = Arc::new(RwLock::new(Some(value)));
+                }
+            } else if reset {
+                std::mem::drop(guard);
+                *grad = Arc::new(RwLock::new(None));
+            };
+        }
+        Ok(())
+    }
+}
+
+impl Default for ParamGrad<'static> {
+    fn default() -> Self {
+        Self::Owned(None)
+    }
+}
+
+impl Clone for ParamGrad<'static> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Owned(grad) => Self::Owned(grad.clone()),
+            Self::BorrowedMut(_) => unreachable!(),
+        }
     }
 }
 
@@ -954,11 +1088,43 @@ impl OptimState<'_> {
         }
         Ok(self.as_mut())
     }
+    // # Safety
+    // The ParameterViewMut borrows from a Parameter.
+    unsafe fn borrow_mut_static(&mut self) -> Result<OptimState<'static>> {
+        match self {
+            Self::State(inner) => {
+                if let Some(state) = inner.as_mut() {
+                    if Arc::get_mut(state).is_none() {
+                        *state = Arc::new(state.as_ref().to_owned()?);
+                    }
+                }
+                Ok(OptimState::StateMut(unsafe { borrow_static_mut(inner) }))
+            }
+            Self::StateMut(_) => unreachable!(),
+        }
+    }
+    fn cast_mut(&mut self, scalar_type: ScalarType) -> Result<()> {
+        let inner = self.as_mut();
+        if let Some(state) = inner.as_mut() {
+            if !state.same_scalar_type(scalar_type) {
+                if let Some(state) = Arc::get_mut(state) {
+                    state.cast_mut(scalar_type)?;
+                } else {
+                    *state = Arc::new(state.as_ref().cast(scalar_type)?);
+                }
+            }
+        }
+        Ok(())
+    }
     fn to_device_mut(&mut self, device: Device) -> Result<()> {
         let inner = self.as_mut();
         if let Some(state) = inner.as_mut() {
-            if Arc::get_mut(state).is_none() {
-                *state = Arc::new(state.as_ref().to_device(device)?);
+            if !state.same_device(&device) {
+                if let Some(state) = Arc::get_mut(state) {
+                    state.to_device_mut(device)?;
+                } else {
+                    *state = Arc::new(state.as_ref().to_device(device)?);
+                }
             }
         }
         Ok(())

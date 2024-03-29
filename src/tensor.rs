@@ -296,7 +296,7 @@ fn broadcast<D: Dimension, E: IntoDimension>(
 fn collapse_axis<D: Dimension>(dims: &mut D, strides: &D, Axis(axis): Axis, index: usize) -> isize {
     let dim = dims[axis];
     assert!(index < dim);
-    dims[0] = 1;
+    dims.slice_mut()[axis] = 1;
     index as isize * strides[axis] as isize
 }
 
@@ -854,22 +854,21 @@ impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
         S: ScalarDataOwned,
     {
         if self.device() == device {
-            Ok(())
-        } else {
-            let ScalarTensor {
-                dim,
-                strides,
-                buffer,
-                offset,
-            } = self.to_device(device)?;
-            *self = Self {
-                dim,
-                strides,
-                buffer: ScalarBufferBase::from_scalar_buffer(buffer),
-                offset,
-            };
-            Ok(())
+            return Ok(());
         }
+        let ScalarTensor {
+            dim,
+            strides,
+            buffer,
+            offset,
+        } = self.to_device(device)?;
+        *self = Self {
+            dim,
+            strides,
+            buffer: ScalarBufferBase::from_scalar_buffer(buffer),
+            offset,
+        };
+        Ok(())
     }
     /// Transfers the tensor into the `device` as a scalar arc tensor.
     ///
@@ -1137,36 +1136,57 @@ impl<S: ScalarData, D: Dimension> Debug for ScalarTensorBase<S, D> {
 }
 
 /// Casts
-#[allow(unused)]
 impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
     /// Casts the tensor into a new tensor.
     ///
     /// See [`BufferBase::cast_into()`].
     pub fn cast_into(self, scalar_type: ScalarType) -> Result<ScalarTensor<D>> {
-        if !self.is_contiguous() {
-            todo!()
+        if self.scalar_type() == scalar_type {
+            self.into_owned()
+        } else {
+            self.cast(scalar_type)
         }
-        Ok(ScalarTensorBase {
-            dim: self.dim,
-            strides: self.strides,
-            buffer: self.buffer.cast_into(scalar_type)?,
-            offset: 0,
-        })
     }
     /// Casts the tensor to a new tensor.
     ///
     /// See [`BufferBase::cast()`].
     pub fn cast(&self, scalar_type: ScalarType) -> Result<ScalarTensor<D>> {
-        if self.is_contiguous() {
+        if self.scalar_type() == scalar_type {
+            self.to_owned()
+        } else if !self.is_contiguous() {
+            self.scaled_cast(ScalarElem::one(scalar_type))
+        } else {
             Ok(ScalarTensorBase {
                 dim: self.dim.clone(),
                 strides: self.strides.clone(),
                 buffer: self.buffer.cast(scalar_type)?,
                 offset: 0,
             })
-        } else {
-            self.scaled_cast(ScalarElem::zero(scalar_type))
         }
+    }
+    /// Casts the tensor in place.
+    ///
+    /// See [`BufferBase::cast()`].
+    pub fn cast_mut(&mut self, scalar_type: ScalarType) -> Result<()>
+    where
+        S: ScalarDataOwned,
+    {
+        if self.scalar_type() == scalar_type {
+            return Ok(());
+        }
+        let ScalarTensor {
+            dim,
+            strides,
+            buffer,
+            offset,
+        } = self.cast(scalar_type)?;
+        *self = Self {
+            dim,
+            strides,
+            buffer: ScalarBufferBase::from_scalar_buffer(buffer),
+            offset,
+        };
+        Ok(())
     }
     /// Casts the tensor into a new tensor.
     ///
@@ -1777,22 +1797,21 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
         S: DataOwned,
     {
         if self.device() == device {
-            Ok(())
-        } else {
-            let Tensor {
-                dim,
-                strides,
-                buffer,
-                offset,
-            } = self.to_device(device)?;
-            *self = Self {
-                dim,
-                strides,
-                buffer: BufferBase::from_buffer(buffer),
-                offset,
-            };
-            Ok(())
+            return Ok(());
         }
+        let Tensor {
+            dim,
+            strides,
+            buffer,
+            offset,
+        } = self.to_device(device)?;
+        *self = Self {
+            dim,
+            strides,
+            buffer: BufferBase::from_buffer(buffer),
+            offset,
+        };
+        Ok(())
     }
     /// Transfers the tensor into the `device`.
     ///
@@ -1938,7 +1957,7 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
             Some(unsafe {
                 ArrayViewMut::from_shape_ptr(
                     self.dim.clone().strides(self.strides.clone()),
-                    &mut host_slice[self.offset] as *mut T,
+                    host_slice[self.offset..].as_mut_ptr(),
                 )
             })
         } else {
@@ -2126,21 +2145,21 @@ impl<S: Data, D: Dimension> Debug for TensorBase<S, D> {
 }
 
 /// Casts
-#[allow(unused)]
 impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     /// Casts the tensor into a new tensor.
     ///
     /// See [`BufferBase::cast_into()`].
     pub fn cast_into<Y: Scalar>(self) -> Result<Tensor<Y, D>> {
-        if !self.is_contiguous() {
-            todo!()
+        if T::SCALAR_TYPE == Y::SCALAR_TYPE && self.is_contiguous() {
+            Ok(TensorBase {
+                dim: self.dim,
+                strides: self.strides,
+                buffer: self.buffer.cast_into()?,
+                offset: 0,
+            })
+        } else {
+            self.cast()
         }
-        Ok(TensorBase {
-            dim: self.dim,
-            strides: self.strides,
-            buffer: self.buffer.cast_into()?,
-            offset: 0,
-        })
     }
     /// Casts the tensor to a new tensor.
     ///
