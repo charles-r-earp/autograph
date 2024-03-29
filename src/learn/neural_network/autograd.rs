@@ -946,6 +946,13 @@ impl<S: ScalarData, D: Dimension> Debug for ParameterBase<S, D> {
     }
 }
 
+// # Safety
+// Borrows `x` with static lifetime. Caller must ensure it
+// is valid to do so.
+unsafe fn borrow_static_mut<T>(x: &mut T) -> &'static mut T {
+    unsafe { &mut *(x as *mut T) }
+}
+
 enum ParamGrad<'a> {
     Owned(Option<Arc<RwLock<Option<ScalarArcTensorD>>>>),
     BorrowedMut(&'a mut Option<Arc<RwLock<Option<ScalarArcTensorD>>>>),
@@ -980,9 +987,7 @@ impl ParamGrad<'_> {
     // The ParameterViewMut borrows from a Parameter.
     unsafe fn borrow_mut_static(&mut self) -> ParamGrad<'static> {
         match self {
-            Self::Owned(grad) => {
-                ParamGrad::BorrowedMut(unsafe { std::ptr::from_mut(grad).as_mut().unwrap() })
-            }
+            Self::Owned(grad) => ParamGrad::BorrowedMut(unsafe { borrow_static_mut(grad) }),
             Self::BorrowedMut(_) => unreachable!(),
         }
     }
@@ -1093,9 +1098,7 @@ impl OptimState<'_> {
                         *state = Arc::new(state.as_ref().to_owned()?);
                     }
                 }
-                Ok(OptimState::StateMut(unsafe {
-                    std::ptr::from_mut(inner).as_mut().unwrap()
-                }))
+                Ok(OptimState::StateMut(unsafe { borrow_static_mut(inner) }))
             }
             Self::StateMut(_) => unreachable!(),
         }
