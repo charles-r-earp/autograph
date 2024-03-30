@@ -976,7 +976,7 @@ impl<'a, D: Dimension> ScalarTensorViewMut<'a, D> {
 impl<D: Dimension> ScalarArcTensor<D> {
     /// Act like a larger size and/or shape array by *broadcasting* into a larger shape, if possible.
     ///
-    /// See [`ArcTensor::broadcast_shared`].
+    /// See [`ArcTensor::broadcast_shared()`].
     pub fn broadcast_shared<E>(&self, dim: E) -> Option<ScalarArcTensor<E::Dim>>
     where
         E: IntoDimension,
@@ -1323,7 +1323,7 @@ pub type TensorView6<'a, T> = TensorView<'a, T, Ix6>;
 /// TensorView with dynamic dimensions.
 pub type TensorViewD<'a, T> = TensorView<'a, T, IxDyn>;
 
-/// Mutably borrowed Tensor
+/// Mutably borrowed Tensor.
 ///
 /// See [`TensorBase`].
 pub type TensorViewMut<'a, T, D> = TensorBase<SliceMutRepr<'a, T>, D>;
@@ -1520,7 +1520,7 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     }
     /// Act like a larger size and/or shape array by *broadcasting* into a larger shape, if possible.
     ///
-    /// See <https://docs.rs/ndarray/0.15.6/ndarray/struct.ArrayBase.html#method.broadcast>
+    /// See [`ArrayBase::broadcast()`].
     pub fn broadcast<E>(&self, dim: E) -> Option<TensorView<T, E::Dim>>
     where
         E: IntoDimension,
@@ -1983,7 +1983,7 @@ impl<'a, T: Scalar, D: Dimension> CowTensor<'a, T, D> {
 impl<T: Scalar, D: Dimension> ArcTensor<T, D> {
     /// Act like a larger size and/or shape array by *broadcasting* into a larger shape, if possible.
     ///
-    /// See [`TensorBase::broadcast`].
+    /// See [`TensorBase::broadcast()`].
     pub fn broadcast_shared<E>(&self, dim: E) -> Option<ArcTensor<T, E::Dim>>
     where
         E: IntoDimension,

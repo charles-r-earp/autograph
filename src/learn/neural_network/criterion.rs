@@ -25,8 +25,7 @@ use paste::paste;
 /// - input: bf16, f32
 /// - target: u8, u16, u32
 ///
-/// **Panics**
-///
+/// # Panics
 /// Panics on the host if `target` indices are out of bounds.
 impl CrossEntropyLoss<ScalarArcTensor1> for Variable2 {
     type Output = Variable0;

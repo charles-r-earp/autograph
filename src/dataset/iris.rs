@@ -73,7 +73,7 @@ Summary Statistics:
 9. Class Distribution: 33.3% for each of 3 classes.
 */
 
-use ndarray::{Array, Array1, Array2};
+use ndarray::{arr1, arr2, Array1, Array2};
 
 // Data from http://archive.ics.uci.edu/ml/machine-learning-databases/iris/iris.data
 
@@ -265,13 +265,11 @@ pub struct Iris {
 
 impl Iris {
     /// Constructs the dataset.
+    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
-        let dimensions =
-            Array::from_shape_vec([150, 4], DIMENSIONS.into_iter().flatten().collect()).unwrap();
-        let classes = Array::from(CLASSES.to_vec());
         Self {
-            dimensions,
-            classes,
+            dimensions: arr2(&DIMENSIONS),
+            classes: arr1(&CLASSES),
         }
     }
 }

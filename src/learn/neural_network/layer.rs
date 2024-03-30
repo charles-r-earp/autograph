@@ -788,12 +788,6 @@ impl<T: Layer> Layer for Vec<T> {
         self.iter_mut()
             .try_for_each(|layer| layer.try_for_each_parameter_view_mut(&mut f))
     }
-    /*
-    fn set_training(&mut self, training: bool) -> Result<()> {
-        self.iter_mut()
-            .try_for_each(|layer| layer.set_training(training))
-    }
-    */
     fn cast_mut(&mut self, scalar_type: ScalarType) -> Result<()> {
         self.iter_mut()
             .try_for_each(|layer| layer.cast_mut(scalar_type))
@@ -904,15 +898,6 @@ impl<D: Dimension> Layer for Conv<D> {
         }
         Ok(())
     }
-    /*
-    fn set_training(&mut self, training: bool) -> Result<()> {
-        self.weight.set_training(training);
-        if let Some(bias) = self.bias.as_mut() {
-            bias.set_training(training);
-        }
-        Ok(())
-    }
-    */
     fn cast_mut(&mut self, scalar_type: ScalarType) -> Result<()> {
         if !matches!(scalar_type, ScalarType::BF16 | ScalarType::F32) {
             bail!("Conv {scalar_type:?} not implemented!");
@@ -1235,7 +1220,7 @@ impl Forward<Variable4> for MaxPool2 {
 /// See [`Variable::flatten()`](Variable::flatten).
 #[derive(Default, Clone, Copy, Debug, Layer)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[autograph(skip, crate=crate)]
+#[autograph(crate=crate)]
 pub struct Flatten;
 
 impl<D: Dimension + 'static> Forward<Variable<D>> for Flatten {
@@ -1248,7 +1233,7 @@ impl<D: Dimension + 'static> Forward<Variable<D>> for Flatten {
 /// Identity.
 #[derive(Default, Clone, Copy, Debug, Layer)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[autograph(skip, crate=crate)]
+#[autograph(crate=crate)]
 pub struct Identity;
 
 impl<X> Forward<X> for Identity {
@@ -1263,7 +1248,7 @@ impl<X> Forward<X> for Identity {
 /// Implemented for bf16 and f32.
 #[derive(Default, Clone, Copy, Debug, Layer)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[autograph(skip, crate=crate)]
+#[autograph(crate=crate)]
 pub struct Relu;
 
 impl<D: Dimension + 'static> Forward<Variable<D>> for Relu {

@@ -287,21 +287,21 @@ pub struct Variable<D: Dimension> {
     node: Option<Node<D>>,
 }
 
-/// Variable with 1 element
+/// Variable with 1 element.
 pub type Variable0 = Variable<Ix0>;
-/// Variable with 1 dimension
+/// Variable with 1 dimension.
 pub type Variable1 = Variable<Ix1>;
-/// Variable with 2 dimensions
+/// Variable with 2 dimensions.
 pub type Variable2 = Variable<Ix2>;
-/// Variable with 3 dimensions
+/// Variable with 3 dimensions.
 pub type Variable3 = Variable<Ix3>;
-/// Variable with 4 dimensions
+/// Variable with 4 dimensions.
 pub type Variable4 = Variable<Ix4>;
-/// Variable with 5 dimensions
+/// Variable with 5 dimensions.
 pub type Variable5 = Variable<Ix5>;
-/// Variable with 6 dimensions
+/// Variable with 6 dimensions.
 pub type Variable6 = Variable<Ix6>;
-/// Variable with dynamic dimensions
+/// Variable with dynamic dimensions.
 pub type VariableD = Variable<IxDyn>;
 
 impl<D: Dimension> Variable<D> {
@@ -854,34 +854,12 @@ impl<D: Dimension> Parameter<D> {
         let value = self.value.make_view_mut()?;
         let grad = unsafe { self.grad.borrow_mut_static() };
         let optim_state = unsafe { self.optim_state.borrow_mut_static()? };
-        /*let optim_state = OptimState::StateMut(unsafe {
-        let optim_state_ptr = optim_state as *mut Option<Arc<OptimizerState>>;
-        &mut *optim_state_ptr as &mut Option<Arc<OptimizerState>>
-        });*/
         Ok(ParameterViewMut {
             value,
             grad,
             optim_state,
         })
     }
-    /*
-    /// Enables or disables training.
-    ///
-    /// If `training`, ensures that when the parameter is converted to a [`Variable`],
-    /// it will have a [`Node`] for computing a gradient.
-    /// If `training` is false, discards any gradient that has been computed.
-    ///
-    /// Training should be enabled prior to the forward pass for each parameter that
-    /// is being trained (and which should have gradients computed), and disabled after
-    /// the optimizer
-    pub fn set_training(&mut self, training: bool) {
-        if training && self.grad.is_none() {
-            self.grad.replace(Arc::new(RwLock::default()));
-        } else if !training {
-            self.grad = None;
-        }
-    }
-    */
     /// Casts to `scalar_type` in place if necessary.
     pub fn cast_mut(&mut self, scalar_type: ScalarType) -> Result<()> {
         let prev = self.value.scalar_type();
