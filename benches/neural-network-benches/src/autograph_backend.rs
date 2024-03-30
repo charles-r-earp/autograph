@@ -74,8 +74,8 @@ impl LeNet5Classifier {
             [batch_size, 1, 28, 28],
             self.scalar_type,
         )?;
-        let t = ScalarArcTensor::zeros(self.device.clone(), batch_size, ScalarType::U8)?;
         let y = self.model.forward(x.into())?;
+        let t = ScalarArcTensor::zeros(self.device.clone(), batch_size, ScalarType::U8)?;
         let loss = y.cross_entropy_loss(t)?;
         loss.backward()?;
         let optimizer = self.optimizer.as_ref().unwrap();

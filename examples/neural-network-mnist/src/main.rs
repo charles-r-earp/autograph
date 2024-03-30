@@ -9,13 +9,16 @@ use autograph::{
     learn::{
         criterion::{Accuracy, CrossEntropyLoss},
         neural_network::{
-            autograd::{Variable, Variable2, Variable4},
+            autograd::{Variable2, Variable4},
             layer::{Conv2, Dense, Flatten, Forward, Layer, MaxPool2, Relu},
             optimizer::{Optimizer, SGD},
         },
     },
-    ndarray::{self, ArcArray, ArcArray1, Axis, Dimension, Ix4},
-    tensor::{CowTensor, ScalarTensor, Tensor, Tensor1, Tensor4},
+    ndarray::{self, ArrayView1, ArrayView4, Axis, Dimension},
+    tensor::{
+        CowTensor4, ScalarArcTensor, ScalarCowTensor, ScalarTensor1, ScalarTensor4, Tensor,
+        TensorView1, TensorView4,
+    },
 };
 use clap::{Parser, ValueEnum};
 use num_format::{Locale, ToFormattedString};
@@ -162,9 +165,6 @@ fn main() -> Result<()> {
         .download(true)
         .verbose(true)
         .build()?;
-    let (train_images, train_classes) =
-        (ArcArray::from(train_images), ArcArray::from(train_classes));
-    let (test_images, test_classes) = (ArcArray::from(test_images), ArcArray::from(test_classes));
     let device = if let Some(index) = options.device {
         Device::builder().index(index).build()?
     } else {
@@ -202,71 +202,83 @@ fn main() -> Result<()> {
     for epoch in 1..=options.epochs {
         let epoch_start = Instant::now();
         let train_iter = shuffled_batches(
-            train_images.clone(),
-            train_classes.clone(),
+            train_images.view(),
+            image_scale,
+            train_classes.view(),
             device.clone(),
             options.train_batch_size,
         );
-        let train_stats = train(
-            &mut model,
-            image_scale,
-            &optimizer,
-            options.learning_rate,
-            train_iter,
-        )?;
+        let train_stats = train(&mut model, &optimizer, options.learning_rate, train_iter)?;
         let train_count = train_stats.count;
         let train_correct = train_stats.correct;
         let train_loss = train_stats.mean_loss();
         let train_acc = train_stats.accuracy();
         let test_iter = batches(
-            test_images.clone(),
-            test_classes.clone(),
+            test_images.view(),
+            image_scale,
+            test_classes.view(),
             device.clone(),
             options.test_batch_size,
         );
-        let test_stats = test(&model, image_scale, test_iter)?;
+        let test_stats = test(&model, test_iter)?;
         let test_count = test_stats.count;
         let test_correct = test_stats.correct;
         let test_loss = test_stats.mean_loss();
         let test_acc = test_stats.accuracy();
         let epoch_elapsed = epoch_start.elapsed();
-        println!(
-            "[{epoch}] train_loss: {train_loss:.5} train_acc: {train_acc:.2}% {train_correct}/{train_count} test_loss: {test_loss:.5} test_acc: {test_acc:.2}% {test_correct}/{test_count} elapsed: {epoch_elapsed:.2?}"
-        );
+        print!("[{epoch}] train_loss: {train_loss:.5} train_acc: {train_acc:.2}% {train_correct}/{train_count} ");
+        println!("test_loss: {test_loss:.5} test_acc: {test_acc:.2}% {test_correct}/{test_count} elapsed: {epoch_elapsed:.2?}");
     }
     println!("Finished in {:?}.", start.elapsed());
     Ok(())
 }
 
-fn batches(
-    images: ArcArray<u8, Ix4>,
-    classes: ArcArray1<u8>,
+fn images_to_device_and_scale(
+    mut images: CowTensor4<u8>,
+    device: Device,
+    scale: ScalarElem,
+) -> Result<ScalarTensor4> {
+    images.to_device_mut(device)?;
+    ScalarCowTensor::from(images).scaled_cast(scale)
+}
+
+fn batches<'a>(
+    images: ArrayView4<'a, u8>,
+    image_scale: ScalarElem,
+    classes: ArrayView1<'a, u8>,
     device: Device,
     batch_size: usize,
-) -> impl Iterator<Item = Result<(Tensor4<u8>, Tensor1<u8>)>> {
+) -> impl Iterator<Item = Result<(ScalarTensor4, ScalarTensor1)>> + 'a {
     let (count, _inputs, _height, _width) = images.dim();
     (0..count).step_by(batch_size).map(move |index| {
         let end = (index + batch_size).min(count);
-        let images = images.slice_axis(
-            Axis(0),
-            ndarray::Slice::new(index as isize, Some(end as isize), 1),
-        );
-        let classes = classes.slice_axis(
-            Axis(0),
-            ndarray::Slice::new(index as isize, Some(end as isize), 1),
-        );
-        let images = CowTensor::from(images).to_device(device.clone());
-        let classes = CowTensor::from(classes).to_device(device.clone());
-        images.and_then(|images| Ok((images, classes?)))
+        let images: TensorView4<u8> = images
+            .slice_axis(
+                Axis(0),
+                ndarray::Slice::new(index as isize, Some(end as isize), 1),
+            )
+            .try_into()
+            .unwrap();
+        let classes: TensorView1<u8> = classes
+            .slice_axis(
+                Axis(0),
+                ndarray::Slice::new(index as isize, Some(end as isize), 1),
+            )
+            .try_into()
+            .unwrap();
+        let images = images_to_device_and_scale(images.into(), device.clone(), image_scale)?;
+        let classes = classes.into_device(device.clone())?.into_scalar_tensor();
+        Ok((images, classes))
     })
 }
 
-fn shuffled_batches(
-    images: ArcArray<u8, Ix4>,
-    classes: ArcArray1<u8>,
+fn shuffled_batches<'a>(
+    images: ArrayView4<'a, u8>,
+    image_scale: ScalarElem,
+    classes: ArrayView1<'a, u8>,
     device: Device,
     batch_size: usize,
-) -> impl Iterator<Item = Result<(Tensor4<u8>, Tensor1<u8>)>> {
+) -> impl Iterator<Item = Result<(ScalarTensor4, ScalarTensor1)>> + 'a {
     let (count, inputs, height, width) = images.dim();
     let mut index_iter = sample(&mut thread_rng(), count, count).into_iter();
     (0..count).step_by(batch_size).map(move |index| {
@@ -279,10 +291,11 @@ fn shuffled_batches(
         }
         let images = Tensor::from(output_images)
             .into_shape([batch_size, inputs, height, width])
-            .unwrap()
-            .into_device(device.clone());
-        let classes = Tensor::from(output_classes).into_device(device.clone());
-        images.and_then(|images| Ok((images, classes?)))
+            .unwrap();
+        let classes = Tensor::from(output_classes);
+        let images = images_to_device_and_scale(images.into(), device.clone(), image_scale)?;
+        let classes = classes.into_device(device.clone())?.into();
+        Ok((images, classes))
     })
 }
 
@@ -302,30 +315,23 @@ impl Stats {
     }
 }
 
-fn train<M, O, I>(
-    model: &mut M,
-    image_scale: ScalarElem,
-    optimizer: &O,
-    learning_rate: f32,
-    mut iter: I,
-) -> Result<Stats>
+fn train<M, O, I>(model: &mut M, optimizer: &O, learning_rate: f32, mut iter: I) -> Result<Stats>
 where
     M: Layer + Forward<Variable4, Output = Variable2>,
     O: Optimizer,
-    I: Iterator<Item = Result<(Tensor4<u8>, Tensor1<u8>)>>,
+    I: Iterator<Item = Result<(ScalarTensor4, ScalarTensor1)>>,
 {
     let mut stats = Stats::default();
     while let Some((x, t)) = iter.by_ref().next().transpose()? {
         stats.count += x.shape().first().unwrap();
-        let x = Variable::from(ScalarTensor::from(x).scaled_cast(image_scale)?);
-        let t = ScalarTensor::from(t).into_shared()?;
         model.init_parameter_grads()?;
-        let y = model.forward(x)?;
+        let y = model.forward(x.into())?;
+        let t = ScalarArcTensor::from(t);
         stats.correct += y.value().accuracy(t.view())?;
         let loss = y.cross_entropy_loss(t)?;
         stats.loss += loss
             .value()
-            .clone()
+            .to_device(Device::host())?
             .cast_into_tensor::<f32>()?
             .into_array()?
             .into_scalar();
@@ -335,24 +341,17 @@ where
     Ok(stats)
 }
 
-fn test<M, I>(model: &M, image_scale: ScalarElem, mut iter: I) -> Result<Stats>
+fn test<M, I>(model: &M, mut iter: I) -> Result<Stats>
 where
     M: Layer + Forward<Variable4, Output = Variable2>,
-    I: Iterator<Item = Result<(Tensor4<u8>, Tensor1<u8>)>>,
+    I: Iterator<Item = Result<(ScalarTensor4, ScalarTensor1)>>,
 {
     let mut stats = Stats::default();
     while let Some((x, t)) = iter.by_ref().next().transpose()? {
         stats.count += x.shape().first().unwrap();
-        let x = Variable::from(ScalarTensor::from(x).scaled_cast(image_scale)?);
-        let t = ScalarTensor::from(t).into_shared()?;
-        let y = model.forward(x)?;
-        stats.correct += y.value().accuracy(t.view())?;
-        let loss = y.cross_entropy_loss(t)?;
-        stats.loss += loss
-            .into_value()
-            .cast_into_tensor::<f32>()?
-            .into_array()?
-            .into_scalar();
+        let y = model.forward(x.into())?.into_value();
+        stats.correct += y.accuracy(t.view())?;
+        stats.loss += y.cross_entropy_loss(t.view())?;
     }
     Ok(stats)
 }

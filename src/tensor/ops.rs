@@ -263,7 +263,7 @@ fn assign<X: Scalar, Y: Scalar>(
     {
         if matches!(op, BinaryOp::Identity)
             && x.device() != y.device()
-            && alpha == Y::zero()
+            && alpha == Y::one()
             && x.strides() == y.strides()
             && X::SCALAR_TYPE == Y::SCALAR_TYPE
         {

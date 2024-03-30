@@ -61,6 +61,8 @@ pub(super) fn conv2_direct(
             }
             Ok(builder.build(output.unpack2(oc)?.into()))
         } else {
+            unreachable!()
+            /*
             let mut builder = Variable::builder();
             if let Some(node) = input.node() {
                 builder.edge(node, move |_output_grad| todo!());
@@ -73,6 +75,7 @@ pub(super) fn conv2_direct(
             builder.edge(output_packed.node().unwrap(), |_output_grad| todo!());
             #[allow(unreachable_code)]
             Ok(builder.build(todo!()))
+            */
         }
     } else {
         output.unpack2(oc).map(Into::into)
@@ -136,7 +139,7 @@ fn conv2_direct_packed<S: ScalarData>(
                 let y = conv2_direct_host_f32(x, ic, w.view(), options);
                 return Ok(PackedOutput::Arrayf32x8(y));
             }
-            todo!()
+            unreachable!()
         }
         //#[cfg(feature = "device")]
         //PackedInput::TensorPacked(_) => todo!(),
@@ -179,7 +182,7 @@ fn conv2_direct_backward_input_packed(
             let input_grad = unpack_input2_host_f32(input_grad.view(), ic);
             Ok(Tensor::from(input_grad).into())
         }
-        _ => todo!(),
+        _ => unreachable!(),
     }
 }
 
@@ -255,7 +258,7 @@ impl<S: ScalarData> TryFrom<ScalarTensorBase<S, Ix4>> for PackedInput<S, Ix4> {
             let x_packed = pack_input2_host_f32(x.as_array().unwrap());
             return Ok(Self::Array8xf32(x_packed));
         }
-        todo!()
+        unreachable!()
     }
 }
 
@@ -304,7 +307,7 @@ impl<S: ScalarData> TryFrom<ScalarTensorBase<S, Ix4>> for PackedWeight<Ix4> {
             };
             return Ok(w_packed);
         }
-        todo!()
+        unreachable!()
     }
 }
 
@@ -323,7 +326,6 @@ impl<D: Dimension> PackedOutput<D> {
             None
         }
     }
-    */
     fn into_tensor_packed(self) -> Option<ScalarTensor<D::Larger>> {
         if let Self::TensorPacked(y) = self {
             Some(y)
@@ -331,6 +333,7 @@ impl<D: Dimension> PackedOutput<D> {
             None
         }
     }
+    */
     fn array_f32x8(&self) -> Option<&Array<f32x8, D>> {
         if let Self::Arrayf32x8(y) = self {
             Some(y)
@@ -349,14 +352,14 @@ impl<S: ScalarData> TryFrom<ScalarTensorBase<S, Ix4>> for PackedOutput<Ix4> {
                 y.as_array().unwrap(),
             )));
         }
-        todo!()
+        unreachable!()
     }
 }
 
 impl PackedOutput<Ix4> {
     fn unpack2(self, oc: usize) -> Result<ScalarTensor4> {
         match self {
-            Self::TensorPacked(_) => todo!(),
+            Self::TensorPacked(_) => unreachable!(),
             Self::Arrayf32x8(y) => Ok(Tensor::from(unpack_output2_host_f32(y.view(), oc)).into()),
         }
     }
@@ -933,7 +936,7 @@ fn conv2_direct_host_f32<const TCX: usize>(
                             inner::<TCX, $TBY, $TWY>(thread_id, threads, input, ic, weight, &sync_output);
                         });
                     } else {
-                        todo!("{options:?}");
+                        unreachable!("{options:?}");
                     }
                 }
             });
@@ -1145,7 +1148,7 @@ where
                     inner::<TCX, $TWY>(thread_id, threads, weight, output_grad, oc, &sync_input_grad);
                 });
             } else {
-                todo!("{options:?}");
+                unreachable!("{options:?}");
             }
         }
     });
@@ -1301,7 +1304,7 @@ fn conv2_direct_backward_weight_host_f32<const TCX: usize>(
                             inner::<TCX, $TBY, $TW>(thread_id, threads, input, ic, output_grad, &sync_weight_grad_tmp);
                         });
                     } else {
-                        todo!("{options:?}");
+                        unreachable!("{options:?}");
                     }
                 }
             });

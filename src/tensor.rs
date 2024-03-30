@@ -934,7 +934,7 @@ impl<S: ScalarData, D: Dimension> ScalarTensorBase<S, D> {
     /// Converts to an [`ScalarArcTensor`].
     pub fn to_shared(&self) -> Result<ScalarArcTensor<D>> {
         if !self.is_contiguous() {
-            todo!()
+            return self.as_standard_layout()?.to_shared();
         }
         Ok(ScalarTensorBase {
             dim: self.dim.clone(),
@@ -1820,7 +1820,7 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
         if device == self.device() {
             self.into_owned()
         } else if !self.is_contiguous() {
-            todo!()
+            self.as_standard_layout()?.to_device(device)
         } else {
             let buffer = self.buffer.to_device(device)?;
             Ok(Tensor {
@@ -2175,21 +2175,6 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
             offset: 0,
         })
     }
-    /*
-    /// Scales the tensor into a new tensor.
-    pub fn scale_into<Y: Scalar>(self, alpha: Y) -> Result<Tensor<Y, D>> {
-        todo!()
-        /*
-        let buffer = match self.data.try_into_buffer() {
-            Ok(buffer) => buffer.scale_into(alpha)?,
-            Err(data) => data.as_slice().scale_into(alpha)?,
-        };
-        Ok(TensorBase {
-            dim: self.dim,
-            strides: self.strides,
-            data: OwnedRepr(buffer),
-        })*/
-    }*/
 }
 
 #[cfg(feature = "serde")]

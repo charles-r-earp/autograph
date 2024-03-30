@@ -73,7 +73,7 @@ Summary Statistics:
 9. Class Distribution: 33.3% for each of 3 classes.
 */
 
-use ndarray::{ArcArray, ArcArray1, ArcArray2};
+use ndarray::{Array, Array1, Array2};
 
 // Data from http://archive.ics.uci.edu/ml/machine-learning-databases/iris/iris.data
 
@@ -239,98 +239,39 @@ const CLASSES: [u8; 150] = [
 ];
 
 /// The Iris dataset.
-#[derive(Clone, Debug)]
 pub struct Iris {
-    dimensions: ArcArray2<f32>,
-    classes: ArcArray1<u8>,
+    /// Dimensions of each flower.
+    ///
+    /// Dimensions:
+    /// - sepal length
+    /// - sepal width,
+    /// - petal length
+    /// - petal width
+    ///
+    /// Shape = \[150, 4\].
+    pub dimensions: Array2<f32>,
+    /// Class of each flower.
+    ///
+    /// Classes:
+    /// - Iris Setosa
+    /// - Iris Versicolour
+    /// - Iris Virginica
+    ///
+    /// Shape = \[150\].
+    ///
+    /// The classes range from 0 to 2 inclusive.
+    pub classes: Array1<u8>,
 }
 
 impl Iris {
     /// Constructs the dataset.
     pub fn new() -> Self {
         let dimensions =
-            ArcArray::from_shape_vec([150, 4], DIMENSIONS.iter().flatten().copied().collect())
-                .unwrap();
-        let classes = ArcArray::from(CLASSES.to_vec());
+            Array::from_shape_vec([150, 4], DIMENSIONS.into_iter().flatten().collect()).unwrap();
+        let classes = Array::from(CLASSES.to_vec());
         Self {
             dimensions,
             classes,
         }
-    }
-    /*
-    fn load(path: impl AsRef<Path>) -> Result<Self> {
-        use anyhow::{bail, ensure};
-        use std::{fs, path::Path, str::FromStr};
-        let csv = fs::read_to_string(path)?;
-        let mut dimensions = vec![-1.; 150 * 4];
-        let mut classes = vec![150; 150];
-        for (line, (x, t)) in csv
-            .lines()
-            .zip(dimensions.chunks_exact_mut(4).zip(classes.iter_mut()))
-        {
-            let mut items = line.split(',');
-            for (x, s) in x.iter_mut().zip(&mut items) {
-                *x = f32::from_str(s)?;
-            }
-            *t = match items.next() {
-                Some("Iris-setosa") => 0,
-                Some("Iris-versicolor") => 1,
-                Some("Iris-virginica") => 2,
-                Some(s) => bail!("Unable to parse iris class {:?}", s),
-                None => bail!("Unable to parse iris.data: expected class, found None!"),
-            };
-        }
-        ensure!(dimensions.iter().all(|x| *x > 0.));
-        ensure!(classes.iter().all(|x| *x <= 2));
-        let dimensions = ArcArray::from_shape_vec([150, 4], dimensions)?;
-        let classes = ArcArray::from(classes);
-        Ok(Self {
-            dimensions,
-            classes,
-        })
-    }*/
-    /// Returns the dimensions of each flower.
-    ///
-    /// Dimensions:
-    /// - sepal length
-    /// - sepal width,
-    /// - petal length
-    /// - petal width
-    pub fn dimensions(&self) -> &ArcArray2<f32> {
-        &self.dimensions
-    }
-    /// Returns the names of the dimensions.
-    ///
-    /// Dimensions:
-    /// - sepal length
-    /// - sepal width,
-    /// - petal length
-    /// - petal width
-    pub fn dimension_names(&self) -> [&'static str; 4] {
-        ["sepal length", "sepal width", "petal length", "petal width"]
-    }
-    /// Returns the class of each flower.
-    ///
-    /// Classes:
-    /// - Iris Setosa
-    /// - Iris Versicolour
-    /// - Iris Virginica
-    pub fn classes(&self) -> &ArcArray1<u8> {
-        &self.classes
-    }
-    /// Returns the class names.
-    ///
-    /// Classes:
-    /// - Iris Setosa
-    /// - Iris Versicolour
-    /// - Iris Virginica
-    pub fn class_names(&self) -> [&'static str; 3] {
-        ["Iris Setosa", "Iris Versicolour", "Iris Virginica"]
-    }
-}
-
-impl Default for Iris {
-    fn default() -> Self {
-        Self::new()
     }
 }

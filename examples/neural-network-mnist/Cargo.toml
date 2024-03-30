@@ -1,16 +1,19 @@
 [package]
 name = "neural-network-mnist-example"
-version = "0.0.0"
+version = "0.1.0"
 authors.workspace = true
 edition.workspace = true
 license.workspace = true
 publish = false
 
 [dependencies]
-autograph = { path = "../../", default-features = false, features = ["neural-network", "mnist"] }
+autograph = { path = "../../", default-features = false, features = [
+    "neural-network",
+    "mnist",
+] }
 clap = { workspace = true, features = ["derive"] }
 rand = "0.8.5"
-crossbeam-channel.workspace = true
+#crossbeam-channel.workspace = true
 derive_more = { workspace = true, features = ["display"] }
 num-format.workspace = true
 
