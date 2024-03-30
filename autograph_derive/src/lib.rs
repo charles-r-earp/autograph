@@ -195,30 +195,6 @@ impl Layers {
             }
         }
     }
-    /*
-    fn try_map(&self, method: Ident, arg: TokenStream2) -> TokenStream2 {
-        match self {
-            Self::Struct(layers) => {
-                quote! {
-                    Ok(Self {
-                        #(
-                            #layers: self.#layers.#method(#arg)?,
-                        )*
-                    })
-                }
-            }
-            Self::Enum(layers) => {
-                quote! {
-                    match self {
-                        #(
-                            Self::#layers(layer) => Ok(Self::#layers(layer.#method(#arg)?)),
-                        )*
-                    }
-                }
-            }
-        }
-    }
-    */
 }
 
 enum Layer {
@@ -364,7 +340,7 @@ fn forward_impl(input: TokenStream2) -> Result<TokenStream2> {
 }
 
 /// Derive for Forward.
-#[proc_macro_derive(Forward, attributes(autograph, layer))]
+#[proc_macro_derive(Forward, attributes(autograph))]
 pub fn forward(input: TokenStream) -> TokenStream {
     match forward_impl(input.into()) {
         Ok(output) => output.into(),
