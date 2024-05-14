@@ -232,12 +232,11 @@ fn download(
         let guard = AbortGuard::new(&done, &bar);
         let url = match kind {
             MnistKind::Mnist => {
-                format!("http://yann.lecun.org/exdb/mnist/{}.gz", name)
+                format!("https://storage.googleapis.com/cvdf-datasets/mnist/{name}.gz")
             }
-            MnistKind::Fashion => format!(
-                "http://fashion-mnist.s3-website.eu-central-1.amazonaws.com/{}.gz",
-                name
-            ),
+            MnistKind::Fashion => {
+                format!("http://fashion-mnist.s3-website.eu-central-1.amazonaws.com/{name}.gz",)
+            }
         };
         let gz_path = mnist_path.join(name).with_extension("gz");
         let file = std::fs::File::create(gz_path)?;
@@ -326,7 +325,7 @@ mod tests {
     fn fashion() {
         let dir = tempfile::tempdir().unwrap();
         Mnist::builder()
-            .kind(MnistKind::Mnist)
+            .kind(MnistKind::Fashion)
             .download(true)
             .path(dir.path())
             .verbose(false)
