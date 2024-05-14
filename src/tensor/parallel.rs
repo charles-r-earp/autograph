@@ -4,19 +4,19 @@ use ndarray::{ArrayViewMut, Dimension, RawArrayViewMut};
 #[cfg(feature = "neural-network")]
 use ndarray::{Axis, Ix4, Ix5, RemoveAxis};
 use std::marker::PhantomData;
-#[cfg(not(target_family = "wasm"))]
+#[cfg(target_family = "x86")]
 use std::sync::OnceLock;
 
 pub(crate) fn parallel_size() -> usize {
     const L1_CACHE_SIZE_DEFAULT: usize = 1 << 15;
     let l1_cache_size: usize = {
-        #[cfg(not(target_family = "wasm"))]
+        #[cfg(target_family = "x86")]
         {
             static L1_CACHE_SIZE: OnceLock<usize> = std::sync::OnceLock::new();
             *L1_CACHE_SIZE
                 .get_or_init(|| cache_size::l1_cache_size().unwrap_or(L1_CACHE_SIZE_DEFAULT))
         }
-        #[cfg(target_family = "wasm")]
+        #[cfg(not(target_family = "x86"))]
         {
             L1_CACHE_SIZE_DEFAULT
         }
