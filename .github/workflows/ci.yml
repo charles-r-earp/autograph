@@ -36,16 +36,18 @@ jobs:
     - name: install toolchains
       run: |
         rustup set profile minimal
-        rustup toolchain install stable nightly
+        rustup toolchain install stable nightly --no-self-update
     - name: build
       run: cargo build --workspace --features serde,iris,mnist,neural-network --all-targets -v
     - name: test
       run: cargo test --workspace --no-default-features --features serde,mnist,neural-network -v
     - name: test avx
+      if: ${{ matrix.os != 'macos-latest' }}
       env:
         RUST_BUILD_RUSTFLAGS: -Ctarget-feature=+avx
       run: cargo test --test=integration_tests --no-default-features --features neural-network --target ${{ matrix.target }} -v conv2_direct
     - name: test fma
+      if: ${{ matrix.os != 'macos-latest' }}
       env:
         RUST_BUILD_RUSTFLAGS: -Ctarget-feature=+fma
       run: cargo test --test=integration_tests --no-default-features --features neural-network --target ${{ matrix.target }} -v conv2_direct
@@ -82,8 +84,8 @@ jobs:
     - name: install toolchains
       run: |
         rustup set profile minimal
-        rustup toolchain install nightly
-        rustup toolchain install nightly-2023-05-27 --component rust-src  rustc-dev  llvm-tools-preview
+        rustup toolchain install nightly --no-self-update
+        rustup toolchain install nightly-2023-05-27 --component rust-src  rustc-dev  llvm-tools-preview --no-self-update
     - name: install spirv-tools
       run: |
         sudo apt install libwayland-cursor0 libxkbcommon-dev libwayland-dev
@@ -102,10 +104,10 @@ jobs:
     - name: install toolchains
       run: |
         rustup set profile minimal
-        rustup toolchain install stable --component rustfmt clippy rust-docs
-        rustup toolchain install nightly --component rust-docs
-        rustup toolchain install nightly-2023-05-27 --component rustfmt clippy rust-src rustc-dev llvm-tools-preview
-        rustup toolchain install 1.70.0
+        rustup toolchain install stable --component rustfmt clippy rust-docs --no-self-update
+        rustup toolchain install nightly --component rust-docs --no-self-update
+        rustup toolchain install nightly-2023-05-27 --component rustfmt clippy rust-src rustc-dev llvm-tools-preview --no-self-update
+        rustup toolchain install 1.70.0 --no-self-update
     - name: fmt
       run: cargo fmt --check
     - name: install cargo-hack
@@ -119,12 +121,12 @@ jobs:
     - name: rustdoc
       run: |
         cargo rustdoc -p autograph_derive -- -D warnings
-        cargo hack --feature-powerset --include-features device,serde,neural-network rustdoc -- --D warnings
-        cargo rustdoc --all-features -- --D warnings
-        cargo +nightly rustdoc --all-features -- --D warnings --cfg doc_cfg
+        cargo hack --feature-powerset --include-features device,serde,neural-network rustdoc -- --D warnings -A unexpected_cfgs
+        cargo rustdoc --all-features -- --D warnings -A unexpected_cfgs
+        cargo +nightly rustdoc --all-features -- --D warnings --cfg doc_cfg -A unexpected_cfgs
     - name: msrv
       run: |
-        cargo +nightly generate-lockfile -Zmsrv-policy
+        cargo +nightly generate-lockfile -Zmsrv-policy --config "resolver.something-like-precedence='something-like-rust-version'"
         cat Cargo.lock
         cargo +1.70.0 check -p autograph -p neural-network-mnist-example --all-features --all-targets -v
         cargo +1.70.0 check -p neural-network-benches --all-targets -v
