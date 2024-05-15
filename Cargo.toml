@@ -70,7 +70,7 @@ bytemuck.workspace = true
 byteorder = { version = "1.4.3", optional = true }
 dirs = { version = "3.0.2", optional = true }
 flate2 = { version = "1.0.20", optional = true }
-half = { version = "=2.1.0", features = ["num-traits", "bytemuck", "serde"] }
+half = { version = "2.1.0", features = ["num-traits", "bytemuck", "serde"] }
 paste = "1.0.7"
 dry = "0.1.1"
 crunchy = { version = "0.2.2" }
