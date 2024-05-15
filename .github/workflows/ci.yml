@@ -47,7 +47,7 @@ jobs:
         RUST_BUILD_RUSTFLAGS: -Ctarget-feature=+avx
       run: cargo test --test=integration_tests --no-default-features --features neural-network --target ${{ matrix.target }} -v conv2_direct
     - name: test fma
-      if: ${{ matrix.os == 'macos-latest' }}
+      if: ${{ matrix.os != 'macos-latest' }}
       env:
         RUST_BUILD_RUSTFLAGS: -Ctarget-feature=+fma
       run: cargo test --test=integration_tests --no-default-features --features neural-network --target ${{ matrix.target }} -v conv2_direct
