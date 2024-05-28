@@ -54,7 +54,7 @@ autobenches = false
 
 [dependencies]
 autograph_derive = { workspace = true, optional = true }
-krnl = { version = "0.1.0", default-features = false }
+krnl = { version = "0.1.1", default-features = false }
 anyhow.workspace = true
 ndarray = { workspace = true, features = [
     "serde",
