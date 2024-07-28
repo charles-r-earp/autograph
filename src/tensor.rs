@@ -220,7 +220,7 @@ fn size_of_shape_checked<D: Dimension>(dim: &D) -> Result<usize, ShapeError> {
         .filter(|&&d| d != 0)
         .try_fold(1usize, |acc, &d| acc.checked_mul(d))
         .ok_or_else(|| ShapeError::from_kind(ErrorKind::Overflow))?;
-    if size_nonzero > ::std::isize::MAX as usize {
+    if size_nonzero > isize::MAX as usize {
         Err(ShapeError::from_kind(ErrorKind::Overflow))
     } else {
         Ok(dim.size())

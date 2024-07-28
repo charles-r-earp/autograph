@@ -116,8 +116,8 @@ jobs:
       env:
         CARGO_ALIAS_CLIPPYALL: clippy --workspace
       run: |
-        cargo hack --feature-powerset --skip default,learn,dataset,iris,mnist clippyall --all-targets -v -- -D warnings
-        cargo clippy --no-default-features --features iris,mnist --all-targets -v -- -D warnings
+        cargo hack --feature-powerset --skip default,learn,dataset,iris,mnist clippyall --all-targets -v -- -D warnings -A unexpected_cfgs
+        cargo clippy --no-default-features --features iris,mnist --all-targets -v -- -D warnings -A unexpected_cfgs
     - name: rustdoc
       run: |
         cargo rustdoc -p autograph_derive -- -D warnings
