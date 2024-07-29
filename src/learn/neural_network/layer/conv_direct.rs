@@ -971,8 +971,8 @@ impl Conv2DirectBackwardInputHostF32Kernel<8> for () {
         dx: &mut [[f32; 8]],
         iw: usize,
     ) {
-        let twy = if UNROLL { TWY } else { twy.max(1).min(TWY) };
-        let tcy = tcy.max(1).min(8);
+        let twy = if UNROLL { TWY } else { twy.clamp(1, TWY) };
+        let tcy = tcy.clamp(1, 8);
         let mut dy_packed = [f32x8::default(); TWY];
         let mut dx_packed = [f32x8::default(); TWY];
         for (fi, w) in w.chunks_exact(fw).enumerate() {
@@ -1012,8 +1012,8 @@ impl Conv2DirectBackwardInputHostF32Kernel<1> for () {
         dx: &mut [[f32; 1]],
         iw: usize,
     ) {
-        let twy = if UNROLL { TWY } else { twy.max(1).min(TWY) };
-        let tcy = tcy.max(1).min(8);
+        let twy = if UNROLL { TWY } else { twy.clamp(1, TWY) };
+        let tcy = tcy.clamp(1, 8);
         let mut dy_packed = f32x8::default();
         let mut dx_packed = f32x8::default();
         for (fi, w) in w.chunks_exact(fw).enumerate() {
