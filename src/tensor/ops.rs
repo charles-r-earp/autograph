@@ -161,6 +161,7 @@ impl<T: Scalar, S: Data<Elem = T>, D: Dimension> TensorBase<S, D> {
     /// - On device, supports up to 6 dimensional inputs.
     /// - [`DeviceLost`]
     /// - The kernel could not be dispatched.
+    ///
     /// See [`.into_owned()`](TensorBase::into_owned()).
     pub fn into_standard_layout(self) -> Result<Tensor<T, D>> {
         if self.is_standard_layout() {
