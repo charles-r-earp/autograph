@@ -60,7 +60,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
     } else {
         0
     };
-    #[cfg_attr(not(feature = "cuda"), allow(unused))]
+    #[allow(unused)]
     let cuda_device_index = if cfg!(feature = "cuda") {
         let cuda_device = std::env::var("CUDA_DEVICE");
         println!("CUDA_DEVICE = {cuda_device:?}");

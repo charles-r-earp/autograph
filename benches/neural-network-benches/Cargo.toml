@@ -27,7 +27,7 @@ num-format.workspace = true
 [features]
 default = ["device"]
 device = ["autograph/device"]
-cuda = ["candle-nn/cuda"]
+cuda = ["candle-nn?/cuda"]
 tch = ["dep:tch", "dep:bytemuck"]
 candle = ["dep:candle-nn", "dep:candle-core"]
 
