@@ -8,7 +8,9 @@ use neural_network_benches::tch_backend;
 use num_format::{Locale, ToFormattedString};
 use std::str::FromStr;
 
-fn autograph_devices(index: usize) -> impl IntoIterator<Item = Device> {
+fn autograph_devices(
+    #[cfg_attr(not(feature = "device"), allow(unused))] index: usize,
+) -> impl IntoIterator<Item = Device> {
     [
         Device::host(),
         #[cfg(feature = "device")]
