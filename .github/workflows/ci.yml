@@ -126,7 +126,7 @@ jobs:
         cargo +nightly rustdoc --all-features -- --D warnings --cfg doc_cfg -A unexpected_cfgs
     - name: msrv
       run: |
-        cargo +nightly generate-lockfile -Zmsrv-policy --config "resolver.something-like-precedence='something-like-rust-version'"
+        cargo +nightly generate-lockfile -Zmsrv-policy --config "resolver.incompatible-rust-versions='fallback'"
         cat Cargo.lock
         cargo +1.70.0 check -p autograph -p neural-network-mnist-example --all-features --all-targets -v
         cargo +1.70.0 check -p neural-network-benches --all-targets -v
