@@ -1,6 +1,6 @@
+use crate::half::bf16;
 use anyhow::Result;
 use autograph::{
-    half::bf16,
     krnl::{device::Device, scalar::ScalarType},
     learn::{
         criterion::CrossEntropyLoss,
