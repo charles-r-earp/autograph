@@ -2,7 +2,7 @@
 members = ["examples/*", "benches/*"]
 
 [workspace.package]
-version = "0.2.1"
+version = "0.2.2-alpha"
 authors = ["Charles R Earp <charles.r.earp@gmail.com>"]
 edition = "2021"
 rust-version = "1.70.0"
@@ -11,10 +11,10 @@ readme = "README.md"
 homepage = "https://github.com/charles-r-earp/autograph"
 repository = "https://github.com/charles-r-earp/autograph"
 license = "MIT OR Apache-2.0"
-publish = true
+publish = false
 
 [workspace.dependencies]
-autograph_derive = { path = "autograph_derive", version = "=0.2.1" }
+autograph_derive = { path = "autograph_derive", version = "=0.2.2-alpha" }
 autograph = { path = ".", default-features = false }
 anyhow = "1.0.37"
 clap = "4.2.5"
